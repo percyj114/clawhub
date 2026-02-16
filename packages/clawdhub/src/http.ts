@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import pRetry, { AbortError } from 'p-retry'
-import { Agent, setGlobalDispatcher } from 'undici'
+import { Agent, EnvHttpProxyAgent, setGlobalDispatcher } from 'undici'
 import type { ArkValidator } from './schema/index.js'
 import { ApiRoutes, parseArk } from './schema/index.js'
 
@@ -28,12 +28,20 @@ const CURL_WRITE_OUT_FORMAT = [
 ].join('\n')
 const isBun = typeof process !== 'undefined' && Boolean(process.versions?.bun)
 
+export function shouldUseProxyFromEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  return Boolean(env.HTTPS_PROXY || env.HTTP_PROXY || env.https_proxy || env.http_proxy)
+}
+
 if (typeof process !== 'undefined' && process.versions?.node) {
   try {
     setGlobalDispatcher(
-      new Agent({
-        connect: { timeout: REQUEST_TIMEOUT_MS },
-      }),
+      shouldUseProxyFromEnv(process.env)
+        ? new EnvHttpProxyAgent({
+            connect: { timeout: REQUEST_TIMEOUT_MS },
+          })
+        : new Agent({
+            connect: { timeout: REQUEST_TIMEOUT_MS },
+          }),
     )
   } catch {
     // ignore dispatcher setup failures in non-node runtimes

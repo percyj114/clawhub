@@ -1,7 +1,7 @@
 /* @vitest-environment node */
 
 import { describe, expect, it, vi } from 'vitest'
-import { apiRequest, apiRequestForm, downloadZip, fetchText } from './http'
+import { apiRequest, apiRequestForm, downloadZip, fetchText, shouldUseProxyFromEnv } from './http'
 import { ApiV1WhoamiResponseSchema } from './schema/index.js'
 
 function mockImmediateTimeouts() {
@@ -35,6 +35,35 @@ function createAbortingFetchMock() {
     })
   })
 }
+
+describe('shouldUseProxyFromEnv', () => {
+  it('detects standard proxy variables', () => {
+    expect(
+      shouldUseProxyFromEnv({
+        HTTPS_PROXY: 'http://proxy.example:3128',
+      } as NodeJS.ProcessEnv),
+    ).toBe(true)
+    expect(
+      shouldUseProxyFromEnv({
+        HTTP_PROXY: 'http://proxy.example:3128',
+      } as NodeJS.ProcessEnv),
+    ).toBe(true)
+    expect(
+      shouldUseProxyFromEnv({
+        https_proxy: 'http://proxy.example:3128',
+      } as NodeJS.ProcessEnv),
+    ).toBe(true)
+  })
+
+  it('ignores NO_PROXY-only configs', () => {
+    expect(
+      shouldUseProxyFromEnv({
+        NO_PROXY: 'localhost,127.0.0.1',
+      } as NodeJS.ProcessEnv),
+    ).toBe(false)
+    expect(shouldUseProxyFromEnv({} as NodeJS.ProcessEnv)).toBe(false)
+  })
+})
 
 describe('apiRequest', () => {
   it('adds bearer token and parses json', async () => {
