@@ -2031,6 +2031,7 @@ export const getActiveSkillBatchForRescanInternal = internalQuery({
       versionId: Id<'skillVersions'>
       sha256hash: string
       slug: string
+      wasFlagged: boolean
     }> = []
     let nextCursor = cursor
 
@@ -2051,6 +2052,8 @@ export const getActiveSkillBatchForRescanInternal = internalQuery({
         versionId: version._id,
         sha256hash: version.sha256hash,
         slug: skill.slug,
+        wasFlagged:
+          (skill.moderationFlags as string[] | undefined)?.includes('flagged.suspicious') ?? false,
       })
     }
 
