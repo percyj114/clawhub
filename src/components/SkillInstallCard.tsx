@@ -4,9 +4,11 @@ import { formatInstallCommand, formatInstallLabel } from './skillDetailUtils'
 const CAPABILITY_DISPLAY: Record<string, { icon: string; label: string }> = {
   shell: { icon: '>_', label: 'Shell commands' },
   filesystem: { icon: '\uD83D\uDCC2', label: 'File access' },
-  network: { icon: '\uD83C\uDF10', label: 'Network requests' },
+  network: { icon: '\uD83C\uDF10', label: 'Web search/fetch' },
   browser: { icon: '\uD83D\uDD0D', label: 'Browser control' },
   sessions: { icon: '\u26A1', label: 'Session orchestration' },
+  messaging: { icon: '\u2709\uFE0F', label: 'Message sending' },
+  scheduling: { icon: '\u23F0', label: 'Scheduling/cron' },
 }
 
 type SkillInstallCardProps = {
