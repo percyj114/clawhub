@@ -99,6 +99,19 @@ metadata:
     expect(clawdis?.capabilities).toEqual(['shell', 'network'])
   })
 
+  it('prefers openclaw capabilities when mixed with legacy clawdis metadata', () => {
+    const frontmatter = parseFrontmatter(`---
+metadata:
+  clawdis:
+    emoji: "🦞"
+  openclaw:
+    capabilities: [terminal, web_fetch]
+---`)
+    const clawdis = parseClawdisMetadata(frontmatter)
+    expect(clawdis?.emoji).toBe('🦞')
+    expect(clawdis?.capabilities).toEqual(['shell', 'network'])
+  })
+
   it('ignores invalid clawdis metadata', () => {
     const frontmatter = parseFrontmatter(`---\nmetadata: not-json\n---\nBody`)
     expect(parseClawdisMetadata(frontmatter)).toBeUndefined()
