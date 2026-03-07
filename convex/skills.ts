@@ -819,7 +819,7 @@ export const getBySlug = query({
 export const checkSlugAvailability = query({
   args: { slug: v.string() },
   handler: async (ctx, args) => {
-    const { userId } = await requireUser(ctx)
+    const userId = await getAuthUserId(ctx)
     const slug = args.slug.trim().toLowerCase()
     if (!slug) {
       return {
@@ -857,7 +857,7 @@ export const checkSlugAvailability = query({
       }
     }
 
-    if (skill.ownerUserId === userId) {
+    if (userId && skill.ownerUserId === userId) {
       return {
         available: true,
         reason: 'available' as const,
@@ -879,22 +879,24 @@ export const checkSlugAvailability = query({
       }
     }
 
-    const [ownerProviderAccountId, callerProviderAccountId] = await Promise.all([
-      getGitHubProviderAccountId(ctx, skill.ownerUserId),
-      getGitHubProviderAccountId(ctx, userId),
-    ])
+    if (userId) {
+      const [ownerProviderAccountId, callerProviderAccountId] = await Promise.all([
+        getGitHubProviderAccountId(ctx, skill.ownerUserId),
+        getGitHubProviderAccountId(ctx, userId),
+      ])
 
-    if (
-      canHealSkillOwnershipByGitHubProviderAccountId(
-        ownerProviderAccountId,
-        callerProviderAccountId,
-      )
-    ) {
-      return {
-        available: true,
-        reason: 'available' as const,
-        message: null,
-        url: null,
+      if (
+        canHealSkillOwnershipByGitHubProviderAccountId(
+          ownerProviderAccountId,
+          callerProviderAccountId,
+        )
+      ) {
+        return {
+          available: true,
+          reason: 'available' as const,
+          message: null,
+          url: null,
+        }
       }
     }
 

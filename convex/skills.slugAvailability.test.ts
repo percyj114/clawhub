@@ -192,6 +192,42 @@ describe('skills.checkSlugAvailability', () => {
     })
   })
 
+  it('returns taken without requiring auth context', async () => {
+    vi.mocked(getAuthUserId).mockResolvedValue(null as never)
+
+    const result = (await checkSlugAvailabilityHandler(
+      createCtx({
+        skill: {
+          _id: 'skills:1',
+          slug: 'taken-skill',
+          ownerUserId: 'users:owner',
+          softDeletedAt: undefined,
+          moderationStatus: 'active',
+          moderationFlags: undefined,
+        },
+        owner: {
+          _id: 'users:owner',
+          handle: 'alice',
+          deletedAt: undefined,
+          deactivatedAt: undefined,
+        },
+      }) as never,
+      { slug: 'taken-skill' } as never,
+    )) as {
+      available: boolean
+      reason: string
+      message: string
+      url: string | null
+    }
+
+    expect(result).toEqual({
+      available: false,
+      reason: 'taken',
+      message: 'Slug is already taken. Choose a different slug. Existing skill: /alice/taken-skill',
+      url: '/alice/taken-skill',
+    })
+  })
+
   it('returns available when slug belongs to current user', async () => {
     vi.mocked(getAuthUserId).mockResolvedValue('users:caller' as never)
 
@@ -226,6 +262,39 @@ describe('skills.checkSlugAvailability', () => {
     const now = 1_700_000_000_000
     vi.spyOn(Date, 'now').mockReturnValue(now)
     vi.mocked(getAuthUserId).mockResolvedValue('users:caller' as never)
+
+    const result = (await checkSlugAvailabilityHandler(
+      createCtx({
+        skill: null,
+        reservation: {
+          _id: 'reservedSlugs:1',
+          slug: 'taken-skill',
+          originalOwnerUserId: 'users:owner',
+          deletedAt: now - 1_000,
+          expiresAt: now + 60_000,
+          releasedAt: undefined,
+        },
+      }) as never,
+      { slug: 'taken-skill' } as never,
+    )) as {
+      available: boolean
+      reason: string
+      message: string
+      url: string | null
+    }
+
+    expect(result).toEqual({
+      available: false,
+      reason: 'reserved',
+      message: formatReservedSlugCooldownMessage('taken-skill', now + 60_000),
+      url: null,
+    })
+  })
+
+  it('returns reserved without requiring auth context', async () => {
+    const now = 1_700_000_000_000
+    vi.spyOn(Date, 'now').mockReturnValue(now)
+    vi.mocked(getAuthUserId).mockResolvedValue(null as never)
 
     const result = (await checkSlugAvailabilityHandler(
       createCtx({
