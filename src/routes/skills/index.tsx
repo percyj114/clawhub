@@ -5,10 +5,10 @@ import { api } from '../../../convex/_generated/api'
 import { parseSort } from './-params'
 import { SkillsResults } from './-SkillsResults'
 import { SkillsToolbar } from './-SkillsToolbar'
-import { useSkillsBrowseModel } from './-useSkillsBrowseModel'
+import { useSkillsBrowseModel, type SkillsSearchState } from './-useSkillsBrowseModel'
 
 export const Route = createFileRoute('/skills/')({
-  validateSearch: (search) => {
+  validateSearch: (search): SkillsSearchState => {
     return {
       q: typeof search.q === 'string' && search.q.trim() ? search.q : undefined,
       sort: typeof search.sort === 'string' ? parseSort(search.sort) : undefined,

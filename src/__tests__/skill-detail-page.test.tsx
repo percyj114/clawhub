@@ -167,11 +167,15 @@ describe('SkillDetailPage', () => {
 
     expect(
       useQueryMock.mock.calls.some(
-        ([, args]: [unknown, unknown]) =>
+        (call) => {
+          const args = call[1]
+          return (
           typeof args === 'object' &&
           args !== null &&
           'limit' in args &&
-          (args as { limit: number }).limit === 200,
+          (args as { limit: number }).limit === 200
+          )
+        },
       ),
     ).toBe(false)
 
@@ -180,11 +184,15 @@ describe('SkillDetailPage', () => {
     await waitFor(() => {
       expect(
         useQueryMock.mock.calls.some(
-          ([, args]: [unknown, unknown]) =>
+          (call) => {
+            const args = call[1]
+            return (
             typeof args === 'object' &&
             args !== null &&
             'limit' in args &&
-            (args as { limit: number }).limit === 200,
+            (args as { limit: number }).limit === 200
+            )
+          },
         ),
       ).toBe(true)
     })

@@ -433,3 +433,4 @@ type _AssertExactKeys<A, B> = [keyof A] extends [keyof B] ? [keyof B] extends [k
 type _ClawdisKeysMatch = _AssertExactKeys<ClawdisSkillMetadata, _ClawdisInferred>
 // If this line errors, ClawdisSkillMetadata is out of sync with ClawdisSkillMetadataSchema
 const _clawdisKeysCheck: _ClawdisKeysMatch = true
+void _clawdisKeysCheck

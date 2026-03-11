@@ -16,6 +16,7 @@ async function hasAuthStorageState() {
 test('authenticated upload preflight stays healthy', async ({ browser, baseURL }) => {
   const storageState = await hasAuthStorageState()
   test.skip(!storageState, 'Set PLAYWRIGHT_AUTH_STORAGE_STATE to run authenticated smoke.')
+  if (!storageState) return
 
   const context = await browser.newContext({ baseURL, storageState })
   const page = await context.newPage()
@@ -32,6 +33,7 @@ test('authenticated upload preflight stays healthy', async ({ browser, baseURL }
 test('authenticated import preflight stays healthy', async ({ browser, baseURL }) => {
   const storageState = await hasAuthStorageState()
   test.skip(!storageState, 'Set PLAYWRIGHT_AUTH_STORAGE_STATE to run authenticated smoke.')
+  if (!storageState) return
 
   const context = await browser.newContext({ baseURL, storageState })
   const page = await context.newPage()

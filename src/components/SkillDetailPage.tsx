@@ -108,8 +108,8 @@ export function SkillDetailPage({
 
   const isLoadingSkill = result === undefined
   const skill = result?.skill
-  const owner = result?.owner
-  const latestVersion = result?.latestVersion
+  const owner = result?.owner ?? null
+  const latestVersion = result?.latestVersion ?? null
 
   const versions = useQuery(
     api.skills.listVersions,
