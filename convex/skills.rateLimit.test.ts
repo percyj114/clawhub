@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   approveSkillByHashInternal,
   clearOwnerSuspiciousFlagsInternal,
+  escalateSkillByIdInternal,
   escalateByVtInternal,
   insertVersion,
 } from './skills'
@@ -14,6 +15,9 @@ const insertVersionHandler = (insertVersion as unknown as WrappedHandler<Record<
   ._handler
 const approveSkillByHashHandler = (
   approveSkillByHashInternal as unknown as WrappedHandler<Record<string, unknown>>
+)._handler
+const escalateSkillByIdHandler = (
+  escalateSkillByIdInternal as unknown as WrappedHandler<Record<string, unknown>>
 )._handler
 const escalateByVtHandler = (
   escalateByVtInternal as unknown as WrappedHandler<Record<string, unknown>>
@@ -411,6 +415,99 @@ describe('skills anti-spam guards', () => {
     )
   })
 
+  it('keeps skills hidden when aggregate verdict remains malicious after a clean scanner update', async () => {
+    const patch = vi.fn(async () => {})
+    const version = {
+      _id: 'skillVersions:1',
+      skillId: 'skills:1',
+      staticScan: {
+        status: 'malicious',
+        reasonCodes: ['malicious.crypto_mining'],
+        findings: [],
+        summary: '',
+        engineVersion: 'v2.1.0',
+        checkedAt: Date.now(),
+      },
+      vtAnalysis: { status: 'malicious' },
+      llmAnalysis: { status: 'clean' },
+    }
+    const skill = {
+      _id: 'skills:1',
+      slug: 'miner',
+      ownerUserId: 'users:owner',
+      moderationFlags: undefined,
+      moderationReason: 'scanner.vt.pending',
+    }
+    const owner = {
+      _id: 'users:owner',
+      role: 'user',
+      _creationTime: Date.now() - 60 * 24 * 60 * 60 * 1000,
+      createdAt: Date.now() - 60 * 24 * 60 * 60 * 1000,
+      deletedAt: undefined,
+    }
+
+    const db = {
+      get: vi.fn(async (id: string) => {
+        if (id === 'skills:1') return skill
+        if (id === 'users:owner') return owner
+        return null
+      }),
+      query: vi.fn((table: string) => {
+        const globalStatsQuery = buildGlobalStatsQuery(table)
+        if (globalStatsQuery) return globalStatsQuery
+        if (table === 'skillVersions') {
+          return {
+            withIndex: () => ({
+              unique: async () => version,
+            }),
+          }
+        }
+        if (table === 'skills') {
+          return {
+            withIndex: (name: string) => {
+              if (name === 'by_owner') {
+                return {
+                  order: () => ({
+                    take: async () => [],
+                  }),
+                }
+              }
+              throw new Error(`unexpected skills index ${name}`)
+            },
+          }
+        }
+        throw new Error(`unexpected table ${table}`)
+      }),
+      patch,
+    }
+
+    await approveSkillByHashHandler(
+      { db, scheduler: { runAfter: vi.fn() } } as never,
+      {
+        sha256hash: 'h'.repeat(64),
+        scanner: 'vt',
+        status: 'clean',
+      } as never,
+    )
+
+    expect(patch).toHaveBeenNthCalledWith(
+      1,
+      'skills:1',
+      expect.objectContaining({
+        moderationStatus: 'hidden',
+        moderationVerdict: 'malicious',
+        moderationFlags: ['blocked.malware'],
+      }),
+    )
+    expect(patch).toHaveBeenNthCalledWith(
+      2,
+      'globalStats:1',
+      expect.objectContaining({
+        activeSkillsCount: 99,
+      }),
+    )
+  })
+
   it('vt suspicious escalation does not keep suspicious flags for admin owners', async () => {
     const patch = vi.fn(async () => {})
     const version = { _id: 'skillVersions:1', skillId: 'skills:1' }
@@ -465,6 +562,88 @@ describe('skills anti-spam guards', () => {
       expect.objectContaining({
         moderationFlags: undefined,
         moderationReason: 'scanner.llm.clean',
+      }),
+    )
+  })
+
+  it('rebuilds structured moderation state for legacy skillId escalation', async () => {
+    const patch = vi.fn(async () => {})
+    const version = {
+      _id: 'skillVersions:1',
+      skillId: 'skills:1',
+      staticScan: {
+        status: 'suspicious',
+        reasonCodes: ['suspicious.dynamic_code_execution'],
+        findings: [],
+        summary: '',
+        engineVersion: 'v2.1.0',
+        checkedAt: Date.now(),
+      },
+      vtAnalysis: { status: 'malicious' },
+      llmAnalysis: { status: 'clean' },
+    }
+    const skill = {
+      _id: 'skills:1',
+      slug: 'legacy-bad',
+      ownerUserId: 'users:owner',
+      latestVersionId: 'skillVersions:1',
+      moderationFlags: undefined,
+      moderationReason: 'scanner.vt.pending',
+      moderationStatus: 'active',
+    }
+    const owner = {
+      _id: 'users:owner',
+      role: 'user',
+      _creationTime: Date.now() - 60 * 24 * 60 * 60 * 1000,
+      createdAt: Date.now() - 60 * 24 * 60 * 60 * 1000,
+      deletedAt: undefined,
+    }
+
+    const db = {
+      get: vi.fn(async (id: string) => {
+        if (id === 'skills:1') return skill
+        if (id === 'skillVersions:1') return version
+        if (id === 'users:owner') return owner
+        return null
+      }),
+      query: vi.fn((table: string) => {
+        const globalStatsQuery = buildGlobalStatsQuery(table)
+        if (globalStatsQuery) return globalStatsQuery
+        throw new Error(`unexpected table ${table}`)
+      }),
+      patch,
+    }
+
+    await escalateSkillByIdHandler(
+      { db } as never,
+      {
+        skillId: 'skills:1',
+        moderationReason: 'scanner.vt.malicious',
+        moderationFlags: ['blocked.malware'],
+        moderationStatus: 'hidden',
+      } as never,
+    )
+
+    expect(patch).toHaveBeenNthCalledWith(
+      1,
+      'skills:1',
+      expect.objectContaining({
+        moderationStatus: 'hidden',
+        moderationReason: 'scanner.vt.malicious',
+        moderationFlags: ['blocked.malware'],
+        moderationVerdict: 'malicious',
+        moderationReasonCodes: expect.arrayContaining([
+          'malicious.vt_malicious',
+          'suspicious.dynamic_code_execution',
+        ]),
+        moderationSourceVersionId: 'skillVersions:1',
+      }),
+    )
+    expect(patch).toHaveBeenNthCalledWith(
+      2,
+      'globalStats:1',
+      expect.objectContaining({
+        activeSkillsCount: 99,
       }),
     )
   })
