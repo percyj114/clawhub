@@ -1,3 +1,4 @@
+import { getAuthUserId } from '@convex-dev/auth/server'
 import { ConvexError, v } from 'convex/values'
 import { internal } from './_generated/api'
 import type { Doc, Id } from './_generated/dataModel'
@@ -159,6 +160,11 @@ export const getVersionByIdInternal = internalQuery({
   handler: async (ctx, args) => ctx.db.get(args.versionId),
 })
 
+export const getSoulByIdInternal = internalQuery({
+  args: { soulId: v.id('souls') },
+  handler: async (ctx, args) => ctx.db.get(args.soulId),
+})
+
 export const getVersionBySoulAndVersion = query({
   args: { soulId: v.id('souls'), version: v.string() },
   handler: async (ctx, args) => {
@@ -222,6 +228,27 @@ export const generateChangelogPreview = action({
   },
 })
 
+async function canReadSoulVersionFiles(
+  ctx: ActionCtx,
+  version: Doc<'soulVersions'>,
+) {
+  const soul = (await ctx.runQuery(internal.souls.getSoulByIdInternal, {
+    soulId: version.soulId,
+  })) as Doc<'souls'> | null
+  if (!soul || soul.softDeletedAt || version.softDeletedAt) return false
+
+  const authUserId = await getAuthUserId(ctx)
+  if (authUserId) {
+    if (authUserId === soul.ownerUserId) return true
+    const actor = (await ctx.runQuery(internal.users.getByIdInternal, {
+      userId: authUserId,
+    })) as Doc<'users'> | null
+    if (actor?.role === 'admin' || actor?.role === 'moderator') return true
+  }
+
+  return true
+}
+
 export const getReadme: ReturnType<typeof action> = action({
   args: { versionId: v.id('soulVersions') },
   handler: async (ctx, args): Promise<ReadmeResult> => {
@@ -229,6 +256,9 @@ export const getReadme: ReturnType<typeof action> = action({
       versionId: args.versionId,
     })) as Doc<'soulVersions'> | null
     if (!version) throw new ConvexError('Version not found')
+    if (!(await canReadSoulVersionFiles(ctx, version))) {
+      throw new ConvexError('Version not available')
+    }
     const readmeFile = version.files.find((file) => file.path.toLowerCase() === 'soul.md')
     if (!readmeFile) throw new ConvexError('SOUL.md not found')
     const text = await fetchText(ctx, readmeFile.storageId)
@@ -243,6 +273,9 @@ export const getFileText: ReturnType<typeof action> = action({
       versionId: args.versionId,
     })) as Doc<'soulVersions'> | null
     if (!version) throw new ConvexError('Version not found')
+    if (!(await canReadSoulVersionFiles(ctx, version))) {
+      throw new ConvexError('Version not available')
+    }
 
     const normalizedPath = args.path.trim()
     const normalizedLower = normalizedPath.toLowerCase()

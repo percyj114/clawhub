@@ -3879,6 +3879,29 @@ export const generateChangelogPreview = action({
   },
 })
 
+async function canReadSkillVersionFiles(
+  ctx: ActionCtx,
+  version: Doc<'skillVersions'>,
+) {
+  const skill = (await ctx.runQuery(internal.skills.getSkillByIdInternal, {
+    skillId: version.skillId,
+  })) as Doc<'skills'> | null
+  if (!skill || skill.softDeletedAt || version.softDeletedAt) return false
+
+  const authUserId = await getAuthUserId(ctx)
+  if (authUserId) {
+    if (authUserId === skill.ownerUserId) return true
+    const actor = (await ctx.runQuery(internal.users.getByIdInternal, {
+      userId: authUserId,
+    })) as Doc<'users'> | null
+    if (actor?.role === 'admin' || actor?.role === 'moderator') return true
+  }
+
+  const isMalwareBlocked =
+    skill.moderationFlags?.includes('blocked.malware') ?? false
+  return Boolean(toPublicSkill(skill) || isMalwareBlocked)
+}
+
 export const getReadme: ReturnType<typeof action> = action({
   args: { versionId: v.id('skillVersions') },
   handler: async (ctx, args): Promise<ReadmeResult> => {
@@ -3889,6 +3912,9 @@ export const getReadme: ReturnType<typeof action> = action({
       },
     )) as Doc<'skillVersions'> | null
     if (!version) throw new ConvexError('Version not found')
+    if (!(await canReadSkillVersionFiles(ctx, version))) {
+      throw new ConvexError('Version not available')
+    }
     const readmeFile = version.files.find(
       (file) =>
         file.path.toLowerCase() === 'skill.md' ||
@@ -3910,6 +3936,9 @@ export const getFileText: ReturnType<typeof action> = action({
       },
     )) as Doc<'skillVersions'> | null
     if (!version) throw new ConvexError('Version not found')
+    if (!(await canReadSkillVersionFiles(ctx, version))) {
+      throw new ConvexError('Version not available')
+    }
 
     const normalizedPath = args.path.trim()
     const normalizedLower = normalizedPath.toLowerCase()
