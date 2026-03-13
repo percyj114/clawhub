@@ -132,7 +132,7 @@ export const rebuildTrendingLeaderboardInternal = internalMutation({
     await ctx.scheduler.runAfter(0, internal.leaderboards.rebuildTrendingLeaderboardAction, {
       limit,
     })
-    return { ok: true as const, scheduled: true as const }
+    return { ok: true as const, count: 0, scheduled: true as const }
   },
 })
 

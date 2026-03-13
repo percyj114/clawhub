@@ -33,6 +33,6 @@ describe('leaderboards.rebuildTrendingLeaderboardInternal', () => {
     expect(runAfter).toHaveBeenCalledTimes(1)
     expect(runAfter.mock.calls[0]?.[0]).toBe(0)
     expect(runAfter.mock.calls[0]?.[2]).toEqual({ limit: 200 })
-    expect(result).toEqual({ ok: true, scheduled: true })
+    expect(result).toEqual({ ok: true, count: 0, scheduled: true })
   })
 })
