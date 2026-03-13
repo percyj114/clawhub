@@ -37,57 +37,6 @@ export async function queryDailyStats(ctx: QueryCtx | MutationCtx, day: number) 
     .collect()
 }
 
-export async function buildTrendingLeaderboard(
-  ctx: QueryCtx | MutationCtx,
-  params: { limit: number; now?: number },
-) {
-  const { startDay, endDay, entries } = await buildTrendingEntryCandidates(
-    ctx,
-    params.now,
-  )
-  return {
-    startDay,
-    endDay,
-    items: takeTopTrendingEntries(entries, params.limit),
-  }
-}
-
-export async function buildNonSuspiciousTrendingLeaderboard(
-  ctx: QueryCtx | MutationCtx,
-  params: { limit: number; now?: number },
-) {
-  const { startDay, endDay, entries } = await buildTrendingEntryCandidates(
-    ctx,
-    params.now,
-  )
-  const items = await takeTopNonSuspiciousTrendingEntries(ctx, entries, params.limit)
-
-  return { startDay, endDay, items }
-}
-
-export async function buildTrendingEntryCandidates(
-  ctx: QueryCtx | MutationCtx,
-  now = Date.now(),
-) {
-  const { startDay, endDay } = getTrendingRange(now)
-
-  // Query one day at a time to stay well under the 32K document limit.
-  // Each daily query reads ~4,500 docs instead of 32K for the full 7-day range.
-  // Parallelized since there are no cross-day dependencies.
-  const dayKeys = Array.from({ length: endDay - startDay + 1 }, (_, i) => startDay + i)
-  const perDayRows = await Promise.all(
-    dayKeys.map((day) =>
-      ctx.db
-        .query('skillDailyStats')
-        .withIndex('by_day', (q) => q.eq('day', day))
-        .collect(),
-    ),
-  )
-  const entries = buildTrendingEntriesFromDailyRows(perDayRows)
-
-  return { startDay, endDay, entries }
-}
-
 export function buildTrendingEntriesFromDailyRows(
   perDayRows: DailyTrendingRow[][],
 ) {

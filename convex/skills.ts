@@ -38,8 +38,6 @@ import {
   readGlobalPublicSkillsCount,
 } from './lib/globalStats'
 import {
-  buildNonSuspiciousTrendingLeaderboard,
-  buildTrendingLeaderboard,
   TRENDING_LEADERBOARD_KIND,
   TRENDING_NON_SUSPICIOUS_LEADERBOARD_KIND,
 } from './lib/leaderboards'
@@ -2481,17 +2479,10 @@ async function getTrendingEntries(
     return latest[0].items.slice(0, limit)
   }
 
-  // No leaderboard exists yet (cold start) - compute on the fly
-  const fallback = args?.nonSuspiciousOnly
-    ? await buildNonSuspiciousTrendingLeaderboard(ctx, {
-        limit,
-        now: Date.now(),
-      })
-    : await buildTrendingLeaderboard(ctx, {
-        limit,
-        now: Date.now(),
-      })
-  return fallback.items
+  // Trending leaderboard generation has to happen through the action/query/mutation
+  // pipeline so each day is read in its own transaction. Returning an empty list on
+  // cold start is safer than rebuilding inside this query and tripping the 32K read cap.
+  return []
 }
 
 export const listVersions = query({

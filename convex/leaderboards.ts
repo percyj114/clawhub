@@ -3,7 +3,6 @@ import { internal } from './_generated/api'
 import { internalAction, internalMutation, internalQuery } from './functions'
 import {
   buildTrendingEntriesFromDailyRows,
-  buildTrendingEntryCandidates,
   getTrendingRange,
   queryDailyStats,
   takeTopNonSuspiciousTrendingEntries,
@@ -120,48 +119,20 @@ export const rebuildTrendingLeaderboardAction = internalAction({
 })
 
 // ---------------------------------------------------------------------------
-// Legacy single-mutation path (kept as fallback for under-32K workloads)
+// Legacy single-mutation entrypoint kept as a compatibility shim.
+// Old callers may still invoke this function name directly, but the
+// rebuild itself must happen in the action/query/mutation pipeline so each
+// daily read happens in its own transaction.
 // ---------------------------------------------------------------------------
 
 export const rebuildTrendingLeaderboardInternal = internalMutation({
   args: { limit: v.optional(v.number()) },
   handler: async (ctx, args) => {
     const limit = clampInt(args.limit ?? MAX_TRENDING_LIMIT, 1, MAX_TRENDING_LIMIT)
-    const now = Date.now()
-    const { startDay, endDay, entries } = await buildTrendingEntryCandidates(ctx, now)
-    const items = takeTopTrendingEntries(entries, limit)
-    const nonSuspicious = await takeTopNonSuspiciousTrendingEntries(ctx, entries, limit)
-
-    await ctx.db.insert('skillLeaderboards', {
-      kind: TRENDING_LEADERBOARD_KIND,
-      generatedAt: now,
-      rangeStartDay: startDay,
-      rangeEndDay: endDay,
-      items,
+    await ctx.scheduler.runAfter(0, internal.leaderboards.rebuildTrendingLeaderboardAction, {
+      limit,
     })
-    await ctx.db.insert('skillLeaderboards', {
-      kind: TRENDING_NON_SUSPICIOUS_LEADERBOARD_KIND,
-      generatedAt: now,
-      rangeStartDay: startDay,
-      rangeEndDay: endDay,
-      items: nonSuspicious,
-    })
-
-    for (const kind of [
-      TRENDING_LEADERBOARD_KIND,
-      TRENDING_NON_SUSPICIOUS_LEADERBOARD_KIND,
-    ]) {
-      const entriesForKind = await ctx.db
-        .query('skillLeaderboards')
-        .withIndex('by_kind', (q) => q.eq('kind', kind))
-        .order('desc')
-        .take(KEEP_LEADERBOARD_ENTRIES + 5)
-      for (const entry of entriesForKind.slice(KEEP_LEADERBOARD_ENTRIES)) {
-        await ctx.db.delete(entry._id)
-      }
-    }
-
-    return { ok: true as const, count: items.length }
+    return { ok: true as const, scheduled: true as const }
   },
 })
 

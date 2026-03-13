@@ -126,6 +126,24 @@ describe('skills.listPublicPage', () => {
     expect(result.items[0]?.skill.slug).toBe('clean')
     expect(result.nextCursor).toBeNull()
   })
+
+  it('returns an empty trending page when no cached leaderboard exists yet', async () => {
+    const ctx = makeTrendingCtx({
+      leaderboards: {},
+      skills: [],
+      users: [],
+      versions: [],
+    })
+
+    const result = await listPublicPageHandler(ctx, {
+      sort: 'trending',
+      limit: 10,
+      nonSuspiciousOnly: false,
+    })
+
+    expect(result.items).toEqual([])
+    expect(result.nextCursor).toBeNull()
+  })
 })
 
 function makeCtx({
