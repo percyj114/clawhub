@@ -9,9 +9,9 @@ import type { HydratableSkill } from './lib/public'
 import { toPublicSkill, toPublicSoul, toPublicUser } from './lib/public'
 import { matchesExactTokens, tokenize } from './lib/searchText'
 import { isSkillSuspicious } from './lib/skillSafety'
-import { digestToHydratableSkill } from './lib/skillSearchDigest'
+import { digestToHydratableSkill, digestToOwnerInfo } from './lib/skillSearchDigest'
 
-type OwnerInfo = { handle: string | null; owner: ReturnType<typeof toPublicUser> | null }
+type OwnerInfo = { ownerHandle: string | null; owner: ReturnType<typeof toPublicUser> | null }
 
 function makeOwnerInfoGetter(ctx: Pick<QueryCtx, 'db'>) {
   const ownerCache = new Map<Id<'users'>, Promise<OwnerInfo>>()
@@ -21,7 +21,7 @@ function makeOwnerInfoGetter(ctx: Pick<QueryCtx, 'db'>) {
     const ownerPromise = ctx.db.get(ownerUserId).then((ownerDoc) => {
       const owner = toPublicUser(ownerDoc)
       return {
-        handle: owner?.handle ?? owner?.name ?? null,
+        ownerHandle: owner?.handle ?? owner?.name ?? null,
         owner,
       }
     })
@@ -228,6 +228,7 @@ export const hydrateResults = internalQuery({
     nonSuspiciousOnly: v.optional(v.boolean()),
   },
   handler: async (ctx, args): Promise<SkillSearchEntry[]> => {
+    // Only used as fallback when digest doesn't have owner data.
     const getOwnerInfo = makeOwnerInfoGetter(ctx)
 
     const entries: Array<SkillSearchEntry | null> = await Promise.all(
@@ -252,14 +253,18 @@ export const hydrateResults = internalQuery({
           : await ctx.db.get(skillId)
         if (!skill || skill.softDeletedAt) return null
         if (args.nonSuspiciousOnly && isSkillSuspicious(skill)) return null
-        const resolved = await getOwnerInfo(skill.ownerUserId)
+        // Use pre-resolved owner from digest to avoid reading the users table.
+        // Fall back to live lookup when digest owner is null (deactivated/deleted user).
+        const preResolved = digest ? digestToOwnerInfo(digest) : null
+        const resolved =
+          preResolved?.owner ? preResolved : await getOwnerInfo(skill.ownerUserId)
         const publicSkill = toPublicSkill(skill)
         if (!publicSkill || !resolved.owner) return null
         return {
           embeddingId,
           skill: publicSkill,
           version: null as Doc<'skillVersions'> | null,
-          ownerHandle: resolved.handle,
+          ownerHandle: resolved.ownerHandle,
           owner: resolved.owner,
         }
       }),
@@ -281,6 +286,11 @@ export const lexicalFallbackSkills = internalQuery({
     const limit = Math.min(Math.max(args.limit ?? 200, 10), FALLBACK_SCAN_LIMIT)
     const seenSkillIds = new Set<Id<'skills'>>()
     const candidates: HydratableSkill[] = []
+    // Keep digest rows around so we can resolve owner info without hitting users table.
+    const preResolvedOwners = new Map<
+      Id<'skills'>,
+      { ownerHandle: string | null; owner: ReturnType<typeof toPublicUser> | null }
+    >()
 
     // Exact slug match via the skills table (only one row, cheap).
     const slugQuery = args.query.trim().toLowerCase()
@@ -312,6 +322,9 @@ export const lexicalFallbackSkills = internalQuery({
       if (args.nonSuspiciousOnly && isSkillSuspicious(skill)) continue
       seenSkillIds.add(digest.skillId)
       candidates.push(skill)
+      // Pre-resolve owner from digest to avoid users table reads.
+      const ownerInfo = digestToOwnerInfo(digest)
+      if (ownerInfo) preResolvedOwners.set(digest.skillId, ownerInfo)
     }
 
     const matched = candidates.filter((skill) =>
@@ -319,17 +332,20 @@ export const lexicalFallbackSkills = internalQuery({
     )
     if (matched.length === 0) return []
 
+    // Only used as fallback for the exact slug match (no digest available).
     const getOwnerInfo = makeOwnerInfoGetter(ctx)
 
     const entries = await Promise.all(
       matched.map(async (skill) => {
-        const resolved = await getOwnerInfo(skill.ownerUserId)
+        const preResolved = preResolvedOwners.get(skill._id)
+        const resolved =
+          preResolved?.owner ? preResolved : await getOwnerInfo(skill.ownerUserId)
         const publicSkill = toPublicSkill(skill)
         if (!publicSkill || !resolved.owner) return null
         return {
           skill: publicSkill,
           version: null as Doc<'skillVersions'> | null,
-          ownerHandle: resolved.handle,
+          ownerHandle: resolved.ownerHandle,
           owner: resolved.owner,
         }
       }),

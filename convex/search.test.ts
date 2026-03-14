@@ -436,7 +436,8 @@ describe('search helpers', () => {
     expect(result[0].skill.slug).toBe('digest-skill')
     expect(result[0].skill._id).toBe('skills:1')
     expect(result[0].ownerHandle).toBe('owner')
-    expect(getMock).toHaveBeenCalledWith('users:owner')
+    // Owner resolved from digest — users table should NOT be read
+    expect(getMock).not.toHaveBeenCalledWith('users:owner')
   })
 
   it('falls back to full skill doc when digest is missing', async () => {

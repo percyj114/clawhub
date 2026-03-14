@@ -1831,6 +1831,42 @@ export const backfillDigestVersionSummary = internalMutation({
   },
 })
 
+// Backfill isSuspicious on skillSearchDigest rows where it's undefined.
+// Computes from digest's own moderationFlags/moderationReason — no skills table read.
+// Run: npx convex run maintenance:backfillDigestIsSuspicious --prod
+export const backfillDigestIsSuspicious = internalMutation({
+  args: {
+    cursor: v.optional(v.string()),
+    batchSize: v.optional(v.number()),
+    delayMs: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const batchSize = clampInt(args.batchSize ?? 100, 10, 200)
+    const delayMs = args.delayMs ?? 500
+    const { page, continueCursor, isDone } = await ctx.db
+      .query('skillSearchDigest')
+      .paginate({ cursor: args.cursor ?? null, numItems: batchSize })
+
+    let patched = 0
+    for (const digest of page) {
+      if (digest.isSuspicious !== undefined) continue
+      const isSuspicious = computeIsSuspicious(digest)
+      await ctx.db.patch(digest._id, { isSuspicious })
+      patched++
+    }
+
+    if (!isDone) {
+      await ctx.scheduler.runAfter(delayMs, internal.maintenance.backfillDigestIsSuspicious, {
+        cursor: continueCursor,
+        batchSize: args.batchSize,
+        delayMs: args.delayMs,
+      })
+    }
+
+    return { patched, isDone, scanned: page.length }
+  },
+})
+
 function clampInt(value: number, min: number, max: number) {
   const rounded = Math.trunc(value)
   if (!Number.isFinite(rounded)) return min
