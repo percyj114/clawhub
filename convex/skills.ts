@@ -1030,15 +1030,55 @@ type PublicSkillListVersion = Pick<
   | 'changelog'
   | 'changelogSource'
 > & {
-  parsed?: {
-    license?: typeof PLATFORM_SKILL_LICENSE
-    clawdis?: {
-      os?: string[]
-      nix?: {
-        plugin?: boolean
-        systems?: string[]
-      }
+  parsed?: PublicSkillVersionParsed
+}
+
+type PublicSkillVersionParsed = {
+  license?: typeof PLATFORM_SKILL_LICENSE
+  clawdis?: {
+    os?: string[]
+    nix?: {
+      plugin?: boolean
+      systems?: string[]
     }
+  }
+}
+
+type PublicSkillVersion = {
+  _id: Id<'skillVersions'>
+  _creationTime?: number
+  skillId?: Id<'skills'>
+  version: string
+  fingerprint?: string
+  changelog?: string
+  changelogSource?: Doc<'skillVersions'>['changelogSource']
+  files: Array<{
+    path: string
+    size: number
+    sha256: string
+    contentType?: string
+  }>
+  parsed?: PublicSkillVersionParsed
+  createdBy?: Id<'users'>
+  createdAt?: number
+  softDeletedAt?: number
+  sha256hash?: string
+  vtAnalysis?: Doc<'skillVersions'>['vtAnalysis']
+  llmAnalysis?: Doc<'skillVersions'>['llmAnalysis']
+  staticScan?: {
+    status: NonNullable<Doc<'skillVersions'>['staticScan']>['status']
+    reasonCodes: NonNullable<Doc<'skillVersions'>['staticScan']>['reasonCodes']
+    findings: Array<{
+      code: string
+      severity: 'info' | 'warn' | 'critical'
+      file: string
+      line: number
+      message: string
+      evidence: string
+    }>
+    summary: NonNullable<Doc<'skillVersions'>['staticScan']>['summary']
+    engineVersion: NonNullable<Doc<'skillVersions'>['staticScan']>['engineVersion']
+    checkedAt: NonNullable<Doc<'skillVersions'>['staticScan']>['checkedAt']
   }
 }
 
@@ -1178,7 +1218,7 @@ function toPublicSkillListVersion(
 
 function toPublicSkillVersion(
   version: Doc<'skillVersions'> | null | undefined,
-): Doc<'skillVersions'> | null {
+): PublicSkillVersion | null {
   if (!version) return null
   return {
     _id: version._id,
@@ -1188,7 +1228,7 @@ function toPublicSkillVersion(
     fingerprint: version.fingerprint,
     changelog: version.changelog,
     changelogSource: version.changelogSource,
-    files: version.files.map((file) => ({
+    files: (version.files ?? []).map((file) => ({
       path: file.path,
       size: file.size,
       sha256: file.sha256,
@@ -1210,7 +1250,7 @@ function toPublicSkillVersion(
       ? {
           status: version.staticScan.status,
           reasonCodes: version.staticScan.reasonCodes,
-          findings: version.staticScan.findings.map((finding) => ({
+          findings: (version.staticScan.findings ?? []).map((finding) => ({
             code: finding.code,
             severity: finding.severity,
             file: finding.file,
@@ -1223,7 +1263,7 @@ function toPublicSkillVersion(
           checkedAt: version.staticScan.checkedAt,
         }
       : undefined,
-  } as Doc<'skillVersions'>
+  }
 }
 
 function toPublicSkillListVersionFromSummary(
@@ -2785,6 +2825,18 @@ export const getVersionsByIdsInternal = internalQuery({
 export const getVersionByIdInternal = internalQuery({
   args: { versionId: v.id('skillVersions') },
   handler: async (ctx, args) => ctx.db.get(args.versionId),
+})
+
+export const getVersionBySkillAndVersionInternal = internalQuery({
+  args: { skillId: v.id('skills'), version: v.string() },
+  handler: async (ctx, args) => {
+    return ctx.db
+      .query('skillVersions')
+      .withIndex('by_skill_version', (q) =>
+        q.eq('skillId', args.skillId).eq('version', args.version),
+      )
+      .unique()
+  },
 })
 
 export const getSkillByIdInternal = internalQuery({

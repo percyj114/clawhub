@@ -1444,7 +1444,7 @@ describe('httpApiV1 handlers', () => {
   })
 
   it('returns raw file content', async () => {
-    const version = {
+    const internalVersion = {
       version: '1.0.0',
       createdAt: 1,
       changelog: 'c',
@@ -1459,19 +1459,28 @@ describe('httpApiV1 handlers', () => {
       ],
       softDeletedAt: undefined,
     }
-    const runQuery = vi.fn().mockResolvedValue({
-      skill: {
-        _id: 'skills:1',
-        slug: 'demo',
-        displayName: 'Demo',
-        summary: 's',
-        tags: {},
-        stats: {},
-        createdAt: 1,
-        updatedAt: 2,
-      },
-      latestVersion: version,
-      owner: null,
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ('slug' in args) {
+        return {
+          skill: {
+            _id: 'skills:1',
+            slug: 'demo',
+            displayName: 'Demo',
+            summary: 's',
+            tags: {},
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+            latestVersionId: 'skillVersions:1',
+          },
+          latestVersion: { _id: 'skillVersions:1', version: '1.0.0' },
+          owner: null,
+        }
+      }
+      if ('versionId' in args) {
+        return internalVersion
+      }
+      return null
     })
     const runMutation = vi.fn().mockResolvedValue(okRate())
     const storage = {
@@ -1487,7 +1496,7 @@ describe('httpApiV1 handlers', () => {
   })
 
   it('returns 413 when raw file too large', async () => {
-    const version = {
+    const internalVersion = {
       version: '1.0.0',
       createdAt: 1,
       changelog: 'c',
@@ -1502,19 +1511,28 @@ describe('httpApiV1 handlers', () => {
       ],
       softDeletedAt: undefined,
     }
-    const runQuery = vi.fn().mockResolvedValue({
-      skill: {
-        _id: 'skills:1',
-        slug: 'demo',
-        displayName: 'Demo',
-        summary: 's',
-        tags: {},
-        stats: {},
-        createdAt: 1,
-        updatedAt: 2,
-      },
-      latestVersion: version,
-      owner: null,
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ('slug' in args) {
+        return {
+          skill: {
+            _id: 'skills:1',
+            slug: 'demo',
+            displayName: 'Demo',
+            summary: 's',
+            tags: {},
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+            latestVersionId: 'skillVersions:1',
+          },
+          latestVersion: { _id: 'skillVersions:1', version: '1.0.0' },
+          owner: null,
+        }
+      }
+      if ('versionId' in args) {
+        return internalVersion
+      }
+      return null
     })
     const runMutation = vi.fn().mockResolvedValue(okRate())
     const response = await __handlers.skillsGetRouterV1Handler(

@@ -90,8 +90,18 @@ type GetBySlugResult = {
     stats: unknown
     createdAt: number
     updatedAt: number
+    latestVersionId?: Id<'skillVersions'>
   } | null
-  latestVersion: Doc<'skillVersions'> | null
+  latestVersion: {
+    _id: Id<'skillVersions'>
+    version: string
+    createdAt?: number
+    changelog?: string
+    parsed?: {
+      license?: 'MIT-0'
+      clawdis?: { os?: string[]; nix?: { plugin?: boolean; systems?: string[] } }
+    }
+  } | null
   owner: { _id: Id<'users'>; handle?: string; displayName?: string; image?: string } | null
   moderationInfo?: {
     isPendingScan: boolean
@@ -792,16 +802,20 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
     const skillResult = (await ctx.runQuery(api.skills.getBySlug, { slug })) as GetBySlugResult
     if (!skillResult?.skill) return text('Skill not found', 404, rate.headers)
 
-    let version = skillResult.latestVersion
+    let version = skillResult.skill.latestVersionId
+      ? await ctx.runQuery(internal.skills.getVersionByIdInternal, {
+          versionId: skillResult.skill.latestVersionId,
+        })
+      : null
     if (versionParam) {
-      version = await ctx.runQuery(api.skills.getVersionBySkillAndVersion, {
+      version = await ctx.runQuery(internal.skills.getVersionBySkillAndVersionInternal, {
         skillId: skillResult.skill._id,
         version: versionParam,
       })
     } else if (tagParam) {
       const versionId = skillResult.skill.tags[tagParam]
       if (versionId) {
-        version = await ctx.runQuery(api.skills.getVersionById, { versionId })
+        version = await ctx.runQuery(internal.skills.getVersionByIdInternal, { versionId })
       }
     }
 

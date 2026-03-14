@@ -71,17 +71,21 @@ export const downloadZip = httpAction(async (ctx, request) => {
   }
 
   const skill = skillResult.skill
-  let version = skillResult.latestVersion
+  let version = skill.latestVersionId
+    ? await ctx.runQuery(internal.skills.getVersionByIdInternal, {
+        versionId: skill.latestVersionId,
+      })
+    : null
 
   if (versionParam) {
-    version = await ctx.runQuery(api.skills.getVersionBySkillAndVersion, {
+    version = await ctx.runQuery(internal.skills.getVersionBySkillAndVersionInternal, {
       skillId: skill._id,
       version: versionParam,
     })
   } else if (tagParam) {
     const versionId = skill.tags[tagParam]
     if (versionId) {
-      version = await ctx.runQuery(api.skills.getVersionById, { versionId })
+      version = await ctx.runQuery(internal.skills.getVersionByIdInternal, { versionId })
     }
   }
 
