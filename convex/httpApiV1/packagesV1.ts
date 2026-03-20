@@ -3,7 +3,7 @@ import { api, internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { ActionCtx } from "../_generated/server";
 import { buildDeterministicZip } from "../lib/skillZip";
-import { isTextFile } from "../lib/skills";
+import { isMacJunkPath, isTextFile } from "../lib/skills";
 import {
   MAX_RAW_FILE_BYTES,
   getPathSegments,
@@ -139,6 +139,7 @@ async function parseMultipartPackagePublish(ctx: ActionCtx, request: Request) {
   }> = [];
   for (const entry of form.getAll("files")) {
     if (typeof entry === "string") continue;
+    if (isMacJunkPath(entry.name)) continue;
     const buffer = new Uint8Array(await entry.arrayBuffer());
     const digest = await crypto.subtle.digest("SHA-256", buffer);
     const sha256 = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");

@@ -261,11 +261,7 @@ export const listPublicPage = query({
       const page = await builder.order("desc").paginate({ cursor, numItems: pageSize });
       for (const digest of page.page) {
         if (channel && digest.channel !== channel) continue;
-        if (
-          typeof isOfficial === "boolean" &&
-          !(family && channel) &&
-          digest.isOfficial !== isOfficial
-        ) {
+        if (typeof isOfficial === "boolean" && digest.isOfficial !== isOfficial) {
           continue;
         }
         if (!digestMatchesFilters(digest, args)) continue;
