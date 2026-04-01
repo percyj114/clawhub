@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { render, screen } from "@testing-library/react";
-import type { ComponentType } from "react";
+import type { AnchorHTMLAttributes, ComponentType, ReactNode } from "react";
 import type { PackageDetailResponse, PackageVersionDetail } from "../lib/packageApi";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -47,6 +47,18 @@ vi.mock("@tanstack/react-router", () => ({
       useParams: () => paramsMock,
       useLoaderData: () => loaderDataMock,
     }),
+  Link: ({
+    children,
+    to,
+    ...props
+  }: {
+    children?: ReactNode;
+    to?: string;
+  } & AnchorHTMLAttributes<HTMLAnchorElement>) => (
+    <a href={typeof to === "string" ? to : "#"} {...props}>
+      {children}
+    </a>
+  ),
 }));
 
 vi.mock("../lib/packageApi", () => ({
@@ -99,7 +111,7 @@ describe("plugin detail route", () => {
 
     render(<Component />);
 
-    expect(screen.getByText("No latest tag")).toBeTruthy();
+    expect(screen.queryByText(/Latest release:/)).toBeNull();
     expect(screen.queryByRole("link", { name: "Download zip" })).toBeNull();
   });
 
