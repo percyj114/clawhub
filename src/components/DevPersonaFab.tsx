@@ -49,6 +49,7 @@ function isLocalDevPersonaEnabled() {
 
 export function DevPersonaFab() {
   const [busyPersona, setBusyPersona] = useState<DevPersona | "sign-out" | null>(null);
+  const [section, setSection] = useState("auth");
   const { signIn, signOut } = useAuthActions();
   const { me, isAuthenticated } = useAuthStatus();
 
@@ -96,7 +97,17 @@ export function DevPersonaFab() {
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-[220px]">
           <div className="px-2 py-1.5">
-            <p className="text-xs font-semibold text-[color:var(--ink)]">Local persona</p>
+            <label className="sr-only" htmlFor="dev-persona-section">
+              Local dev control section
+            </label>
+            <select
+              id="dev-persona-section"
+              className="h-9 w-full rounded-[var(--radius-sm)] border border-[color:var(--line)] bg-[color:var(--surface)] px-2 text-sm font-semibold text-[color:var(--ink)]"
+              value={section}
+              onChange={(event) => setSection(event.currentTarget.value)}
+            >
+              <option value="auth">Auth</option>
+            </select>
             <p className="text-xs text-[color:var(--ink-soft)]">{currentHandle}</p>
           </div>
           <DropdownMenuSeparator />
