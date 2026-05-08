@@ -67,7 +67,7 @@ If validation fails, the release is not created.
 
 ## FAQ
 
-### Why does the package scope need to match the selected owner?
+### FAQ: Package scoping
 
 If the package scope and selected owner do not match, ClawHub rejects the
 publish:
