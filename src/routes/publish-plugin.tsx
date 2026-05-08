@@ -12,6 +12,13 @@ import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Input } from "../components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../components/ui/select";
 import { Textarea } from "../components/ui/textarea";
 import {
   buildPackageUploadEntries,
@@ -205,14 +212,18 @@ export function PublishPluginRoute() {
                 ? "Upload plugin code to detect the package shape and unlock the release form."
                 : "Metadata detected and prefilled. Review it, then fill any missing release details."}
             </p>
-            <select
-              className="min-h-[44px] w-full rounded-[var(--radius-sm)] border border-[rgba(29,59,78,0.22)] bg-[rgba(255,255,255,0.94)] px-3.5 py-[13px] text-sm text-[color:var(--ink)] disabled:cursor-not-allowed disabled:opacity-60 dark:border-[rgba(255,255,255,0.12)] dark:bg-[rgba(14,28,37,0.84)]"
+            <Select
               value={family}
+              onValueChange={(value) => setFamily(value as typeof family)}
               disabled={metadataDisabled}
-              onChange={(event) => setFamily(event.target.value as never)}
             >
-              <option value="code-plugin">Code plugin</option>
-            </select>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="code-plugin">Code plugin</SelectItem>
+              </SelectContent>
+            </Select>
             <Input
               placeholder="Plugin name"
               value={name}
@@ -225,18 +236,18 @@ export function PublishPluginRoute() {
               disabled={metadataDisabled}
               onChange={(event) => setDisplayName(event.target.value)}
             />
-            <select
-              className="min-h-[44px] w-full rounded-[var(--radius-sm)] border border-[rgba(29,59,78,0.22)] bg-[rgba(255,255,255,0.94)] px-3.5 py-[13px] text-sm text-[color:var(--ink)] disabled:cursor-not-allowed disabled:opacity-60 dark:border-[rgba(255,255,255,0.12)] dark:bg-[rgba(14,28,37,0.84)]"
-              value={ownerHandle}
-              disabled={metadataDisabled}
-              onChange={(event) => setOwnerHandle(event.target.value)}
-            >
-              {(publishers ?? []).map((entry) => (
-                <option key={entry.publisher._id} value={entry.publisher.handle}>
-                  @{entry.publisher.handle} &middot; {entry.publisher.displayName}
-                </option>
-              ))}
-            </select>
+            <Select value={ownerHandle} onValueChange={setOwnerHandle} disabled={metadataDisabled}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {(publishers ?? []).map((entry) => (
+                  <SelectItem key={entry.publisher._id} value={entry.publisher.handle}>
+                    @{entry.publisher.handle} · {entry.publisher.displayName}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Input
               placeholder="Version"
               value={version}

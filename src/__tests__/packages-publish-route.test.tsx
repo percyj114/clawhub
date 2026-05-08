@@ -342,7 +342,7 @@ describe("plugins publish route", () => {
       expect(screen.getByDisplayValue("demo-bundle")).toBeTruthy();
       expect(screen.getByDisplayValue("Demo Bundle")).toBeTruthy();
       expect(screen.getByDisplayValue("0.4.0")).toBeTruthy();
-      expect((screen.getAllByRole("combobox")[0] as HTMLSelectElement).value).toBe("code-plugin");
+      expect(screen.getAllByRole("combobox")[0].textContent).toBe("Code plugin");
       expect(screen.queryByText("Bundle plugin")).toBeNull();
       expect(screen.getByText("Agent metadata")).toBeTruthy();
       expect(screen.queryByPlaceholderText("Bundle format")).toBeNull();

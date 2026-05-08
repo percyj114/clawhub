@@ -99,8 +99,8 @@ describe("DevPersonaFab", () => {
   it("signs in with the selected local persona", async () => {
     render(<DevPersonaFab />);
 
-    expect((screen.getByLabelText("Local dev control section") as HTMLSelectElement).value).toBe(
-      "auth",
+    expect(screen.getByRole("combobox", { name: "Local dev control section" }).textContent).toBe(
+      "Auth",
     );
     fireEvent.click(screen.getByRole("button", { name: /use admin/i }));
 

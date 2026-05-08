@@ -29,6 +29,7 @@ import { SkillReportDialog } from "./SkillReportDialog";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 
 type SkillDetailPageProps = {
   slug: string;
@@ -553,21 +554,22 @@ export function SkillDetailPage({
                         onChange={(event) => setTagName(event.target.value)}
                         placeholder="latest..."
                       />
-                      <select
-                        aria-label="Tag version"
-                        className="search-input"
+                      <Select
                         name="tagVersion"
-                        value={tagVersionId ?? ""}
-                        onChange={(event) =>
-                          setTagVersionId(event.target.value as Id<"skillVersions">)
-                        }
+                        value={tagVersionId ?? undefined}
+                        onValueChange={(value) => setTagVersionId(value as Id<"skillVersions">)}
                       >
-                        {(versions ?? []).map((version) => (
-                          <option key={version._id} value={version._id}>
-                            v{version.version}
-                          </option>
-                        ))}
-                      </select>
+                        <SelectTrigger aria-label="Tag version" className="search-input">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {(versions ?? []).map((version) => (
+                            <SelectItem key={version._id} value={version._id}>
+                              v{version.version}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                       <Button type="submit">Update Tag</Button>
                     </form>
                   ) : null}

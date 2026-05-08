@@ -22,6 +22,13 @@ import {
 } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../components/ui/select";
 import { Separator } from "../components/ui/separator";
 import { Textarea } from "../components/ui/textarea";
 import { gravatarUrl } from "../lib/gravatar";
@@ -372,18 +379,21 @@ export function Settings() {
 
                 <div className="flex flex-col gap-2">
                   <Label htmlFor="settings-manage-org">Manage org</Label>
-                  <select
-                    id="settings-manage-org"
-                    className="w-full min-h-[44px] rounded-[var(--radius-sm)] border border-[rgba(29,59,78,0.22)] bg-[rgba(255,255,255,0.94)] px-3.5 py-[13px] text-[color:var(--ink)] transition-all duration-[180ms] ease-out focus:outline-none focus:border-[color-mix(in_srgb,var(--accent)_70%,white)] focus:shadow-[0_0_0_3px_color-mix(in_srgb,var(--accent)_22%,transparent)] dark:border-[rgba(255,255,255,0.12)] dark:bg-[rgba(14,28,37,0.84)]"
-                    value={selectedOrg?.publisher.handle ?? ""}
-                    onChange={(event) => setSelectedOrgHandle(event.target.value)}
+                  <Select
+                    value={selectedOrg?.publisher.handle ?? undefined}
+                    onValueChange={setSelectedOrgHandle}
                   >
-                    {orgs.map((entry) => (
-                      <option key={entry.publisher._id} value={entry.publisher.handle}>
-                        @{entry.publisher.handle} · {entry.role}
-                      </option>
-                    ))}
-                  </select>
+                    <SelectTrigger id="settings-manage-org">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {orgs.map((entry) => (
+                        <SelectItem key={entry.publisher._id} value={entry.publisher.handle}>
+                          @{entry.publisher.handle} · {entry.role}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
 
                 {selectedOrg && selectedOrg.role !== "publisher" ? (
@@ -432,16 +442,19 @@ export function Settings() {
                     </div>
                     <div className="flex flex-col gap-2">
                       <Label htmlFor="settings-member-role">Role</Label>
-                      <select
-                        id="settings-member-role"
-                        className="w-full min-h-[44px] rounded-[var(--radius-sm)] border border-[rgba(29,59,78,0.22)] bg-[rgba(255,255,255,0.94)] px-3.5 py-[13px] text-[color:var(--ink)] transition-all duration-[180ms] ease-out focus:outline-none focus:border-[color-mix(in_srgb,var(--accent)_70%,white)] focus:shadow-[0_0_0_3px_color-mix(in_srgb,var(--accent)_22%,transparent)] dark:border-[rgba(255,255,255,0.12)] dark:bg-[rgba(14,28,37,0.84)]"
+                      <Select
                         value={memberRole}
-                        onChange={(event) => setMemberRole(event.target.value as typeof memberRole)}
+                        onValueChange={(value) => setMemberRole(value as typeof memberRole)}
                       >
-                        <option value="publisher">Publisher</option>
-                        <option value="admin">Admin</option>
-                        <option value="owner">Owner</option>
-                      </select>
+                        <SelectTrigger id="settings-member-role">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="publisher">Publisher</SelectItem>
+                          <SelectItem value="admin">Admin</SelectItem>
+                          <SelectItem value="owner">Owner</SelectItem>
+                        </SelectContent>
+                      </Select>
                     </div>
                     <div className="flex items-center gap-3">
                       <Button

@@ -16,6 +16,7 @@ import {
 import { isDarkThemeResolved, onThemeChange } from "../lib/theme";
 import { ClientOnly } from "./ClientOnly";
 import { Button } from "./ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 
 type SkillDiffCardProps = {
   skill: Doc<"skills">;
@@ -312,17 +313,15 @@ export function SkillDiffCard({ skill, versions, variant = "card" }: SkillDiffCa
           <div className="diff-controls">
             <div className="diff-select">
               <label htmlFor="diff-left">Left</label>
-              <select
-                id="diff-left"
-                className="search-input"
-                value={leftVersionId ?? ""}
-                onChange={(event) => setLeftVersionId(event.target.value as Id<"skillVersions">)}
+              <Select
+                value={leftVersionId ?? undefined}
+                onValueChange={(value) => setLeftVersionId(value as Id<"skillVersions">)}
               >
-                <option value="" disabled>
-                  Select version
-                </option>
-                {renderOptions(versionOptions)}
-              </select>
+                <SelectTrigger id="diff-left" className="search-input">
+                  <SelectValue placeholder="Select version" />
+                </SelectTrigger>
+                <SelectContent>{renderOptions(versionOptions)}</SelectContent>
+              </Select>
             </div>
             <Button
               className="diff-swap"
@@ -337,17 +336,15 @@ export function SkillDiffCard({ skill, versions, variant = "card" }: SkillDiffCa
             </Button>
             <div className="diff-select">
               <label htmlFor="diff-right">Right</label>
-              <select
-                id="diff-right"
-                className="search-input"
-                value={rightVersionId ?? ""}
-                onChange={(event) => setRightVersionId(event.target.value as Id<"skillVersions">)}
+              <Select
+                value={rightVersionId ?? undefined}
+                onValueChange={(value) => setRightVersionId(value as Id<"skillVersions">)}
               >
-                <option value="" disabled>
-                  Select version
-                </option>
-                {renderOptions(versionOptions)}
-              </select>
+                <SelectTrigger id="diff-right" className="search-input">
+                  <SelectValue placeholder="Select version" />
+                </SelectTrigger>
+                <SelectContent>{renderOptions(versionOptions)}</SelectContent>
+              </Select>
             </div>
           </div>
 
@@ -426,13 +423,18 @@ function renderOptions(options: VersionOption[]) {
   return (["Special", "Tags", "Versions"] as const)
     .filter((group) => groups[group].length > 0)
     .map((group) => (
-      <optgroup key={group} label={group}>
+      <div key={group}>
+        <div className="px-3 py-1 text-xs font-semibold text-[color:var(--ink-soft)]">{group}</div>
         {groups[group].map((option) => (
-          <option key={`${group}-${option.value}`} value={option.value} disabled={option.disabled}>
+          <SelectItem
+            key={`${group}-${option.value}`}
+            value={option.value}
+            disabled={option.disabled}
+          >
             {option.label}
-          </option>
+          </SelectItem>
         ))}
-      </optgroup>
+      </div>
     ));
 }
 

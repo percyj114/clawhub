@@ -11,6 +11,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 
 type DevPersona = "owner" | "user" | "admin";
 
@@ -100,14 +101,18 @@ export function DevPersonaFab() {
             <label className="sr-only" htmlFor="dev-persona-section">
               Local dev control section
             </label>
-            <select
-              id="dev-persona-section"
-              className="h-9 w-full rounded-[var(--radius-sm)] border border-[color:var(--line)] bg-[color:var(--surface)] px-2 text-sm font-semibold text-[color:var(--ink)]"
-              value={section}
-              onChange={(event) => setSection(event.currentTarget.value)}
-            >
-              <option value="auth">Auth</option>
-            </select>
+            <Select value={section} onValueChange={setSection}>
+              <SelectTrigger
+                id="dev-persona-section"
+                size="sm"
+                className="h-9 text-sm font-semibold"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="end">
+                <SelectItem value="auth">Auth</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
           <DropdownMenuSeparator />
           {PERSONAS.map((persona) => {

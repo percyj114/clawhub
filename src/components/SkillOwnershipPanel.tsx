@@ -18,6 +18,7 @@ import {
 } from "./ui/dialog";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 
 type OwnedSkillOption = {
   _id: Id<"skills">;
@@ -149,19 +150,25 @@ export function SkillOwnershipPanel({
             {/* Merge */}
             <div className="flex flex-col gap-2">
               <Label>Merge into</Label>
-              <select
-                className="w-full min-h-[44px] rounded-[var(--radius-sm)] border border-[rgba(29,59,78,0.22)] bg-[rgba(255,255,255,0.94)] px-3.5 py-[13px] text-[color:var(--ink)] dark:border-[rgba(255,255,255,0.12)] dark:bg-[rgba(14,28,37,0.84)]"
-                value={mergeTargetSlug}
-                onChange={(event) => setMergeTargetSlug(event.target.value)}
+              <Select
+                value={ownedSkills.length === 0 ? "__none__" : mergeTargetSlug}
+                onValueChange={setMergeTargetSlug}
                 disabled={ownedSkills.length === 0 || isSubmitting}
               >
-                {ownedSkills.length === 0 ? <option value="">No other owned skills</option> : null}
-                {ownedSkills.map((entry) => (
-                  <option key={entry._id} value={entry.slug}>
-                    {entry.displayName} ({entry.slug})
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {ownedSkills.length === 0 ? (
+                    <SelectItem value="__none__">No other owned skills</SelectItem>
+                  ) : null}
+                  {ownedSkills.map((entry) => (
+                    <SelectItem key={entry._id} value={entry.slug}>
+                      {entry.displayName} ({entry.slug})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="flex flex-col gap-2">
               <Label>Merge action</Label>

@@ -20,6 +20,13 @@ import { Button } from "../components/ui/button";
 import { Card, CardContent, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../components/ui/select";
 import { Textarea } from "../components/ui/textarea";
 import { getSiteMode } from "../lib/site";
 import { getPublicSlugCollision } from "../lib/slugCollision";
@@ -505,18 +512,18 @@ export function Upload() {
               {!isSoulMode ? (
                 <>
                   <Label htmlFor="ownerHandle">Owner</Label>
-                  <select
-                    className="w-full min-h-[44px] rounded-[var(--radius-sm)] border px-3.5 py-[13px] text-[color:var(--ink)] transition-all duration-[180ms] ease-out border-[rgba(29,59,78,0.22)] bg-[rgba(255,255,255,0.94)] focus:outline-none focus:border-[color-mix(in_srgb,var(--accent)_70%,white)] focus:shadow-[0_0_0_3px_color-mix(in_srgb,var(--accent)_22%,transparent)] dark:border-[rgba(255,255,255,0.12)] dark:bg-[rgba(14,28,37,0.84)]"
-                    id="ownerHandle"
-                    value={ownerHandle}
-                    onChange={(event) => setOwnerHandle(event.target.value)}
-                  >
-                    {(publisherMemberships ?? []).map((entry) => (
-                      <option key={entry.publisher._id} value={entry.publisher.handle}>
-                        @{entry.publisher.handle} · {entry.publisher.displayName}
-                      </option>
-                    ))}
-                  </select>
+                  <Select value={ownerHandle} onValueChange={setOwnerHandle}>
+                    <SelectTrigger id="ownerHandle">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(publisherMemberships ?? []).map((entry) => (
+                        <SelectItem key={entry.publisher._id} value={entry.publisher.handle}>
+                          @{entry.publisher.handle} · {entry.publisher.displayName}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </>
               ) : null}
 
