@@ -109,6 +109,23 @@ describe("DevPersonaFab", () => {
     });
   });
 
+  it("signs out before switching between local personas", async () => {
+    authStatusMock.mockReturnValue({
+      isAuthenticated: true,
+      isLoading: false,
+      me: { handle: "local" },
+    });
+
+    render(<DevPersonaFab />);
+
+    fireEvent.click(screen.getByRole("button", { name: /use user/i }));
+
+    await waitFor(() => {
+      expect(signOutMock).toHaveBeenCalledBefore(signInMock);
+      expect(signInMock).toHaveBeenCalledWith("dev-persona", { persona: "user" });
+    });
+  });
+
   it("signs out of the current local persona", async () => {
     authStatusMock.mockReturnValue({
       isAuthenticated: true,

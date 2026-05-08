@@ -59,6 +59,9 @@ export function DevPersonaFab() {
   async function usePersona(persona: DevPersona) {
     setBusyPersona(persona);
     try {
+      if (isAuthenticated) {
+        await signOut();
+      }
       const result = await signIn("dev-persona", { persona });
       if (result.signingIn === false)
         throw new Error("Dev persona sign-in did not create a session");
