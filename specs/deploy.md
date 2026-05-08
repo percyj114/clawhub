@@ -41,6 +41,57 @@ Production deploy notes:
 - Required `Production` environment secret: `CONVEX_DEPLOY_KEY`.
 - Optional `Production` environment secret: `PLAYWRIGHT_AUTH_STORAGE_STATE_JSON` for authenticated smoke coverage.
 
+## Staging
+
+Shared staging is intended to run at:
+
+- `https://staging.hub.openclaw.ai`
+
+The repo-side workflow is `.github/workflows/deploy-staging.yml`.
+
+- It runs on every push to `main`.
+- It can also be run manually.
+- It exits successfully with a notice until the required `Staging` environment values exist.
+- It deploys a separate Convex backend, prepares staging-specific Vercel config, deploys Vercel with `--target=staging`, seeds deterministic fixtures, and runs staging smoke tests.
+
+Required GitHub `Staging` environment secrets:
+
+- `CONVEX_DEPLOY_KEY` - deploy key for the permanent staging Convex deployment.
+- `VERCEL_TOKEN` - Vercel token with access to the ClawHub project.
+- `VERCEL_ORG_ID` - Vercel team/org id.
+- `VERCEL_PROJECT_ID` - Vercel project id.
+
+Required GitHub `Staging` environment variables:
+
+- `STAGING_CONVEX_URL` - Convex client URL, for example `https://<deployment>.convex.cloud`.
+- `STAGING_CONVEX_SITE_URL` - Convex site URL, for example `https://<deployment>.convex.site`.
+
+One-time setup that requires dashboard access:
+
+1. Create a separate Convex project/deployment for staging.
+2. Configure staging Convex env:
+   - `AUTH_GITHUB_ID`
+   - `AUTH_GITHUB_SECRET`
+   - `CONVEX_SITE_URL` set to the staging Convex site URL
+   - `JWT_PRIVATE_KEY`
+   - `JWKS`
+   - `OPENAI_API_KEY`
+   - `SITE_URL=https://staging.hub.openclaw.ai`
+   - Optional webhook env (see `docs/webhook.md`)
+3. Create or configure a Vercel custom environment target named `staging`.
+4. Attach `staging.hub.openclaw.ai` to that Vercel staging target and point DNS at Vercel.
+5. Configure the staging GitHub OAuth App:
+   - Homepage URL: `https://staging.hub.openclaw.ai`
+   - Authorization callback URL: `<STAGING_CONVEX_SITE_URL>/api/auth/callback/github`
+
+The staging workflow rewrites deployment artifacts in the CI workspace before uploading to Vercel:
+
+- `vercel.json` routes `/api/*` to `STAGING_CONVEX_SITE_URL`.
+- `public/.well-known/clawhub.json` and `public/.well-known/clawdhub.json` point CLI discovery at `https://staging.hub.openclaw.ai`.
+- `public/robots.txt` disallows indexing.
+
+Manual staging runs support `reset_seed=true`, which resets deterministic fixtures before smoke tests. Normal `main` pushes seed idempotently without resetting existing staging state.
+
 ## CLI npm release
 
 The `clawhub` CLI package is released separately from the app deploy.

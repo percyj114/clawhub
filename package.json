@@ -27,6 +27,7 @@
     "deadcode:exports": "KNIP_INCLUDE_TESTS=1 bunx knip@6.8.0 --config knip.config.ts --no-progress --reporter compact --exports --no-config-hints",
     "deadcode:files": "bunx knip@6.8.0 --config knip.config.ts --production --no-progress --reporter compact --files --no-config-hints",
     "deadcode:knip": "bun run deadcode:files && bun run deadcode:dependencies && bun run deadcode:exports",
+    "deploy:prepare-config": "bun scripts/prepare-deploy-config.ts",
     "dev": "bun --bun vite dev --port 3000",
     "dev:worktree": "bun run setup:worktree -- --quiet && bun scripts/dev-worktree.ts",
     "docs:list": "bun scripts/docs-list.ts",

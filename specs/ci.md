@@ -51,6 +51,13 @@ Production-only checks stay in the manual deploy workflow:
 - `bun run test:e2e:prod-http`
 - production Playwright smoke tests
 
+Staging checks live in `.github/workflows/deploy-staging.yml`. That workflow runs
+on `main` pushes once the GitHub `Staging` environment is configured, deploys the
+staging Convex/Vercel stack, seeds deterministic fixtures, and runs HTTP plus
+Chromium UI smoke tests against `https://staging.hub.openclaw.ai`. Until the
+required staging secrets and variables exist, it exits successfully with a
+notice instead of failing unrelated merges.
+
 Successful `full` and `frontend` production deploys create two annotated Git
 tags:
 

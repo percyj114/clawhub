@@ -93,6 +93,7 @@ describe("site helpers", () => {
     expect(isClawHubHost("clawhub.ai")).toBe(true);
     expect(isClawHubHost("www.clawhub.ai")).toBe(true);
     expect(isClawHubHost("hub.openclaw.ai")).toBe(true);
+    expect(isClawHubHost("staging.hub.openclaw.ai")).toBe(true);
     expect(isClawHubHost("clawdhub.com")).toBe(false);
     expect(isClawHubHost("example.com")).toBe(false);
   });

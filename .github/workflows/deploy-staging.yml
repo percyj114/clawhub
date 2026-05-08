@@ -1,0 +1,187 @@
+name: Deploy Staging
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      reset_seed:
+        description: "Reset seeded staging fixtures before smoke tests"
+        required: true
+        default: false
+        type: boolean
+      allow_deleting_large_indexes:
+        description: "Allow Convex to delete large indexes"
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-staging:
+    name: deploy-staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment:
+      name: Staging
+      url: https://staging.hub.openclaw.ai
+    env:
+      CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
+      PLAYWRIGHT_BASE_URL: https://staging.hub.openclaw.ai
+      RESET_STAGING_SEED: ${{ github.event_name == 'workflow_dispatch' && inputs.reset_seed || false }}
+      STAGING_CONVEX_SITE_URL: ${{ vars.STAGING_CONVEX_SITE_URL }}
+      STAGING_CONVEX_URL: ${{ vars.STAGING_CONVEX_URL }}
+      STAGING_SITE_URL: https://staging.hub.openclaw.ai
+      VERCEL_CLI_VERSION: 52.0.0
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      ALLOW_DELETING_LARGE_INDEXES: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_deleting_large_indexes || false }}
+
+    steps:
+      - name: Check staging deploy configuration
+        id: config
+        run: |
+          set -euo pipefail
+          missing=()
+
+          for name in \
+            CONVEX_DEPLOY_KEY \
+            STAGING_CONVEX_SITE_URL \
+            STAGING_CONVEX_URL \
+            VERCEL_ORG_ID \
+            VERCEL_PROJECT_ID \
+            VERCEL_TOKEN
+          do
+            if [[ -z "${!name}" ]]; then
+              missing+=("$name")
+            fi
+          done
+
+          if (( ${#missing[@]} > 0 )); then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            printf '::notice::Skipping staging deploy; missing Staging environment values: %s\n' "${missing[*]}"
+            exit 0
+          fi
+
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+          echo "Deploying staging site: $STAGING_SITE_URL"
+          echo "Using staging Convex site URL: $STAGING_CONVEX_SITE_URL"
+
+      - uses: actions/checkout@v6
+        if: steps.config.outputs.configured == 'true'
+
+      - uses: ./.github/actions/setup-bun
+        if: steps.config.outputs.configured == 'true'
+
+      - name: Stamp Convex staging metadata
+        if: steps.config.outputs.configured == 'true'
+        run: |
+          set -euo pipefail
+          bunx convex env set APP_BUILD_SHA "$GITHUB_SHA"
+          bunx convex env set APP_DEPLOYED_AT "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          bunx convex env set SITE_URL "$STAGING_SITE_URL"
+          bunx convex env set VITE_SITE_URL "$STAGING_SITE_URL"
+          bunx convex env set CONVEX_SITE_URL "$STAGING_CONVEX_SITE_URL"
+
+      - name: Deploy Convex staging backend
+        if: steps.config.outputs.configured == 'true'
+        run: |
+          set -euo pipefail
+          if [[ "$ALLOW_DELETING_LARGE_INDEXES" == "true" ]]; then
+            bunx convex deploy --typecheck=disable --yes --allow-deleting-large-indexes
+          else
+            bun run convex:deploy
+          fi
+
+      - name: Verify Convex staging contract
+        if: steps.config.outputs.configured == 'true'
+        run: bun run verify:convex-contract
+
+      - name: Seed staging fixtures
+        if: steps.config.outputs.configured == 'true'
+        run: |
+          set -euo pipefail
+          if [[ "$RESET_STAGING_SEED" == "true" ]]; then
+            bunx convex run --no-push devSeed:seedNixSkills '{"reset":true}'
+          else
+            bunx convex run --no-push devSeed:seedNixSkills
+          fi
+          bunx convex run --no-push statsMaintenance:updateGlobalStatsAction
+
+      - name: Prepare staging deploy config
+        if: steps.config.outputs.configured == 'true'
+        run: |
+          bun run deploy:prepare-config -- \
+            --target staging \
+            --site-url "$STAGING_SITE_URL" \
+            --convex-site-url "$STAGING_CONVEX_SITE_URL"
+
+      - name: Pull Vercel staging project settings
+        if: steps.config.outputs.configured == 'true'
+        run: |
+          bunx "vercel@$VERCEL_CLI_VERSION" pull \
+            --yes \
+            --environment=staging \
+            --token "$VERCEL_TOKEN"
+
+      - name: Sync Vercel staging public env
+        if: steps.config.outputs.configured == 'true'
+        run: |
+          set -euo pipefail
+          set_vercel_env() {
+            local name="$1"
+            local value="$2"
+            bunx "vercel@$VERCEL_CLI_VERSION" env add "$name" staging \
+              --force \
+              --yes \
+              --value "$value" \
+              --token "$VERCEL_TOKEN"
+          }
+
+          set_vercel_env VITE_CONVEX_URL "$STAGING_CONVEX_URL"
+          set_vercel_env VITE_CONVEX_SITE_URL "$STAGING_CONVEX_SITE_URL"
+          set_vercel_env CONVEX_SITE_URL "$STAGING_CONVEX_SITE_URL"
+          set_vercel_env SITE_URL "$STAGING_SITE_URL"
+          set_vercel_env VITE_SITE_URL "$STAGING_SITE_URL"
+          set_vercel_env VITE_APP_BUILD_SHA "$GITHUB_SHA"
+
+      - name: Deploy Vercel staging frontend
+        id: vercel
+        if: steps.config.outputs.configured == 'true'
+        run: |
+          set -euo pipefail
+          deployment_url="$(bunx "vercel@$VERCEL_CLI_VERSION" deploy \
+            --target=staging \
+            --yes \
+            --token "$VERCEL_TOKEN")"
+          echo "deployment_url=$deployment_url" >> "$GITHUB_OUTPUT"
+          echo "Vercel staging deployment: $deployment_url"
+
+      - name: Smoke test staging HTTP
+        if: steps.config.outputs.configured == 'true'
+        env:
+          CLAWHUB_E2E_SITE: https://staging.hub.openclaw.ai
+          CLAWHUB_E2E_SKILL_OWNER: local
+          CLAWHUB_E2E_SKILL_SLUG: padel
+        run: bun run test:e2e:prod-http
+
+      - name: Install Playwright browser
+        if: steps.config.outputs.configured == 'true'
+        run: bunx playwright install --with-deps chromium
+
+      - name: Smoke test staging UI
+        if: steps.config.outputs.configured == 'true'
+        run: bunx playwright test --workers=1 --project=chromium e2e/menu-smoke.pw.test.ts
+
+      - name: Report unconfigured staging
+        if: steps.config.outputs.configured != 'true'
+        run: |
+          echo "Staging deploy is wired in the repo but not configured yet."
+          echo "Add the Staging environment secrets and variables documented in docs/deploy.md."
