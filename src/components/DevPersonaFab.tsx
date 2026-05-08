@@ -4,7 +4,6 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { getRuntimeEnv } from "../lib/runtimeEnv";
 import { useAuthStatus } from "../lib/useAuthStatus";
-import { Button } from "./ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -87,14 +86,13 @@ export function DevPersonaFab() {
     <div className="fixed right-5 bottom-24 z-[70] flex flex-col items-end gap-2 sm:right-6">
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button
+          <button
             type="button"
-            size="icon-lg"
-            className="h-14 w-14 rounded-full border border-[color:var(--line)] bg-[color:var(--surface)] text-[color:var(--ink)] shadow-[var(--shadow)] hover:bg-[color:var(--surface-subtle)]"
+            className="flex h-14 w-14 shrink-0 cursor-pointer items-center justify-center rounded-[9999px] border border-[color:var(--line)] bg-[color:var(--surface)] p-0 text-[color:var(--ink)] shadow-[var(--shadow)] transition-colors hover:bg-[color:var(--surface-subtle)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)]/35 focus-visible:ring-offset-2 focus-visible:ring-offset-[color:var(--bg)]"
             aria-label="Open local dev personas"
           >
             <Wrench size={22} aria-hidden="true" />
-          </Button>
+          </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-[220px]">
           <div className="px-2 py-1.5">
