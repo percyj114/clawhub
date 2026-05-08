@@ -6,7 +6,7 @@ import { convexHttp } from "../convex/client";
 import { hasOwnProperty } from "../lib/hasOwnProperty";
 import { formatCompactStat } from "../lib/numberFormat";
 import type { PublicPublisher, PublicUser } from "../lib/publicUser";
-import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 
 type UserBadgeProps = {
   user: PublicUser | PublicPublisher | null | undefined;
@@ -99,10 +99,12 @@ export function UserBadge({
   if (!userId || disableTooltip) return badge;
 
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>{badge}</TooltipTrigger>
-      <UserStatsTooltipContent userId={userId} displayName={displayName} handle={handle} />
-    </Tooltip>
+    <TooltipProvider delayDuration={400}>
+      <Tooltip>
+        <TooltipTrigger asChild>{badge}</TooltipTrigger>
+        <UserStatsTooltipContent userId={userId} displayName={displayName} handle={handle} />
+      </Tooltip>
+    </TooltipProvider>
   );
 }
 

@@ -5,12 +5,10 @@ export type ArtifactDisplayStatus = {
   variant: "default" | "pending" | "warning" | "destructive" | "success";
 };
 
-export type ArtifactScanStatus = "clean" | "suspicious" | "malicious" | "pending" | "unknown";
-
 export type ArtifactScanSignalStatus = "clean" | "suspicious" | "malicious" | null;
 
-export type SkillArtifactStatusInput = {
-  moderationStatus?: "active" | "hidden" | "removed" | string;
+type SkillArtifactStatusInput = {
+  moderationStatus?: string;
   moderationReason?: string;
   moderationVerdict?: "clean" | "suspicious" | "malicious";
   moderationFlags?: string[];
@@ -24,7 +22,7 @@ export type SkillArtifactStatusInput = {
   } | null;
 };
 
-export type PackageArtifactStatusInput = {
+type PackageArtifactStatusInput = {
   scanStatus?: "clean" | "suspicious" | "malicious" | "pending" | "not-run";
   pendingReview?: boolean;
   latestRelease?: {

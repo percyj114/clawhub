@@ -10,10 +10,10 @@ export type ArtifactRescanState = {
   requestCount: number;
   remainingRequests: number;
   canRequest: boolean;
-  inProgressRequest: unknown | null;
+  inProgressRequest: Record<string, unknown> | null;
 };
 
-export function formatArtifactRescanState(state: ArtifactRescanState | null) {
+function formatArtifactRescanState(state: ArtifactRescanState | null) {
   if (state?.inProgressRequest) return "Scan running";
   if (!state) return "Rescan available";
   if (state.remainingRequests <= 0)
@@ -42,7 +42,7 @@ export function ArtifactScanStrip({
   );
 }
 
-export function ScanSignal({ label, status }: { label: string; status: string | null }) {
+function ScanSignal({ label, status }: { label: string; status: string | null }) {
   const normalized = status ?? "not-run";
   return (
     <span className="dashboard-scan-signal">

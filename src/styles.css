@@ -943,8 +943,8 @@ code {
 
 .theme-mode-toggle {
   min-width: 154px;
-  min-height: 32px;
-  padding: 0 10px;
+  min-height: 50px;
+  padding: 0 16px;
   gap: 14px;
   border: 1px solid var(--line);
   background: var(--surface);
@@ -957,8 +957,8 @@ code {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 30px;
+  height: 30px;
   border-radius: var(--r-btn);
   cursor: pointer;
   color: var(--ink-soft);
@@ -970,8 +970,8 @@ code {
 }
 
 .theme-mode-toggle button svg {
-  width: 18px;
-  height: 18px;
+  width: 22px;
+  height: 22px;
 }
 
 .theme-mode-toggle button:focus-visible {
@@ -3540,6 +3540,10 @@ code {
   align-items: start;
   gap: 24px;
   min-width: 0;
+}
+
+.skill-hero-layout.has-sidebar {
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
 }
 
 .skill-hero-main {

@@ -6,12 +6,12 @@ import {
 } from "./ArtifactScanStrip";
 import type { ArtifactDisplayStatus, ArtifactScanSignalStatus } from "./artifactStatus";
 
-export type ArtifactStat = {
+type ArtifactStat = {
   label: string;
   value: string;
 };
 
-export type ArtifactScanSignals = {
+type ArtifactScanSignals = {
   vtStatus: string | null;
   llmStatus: string | null;
   staticScanStatus: ArtifactScanSignalStatus;

@@ -1,13 +1,13 @@
 import type { ReactNode } from "react";
 import { cn } from "../lib/utils";
 
-export type SidebarMetadataItem = {
+type SidebarMetadataItem = {
   label: string;
   value: ReactNode;
   large?: boolean;
 };
 
-export type SidebarMetadataBlock =
+type SidebarMetadataBlock =
   | SidebarMetadataItem
   | {
       grid: SidebarMetadataItem[];
