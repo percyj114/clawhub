@@ -1,5 +1,5 @@
 import { useAuthActions } from "@convex-dev/auth/react";
-import { Shield, User, UserCog, Wrench } from "lucide-react";
+import { Check, Shield, User, UserCog, Wrench } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { getRuntimeEnv } from "../lib/runtimeEnv";
@@ -81,7 +81,7 @@ export function DevPersonaFab() {
     }
   }
 
-  const currentHandle = me?.handle ? `@${me.handle}` : isAuthenticated ? "signed in" : "anonymous";
+  const activeHandle = me?.handle ? `@${me.handle}` : null;
 
   return (
     <div className="fixed right-5 bottom-24 z-[70] flex flex-col items-end gap-2 sm:right-6">
@@ -108,12 +108,12 @@ export function DevPersonaFab() {
             >
               <option value="auth">Auth</option>
             </select>
-            <p className="text-xs text-[color:var(--ink-soft)]">{currentHandle}</p>
           </div>
           <DropdownMenuSeparator />
           {PERSONAS.map((persona) => {
             const Icon = persona.icon;
             const busy = busyPersona === persona.value;
+            const active = persona.description === activeHandle;
             return (
               <DropdownMenuItem
                 key={persona.value}
@@ -131,6 +131,7 @@ export function DevPersonaFab() {
                       {persona.description}
                     </span>
                   </span>
+                  {active ? <Check size={15} aria-label="Active persona" /> : null}
                 </span>
               </DropdownMenuItem>
             );

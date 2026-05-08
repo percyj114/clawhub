@@ -118,11 +118,17 @@ describe("DevPersonaFab", () => {
 
     render(<DevPersonaFab />);
 
-    expect(screen.getAllByText("@local-admin").length).toBeGreaterThan(0);
+    expect(screen.getByLabelText("Active persona")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
 
     await waitFor(() => {
       expect(signOutMock).toHaveBeenCalled();
     });
+  });
+
+  it("does not show an active checkmark while anonymous", () => {
+    render(<DevPersonaFab />);
+
+    expect(screen.queryByLabelText("Active persona")).toBeNull();
   });
 });
