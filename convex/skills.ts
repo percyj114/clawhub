@@ -6229,6 +6229,7 @@ export const publishVersion: ReturnType<typeof action> = action({
     displayName: v.string(),
     version: v.string(),
     changelog: v.string(),
+    clawScanNote: v.optional(v.string()),
     acceptLicenseTerms: v.optional(v.boolean()),
     tags: v.optional(v.array(v.string())),
     forkOf: v.optional(
@@ -7597,6 +7598,7 @@ export const insertVersion = internalMutation({
     displayName: v.string(),
     version: v.string(),
     changelog: v.string(),
+    clawScanNote: v.optional(v.string()),
     changelogSource: v.optional(v.union(v.literal("auto"), v.literal("user"))),
     tags: v.optional(v.array(v.string())),
     fingerprint: v.string(),
@@ -8101,6 +8103,7 @@ export const insertVersion = internalMutation({
       version: args.version,
       fingerprint: args.fingerprint,
       changelog: args.changelog,
+      ...(args.clawScanNote?.trim() ? { clawScanNote: args.clawScanNote.trim() } : {}),
       changelogSource: args.changelogSource,
       files: args.files,
       parsed: args.parsed,

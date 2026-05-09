@@ -520,6 +520,7 @@ const skillVersions = defineTable({
   }),
   createdBy: v.id("users"),
   createdAt: v.number(),
+  clawScanNote: v.optional(v.string()),
   softDeletedAt: v.optional(v.number()),
   sha256hash: v.optional(v.string()),
   vtAnalysis: v.optional(vtAnalysisValidator),
@@ -906,6 +907,7 @@ const packageReleases = defineTable({
   createdBy: v.id("users"),
   publishActor: packagePublishActorValidator,
   createdAt: v.number(),
+  clawScanNote: v.optional(v.string()),
   softDeletedAt: v.optional(v.number()),
 })
   .index("by_package", ["packageId"])

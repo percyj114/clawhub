@@ -128,6 +128,7 @@ const insertReleaseInternalHandler = (
       family: "skill" | "code-plugin" | "bundle-plugin";
       version: string;
       changelog: string;
+      clawScanNote?: string;
       tags: string[];
       summary: string;
       files: Array<{
@@ -3544,6 +3545,7 @@ describe("packages public queries", () => {
       family: "code-plugin",
       version: "1.0.0",
       changelog: "beta",
+      clawScanNote: "This release bundles a native helper but does not fetch remote code.",
       tags: ["beta"],
       summary: "demo",
       files: [],
@@ -3567,6 +3569,7 @@ describe("packages public queries", () => {
       "packageReleases",
       expect.objectContaining({
         distTags: ["beta"],
+        clawScanNote: "This release bundles a native helper but does not fetch remote code.",
         verification: expect.objectContaining({ scanStatus: "suspicious" }),
         staticScan: expect.objectContaining({ status: "suspicious" }),
       }),

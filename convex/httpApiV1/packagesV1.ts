@@ -844,6 +844,7 @@ function parsePackagePublishBody(body: unknown) {
     family: "skill" | "code-plugin" | "bundle-plugin";
     version: string;
     changelog: string;
+    clawScanNote?: string;
     manualOverrideReason?: string;
     channel?: "official" | "community" | "private";
     tags?: string[];
@@ -877,6 +878,7 @@ function parsePackagePublishBody(body: unknown) {
     family: parsed.family,
     version: parsed.version,
     changelog: parsed.changelog,
+    clawScanNote: parsed.clawScanNote?.trim() || undefined,
     manualOverrideReason: parsed.manualOverrideReason?.trim() || undefined,
     channel: parsed.channel ?? undefined,
     tags: parsed.tags?.filter(Boolean) ?? undefined,
