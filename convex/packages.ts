@@ -5014,7 +5014,7 @@ export const getRescanState = query({
       actor: user,
       ownerUserId: target.pkg.ownerUserId,
       ownerPublisherId: target.pkg.ownerPublisherId,
-      allowPlatformAdmin: true,
+      allowPlatformModerator: true,
     });
     return {
       targetKind: "plugin" as const,
@@ -5044,7 +5044,7 @@ export const getOwnerRescanStateByName = query({
 
     const actor = await ctx.db.get(viewerUserId);
     if (!actor || actor.deletedAt || actor.deactivatedAt) return null;
-    if (actor.role !== "admin") {
+    if (actor.role !== "admin" && actor.role !== "moderator") {
       const canAccess = await viewerCanAccessPackageOwner(ctx, pkg, viewerUserId);
       if (!canAccess) return null;
     }
@@ -5068,16 +5068,21 @@ export const requestRescan = mutation({
   handler: async (ctx, args) => {
     const { user } = await requireUser(ctx);
     const target = await getLatestPackageRescanTarget(ctx, args.packageId);
+    const isPlatformStaff = user.role === "admin" || user.role === "moderator";
     await assertCanManageOwnedResource(ctx, {
       actor: user,
       ownerUserId: target.pkg.ownerUserId,
       ownerPublisherId: target.pkg.ownerPublisherId,
-      allowPlatformAdmin: true,
+      allowPlatformModerator: true,
     });
-    await assertCanRequestRescan(ctx, {
-      kind: "plugin",
-      artifactId: target.release._id,
-    });
+    await assertCanRequestRescan(
+      ctx,
+      {
+        kind: "plugin",
+        artifactId: target.release._id,
+      },
+      { ignoreRequestLimit: isPlatformStaff },
+    );
 
     const requestId = await insertPackageRescanRequest(ctx, user, target);
     await ctx.scheduler.runAfter(0, internal.packages.dispatchPackageRescanInternal, {
@@ -5220,16 +5225,21 @@ export const requestRescanForApiTokenInternal = internalMutation({
     }
 
     const target = await getLatestPackageRescanTarget(ctx, pkg._id);
+    const isPlatformStaff = actor.role === "admin" || actor.role === "moderator";
     await assertCanManageOwnedResource(ctx, {
       actor,
       ownerUserId: target.pkg.ownerUserId,
       ownerPublisherId: target.pkg.ownerPublisherId,
-      allowPlatformAdmin: true,
+      allowPlatformModerator: true,
     });
-    await assertCanRequestRescan(ctx, {
-      kind: "plugin",
-      artifactId: target.release._id,
-    });
+    await assertCanRequestRescan(
+      ctx,
+      {
+        kind: "plugin",
+        artifactId: target.release._id,
+      },
+      { ignoreRequestLimit: isPlatformStaff },
+    );
 
     const requestId = await insertPackageRescanRequest(ctx, actor, target);
     await ctx.scheduler.runAfter(0, internal.packages.dispatchPackageRescanInternal, {

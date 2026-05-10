@@ -119,11 +119,14 @@ export async function getInProgressRequestForTarget(
 export async function assertCanRequestRescan(
   ctx: Pick<QueryCtx | MutationCtx, "db">,
   target: RescanTarget,
+  options?: { ignoreRequestLimit?: boolean },
 ) {
   const existingInProgress = await getInProgressRequestForTarget(ctx, target);
   if (existingInProgress) {
     throw new ConvexError("A rescan request is already in progress for this release");
   }
+
+  if (options?.ignoreRequestLimit) return;
 
   const existingRequests = await listRequestsForTarget(ctx, target);
   if (existingRequests.length >= MAX_OWNER_RESCAN_REQUESTS_PER_RELEASE) {

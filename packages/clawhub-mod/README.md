@@ -110,11 +110,13 @@ Package moderation and operations:
 
 ```bash
 clawhub-mod skills reports [--status open|confirmed|dismissed|all]
+clawhub-mod skills rescan <slug> [--yes]
 clawhub-mod skills triage-report <report-id> --status open|confirmed|dismissed [--note <text>] [--action none|hide] [--yes]
 clawhub-mod skills appeals [--status open|accepted|rejected|all]
 clawhub-mod skills resolve-appeal <appeal-id> --status open|accepted|rejected [--note <text>] [--action none|restore] [--yes]
 
 clawhub-mod plugins moderate <name> --version <version> --state approved|quarantined|revoked --reason <text>
+clawhub-mod plugins rescan <name> [--yes]
 clawhub-mod plugins status <name>
 clawhub-mod plugins queue [--status open|blocked|manual|all]
 clawhub-mod plugins reports [--status open|confirmed|dismissed|all]

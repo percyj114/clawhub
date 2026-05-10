@@ -382,6 +382,56 @@ describe("rescan requests", () => {
     ).resolves.toMatchObject({ requestId: "rescanRequests:1" });
   });
 
+  it("lets moderators request rescans for any skill and bypass the owner cap", async () => {
+    vi.mocked(requireUser).mockResolvedValue({
+      userId: "users:actor",
+      user: { _id: "users:actor", role: "moderator" },
+    } as never);
+    const { db, requests } = createDb({
+      requests: Array.from({ length: MAX_OWNER_RESCAN_REQUESTS_PER_RELEASE }, (_, index) =>
+        createRequest({
+          _id: `rescanRequests:${index}`,
+          status: "completed",
+          createdAt: index,
+        }),
+      ),
+    });
+    const scheduler = { runAfter: vi.fn(async () => undefined) };
+
+    await expect(
+      requestSkillRescanHandler({ db, scheduler } as never, {
+        skillId: "skills:1",
+      }),
+    ).resolves.toMatchObject({ requestId: "rescanRequests:4" });
+
+    expect(requests[3]).toMatchObject({
+      targetKind: "skill",
+      requestedByUserId: "users:actor",
+      status: "in_progress",
+    });
+  });
+
+  it("lets moderators request plugin rescans without package owner access", async () => {
+    vi.mocked(requireUser).mockResolvedValue({
+      userId: "users:actor",
+      user: { _id: "users:actor", role: "moderator" },
+    } as never);
+    const { db, requests } = createDb();
+    const scheduler = { runAfter: vi.fn(async () => undefined) };
+
+    await expect(
+      requestPackageRescanHandler({ db, scheduler } as never, {
+        packageId: "packages:1",
+      }),
+    ).resolves.toMatchObject({ requestId: "rescanRequests:1" });
+
+    expect(requests[0]).toMatchObject({
+      targetKind: "plugin",
+      requestedByUserId: "users:actor",
+      status: "in_progress",
+    });
+  });
+
   it("rejects missing or soft-deleted skill targets", async () => {
     const softDeletedSkill = createDb({ skillSoftDeletedAt: 123 });
     await expect(

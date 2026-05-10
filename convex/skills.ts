@@ -5389,7 +5389,7 @@ export const getRescanState = query({
       actor: user,
       ownerUserId: target.skill.ownerUserId,
       ownerPublisherId: target.skill.ownerPublisherId,
-      allowPlatformAdmin: true,
+      allowPlatformModerator: true,
     });
     return {
       targetKind: "skill" as const,
@@ -5410,16 +5410,21 @@ export const requestRescan = mutation({
   handler: async (ctx, args) => {
     const { user } = await requireUser(ctx);
     const target = await getLatestSkillRescanTarget(ctx, args.skillId);
+    const isPlatformStaff = user.role === "admin" || user.role === "moderator";
     await assertCanManageOwnedResource(ctx, {
       actor: user,
       ownerUserId: target.skill.ownerUserId,
       ownerPublisherId: target.skill.ownerPublisherId,
-      allowPlatformAdmin: true,
+      allowPlatformModerator: true,
     });
-    await assertCanRequestRescan(ctx, {
-      kind: "skill",
-      artifactId: target.version._id,
-    });
+    await assertCanRequestRescan(
+      ctx,
+      {
+        kind: "skill",
+        artifactId: target.version._id,
+      },
+      { ignoreRequestLimit: isPlatformStaff },
+    );
 
     const requestId = await insertSkillRescanRequest(ctx, user, target);
     await ctx.scheduler.runAfter(0, internal.skills.dispatchSkillRescanInternal, {
@@ -5452,16 +5457,21 @@ export const requestRescanForApiTokenInternal = internalMutation({
     if (!skill) throw new ConvexError("Skill not found");
 
     const target = await getLatestSkillRescanTarget(ctx, skill._id);
+    const isPlatformStaff = actor.role === "admin" || actor.role === "moderator";
     await assertCanManageOwnedResource(ctx, {
       actor,
       ownerUserId: target.skill.ownerUserId,
       ownerPublisherId: target.skill.ownerPublisherId,
-      allowPlatformAdmin: true,
+      allowPlatformModerator: true,
     });
-    await assertCanRequestRescan(ctx, {
-      kind: "skill",
-      artifactId: target.version._id,
-    });
+    await assertCanRequestRescan(
+      ctx,
+      {
+        kind: "skill",
+        artifactId: target.version._id,
+      },
+      { ignoreRequestLimit: isPlatformStaff },
+    );
 
     const requestId = await insertSkillRescanRequest(ctx, actor, target);
     await ctx.scheduler.runAfter(0, internal.skills.dispatchSkillRescanInternal, {

@@ -8,6 +8,7 @@ import {
   cmdGetPackageTrustedPublisher,
   cmdPackageModerationStatus,
 } from "../../clawhub/src/cli/commands/packages.js";
+import { cmdRescanPackage, cmdRescanSkill } from "../../clawhub/src/cli/commands/rescan.js";
 import {
   cmdListSkillAppeals,
   cmdListSkillReports,
@@ -443,6 +444,17 @@ function registerPluginModerationCommands(command: Command) {
 
 function registerPluginOperations(command: Command) {
   command
+    .command("rescan")
+    .description("Request a security rescan for the latest plugin release")
+    .argument("<name>", "Plugin package name")
+    .option("--yes", "Skip confirmation")
+    .option("--json", "Output JSON")
+    .action(async (name, options) => {
+      const opts = await resolveGlobalOpts();
+      await cmdRescanPackage(opts, name, options, isInputAllowed());
+    });
+
+  command
     .command("moderate")
     .description("Set plugin release moderation state")
     .argument("<name>", "Plugin package name")
@@ -483,6 +495,17 @@ function registerPluginOperations(command: Command) {
 }
 
 function registerSkillModerationCommands(command: Command) {
+  command
+    .command("rescan")
+    .description("Request a security rescan for the latest skill version")
+    .argument("<slug>", "Skill slug")
+    .option("--yes", "Skip confirmation")
+    .option("--json", "Output JSON")
+    .action(async (slug, options) => {
+      const opts = await resolveGlobalOpts();
+      await cmdRescanSkill(opts, slug, options, isInputAllowed());
+    });
+
   command
     .command("reports")
     .description("List skill reports for moderator review")

@@ -92,8 +92,15 @@ export async function assertCanManageOwnedResource(
     ownerPublisherId?: Id<"publishers"> | null;
     allowedPublisherRoles?: PublisherRole[];
     allowPlatformAdmin?: boolean;
+    allowPlatformModerator?: boolean;
   },
 ) {
+  if (
+    params.allowPlatformModerator &&
+    (params.actor.role === "admin" || params.actor.role === "moderator")
+  ) {
+    return;
+  }
   if (params.allowPlatformAdmin && params.actor.role === "admin") return;
   if (!params.ownerPublisherId) {
     if (params.ownerUserId === params.actor._id) return;
