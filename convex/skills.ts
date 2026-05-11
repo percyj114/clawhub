@@ -317,6 +317,19 @@ function resolveScannerModerationReason(params: {
   return "scanner.aggregate.clean";
 }
 
+function scannerStatusFromReasonCodes(params: {
+  scanner: "vt" | "llm";
+  status?: string;
+  reasonCodes: readonly string[];
+}) {
+  const scanner = params.scanner;
+  if (params.reasonCodes.includes(`malicious.${scanner}_malicious`)) return "malicious";
+  if (params.reasonCodes.includes(`suspicious.${scanner}_suspicious`)) return "suspicious";
+
+  const status = normalizeAnalysisStatus(params.status);
+  return status === "malicious" || status === "suspicious" ? undefined : status;
+}
+
 function buildScannerModerationPatchFromVersion(params: {
   owner: Doc<"users"> | null | undefined;
   version: Pick<Doc<"skillVersions">, "_id" | "staticScan" | "vtAnalysis" | "llmAnalysis">;
@@ -332,9 +345,21 @@ function buildScannerModerationPatchFromVersion(params: {
   });
 
   const sourceReasonCodes = structuredPatch.moderationReasonCodes ?? [];
+  const vtStatusForReason = scannerStatusFromReasonCodes({
+    scanner: "vt",
+    status: params.version.vtAnalysis?.status,
+    reasonCodes: sourceReasonCodes,
+  });
+  const rawVtStatus = normalizeAnalysisStatus(params.version.vtAnalysis?.status);
+  const llmStatusForReason =
+    !vtStatusForReason &&
+    (rawVtStatus === "malicious" || rawVtStatus === "suspicious") &&
+    normalizeAnalysisStatus(params.version.llmAnalysis?.status) === "clean"
+      ? undefined
+      : params.version.llmAnalysis?.status;
   const sourceReason = resolveScannerModerationReason({
-    vtStatus: params.version.vtAnalysis?.status,
-    llmStatus: params.version.llmAnalysis?.status,
+    vtStatus: vtStatusForReason,
+    llmStatus: llmStatusForReason,
     verdict: structuredPatch.moderationVerdict,
   });
   const bypassSuspicious =
@@ -972,8 +997,14 @@ async function repointSkillRelationships(
 
 function normalizeScannerSuspiciousReason(reason: string | undefined) {
   if (!reason) return reason;
-  if (!reason.startsWith("scanner.") || !reason.endsWith(".suspicious")) return reason;
-  return `${reason.slice(0, -".suspicious".length)}.clean`;
+  if (!reason.startsWith("scanner.")) return reason;
+  if (reason.endsWith(".suspicious")) {
+    return `${reason.slice(0, -".suspicious".length)}.clean`;
+  }
+  if (reason.endsWith(".malicious")) {
+    return `${reason.slice(0, -".malicious".length)}.clean`;
+  }
+  return reason;
 }
 
 async function adjustGlobalPublicCountForSkillChange(
@@ -5843,9 +5874,21 @@ export const escalateSkillByIdInternal = internalMutation({
       sourceVersionId: version?._id,
     });
     const sourceReasonCodes = snapshot.reasonCodes;
+    const vtStatusForReason = scannerStatusFromReasonCodes({
+      scanner: "vt",
+      status: vtStatus,
+      reasonCodes: sourceReasonCodes,
+    });
+    const rawVtStatus = normalizeAnalysisStatus(vtStatus);
+    const llmStatusForReason =
+      !vtStatusForReason &&
+      (rawVtStatus === "malicious" || rawVtStatus === "suspicious") &&
+      normalizeAnalysisStatus(llmStatus) === "clean"
+        ? undefined
+        : llmStatus;
     const sourceReason = resolveScannerModerationReason({
-      vtStatus,
-      llmStatus,
+      vtStatus: vtStatusForReason,
+      llmStatus: llmStatusForReason,
       verdict: snapshot.verdict,
     });
     const bypassSuspicious =
@@ -5864,7 +5907,12 @@ export const escalateSkillByIdInternal = internalMutation({
       : isReviewOnlyVerdict
         ? "scanner.llm.review"
         : sourceReason;
-    const moderationStatus = moderationVerdict === "malicious" ? "hidden" : args.moderationStatus;
+    const moderationStatus =
+      moderationVerdict === "malicious"
+        ? "hidden"
+        : moderationVerdict === "clean"
+          ? "active"
+          : args.moderationStatus;
 
     const basePatch: SkillModerationPatch = {
       moderationReason,
@@ -6640,7 +6688,7 @@ export const approveSkillByHashInternal = internalMutation({
       const nextVerdict = verdictFromCodes(nextReasonCodes);
       const nextLegacyFlags = legacyFlagsFromVerdict(nextVerdict);
       const isReviewOnlyVerdict = nextVerdict === "clean" && hasReviewReasonCode(nextReasonCodes);
-      if (nextVerdict === "clean" && !alreadyBlocked) {
+      if (nextVerdict === "clean") {
         newFlags = isReviewOnlyVerdict ? ["flagged.review"] : undefined;
       }
       const nextModerationReason = qualityLocked
@@ -6689,7 +6737,7 @@ export const approveSkillByHashInternal = internalMutation({
       await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill);
 
       // Auto-ban authors of malicious skills (skips moderators/admins)
-      if (isMalicious && skill.ownerUserId) {
+      if (nextVerdict === "malicious" && skill.ownerUserId) {
         await ctx.scheduler.runAfter(0, internal.users.autobanMalwareAuthorInternal, {
           ownerUserId: skill.ownerUserId,
           sha256hash: args.sha256hash,
@@ -6730,16 +6778,6 @@ export const escalateByVtInternal = internalMutation({
     const bypassSuspicious =
       !isMalicious && !alreadyBlocked && isPrivilegedOwnerForSuspiciousBypass(owner);
 
-    // Determine new flags — stricter verdict always wins
-    let newFlags: string[];
-    if (isMalicious || alreadyBlocked) {
-      newFlags = ["blocked.malware"];
-    } else if (bypassSuspicious) {
-      newFlags = stripSuspiciousFlag(existingFlags) ?? [];
-    } else {
-      newFlags = ["flagged.suspicious"];
-    }
-
     const snapshot = buildModerationSnapshot({
       staticScan: version.staticScan,
       vtAnalysis: version.vtAnalysis,
@@ -6754,15 +6792,25 @@ export const escalateByVtInternal = internalMutation({
         : snapshot.reasonCodes;
     const nextVerdict = verdictFromCodes(nextReasonCodes);
     const nextLegacyFlags = legacyFlagsFromVerdict(nextVerdict);
+
+    // Determine new flags — stricter structured verdict wins.
+    let newFlags: string[];
+    if (nextVerdict === "malicious" || alreadyBlocked) {
+      newFlags = ["blocked.malware"];
+    } else if (bypassSuspicious) {
+      newFlags = stripSuspiciousFlag(existingFlags) ?? [];
+    } else {
+      newFlags = ["flagged.suspicious"];
+    }
+
     const isReviewOnlyVerdict = nextVerdict === "clean" && hasReviewReasonCode(nextReasonCodes);
-    const nextModerationFlags =
-      isReviewOnlyVerdict && !alreadyBlocked
-        ? ["flagged.review"]
-        : nextVerdict === "clean" && !alreadyBlocked
-          ? undefined
-          : newFlags.length
-            ? newFlags
-            : nextLegacyFlags;
+    const nextModerationFlags = isReviewOnlyVerdict
+      ? ["flagged.review"]
+      : nextVerdict === "clean"
+        ? undefined
+        : newFlags.length
+          ? newFlags
+          : nextLegacyFlags;
     const now = Date.now();
     const basePatch: SkillModerationPatch = {
       moderationFlags: nextModerationFlags,
@@ -6779,17 +6827,20 @@ export const escalateByVtInternal = internalMutation({
       basePatch.moderationReason = normalizeScannerSuspiciousReason(
         skill.moderationReason as string | undefined,
       );
-    } else if (isReviewOnlyVerdict && !alreadyBlocked) {
+    } else if (isReviewOnlyVerdict) {
       basePatch.moderationReason = "scanner.llm.review";
-    } else if (nextVerdict === "clean" && !alreadyBlocked) {
+    } else if (nextVerdict === "clean") {
       const existingReason = skill.moderationReason as string | undefined;
-      if (existingReason?.startsWith("scanner.") && existingReason.endsWith(".suspicious")) {
+      if (
+        existingReason?.startsWith("scanner.") &&
+        (existingReason.endsWith(".suspicious") || existingReason.endsWith(".malicious"))
+      ) {
         basePatch.moderationReason = normalizeScannerSuspiciousReason(existingReason);
       }
     }
 
     // Only hide for malicious — suspicious stays visible with a flag
-    if (isMalicious) {
+    if (nextVerdict === "malicious") {
       basePatch.moderationStatus = "hidden";
       // Security: reset hide provenance so the owner-undelete gate cannot
       // mistake prior owner-initiated soft-deletes (hiddenBy === owner,
@@ -6804,7 +6855,7 @@ export const escalateByVtInternal = internalMutation({
       basePatch.unpublishedSlugReleasedAt = undefined;
       basePatch.unpublishedOriginalSlug = undefined;
       basePatch.lastReviewedAt = now;
-    } else if (nextVerdict === "clean" && !alreadyBlocked) {
+    } else if (nextVerdict === "clean") {
       basePatch.moderationStatus = "active";
       basePatch.hiddenAt = undefined;
       basePatch.hiddenBy = undefined;
@@ -6828,7 +6879,7 @@ export const escalateByVtInternal = internalMutation({
     await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill);
 
     // Auto-ban authors of malicious skills
-    if (isMalicious && skill.ownerUserId) {
+    if (nextVerdict === "malicious" && skill.ownerUserId) {
       await ctx.scheduler.runAfter(0, internal.users.autobanMalwareAuthorInternal, {
         ownerUserId: skill.ownerUserId,
         sha256hash: args.sha256hash,

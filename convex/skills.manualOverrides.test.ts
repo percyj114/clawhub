@@ -213,7 +213,12 @@ describe("skills manual overrides", () => {
       _id: "skillVersions:3",
       skillId: "skills:1",
       staticScan: undefined,
-      vtAnalysis: { status: "suspicious", checkedAt: now - 1000 },
+      vtAnalysis: {
+        status: "suspicious",
+        source: "engines",
+        engineStats: { malicious: 0, suspicious: 1, undetected: 64 },
+        checkedAt: now - 1000,
+      },
       llmAnalysis: undefined,
     };
 
@@ -277,7 +282,12 @@ describe("skills manual overrides", () => {
       _id: "skillVersions:4",
       skillId: "skills:1",
       staticScan: undefined,
-      vtAnalysis: { status: "malicious", checkedAt: now - 1000 },
+      vtAnalysis: {
+        status: "malicious",
+        source: "engines",
+        engineStats: { malicious: 1, suspicious: 0, undetected: 64 },
+        checkedAt: now - 1000,
+      },
       llmAnalysis: undefined,
     };
 

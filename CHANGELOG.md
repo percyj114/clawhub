@@ -15,6 +15,7 @@
 ### Fixes
 
 - Moderation: stop treating static suspicious-only findings as a verdict; keep file/line evidence for review while VT/LLM decide public suspicious status.
+- Moderation: stop treating VirusTotal Code Insight/Palm verdicts as a hide authority for skills; real AV-engine hits and ClawScan findings still contribute moderation verdicts.
 - ClawScan: lower false positives by treating purpose-aligned notes as benign unless structured LLM findings contain a material concern, and add targeted rescan batches for suspicious skills/plugins.
 - Moderation: split visible ClawScan review guidance from hidden suspicious filtering, and add operator cleanup for stale aggregate rows and obvious test/placeholder suspicious skills.
 - Web: keep the Publishers directory responsive for high-volume publishers by using bounded published-item previews, and abort stale unified-search plugin requests during route changes.

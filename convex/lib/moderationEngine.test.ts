@@ -1840,7 +1840,16 @@ describe("moderationEngine", () => {
         engineVersion: "v2.1.1",
         checkedAt: Date.now(),
       },
-      vtStatus: "malicious",
+      vtAnalysis: {
+        status: "malicious",
+        source: "engines",
+        engineStats: {
+          malicious: 1,
+          suspicious: 0,
+          harmless: 12,
+          undetected: 54,
+        },
+      },
     });
 
     expect(snapshot.verdict).toBe("malicious");
@@ -1956,7 +1965,7 @@ describe("moderationEngine", () => {
     expect(snapshot.reasonCodes).toEqual([]);
   });
 
-  it("uses VT suspicious without adding static suspicious noise", () => {
+  it("uses engine-backed VT suspicious without adding static suspicious noise", () => {
     const snapshot = buildModerationSnapshot({
       staticScan: {
         status: "suspicious",
@@ -1966,13 +1975,78 @@ describe("moderationEngine", () => {
         engineVersion: "v2.1.1",
         checkedAt: Date.now(),
       },
-      vtStatus: "suspicious",
+      vtAnalysis: {
+        status: "suspicious",
+        source: "engines",
+        engineStats: {
+          malicious: 0,
+          suspicious: 1,
+          harmless: 12,
+          undetected: 54,
+        },
+      },
       llmStatus: "clean",
     });
 
     expect(snapshot.verdict).toBe("suspicious");
     expect(snapshot.reasonCodes).not.toContain("suspicious.env_credential_access");
     expect(snapshot.reasonCodes).toContain("suspicious.vt_suspicious");
+  });
+
+  it("ignores AI-only VT suspicious as moderation authority", () => {
+    const snapshot = buildModerationSnapshot({
+      staticScan: {
+        status: "clean",
+        reasonCodes: [],
+        findings: [],
+        summary: "",
+        engineVersion: "v2.1.1",
+        checkedAt: Date.now(),
+      },
+      vtAnalysis: {
+        status: "suspicious",
+        scanner: "code_insight",
+        source: "palm",
+        engineStats: {
+          malicious: 0,
+          suspicious: 0,
+          harmless: 12,
+          undetected: 54,
+        },
+      },
+      llmStatus: "clean",
+    });
+
+    expect(snapshot.verdict).toBe("clean");
+    expect(snapshot.reasonCodes).toEqual([]);
+  });
+
+  it("ignores AI-only VT malicious without AV-engine corroboration", () => {
+    const snapshot = buildModerationSnapshot({
+      staticScan: {
+        status: "clean",
+        reasonCodes: [],
+        findings: [],
+        summary: "",
+        engineVersion: "v2.1.1",
+        checkedAt: Date.now(),
+      },
+      vtAnalysis: {
+        status: "malicious",
+        scanner: "code_insight",
+        source: "palm",
+        engineStats: {
+          malicious: 0,
+          suspicious: 0,
+          harmless: 12,
+          undetected: 54,
+        },
+      },
+      llmStatus: "clean",
+    });
+
+    expect(snapshot.verdict).toBe("clean");
+    expect(snapshot.reasonCodes).toEqual([]);
   });
 
   it("keeps medium LLM concerns visible as review instead of hidden suspicious", () => {

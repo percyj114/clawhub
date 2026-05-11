@@ -1275,34 +1275,37 @@ function dedupeEvidence(evidence: ModerationFinding[]) {
   return out.slice(0, 40);
 }
 
-function isStaticScanClean(staticScan: StaticScanResult | undefined) {
-  // Older moderation records can predate static scan persistence; absence means
-  // there are no static findings available to corroborate an external signal.
-  return (
-    !staticScan ||
-    staticScan.reasonCodes.every((code) => code.startsWith("suspicious.")) ||
-    staticScan.status === "clean"
-  );
-}
-
-function isAvEngineStatsClean(stats: VirusTotalEngineStats | undefined) {
-  if (!stats) return false;
-  return (stats.malicious ?? 0) === 0 && (stats.suspicious ?? 0) === 0;
-}
-
 function getVtEngineStats(analysis: VirusTotalAnalysis | undefined) {
   return analysis?.engineStats ?? analysis?.metadata?.stats;
 }
 
-function isUncorroboratedVtCodeInsightSuspicious(params: {
-  vtAnalysis?: VirusTotalAnalysis;
-  staticScan?: StaticScanResult;
-  llmStatus?: string;
-}) {
-  if (params.vtAnalysis?.scanner !== "code_insight") return false;
-  if (!isExternalScannerClean(params.llmStatus)) return false;
-  if (!isStaticScanClean(params.staticScan)) return false;
-  return isAvEngineStatsClean(getVtEngineStats(params.vtAnalysis));
+function normalizeVtAnalysisStatus(status: string | undefined) {
+  const normalized = status?.trim().toLowerCase();
+  return normalized === "malicious" || normalized === "suspicious" ? normalized : undefined;
+}
+
+function isVtAiOnlyAnalysis(analysis: VirusTotalAnalysis | undefined) {
+  const scanner = analysis?.scanner?.trim().toLowerCase();
+  const source = analysis?.source?.trim().toLowerCase();
+  return scanner === "code_insight" || source === "palm" || source?.includes("code insight");
+}
+
+function getAuthoritativeVtStatus(analysis: VirusTotalAnalysis | undefined, status?: string) {
+  const stats = getVtEngineStats(analysis);
+  if (stats) {
+    if ((stats.malicious ?? 0) > 0) return "malicious";
+    if ((stats.suspicious ?? 0) > 0) return "suspicious";
+    return undefined;
+  }
+
+  if (isVtAiOnlyAnalysis(analysis)) return undefined;
+
+  const source = analysis?.source?.trim().toLowerCase();
+  if (source === "engines" || source?.startsWith("engines-")) {
+    return normalizeVtAnalysisStatus(status ?? analysis?.status);
+  }
+
+  return undefined;
 }
 
 function addScannerStatusReason(
@@ -1457,11 +1460,6 @@ export function runStaticModerationScan(input: StaticScanInput): StaticScanResul
   };
 }
 
-function isExternalScannerClean(status: string | undefined): boolean {
-  const normalized = status?.trim().toLowerCase();
-  return normalized === "clean" || normalized === "benign";
-}
-
 export function buildModerationSnapshot(params: {
   staticScan?: StaticScanResult;
   vtAnalysis?: VirusTotalAnalysis;
@@ -1477,13 +1475,7 @@ export function buildModerationSnapshot(params: {
 
   const reasonCodes = [...staticCodes];
   const vtStatus = params.vtStatus ?? params.vtAnalysis?.status;
-  addScannerStatusReason(reasonCodes, "vt", vtStatus, {
-    suppressSuspicious: isUncorroboratedVtCodeInsightSuspicious({
-      vtAnalysis: params.vtAnalysis,
-      staticScan: params.staticScan,
-      llmStatus: params.llmStatus,
-    }),
-  });
+  addScannerStatusReason(reasonCodes, "vt", getAuthoritativeVtStatus(params.vtAnalysis, vtStatus));
   addLlmStatusReason(reasonCodes, params.llmStatus, params.llmAnalysis);
 
   const normalizedCodes = normalizeReasonCodes(reasonCodes);

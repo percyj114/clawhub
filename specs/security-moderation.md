@@ -83,6 +83,11 @@ See also: [acceptable-usage.md](./acceptable-usage.md) for the marketplace polic
   suspicious verdict. Medium-only material concerns are visible
   `flagged.review` guidance and must not set `isSuspicious`; high or critical
   concerns remain `flagged.suspicious` and are hidden by the suspicious filter.
+- VirusTotal is telemetry for skills, not the primary classifier. Real AV
+  engine malicious/suspicious hits can still contribute malicious/suspicious
+  reason codes, but Code Insight/Palm suspicious verdicts do not set
+  `isSuspicious` without corroborating engine detections or LLM/static
+  malicious evidence.
 - Operators can schedule targeted LLM rescans for suspicious skills by bucket
   (`all`, `llm-only`, `vt-only`, `both`) and for suspicious plugin releases.
 - Package/plugin scan backfills now also recompute deterministic static scan results for older releases,
