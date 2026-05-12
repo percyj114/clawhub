@@ -261,7 +261,7 @@ export function SkillHeader({
               <nav className="skill-hero-breadcrumbs" aria-label="Skill breadcrumbs">
                 <a href="/skills">skills</a>
                 <span aria-hidden="true">/</span>
-                <a href={ownerHandle ? `/${encodeURIComponent(ownerHandle)}` : "#"}>
+                <a href={ownerHandle ? `/p/${encodeURIComponent(ownerHandle)}` : "#"}>
                   {ownerHandle ?? owner?.displayName ?? owner?._id ?? "unknown"}
                 </a>
                 <span aria-hidden="true">/</span>

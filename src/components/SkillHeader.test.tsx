@@ -104,6 +104,9 @@ describe("SkillHeader", () => {
     expect(screen.getByText("Downloads")).toBeTruthy();
     expect(screen.getByText("2")).toBeTruthy();
     expect(container.querySelector('a[href="/p/local"]')).toBeTruthy();
+    expect(
+      container.querySelector('nav[aria-label="Skill breadcrumbs"] a[href="/p/local"]'),
+    ).toBeTruthy();
   });
 
   it("shows the latest version description instead of the short catalog summary", () => {
