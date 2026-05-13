@@ -23,6 +23,9 @@
 
 ### Fixes
 
+- Web/API: keep search results limited to items with match evidence, preserve
+  trust and popularity as tie-breakers, and show `N+` counts without exact
+  count queries (#2206) (thanks @vyctorbrzezowski).
 - API: return `400` for invalid known public package filters and invalid skill
   list sort values, while continuing to ignore unknown query parameters (#2184).
 - API/docs: document v1 plain-text error responses and expose owner metadata in

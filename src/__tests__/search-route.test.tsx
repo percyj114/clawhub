@@ -57,6 +57,8 @@ describe("search route", () => {
       pluginResults: [],
       skillCount: 0,
       pluginCount: 0,
+      skillHasMore: false,
+      pluginHasMore: false,
       isSearching: false,
     });
   });
@@ -96,6 +98,8 @@ describe("search route", () => {
       pluginResults: [{ type: "plugin", plugin: { name: "github-plugin" } }],
       skillCount: 0,
       pluginCount: 3,
+      skillHasMore: false,
+      pluginHasMore: false,
       isSearching: false,
     });
     const route = await loadRoute();
@@ -125,6 +129,124 @@ describe("search route", () => {
 
   it("can request more results from global search", async () => {
     searchMock = { q: "weather", type: "skills" };
+    const skills = Array.from({ length: 25 }, (_, index) => ({
+      type: "skill",
+      skill: {
+        _id: `skill-${index}`,
+        slug: `weather-${index}`,
+        displayName: `Weather ${index}`,
+        ownerUserId: "users:1",
+        stats: { downloads: 0, stars: 0 },
+        updatedAt: 1,
+        createdAt: 1,
+      },
+      ownerHandle: "clawhub",
+      score: 1,
+    }));
+    useUnifiedSearchMock.mockReturnValue({
+      results: skills,
+      skillResults: skills,
+      pluginResults: [],
+      skillCount: 25,
+      pluginCount: 0,
+      skillHasMore: true,
+      pluginHasMore: false,
+      isSearching: false,
+    });
+    const route = await loadRoute();
+    const Component = route.__config.component as ComponentType;
+
+    render(<Component />);
+
+    expect(useUnifiedSearchMock).toHaveBeenCalledWith("weather", "all", {
+      limits: { skills: 25, plugins: 25 },
+      nonSuspiciousOnly: true,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+
+    expect(useUnifiedSearchMock).toHaveBeenCalledWith("weather", "all", {
+      limits: { skills: 50, plugins: 50 },
+      nonSuspiciousOnly: true,
+    });
+  });
+
+  it("keeps inactive tab counts honest while rendering the active tab", async () => {
+    searchMock = { q: "weather", type: "skills" };
+    useUnifiedSearchMock.mockReturnValue({
+      results: [
+        {
+          type: "skill",
+          skill: {
+            _id: "skill-weather",
+            slug: "weather",
+            displayName: "Weather",
+            ownerUserId: "users:1",
+            stats: { downloads: 0, stars: 0 },
+            updatedAt: 1,
+            createdAt: 1,
+          },
+          ownerHandle: "clawhub",
+          score: 1,
+        },
+        { type: "plugin", plugin: { name: "weather-plugin" } },
+      ],
+      skillResults: [
+        {
+          type: "skill",
+          skill: {
+            _id: "skill-weather",
+            slug: "weather",
+            displayName: "Weather",
+            ownerUserId: "users:1",
+            stats: { downloads: 0, stars: 0 },
+            updatedAt: 1,
+            createdAt: 1,
+          },
+          ownerHandle: "clawhub",
+          score: 1,
+        },
+      ],
+      pluginResults: [{ type: "plugin", plugin: { name: "weather-plugin" } }],
+      skillCount: 1,
+      pluginCount: 1,
+      skillHasMore: false,
+      pluginHasMore: false,
+      isSearching: false,
+    });
+    const route = await loadRoute();
+    const Component = route.__config.component as ComponentType;
+
+    render(<Component />);
+
+    expect(screen.getByRole("button", { name: "All 2" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Plugins 1" })).toBeTruthy();
+    expect(screen.getByText("weather")).toBeTruthy();
+    expect(screen.queryByText("weather-plugin")).toBeNull();
+  });
+
+  it("marks tab counts as partial when more results are available", async () => {
+    useUnifiedSearchMock.mockReturnValue({
+      results: [],
+      skillResults: [],
+      pluginResults: [{ type: "plugin", plugin: { name: "github-plugin" } }],
+      skillCount: 0,
+      pluginCount: 25,
+      skillHasMore: false,
+      pluginHasMore: true,
+      isSearching: false,
+    });
+    const route = await loadRoute();
+    const Component = route.__config.component as ComponentType;
+
+    render(<Component />);
+
+    expect(screen.getByRole("button", { name: "All 25+" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Plugins 25+" })).toBeTruthy();
+  });
+
+  it("does not show load more only because the current page is full", async () => {
+    searchMock = { q: "weather", type: "skills" };
     useUnifiedSearchMock.mockReturnValue({
       results: Array.from({ length: 25 }, (_, index) => ({
         type: "skill",
@@ -144,6 +266,8 @@ describe("search route", () => {
       pluginResults: [],
       skillCount: 25,
       pluginCount: 0,
+      skillHasMore: false,
+      pluginHasMore: false,
       isSearching: false,
     });
     const route = await loadRoute();
@@ -151,17 +275,126 @@ describe("search route", () => {
 
     render(<Component />);
 
-    expect(useUnifiedSearchMock).toHaveBeenLastCalledWith("weather", "all", {
-      limits: { skills: 25, plugins: 25 },
-      nonSuspiciousOnly: true,
-    });
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+  });
 
-    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+  it("links to skills browse when search has no matches", async () => {
+    searchMock = { q: "zzzz", type: "skills" };
+    const route = await loadRoute();
+    const Component = route.__config.component as ComponentType;
 
-    expect(useUnifiedSearchMock).toHaveBeenLastCalledWith("weather", "all", {
-      limits: { skills: 50, plugins: 50 },
-      nonSuspiciousOnly: true,
+    render(<Component />);
+
+    expect(screen.getByText('No matches for "zzzz"')).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Show all skills" }).getAttribute("href")).toBe(
+      "/skills",
+    );
+    expect(screen.queryByRole("link", { name: "Show all plugins" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Search all types" })).toBeNull();
+  });
+
+  it("offers all-types recovery when the active type is empty but another type matched", async () => {
+    searchMock = { q: "weather", type: "skills" };
+    useUnifiedSearchMock.mockReturnValue({
+      results: [{ type: "plugin", plugin: { name: "weather-plugin" } }],
+      skillResults: [],
+      pluginResults: [{ type: "plugin", plugin: { name: "weather-plugin" } }],
+      skillCount: 0,
+      pluginCount: 1,
+      skillHasMore: false,
+      pluginHasMore: false,
+      isSearching: false,
     });
+    const route = await loadRoute();
+    const Component = route.__config.component as ComponentType;
+
+    render(<Component />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Search all types" }));
+    expect(navigateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/search",
+        replace: true,
+        search: expect.objectContaining({ type: undefined }),
+      }),
+    );
+  });
+
+  it("offers under-review skill recovery without changing the browse link", async () => {
+    searchMock = { q: "risky", type: "skills" };
+    useUnifiedSearchMock.mockImplementation(
+      (_query: string, _type: string, options: { nonSuspiciousOnly?: boolean }) => {
+        if (options.nonSuspiciousOnly === false) {
+          return {
+            results: [
+              {
+                type: "skill",
+                skill: {
+                  _id: "skill-hidden",
+                  slug: "review-risky",
+                  displayName: "Review Risky",
+                  ownerUserId: "users:1",
+                  stats: { downloads: 0, stars: 0 },
+                  updatedAt: 1,
+                  createdAt: 1,
+                },
+                ownerHandle: "clawhub",
+                score: 1,
+              },
+            ],
+            skillResults: [
+              {
+                type: "skill",
+                skill: {
+                  _id: "skill-hidden",
+                  slug: "review-risky",
+                  displayName: "Review Risky",
+                  ownerUserId: "users:1",
+                  stats: { downloads: 0, stars: 0 },
+                  updatedAt: 1,
+                  createdAt: 1,
+                },
+                ownerHandle: "clawhub",
+                score: 1,
+              },
+            ],
+            pluginResults: [],
+            skillCount: 1,
+            pluginCount: 0,
+            skillHasMore: false,
+            pluginHasMore: false,
+            isSearching: false,
+          };
+        }
+        return {
+          results: [],
+          skillResults: [],
+          pluginResults: [],
+          skillCount: 0,
+          pluginCount: 0,
+          skillHasMore: false,
+          pluginHasMore: false,
+          isSearching: false,
+        };
+      },
+    );
+    const route = await loadRoute();
+    const Component = route.__config.component as ComponentType;
+
+    render(<Component />);
+
+    expect(screen.getByRole("link", { name: "Show all skills" }).getAttribute("href")).toBe(
+      "/skills",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Show filtered skills" }));
+    expect(navigateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/search",
+        replace: true,
+        search: expect.objectContaining({ nonSuspicious: false }),
+      }),
+    );
+    expect(screen.queryByRole("button", { name: "Search all types" })).toBeNull();
   });
 
   it("defaults nonSuspiciousOnly to true when URL param is absent", async () => {
@@ -171,7 +404,7 @@ describe("search route", () => {
 
     render(<Component />);
 
-    expect(useUnifiedSearchMock).toHaveBeenLastCalledWith(
+    expect(useUnifiedSearchMock).toHaveBeenCalledWith(
       "hello",
       "all",
       expect.objectContaining({ nonSuspiciousOnly: true }),
@@ -185,7 +418,7 @@ describe("search route", () => {
 
     render(<Component />);
 
-    expect(useUnifiedSearchMock).toHaveBeenLastCalledWith(
+    expect(useUnifiedSearchMock).toHaveBeenCalledWith(
       "hello",
       "all",
       expect.objectContaining({ nonSuspiciousOnly: false }),

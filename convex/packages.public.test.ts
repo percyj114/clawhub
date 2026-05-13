@@ -1824,6 +1824,136 @@ describe("packages public queries", () => {
     expect(take).toHaveBeenCalledWith(50);
   });
 
+  it("does not let official status make unrelated packages eligible for search", async () => {
+    const { ctx } = makeDigestCtx({
+      pages: [
+        {
+          page: [
+            makeDigest("openclaw-nostr", {
+              displayName: "OpenClaw Nostr",
+              isOfficial: true,
+              summary: "Protocol integration.",
+            }),
+          ],
+          isDone: true,
+          continueCursor: "",
+        },
+      ],
+    });
+
+    const result = await searchPublicHandler(ctx, {
+      query: "zzzznonexistentquery123",
+      limit: 10,
+    });
+
+    expect(result).toEqual([]);
+  });
+
+  it("does not treat punctuation-only queries as package matches", async () => {
+    const { ctx } = makeDigestCtx({
+      pages: [
+        {
+          page: [
+            makeDigest("openclaw-nostr", {
+              isOfficial: true,
+              runtimeId: "openclaw.nostr",
+            }),
+          ],
+          isDone: true,
+          continueCursor: "",
+        },
+      ],
+    });
+
+    const result = await searchPublicHandler(ctx, {
+      query: ".",
+      limit: 10,
+    });
+
+    expect(result).toEqual([]);
+  });
+
+  it("does not match short queries through arbitrary summary substrings", async () => {
+    const { ctx } = makeDigestCtx({
+      pages: [
+        {
+          page: [
+            makeDigest("local-tools", {
+              summary: "Available helper tools.",
+            }),
+          ],
+          isDone: true,
+          continueCursor: "",
+        },
+      ],
+    });
+
+    const result = await searchPublicHandler(ctx, {
+      query: "ai",
+      limit: 10,
+    });
+
+    expect(result).toEqual([]);
+  });
+
+  it("does not drop short tokens from exploratory package matches", async () => {
+    const { ctx } = makeDigestCtx({
+      pages: [
+        {
+          page: [
+            makeDigest("database-tools", {
+              summary: "Postgres database helper.",
+              capabilityTags: ["postgres"],
+            }),
+          ],
+          isDone: true,
+          continueCursor: "",
+        },
+      ],
+    });
+
+    const result = await searchPublicHandler(ctx, {
+      query: "ai postgres",
+      limit: 10,
+    });
+
+    expect(result).toEqual([]);
+  });
+
+  it("orders lexical matches before summary-only matches without exposing rank metadata", async () => {
+    const { ctx } = makeDigestCtx({
+      pages: [
+        {
+          page: [
+            makeDigest("official-helper", {
+              displayName: "Official Helper",
+              isOfficial: true,
+              summary: "Ghost CMS integration.",
+              updatedAt: 100,
+            }),
+            makeDigest("ghost-tools", {
+              displayName: "Ghost Tools",
+              isOfficial: false,
+              summary: "CMS helper.",
+              updatedAt: 1,
+            }),
+          ],
+          isDone: true,
+          continueCursor: "",
+        },
+      ],
+    });
+
+    const result = await searchPublicHandler(ctx, {
+      query: "ghost",
+      limit: 10,
+    });
+
+    expect(result.map((entry) => entry.package.name)).toEqual(["ghost-tools", "official-helper"]);
+    expect(result[0]).not.toHaveProperty("rankTier");
+    expect(result[0]).not.toHaveProperty("matchReason");
+  });
+
   it("allows org collaborators to search their private packages", async () => {
     const { ctx } = makeDigestCtx({
       capabilityPages: [

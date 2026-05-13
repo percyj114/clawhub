@@ -4,6 +4,7 @@ import { api } from "../../convex/_generated/api";
 import { fetchPluginCatalog, type PackageListItem } from "./packageApi";
 
 export type UnifiedSearchType = "all" | "skills" | "plugins";
+const MAX_UNIFIED_SEARCH_LIMIT = 100;
 
 export type UnifiedSkillResult = {
   type: "skill";
@@ -57,12 +58,17 @@ export function useUnifiedSearch(
   const [pluginResults, setPluginResults] = useState<UnifiedPluginResult[]>([]);
   const [skillCount, setSkillCount] = useState(0);
   const [pluginCount, setPluginCount] = useState(0);
+  const [skillHasMore, setSkillHasMore] = useState(false);
+  const [pluginHasMore, setPluginHasMore] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const requestRef = useRef(0);
   const debounceMs = options.debounceMs ?? 300;
   const enabled = options.enabled ?? true;
-  const skillLimit = options.limits?.skills ?? 25;
-  const pluginLimit = options.limits?.plugins ?? 25;
+  const skillLimit = Math.max(0, Math.min(options.limits?.skills ?? 25, MAX_UNIFIED_SEARCH_LIMIT));
+  const pluginLimit = Math.max(
+    0,
+    Math.min(options.limits?.plugins ?? 25, MAX_UNIFIED_SEARCH_LIMIT),
+  );
   const nonSuspiciousOnly = options.nonSuspiciousOnly ?? true;
 
   useEffect(() => {
@@ -74,6 +80,8 @@ export function useUnifiedSearch(
       setPluginResults([]);
       setSkillCount(0);
       setPluginCount(0);
+      setSkillHasMore(false);
+      setPluginHasMore(false);
       setIsSearching(false);
       return () => {};
     }
@@ -92,7 +100,7 @@ export function useUnifiedSearch(
           if (activeType === "all" || activeType === "skills") {
             promises[0] = searchSkills({
               query: trimmed,
-              limit: skillLimit,
+              limit: skillLimit + 1,
               nonSuspiciousOnly,
             });
           }
@@ -100,7 +108,7 @@ export function useUnifiedSearch(
           if (activeType === "all" || activeType === "plugins") {
             promises[1] = fetchPluginCatalog({
               q: trimmed,
-              limit: pluginLimit,
+              limit: pluginLimit + 1,
               signal: controller.signal,
             });
           }
@@ -112,7 +120,7 @@ export function useUnifiedSearch(
           const skillsRaw = settled[0].status === "fulfilled" ? settled[0].value : null;
           const pluginsRaw = settled[1].status === "fulfilled" ? settled[1].value : null;
 
-          const nextSkillResults: UnifiedSkillResult[] = (
+          const skillMatches: UnifiedSkillResult[] = (
             (skillsRaw as Array<{
               skill: UnifiedSkillResult["skill"];
               ownerHandle: string | null;
@@ -124,16 +132,20 @@ export function useUnifiedSearch(
             ownerHandle: entry.ownerHandle,
             score: entry.score,
           }));
+          const nextSkillResults = skillMatches.slice(0, skillLimit);
 
-          const nextPluginResults: UnifiedPluginResult[] = (
+          const pluginMatches: UnifiedPluginResult[] = (
             (pluginsRaw as { items: PackageListItem[] })?.items ?? []
           ).map((item) => ({
             type: "plugin" as const,
             plugin: item,
           }));
+          const nextPluginResults = pluginMatches.slice(0, pluginLimit);
 
           setSkillCount(nextSkillResults.length);
           setPluginCount(nextPluginResults.length);
+          setSkillHasMore(skillMatches.length > skillLimit);
+          setPluginHasMore(pluginMatches.length > pluginLimit);
           setSkillResults(nextSkillResults);
           setPluginResults(nextPluginResults);
 
@@ -155,6 +167,8 @@ export function useUnifiedSearch(
             setPluginResults([]);
             setSkillCount(0);
             setPluginCount(0);
+            setSkillHasMore(false);
+            setPluginHasMore(false);
           }
         } finally {
           if (requestId === requestRef.current) {
@@ -180,5 +194,14 @@ export function useUnifiedSearch(
     nonSuspiciousOnly,
   ]);
 
-  return { results, skillResults, pluginResults, skillCount, pluginCount, isSearching };
+  return {
+    results,
+    skillResults,
+    pluginResults,
+    skillCount,
+    pluginCount,
+    skillHasMore,
+    pluginHasMore,
+    isSearching,
+  };
 }

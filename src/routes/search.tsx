@@ -51,8 +51,12 @@ function UnifiedSearchPage() {
 
   const {
     results: allResults,
+    skillResults,
+    pluginResults,
     skillCount,
     pluginCount,
+    skillHasMore,
+    pluginHasMore,
     isSearching,
   } = useUnifiedSearch(search.q ?? "", "all", {
     limits: {
@@ -61,18 +65,39 @@ function UnifiedSearchPage() {
     },
     nonSuspiciousOnly,
   });
-  const results =
-    activeType === "all"
-      ? allResults
-      : allResults.filter((item) => item.type === (activeType === "skills" ? "skill" : "plugin"));
+  const results: Array<UnifiedSkillResult | UnifiedPluginResult> =
+    activeType === "all" ? allResults : activeType === "skills" ? skillResults : pluginResults;
+  const shouldProbeReviewFilteredSkills = Boolean(
+    search.q &&
+    nonSuspiciousOnly &&
+    activeType !== "plugins" &&
+    !isSearching &&
+    results.length === 0,
+  );
+  const { skillCount: reviewFilteredSkillCount, isSearching: isProbingReviewFilteredSkills } =
+    useUnifiedSearch(search.q ?? "", "skills", {
+      debounceMs: 0,
+      enabled: shouldProbeReviewFilteredSkills,
+      limits: {
+        skills: 1,
+        plugins: 0,
+      },
+      nonSuspiciousOnly: false,
+    });
   const showSearchCounts = Boolean(search.q);
   const allCount = skillCount + pluginCount;
+  const allHasMore = skillHasMore || pluginHasMore;
   const canLoadMore =
     search.q &&
     !isSearching &&
-    ((activeType === "all" && (skillCount >= resultLimit || pluginCount >= resultLimit)) ||
-      (activeType === "skills" && skillCount >= resultLimit) ||
-      (activeType === "plugins" && pluginCount >= resultLimit));
+    ((activeType === "all" && allHasMore) ||
+      (activeType === "skills" && skillHasMore) ||
+      (activeType === "plugins" && pluginHasMore));
+  const hasReviewFilteredSkills =
+    shouldProbeReviewFilteredSkills &&
+    !isProbingReviewFilteredSkills &&
+    reviewFilteredSkillCount > 0;
+  const hasOtherTypeMatches = activeType !== "all" && allCount > 0;
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -93,6 +118,18 @@ function UnifiedSearchPage() {
         q: search.q,
         type: type === "all" ? undefined : type,
         nonSuspicious: search.nonSuspicious,
+      },
+      replace: true,
+    });
+  };
+
+  const showReviewFilteredSkills = () => {
+    void navigate({
+      to: "/search",
+      search: {
+        q: search.q,
+        type: search.type,
+        nonSuspicious: false,
       },
       replace: true,
     });
@@ -149,14 +186,20 @@ function UnifiedSearchPage() {
           type="button"
           onClick={() => setType("all")}
         >
-          All {showSearchCounts ? <span className="search-tab-count">{allCount}</span> : null}
+          All{" "}
+          {showSearchCounts ? (
+            <span className="search-tab-count">{formatSearchCount(allCount, allHasMore)}</span>
+          ) : null}
         </button>
         <button
           className={`search-tab${activeType === "skills" ? " is-active" : ""}`}
           type="button"
           onClick={() => setType("skills")}
         >
-          Skills {showSearchCounts ? <span className="search-tab-count">{skillCount}</span> : null}
+          Skills{" "}
+          {showSearchCounts ? (
+            <span className="search-tab-count">{formatSearchCount(skillCount, skillHasMore)}</span>
+          ) : null}
         </button>
         <button
           className={`search-tab${activeType === "plugins" ? " is-active" : ""}`}
@@ -164,7 +207,11 @@ function UnifiedSearchPage() {
           onClick={() => setType("plugins")}
         >
           Plugins{" "}
-          {showSearchCounts ? <span className="search-tab-count">{pluginCount}</span> : null}
+          {showSearchCounts ? (
+            <span className="search-tab-count">
+              {formatSearchCount(pluginCount, pluginHasMore)}
+            </span>
+          ) : null}
         </button>
       </div>
 
@@ -177,20 +224,50 @@ function UnifiedSearchPage() {
           <p className="text-ink-soft">Enter a search term to find skills and plugins</p>
         </Card>
       ) : results.length === 0 ? (
-        <Card className="text-center p-10">
-          <p className="text-ink-soft">No results found for "{search.q}"</p>
-        </Card>
+        <SearchEmptyState
+          activeType={activeType}
+          hasOtherTypeMatches={hasOtherTypeMatches}
+          hasReviewFilteredSkills={hasReviewFilteredSkills}
+          onSearchAllTypes={() => setType("all")}
+          onShowReviewFilteredSkills={showReviewFilteredSkills}
+          query={search.q}
+        />
       ) : (
         <>
-          <div className="results-list">
-            {results.map((item) =>
-              item.type === "skill" ? (
-                <SkillResultRow key={`skill-${item.skill._id}`} result={item} />
-              ) : (
-                <PluginResultRow key={`plugin-${item.plugin.name}`} result={item} />
-              ),
-            )}
-          </div>
+          {activeType === "all" ? (
+            <div className="search-results-sections">
+              {skillResults.length > 0 ? (
+                <SearchResultSection
+                  countLabel={formatSearchCount(skillCount, skillHasMore)}
+                  title="Skills"
+                >
+                  {skillResults.map((item) => (
+                    <SkillResultRow key={`skill-${item.skill._id}`} result={item} />
+                  ))}
+                </SearchResultSection>
+              ) : null}
+              {pluginResults.length > 0 ? (
+                <SearchResultSection
+                  countLabel={formatSearchCount(pluginCount, pluginHasMore)}
+                  title="Plugins"
+                >
+                  {pluginResults.map((item) => (
+                    <PluginResultRow key={`plugin-${item.plugin.name}`} result={item} />
+                  ))}
+                </SearchResultSection>
+              ) : null}
+            </div>
+          ) : (
+            <div className="results-list">
+              {results.map((item) =>
+                item.type === "skill" ? (
+                  <SkillResultRow key={`skill-${item.skill._id}`} result={item} />
+                ) : (
+                  <PluginResultRow key={`plugin-${item.plugin.name}`} result={item} />
+                ),
+              )}
+            </div>
+          )}
           {canLoadMore ? (
             <div className="search-load-more">
               <button
@@ -205,6 +282,74 @@ function UnifiedSearchPage() {
         </>
       )}
     </main>
+  );
+}
+
+function SearchEmptyState({
+  activeType,
+  hasOtherTypeMatches,
+  hasReviewFilteredSkills,
+  onSearchAllTypes,
+  onShowReviewFilteredSkills,
+  query,
+}: {
+  activeType: UnifiedSearchType;
+  hasOtherTypeMatches: boolean;
+  hasReviewFilteredSkills: boolean;
+  onSearchAllTypes: () => void;
+  onShowReviewFilteredSkills: () => void;
+  query: string;
+}) {
+  const browseHref = activeType === "plugins" ? "/plugins" : "/skills";
+  const browseLabel = activeType === "plugins" ? "Show all plugins" : "Show all skills";
+
+  return (
+    <Card className="search-empty-state">
+      <p className="search-empty-title">No matches for "{query}"</p>
+      <div className="search-empty-actions">
+        {!hasReviewFilteredSkills && hasOtherTypeMatches ? (
+          <button type="button" className="search-empty-action" onClick={onSearchAllTypes}>
+            Search all types
+          </button>
+        ) : null}
+        {hasReviewFilteredSkills ? (
+          <button
+            type="button"
+            className="search-empty-action"
+            onClick={onShowReviewFilteredSkills}
+          >
+            Show filtered skills
+          </button>
+        ) : null}
+        <a className="search-empty-action" href={browseHref}>
+          {browseLabel}
+        </a>
+      </div>
+    </Card>
+  );
+}
+
+function formatSearchCount(count: number, hasMore: boolean) {
+  return hasMore ? `${count}+` : String(count);
+}
+
+function SearchResultSection({
+  children,
+  countLabel,
+  title,
+}: {
+  children: React.ReactNode;
+  countLabel: string;
+  title: string;
+}) {
+  return (
+    <section className="search-results-section" aria-label={title}>
+      <div className="search-results-section-header">
+        <h2 className="search-results-section-title">{title}</h2>
+        <span className="search-results-section-count">{countLabel}</span>
+      </div>
+      <div className="results-list">{children}</div>
+    </section>
   );
 }
 
