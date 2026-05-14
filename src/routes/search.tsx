@@ -17,15 +17,12 @@ const SEARCH_PAGE_SIZE = 25;
 type SearchState = {
   q?: string;
   type?: UnifiedSearchType;
-  nonSuspicious?: boolean;
 };
 
 export const Route = createFileRoute("/search")({
   validateSearch: (search: Record<string, unknown>): SearchState => ({
     q: typeof search.q === "string" && search.q.trim() ? search.q : undefined,
     type: search.type === "skills" || search.type === "plugins" ? search.type : undefined,
-    nonSuspicious:
-      search.nonSuspicious === false || search.nonSuspicious === "false" ? false : undefined,
   }),
   component: UnifiedSearchPage,
 });
@@ -34,10 +31,6 @@ function UnifiedSearchPage() {
   const search = Route.useSearch();
   const navigate = useNavigate();
   const activeType = search.type ?? "all";
-  // Unified search defaults to moderation-safe (skills with warnings hidden).
-  // Keep the URL flag for compatibility even though the search UI no longer
-  // exposes a warning filter control.
-  const nonSuspiciousOnly = search.nonSuspicious ?? true;
   const [query, setQuery] = useState(search.q ?? "");
   const [resultLimit, setResultLimit] = useState(SEARCH_PAGE_SIZE);
 
@@ -47,7 +40,7 @@ function UnifiedSearchPage() {
 
   useEffect(() => {
     setResultLimit(SEARCH_PAGE_SIZE);
-  }, [search.q, activeType, nonSuspiciousOnly]);
+  }, [search.q, activeType]);
 
   const {
     results: allResults,
@@ -63,27 +56,9 @@ function UnifiedSearchPage() {
       skills: resultLimit,
       plugins: resultLimit,
     },
-    nonSuspiciousOnly,
   });
   const results: Array<UnifiedSkillResult | UnifiedPluginResult> =
     activeType === "all" ? allResults : activeType === "skills" ? skillResults : pluginResults;
-  const shouldProbeReviewFilteredSkills = Boolean(
-    search.q &&
-    nonSuspiciousOnly &&
-    activeType !== "plugins" &&
-    !isSearching &&
-    results.length === 0,
-  );
-  const { skillCount: reviewFilteredSkillCount, isSearching: isProbingReviewFilteredSkills } =
-    useUnifiedSearch(search.q ?? "", "skills", {
-      debounceMs: 0,
-      enabled: shouldProbeReviewFilteredSkills,
-      limits: {
-        skills: 1,
-        plugins: 0,
-      },
-      nonSuspiciousOnly: false,
-    });
   const showSearchCounts = Boolean(search.q);
   const allCount = skillCount + pluginCount;
   const allHasMore = skillHasMore || pluginHasMore;
@@ -93,10 +68,6 @@ function UnifiedSearchPage() {
     ((activeType === "all" && allHasMore) ||
       (activeType === "skills" && skillHasMore) ||
       (activeType === "plugins" && pluginHasMore));
-  const hasReviewFilteredSkills =
-    shouldProbeReviewFilteredSkills &&
-    !isProbingReviewFilteredSkills &&
-    reviewFilteredSkillCount > 0;
   const hasOtherTypeMatches = activeType !== "all" && allCount > 0;
 
   const handleSearch = (e: React.FormEvent) => {
@@ -106,7 +77,6 @@ function UnifiedSearchPage() {
       search: {
         q: query.trim() || undefined,
         type: search.type,
-        nonSuspicious: search.nonSuspicious,
       },
     });
   };
@@ -117,19 +87,6 @@ function UnifiedSearchPage() {
       search: {
         q: search.q,
         type: type === "all" ? undefined : type,
-        nonSuspicious: search.nonSuspicious,
-      },
-      replace: true,
-    });
-  };
-
-  const showReviewFilteredSkills = () => {
-    void navigate({
-      to: "/search",
-      search: {
-        q: search.q,
-        type: search.type,
-        nonSuspicious: false,
       },
       replace: true,
     });
@@ -227,9 +184,7 @@ function UnifiedSearchPage() {
         <SearchEmptyState
           activeType={activeType}
           hasOtherTypeMatches={hasOtherTypeMatches}
-          hasReviewFilteredSkills={hasReviewFilteredSkills}
           onSearchAllTypes={() => setType("all")}
-          onShowReviewFilteredSkills={showReviewFilteredSkills}
           query={search.q}
         />
       ) : (
@@ -288,16 +243,12 @@ function UnifiedSearchPage() {
 function SearchEmptyState({
   activeType,
   hasOtherTypeMatches,
-  hasReviewFilteredSkills,
   onSearchAllTypes,
-  onShowReviewFilteredSkills,
   query,
 }: {
   activeType: UnifiedSearchType;
   hasOtherTypeMatches: boolean;
-  hasReviewFilteredSkills: boolean;
   onSearchAllTypes: () => void;
-  onShowReviewFilteredSkills: () => void;
   query: string;
 }) {
   const browseHref = activeType === "plugins" ? "/plugins" : "/skills";
@@ -307,18 +258,9 @@ function SearchEmptyState({
     <Card className="search-empty-state">
       <p className="search-empty-title">No matches for "{query}"</p>
       <div className="search-empty-actions">
-        {!hasReviewFilteredSkills && hasOtherTypeMatches ? (
+        {hasOtherTypeMatches ? (
           <button type="button" className="search-empty-action" onClick={onSearchAllTypes}>
             Search all types
-          </button>
-        ) : null}
-        {hasReviewFilteredSkills ? (
-          <button
-            type="button"
-            className="search-empty-action"
-            onClick={onShowReviewFilteredSkills}
-          >
-            Show filtered skills
           </button>
         ) : null}
         <a className="search-empty-action" href={browseHref}>

@@ -73,7 +73,6 @@ describe("useUnifiedSearch", () => {
     expect(searchSkillsMock).toHaveBeenCalledWith({
       query: "ghost",
       limit: 3,
-      nonSuspiciousOnly: true,
     });
     expect(fetchPluginCatalogMock).toHaveBeenCalledWith(
       expect.objectContaining({ q: "ghost", limit: 3 }),
@@ -106,7 +105,6 @@ describe("useUnifiedSearch", () => {
     expect(searchSkillsMock).toHaveBeenCalledWith({
       query: "ghost",
       limit: 101,
-      nonSuspiciousOnly: true,
     });
     expect(fetchPluginCatalogMock).toHaveBeenCalledWith(
       expect.objectContaining({ q: "ghost", limit: 101 }),

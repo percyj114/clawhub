@@ -836,12 +836,11 @@ async function getSkillSlugAliasBySlugForAvailabilityPublisher(
   if (scopedAliases[0]) return scopedAliases[0];
 
   if (publisher.kind !== "user" || !publisher.linkedUserId) return null;
+  const linkedUserId = publisher.linkedUserId;
 
   const legacyAliases = await ctx.db
     .query("skillSlugAliases")
-    .withIndex("by_owner_slug", (q) =>
-      q.eq("ownerUserId", publisher.linkedUserId as Id<"users">).eq("slug", slug),
-    )
+    .withIndex("by_owner_slug", (q) => q.eq("ownerUserId", linkedUserId).eq("slug", slug))
     .take(2);
   return (
     legacyAliases.find(

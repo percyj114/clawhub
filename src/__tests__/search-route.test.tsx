@@ -8,7 +8,6 @@ const navigateMock = vi.fn();
 let searchMock: {
   q?: string;
   type?: "all" | "skills" | "plugins";
-  nonSuspicious?: boolean;
 } = {};
 const useUnifiedSearchMock = vi.fn();
 
@@ -160,14 +159,12 @@ describe("search route", () => {
 
     expect(useUnifiedSearchMock).toHaveBeenCalledWith("weather", "all", {
       limits: { skills: 25, plugins: 25 },
-      nonSuspiciousOnly: true,
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Load more" }));
 
     expect(useUnifiedSearchMock).toHaveBeenCalledWith("weather", "all", {
       limits: { skills: 50, plugins: 50 },
-      nonSuspiciousOnly: true,
     });
   });
 
@@ -320,141 +317,16 @@ describe("search route", () => {
     );
   });
 
-  it("offers under-review skill recovery without changing the browse link", async () => {
-    searchMock = { q: "risky", type: "skills" };
-    useUnifiedSearchMock.mockImplementation(
-      (_query: string, _type: string, options: { nonSuspiciousOnly?: boolean }) => {
-        if (options.nonSuspiciousOnly === false) {
-          return {
-            results: [
-              {
-                type: "skill",
-                skill: {
-                  _id: "skill-hidden",
-                  slug: "review-risky",
-                  displayName: "Review Risky",
-                  ownerUserId: "users:1",
-                  stats: { downloads: 0, stars: 0 },
-                  updatedAt: 1,
-                  createdAt: 1,
-                },
-                ownerHandle: "clawhub",
-                score: 1,
-              },
-            ],
-            skillResults: [
-              {
-                type: "skill",
-                skill: {
-                  _id: "skill-hidden",
-                  slug: "review-risky",
-                  displayName: "Review Risky",
-                  ownerUserId: "users:1",
-                  stats: { downloads: 0, stars: 0 },
-                  updatedAt: 1,
-                  createdAt: 1,
-                },
-                ownerHandle: "clawhub",
-                score: 1,
-              },
-            ],
-            pluginResults: [],
-            skillCount: 1,
-            pluginCount: 0,
-            skillHasMore: false,
-            pluginHasMore: false,
-            isSearching: false,
-          };
-        }
-        return {
-          results: [],
-          skillResults: [],
-          pluginResults: [],
-          skillCount: 0,
-          pluginCount: 0,
-          skillHasMore: false,
-          pluginHasMore: false,
-          isSearching: false,
-        };
-      },
-    );
-    const route = await loadRoute();
-    const Component = route.__config.component as ComponentType;
-
-    render(<Component />);
-
-    expect(screen.getByRole("link", { name: "Show all skills" }).getAttribute("href")).toBe(
-      "/skills",
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Show filtered skills" }));
-    expect(navigateMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        to: "/search",
-        replace: true,
-        search: expect.objectContaining({ nonSuspicious: false }),
-      }),
-    );
-    expect(screen.queryByRole("button", { name: "Search all types" })).toBeNull();
-  });
-
-  it("defaults nonSuspiciousOnly to true when URL param is absent", async () => {
+  it("passes only result limits to unified search", async () => {
     searchMock = { q: "hello" };
     const route = await loadRoute();
     const Component = route.__config.component as ComponentType;
 
     render(<Component />);
 
-    expect(useUnifiedSearchMock).toHaveBeenCalledWith(
-      "hello",
-      "all",
-      expect.objectContaining({ nonSuspiciousOnly: true }),
-    );
-  });
-
-  it("passes nonSuspiciousOnly=false to the hook when URL opts out", async () => {
-    searchMock = { q: "hello", nonSuspicious: false };
-    const route = await loadRoute();
-    const Component = route.__config.component as ComponentType;
-
-    render(<Component />);
-
-    expect(useUnifiedSearchMock).toHaveBeenCalledWith(
-      "hello",
-      "all",
-      expect.objectContaining({ nonSuspiciousOnly: false }),
-    );
-  });
-
-  it("does not render a warning filter chip while keeping the safe default", async () => {
-    searchMock = { q: "hello" };
-    const route = await loadRoute();
-    const Component = route.__config.component as ComponentType;
-
-    render(<Component />);
-
-    expect(screen.queryByRole("button", { name: /Hiding warnings/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /Showing all skills/i })).toBeNull();
-    expect(useUnifiedSearchMock).toHaveBeenCalledWith(
-      "hello",
-      "all",
-      expect.objectContaining({ nonSuspiciousOnly: true }),
-    );
-  });
-
-  it("does not render a warning filter chip when opted out", async () => {
-    searchMock = { q: "hello", nonSuspicious: false };
-    const route = await loadRoute();
-    const Component = route.__config.component as ComponentType;
-
-    render(<Component />);
-
-    expect(screen.queryByRole("button", { name: /Hiding warnings/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /Showing all skills/i })).toBeNull();
-    expect(useUnifiedSearchMock).toHaveBeenCalledWith(
-      "hello",
-      "all",
-      expect.objectContaining({ nonSuspiciousOnly: false }),
-    );
+    expect(useUnifiedSearchMock).toHaveBeenLastCalledWith("hello", "all", {
+      limits: { skills: 25, plugins: 25 },
+    });
   });
 
   it("does not render a warning-filter chip on the plugins tab", async () => {
