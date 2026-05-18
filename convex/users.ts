@@ -34,6 +34,7 @@ const MAX_USER_LIST_LIMIT = 200;
 const MAX_USER_SEARCH_SCAN = 5_000;
 const MIN_USER_SEARCH_SCAN = 500;
 const DEV_PERSONA_GITHUB_CREATED_AT = Date.UTC(2020, 0, 1);
+const DEFAULT_SECURITY_EMAIL = "security@openclaw.org";
 
 const DEV_PERSONAS = {
   owner: {
@@ -54,6 +55,303 @@ const DEV_PERSONAS = {
 } as const;
 
 type DevPersona = keyof typeof DEV_PERSONAS;
+
+type BanNotificationSource = "manual" | "autoban";
+type BanNotificationArtifactKind = "skill" | "plugin";
+
+type BanNotificationArtifact = {
+  kind: BanNotificationArtifactKind;
+  name: string;
+};
+
+function getSecurityEmailAddress() {
+  return process.env.CLAWHUB_SECURITY_EMAIL?.trim() || DEFAULT_SECURITY_EMAIL;
+}
+
+function getBanNotificationFromAddress() {
+  return process.env.CLAWHUB_SECURITY_EMAIL_FROM?.trim() || getSecurityEmailAddress();
+}
+
+function buildBanNotificationText(args: {
+  handle?: string;
+  reason?: string;
+  artifact?: BanNotificationArtifact;
+  source: BanNotificationSource;
+}) {
+  const greeting = args.handle ? `Hi ${args.handle},` : "Hi,";
+  const lines = [greeting, "", getBanNotificationIntro(args.source, args.artifact)];
+  if (args.artifact) {
+    const label = args.artifact.kind === "plugin" ? "Plugin" : "Skill";
+    lines.push(`${label} name: ${args.artifact.name}.`);
+  }
+  const finding = formatBanNotificationFinding(args.reason, args.source);
+  if (finding) lines.push(finding);
+  lines.push(
+    "",
+    "What this means right now:",
+    "- Your ClawHub account cannot sign in.",
+    "- API tokens for the account have been revoked.",
+    "- Published skills owned by the account have been hidden from public view.",
+    "",
+    "If you believe this was a mistake, reply to this email and the ClawHub security team will review the decision.",
+    "",
+    "ClawHub Security",
+    getSecurityEmailAddress(),
+  );
+  return lines.join("\n");
+}
+
+function buildBanNotificationHtml(args: {
+  handle?: string;
+  reason?: string;
+  artifact?: BanNotificationArtifact;
+  source: BanNotificationSource;
+}) {
+  const securityEmail = getSecurityEmailAddress();
+  const finding = formatBanNotificationFindingValue(args.reason, args.source);
+  const rows: string[] = [];
+  if (args.artifact) {
+    rows.push(
+      buildHtmlKeyValueRow(
+        args.artifact.kind === "plugin" ? "Plugin name" : "Skill name",
+        args.artifact.name,
+      ),
+    );
+  }
+  if (finding) rows.push(buildHtmlKeyValueRow("Security finding", finding));
+
+  return `<!doctype html>
+<html>
+  <body style="margin:0;padding:0;background:#ffffff;color:#202124;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.5;">
+    <div style="max-width:720px;padding:24px;">
+      <p style="margin:0 0 16px;">${escapeHtml(args.handle ? `Hi ${args.handle},` : "Hi,")}</p>
+      <p style="margin:0 0 16px;">${escapeHtml(getBanNotificationIntro(args.source, args.artifact))}</p>
+      ${
+        rows.length
+          ? `<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:0 0 16px;">${rows.join("")}</table>`
+          : ""
+      }
+      <p style="margin:0 0 8px;"><strong>What this means right now:</strong></p>
+      <ul style="margin:0 0 16px 20px;padding:0;">
+        <li>Your ClawHub account cannot sign in.</li>
+        <li>API tokens for the account have been revoked.</li>
+        <li>Published skills owned by the account have been hidden from public view.</li>
+      </ul>
+      <p style="margin:0 0 16px;">If you believe this was a mistake, reply to this email and the ClawHub security team will review the decision.</p>
+      <p style="margin:0;">ClawHub Security<br><a href="mailto:${escapeHtml(securityEmail)}" style="color:#1155cc;">${escapeHtml(securityEmail)}</a></p>
+    </div>
+  </body>
+</html>`;
+}
+
+function buildHtmlKeyValueRow(label: string, value: string) {
+  return `<tr><td style="padding:0 16px 4px 0;vertical-align:top;white-space:nowrap;"><strong>${escapeHtml(label)}:</strong></td><td style="padding:0 0 4px;vertical-align:top;">${escapeHtml(value)}</td></tr>`;
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function getBanNotificationIntro(
+  source: BanNotificationSource,
+  artifact?: BanNotificationArtifact,
+) {
+  if (source !== "autoban") return "Your ClawHub account was disabled after a security review.";
+  if (artifact?.kind === "skill") {
+    return "Your ClawHub account was disabled after automated security checks flagged an uploaded skill.";
+  }
+  if (artifact?.kind === "plugin") {
+    return "Your ClawHub account was disabled after automated security checks flagged an uploaded plugin.";
+  }
+  return "Your ClawHub account was disabled after automated security checks flagged an uploaded skill or plugin.";
+}
+
+function formatBanNotificationFindingValue(
+  reason: string | undefined,
+  source: BanNotificationSource,
+) {
+  const normalized = reason?.trim();
+  if (!normalized) return undefined;
+  if (source === "manual" && normalized.startsWith("comment scam auto-ban.")) {
+    return "ClawHub security checks found high-confidence scam activity from the account.";
+  }
+  if (source === "manual" && /\b(?:commentId|skillId|userId)=/.test(normalized)) {
+    return "ClawHub security checks found high-confidence policy-violating activity from the account.";
+  }
+  if (normalized === "vt.malicious" || normalized === "malicious.vt_malicious") {
+    return "VirusTotal reported the upload as malicious.";
+  }
+  if (normalized === "malicious.llm_malicious") {
+    return "ClawScan classified the upload as malicious.";
+  }
+  if (normalized === "static.malicious" || normalized.startsWith("malicious.")) {
+    return "ClawHub security checks classified the upload as malicious.";
+  }
+  if (normalized.startsWith("suspicious.")) {
+    return "ClawHub security checks flagged suspicious upload behavior.";
+  }
+  if (source === "autoban") {
+    return "ClawHub security checks classified the upload as malicious.";
+  }
+  return normalized.endsWith(".") ? normalized : `${normalized}.`;
+}
+
+function formatBanNotificationFinding(reason: string | undefined, source: BanNotificationSource) {
+  const finding = formatBanNotificationFindingValue(reason, source);
+  if (!finding) return undefined;
+  return source === "manual"
+    ? `Security review finding: ${finding}`
+    : `Security finding: ${finding}`;
+}
+
+async function resolveBanNotificationArtifact(
+  ctx: Pick<MutationCtx, "db">,
+  args: {
+    ownerUserId: Id<"users">;
+    target: Doc<"users">;
+    slug?: string;
+    kind?: BanNotificationArtifactKind;
+  },
+): Promise<BanNotificationArtifact | undefined> {
+  const slug = args.slug?.trim();
+  if (!slug) return undefined;
+
+  if (args.kind !== "plugin") {
+    const skill = await ctx.db
+      .query("skills")
+      .withIndex("by_owner_slug", (q) => q.eq("ownerUserId", args.ownerUserId).eq("slug", slug))
+      .unique();
+    if (skill) {
+      return {
+        kind: "skill",
+        name: `${await resolveOwnerHandle(ctx, skill.ownerPublisherId, args.target)}/${skill.slug}`,
+      };
+    }
+  }
+
+  if (args.kind !== "skill") {
+    const packages = await ctx.db
+      .query("packages")
+      .withIndex("by_name", (q) => q.eq("normalizedName", slug.toLowerCase()))
+      .collect();
+    const pkg = packages.find((item) => item.ownerUserId === args.ownerUserId);
+    if (pkg && pkg.family !== "skill") {
+      return {
+        kind: "plugin",
+        name: `${await resolveOwnerHandle(ctx, pkg.ownerPublisherId, args.target)}/${pkg.name}`,
+      };
+    }
+  }
+
+  const fallbackKind = args.kind ?? "skill";
+  return {
+    kind: fallbackKind,
+    name: `${args.target.handle ?? args.ownerUserId}/${slug}`,
+  };
+}
+
+async function resolveOwnerHandle(
+  ctx: Pick<MutationCtx, "db">,
+  ownerPublisherId: Id<"publishers"> | undefined,
+  target: Doc<"users">,
+) {
+  if (ownerPublisherId) {
+    const publisher = await ctx.db.get(ownerPublisherId);
+    if (publisher?.handle) return publisher.handle;
+  }
+  return target.handle ?? target._id;
+}
+
+async function scheduleBanNotificationEmail(
+  ctx: MutationCtx,
+  args: {
+    userId: Id<"users">;
+    bannedAt: number;
+    target: Doc<"users">;
+    reason?: string;
+    artifact?: BanNotificationArtifact;
+    source: BanNotificationSource;
+  },
+) {
+  const to = args.target.email?.trim();
+  if (!to) return;
+
+  await ctx.scheduler.runAfter(0, internal.users.sendBanNotificationInternal, {
+    userId: args.userId,
+    bannedAt: args.bannedAt,
+    to,
+    handle: args.target.handle ?? undefined,
+    reason: args.reason,
+    artifact: args.artifact,
+    source: args.source,
+  });
+}
+
+export const sendBanNotificationInternal = internalAction({
+  args: {
+    userId: v.id("users"),
+    bannedAt: v.number(),
+    to: v.string(),
+    handle: v.optional(v.string()),
+    reason: v.optional(v.string()),
+    artifact: v.optional(
+      v.object({
+        kind: v.union(v.literal("skill"), v.literal("plugin")),
+        name: v.string(),
+      }),
+    ),
+    source: v.union(v.literal("manual"), v.literal("autoban")),
+  },
+  handler: async (_ctx, args) => {
+    const apiKey = process.env.RESEND_API_KEY?.trim();
+    if (!apiKey) {
+      console.warn(`[ban-email] RESEND_API_KEY missing; skipped email for ${args.userId}`);
+      return { ok: false as const, reason: "missing_api_key" as const };
+    }
+
+    const from = getBanNotificationFromAddress();
+    const replyTo = getSecurityEmailAddress();
+    const text = buildBanNotificationText(args);
+    const html = buildBanNotificationHtml(args);
+
+    try {
+      const response = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "Idempotency-Key": `clawhub-ban-${args.userId}-${args.bannedAt}`,
+        },
+        body: JSON.stringify({
+          from,
+          to: args.to,
+          reply_to: replyTo,
+          subject: "Your ClawHub account was disabled",
+          text,
+          html,
+        }),
+      });
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => "");
+        console.warn(
+          `[ban-email] Resend failed for ${args.userId}: ${response.status} ${body.slice(0, 500)}`,
+        );
+        return { ok: false as const, reason: "resend_error" as const, status: response.status };
+      }
+    } catch (error) {
+      console.warn(`[ban-email] Failed to send ban notification for ${args.userId}`, error);
+      return { ok: false as const, reason: "send_error" as const };
+    }
+
+    return { ok: true as const };
+  },
+});
 
 export const getById = query({
   args: { userId: v.id("users") },
@@ -769,11 +1067,20 @@ export const banUserInternal = internalMutation({
     actorUserId: v.id("users"),
     targetUserId: v.id("users"),
     reason: v.optional(v.string()),
+    slug: v.optional(v.string()),
+    artifactKind: v.optional(v.union(v.literal("skill"), v.literal("plugin"))),
   },
   handler: async (ctx, args) => {
     const actor = await ctx.db.get(args.actorUserId);
     if (!actor || actor.deletedAt || actor.deactivatedAt) throw new Error("User not found");
-    return banUserWithActor(ctx, actor, args.targetUserId, args.reason);
+    return banUserWithActor(
+      ctx,
+      actor,
+      args.targetUserId,
+      args.reason,
+      args.slug,
+      args.artifactKind,
+    );
   },
 });
 
@@ -803,6 +1110,8 @@ async function banUserWithActor(
   actor: Doc<"users">,
   targetUserId: Id<"users">,
   reasonRaw?: string,
+  slug?: string,
+  artifactKind?: BanNotificationArtifactKind,
 ) {
   assertModerator(actor);
 
@@ -869,6 +1178,20 @@ async function banUserWithActor(
     role: "user",
     updatedAt: now,
     banReason: reason || undefined,
+  });
+
+  await scheduleBanNotificationEmail(ctx, {
+    userId: targetUserId,
+    bannedAt: now,
+    target,
+    reason,
+    artifact: await resolveBanNotificationArtifact(ctx, {
+      ownerUserId: targetUserId,
+      target,
+      slug,
+      kind: artifactKind,
+    }),
+    source: "manual",
   });
 
   await ctx.runMutation(internal.telemetry.clearUserTelemetryInternal, { userId: targetUserId });
@@ -1248,6 +1571,7 @@ export const autobanMalwareAuthorInternal = internalMutation({
     ownerUserId: v.id("users"),
     sha256hash: v.optional(v.string()),
     slug: v.string(),
+    artifactKind: v.optional(v.union(v.literal("skill"), v.literal("plugin"))),
     trigger: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
@@ -1297,6 +1621,20 @@ export const autobanMalwareAuthorInternal = internalMutation({
       role: "user",
       updatedAt: now,
       banReason: "malware auto-ban",
+    });
+
+    await scheduleBanNotificationEmail(ctx, {
+      userId: args.ownerUserId,
+      bannedAt: now,
+      target,
+      reason: args.trigger?.trim() || "scanner.malicious",
+      artifact: await resolveBanNotificationArtifact(ctx, {
+        ownerUserId: args.ownerUserId,
+        target,
+        slug: args.slug,
+        kind: args.artifactKind,
+      }),
+      source: "autoban",
     });
 
     await ctx.runMutation(internal.telemetry.clearUserTelemetryInternal, {
