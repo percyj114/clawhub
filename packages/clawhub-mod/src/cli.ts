@@ -22,7 +22,12 @@ import { DEFAULT_REGISTRY, DEFAULT_SITE } from "../../clawhub/src/cli/registry.j
 import type { GlobalOpts } from "../../clawhub/src/cli/types.js";
 import { fail } from "../../clawhub/src/cli/ui.js";
 import { getModeratorCliBuildLabel, getModeratorCliVersion } from "./buildInfo.js";
-import { cmdBanUser, cmdSetRole, cmdUnbanUser } from "./commands/moderation.js";
+import {
+  cmdBanUser,
+  cmdRemediateAutobans,
+  cmdSetRole,
+  cmdUnbanUser,
+} from "./commands/moderation.js";
 import {
   cmdBackfillPackageArtifacts,
   cmdDeletePackageTrustedPublisher,
@@ -30,6 +35,7 @@ import {
   cmdListPackageReports,
   cmdModeratePackageRelease,
   cmdPackageModerationQueue,
+  cmdRepairPackageName,
   cmdSetPackageTrustedPublisher,
   cmdTriagePackageReport,
   cmdUpsertPackageMigration,
@@ -225,6 +231,22 @@ users
     await cmdSetRole(opts, handleOrId, role, options, isInputAllowed());
   });
 
+users
+  .command("remediate-autobans")
+  .description("Dry-run or apply malware autoban remediation")
+  .option("--apply", "Write changes; defaults to dry-run")
+  .option("--dry-run", "Plan only (default)")
+  .option("--user <handleOrId>", "Limit to one user handle or id")
+  .option("--id", "Treat --user as a user id")
+  .option("--since <date>", "Only scan autobans at or after this date")
+  .option("--limit <n>", "Maximum users to scan")
+  .option("--reason <reason>", "Audit reason for apply")
+  .option("--json", "Output JSON")
+  .action(async (options) => {
+    const opts = await resolveGlobalOpts();
+    await cmdRemediateAutobans(opts, options, isInputAllowed());
+  });
+
 program
   .command("ban-user")
   .description("Alias for users ban")
@@ -295,6 +317,21 @@ function registerPluginGovernanceCommands(command: Command) {
     .action(async (options) => {
       const opts = await resolveGlobalOpts();
       await cmdBackfillPackageArtifacts(opts, options);
+    });
+
+  command
+    .command("repair-name")
+    .description("Admin repair for plugin package names")
+    .argument("<name>", "Current plugin package name")
+    .requiredOption("--next-name <name>", "Target plugin package name")
+    .option("--retire-target", "Rename and soft-delete the current target package first")
+    .option("--owner <handle>", "Transfer repaired package to a publisher handle")
+    .requiredOption("--reason <reason>", "Audit reason")
+    .option("--apply", "Write changes; defaults to dry-run")
+    .option("--json", "Output JSON")
+    .action(async (name, options) => {
+      const opts = await resolveGlobalOpts();
+      await cmdRepairPackageName(opts, name, options);
     });
 
   command

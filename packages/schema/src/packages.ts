@@ -76,6 +76,7 @@ export const PackageVerificationSummarySchema = type({
   sourceCommit: "string?",
   sourceTag: "string?",
   hasProvenance: "boolean?",
+  trustedOpenClawPlugin: "boolean?",
   scanStatus: '"clean"|"suspicious"|"malicious"|"pending"|"not-run"?',
 });
 export type PackageVerificationSummary = (typeof PackageVerificationSummarySchema)[inferred];
@@ -610,6 +611,46 @@ export const ApiV1PackageTransferResponseSchema = type({
   isOfficial: "boolean",
 });
 export type ApiV1PackageTransferResponse = (typeof ApiV1PackageTransferResponseSchema)[inferred];
+
+export const PackageRepairNameRequestSchema = type({
+  nextName: "string",
+  retireTarget: "boolean?",
+  owner: "string?",
+  reason: "string",
+  dryRun: "boolean?",
+});
+export type PackageRepairNameRequest = (typeof PackageRepairNameRequestSchema)[inferred];
+
+export const PackageRepairNamePackageSchema = type({
+  packageId: "string",
+  name: "string",
+  runtimeId: "string|null?",
+  ownerUserId: "string",
+  ownerPublisherId: "string|null?",
+  channel: PackageChannelSchema,
+  softDeletedAt: "number|null?",
+});
+export type PackageRepairNamePackage = (typeof PackageRepairNamePackageSchema)[inferred];
+
+export const PackageRepairNameOperationSchema = type({
+  action: '"retire-target"|"rename-source"|"transfer-owner"',
+  packageId: "string?",
+  from: "string?",
+  to: "string?",
+  owner: "string?",
+});
+export type PackageRepairNameOperation = (typeof PackageRepairNameOperationSchema)[inferred];
+
+export const ApiV1PackageRepairNameResponseSchema = type({
+  ok: "true",
+  dryRun: "boolean",
+  source: PackageRepairNamePackageSchema,
+  target: PackageRepairNamePackageSchema.or("null"),
+  retiredName: "string|null?",
+  operations: PackageRepairNameOperationSchema.array(),
+});
+export type ApiV1PackageRepairNameResponse =
+  (typeof ApiV1PackageRepairNameResponseSchema)[inferred];
 
 export const PackageOfficialMigrationUpsertRequestSchema = type({
   bundledPluginId: "string",

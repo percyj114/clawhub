@@ -74,6 +74,10 @@ ClawHub can resolve it, and summarizes scanner findings in user-facing language.
 The notice also explains that the account cannot sign in, API tokens are
 revoked, and published skills owned by the account are hidden from public view.
 Users can reply to that email if they believe the decision was a mistake.
+When an account is restored through manual unban or autoban remediation, ClawHub
+sends a best-effort account-restored notice if the account has an email address.
+That notice explains that sign-in works again and that previously revoked API
+tokens stay revoked.
 
 ## Publisher guidance
 

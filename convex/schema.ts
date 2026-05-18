@@ -114,6 +114,7 @@ const users = defineTable({
   .index("email", ["email"])
   .index("phone", ["phone"])
   .index("handle", ["handle"])
+  .index("by_ban_reason_deleted_at", ["banReason", "deletedAt"])
   .index("by_active_handle", ["deletedAt", "deactivatedAt", "handle"]);
 
 const publishers = defineTable({
@@ -298,6 +299,7 @@ const packageVerificationValidator = v.optional(
     sourceCommit: v.optional(v.string()),
     sourceTag: v.optional(v.string()),
     hasProvenance: v.optional(v.boolean()),
+    trustedOpenClawPlugin: v.optional(v.boolean()),
     scanStatus: v.optional(
       v.union(
         v.literal("clean"),
@@ -343,6 +345,24 @@ const packageReleaseModerationOverrideValidator = v.object({
   reviewerUserId: v.id("users"),
   updatedAt: v.number(),
 });
+
+const securityScanTargetKindValidator = v.union(
+  v.literal("skillVersion"),
+  v.literal("packageRelease"),
+);
+const securityScanJobStatusValidator = v.union(
+  v.literal("queued"),
+  v.literal("running"),
+  v.literal("succeeded"),
+  v.literal("failed"),
+);
+const securityScanJobSourceValidator = v.union(
+  v.literal("publish"),
+  v.literal("clawscan-note"),
+  v.literal("vt-update"),
+  v.literal("backfill"),
+  v.literal("manual"),
+);
 
 const packageFilesValidator = v.array(
   v.object({
@@ -984,6 +1004,32 @@ const packageReleases = defineTable({
   .index("by_active_created", ["softDeletedAt", "createdAt"])
   .index("by_package_version", ["packageId", "version"])
   .index("by_sha256hash", ["sha256hash"]);
+
+const securityScanJobs = defineTable({
+  targetKind: securityScanTargetKindValidator,
+  skillVersionId: v.optional(v.id("skillVersions")),
+  packageReleaseId: v.optional(v.id("packageReleases")),
+  status: securityScanJobStatusValidator,
+  source: securityScanJobSourceValidator,
+  priority: v.number(),
+  hasMaliciousSignal: v.boolean(),
+  waitForVtUntil: v.number(),
+  nextRunAt: v.number(),
+  attempts: v.number(),
+  leaseToken: v.optional(v.string()),
+  leaseExpiresAt: v.optional(v.number()),
+  workerId: v.optional(v.string()),
+  lastError: v.optional(v.string()),
+  runId: v.optional(v.string()),
+  completedAt: v.optional(v.number()),
+  createdAt: v.number(),
+  updatedAt: v.number(),
+})
+  .index("by_status_and_next_run_at", ["status", "nextRunAt"])
+  .index("by_status_and_lease_expires_at", ["status", "leaseExpiresAt"])
+  .index("by_status_malicious_signal_next_run_at", ["status", "hasMaliciousSignal", "nextRunAt"])
+  .index("by_skill_version", ["skillVersionId"])
+  .index("by_package_release", ["packageReleaseId"]);
 
 const packageStatEvents = defineTable({
   packageId: v.id("packages"),
@@ -1850,6 +1896,7 @@ export default defineSchema({
   skillSlugAliases,
   packages,
   packageReleases,
+  securityScanJobs,
   packageStatEvents,
   packageTrustedPublishers,
   packagePublishTokens,

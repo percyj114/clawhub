@@ -1747,7 +1747,7 @@ describe("httpApiV1 handlers", () => {
     );
     expect(response.status).toBe(200);
     const json = await response.json();
-    expect(json.version.security.status).toBe("suspicious");
+    expect(json.version.security.status).toBe("pending");
     expect(json.version.security.scanners.vt.normalizedStatus).toBe("suspicious");
     expect(json.version.security.virustotalUrl).toContain("virustotal.com/gui/file/");
   });
@@ -2163,7 +2163,7 @@ describe("httpApiV1 handlers", () => {
     expect(response.status).toBe(200);
     const json = await response.json();
     expect(json.security.status).toBe("error");
-    expect(json.security.hasScanResult).toBe(true);
+    expect(json.security.hasScanResult).toBe(false);
     expect(json.security.scanners.vt.normalizedStatus).toBe("clean");
     expect(json.security.scanners.llm.normalizedStatus).toBe("error");
   });
@@ -2303,7 +2303,7 @@ describe("httpApiV1 handlers", () => {
     expect(response.status).toBe(200);
     const json = await response.json();
     expect(json.version.version).toBe("1.0.0");
-    expect(json.security.status).toBe("malicious");
+    expect(json.security.status).toBe("pending");
     expect(json.moderation.sourceVersion).toEqual({
       version: "2.0.0",
       createdAt: 2,
@@ -3119,6 +3119,41 @@ describe("httpApiV1 handlers", () => {
     expect(response.status).toBe(404);
   });
 
+  it("transfer accept maps committed cancellation failures to an error response", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:1",
+      user: { handle: "p" },
+    } as never);
+
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("slug" in args) return { _id: "skills:1", slug: "demo" };
+      if ("toUserId" in args) {
+        return {
+          _id: "skillOwnershipTransfers:1",
+          skillId: "skills:1",
+          toUserId: "users:1",
+          status: "pending",
+        };
+      }
+      return null;
+    });
+    const runMutation = vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {
+      if ("key" in args) return okRate();
+      return { ok: false, error: "Skill is under moderation" };
+    });
+
+    const response = await __handlers.skillsPostRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/skills/demo/transfer/accept", {
+        method: "POST",
+        headers: { Authorization: "Bearer clh_test" },
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe("Skill is under moderation");
+  });
+
   it("rename endpoint forwards to renameOwnedSkillInternal", async () => {
     vi.mocked(requireApiTokenUser).mockResolvedValue({
       userId: "users:1",
@@ -3343,6 +3378,67 @@ describe("httpApiV1 handlers", () => {
         actorUserId: "users:1",
         targetUserId: "users:2",
         reason: "appeal accepted",
+      }),
+    );
+  });
+
+  it("remediate autobans requires admin", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:actor",
+      user: { _id: "users:actor", role: "user" },
+    } as never);
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const response = await __handlers.usersPostRouterV1Handler(
+      makeCtx({ runMutation }),
+      new Request("https://example.com/api/v1/users/remediate-autobans", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ dryRun: true }),
+      }),
+    );
+    expect(response.status).toBe(403);
+  });
+
+  it("remediate autobans forwards admin payload", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:admin",
+      user: { _id: "users:admin", role: "admin" },
+    } as never);
+    const runMutation = vi.fn().mockResolvedValueOnce(okRate()).mockResolvedValueOnce({
+      ok: true,
+      dryRun: false,
+      scanned: 1,
+      wouldUnban: 0,
+      unbanned: 1,
+      skipped: 0,
+      restoredSkills: 12,
+      restoredPackages: 0,
+      items: [],
+    });
+    const response = await __handlers.usersPostRouterV1Handler(
+      makeCtx({ runMutation }),
+      new Request("https://example.com/api/v1/users/remediate-autobans", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          dryRun: false,
+          userId: "users:target",
+          reason: "appeal accepted",
+          since: "2026-05-12",
+          limit: 5,
+        }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        actorUserId: "users:admin",
+        targetUserId: "users:target",
+        dryRun: false,
+        reason: "appeal accepted",
+        since: "2026-05-12",
+        limit: 5,
       }),
     );
   });
@@ -3987,6 +4083,45 @@ describe("httpApiV1 handlers", () => {
     expect(response.status).toBe(400);
     expect(await response.text()).toBe("Invalid plugin category");
     expect(runQuery).not.toHaveBeenCalled();
+  });
+
+  it("plugins search sorts by rank tier before score without exposing rank metadata", async () => {
+    const runQuery = vi.fn((_, args: Record<string, unknown>) => {
+      if (args.family === "code-plugin") {
+        return [
+          {
+            score: 20,
+            rankTier: 3,
+            package: makeCatalogItem("summary-plugin", { family: "code-plugin", updatedAt: 100 }),
+          },
+        ];
+      }
+      if (args.family === "bundle-plugin") {
+        return [
+          {
+            score: 10,
+            rankTier: 1,
+            package: makeCatalogItem("name-plugin", { family: "bundle-plugin", updatedAt: 50 }),
+          },
+        ];
+      }
+      throw new Error(`unexpected family ${String(args.family)}`);
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.pluginsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/plugins/search?q=plugin&limit=2"),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.results.map((entry: { package: { name: string } }) => entry.package.name)).toEqual([
+      "name-plugin",
+      "summary-plugin",
+    ]);
+    expect(body.results[0]).not.toHaveProperty("rankTier");
+    expect(body.results[0]).not.toHaveProperty("matchReason");
   });
 
   it("packages list forwards viewerUserId for authenticated private package browsing", async () => {
@@ -4982,10 +5117,10 @@ describe("httpApiV1 handlers", () => {
         },
       },
       expected: {
-        scanStatus: "suspicious",
+        scanStatus: "pending",
         blockedFromDownload: false,
-        reasons: ["scan:suspicious", "vt:suspicious"],
-        pending: false,
+        reasons: ["scan:pending"],
+        pending: true,
       },
     },
     {
@@ -6940,6 +7075,64 @@ describe("httpApiV1 handlers", () => {
     );
   });
 
+  it("package publish returns retryable status for transient Convex contention", async () => {
+    vi.mocked(getOptionalApiTokenUser).mockResolvedValue({
+      userId: "users:1",
+      user: { _id: "users:1", handle: "p" },
+    } as never);
+    vi.mocked(getOptionalApiTokenUserId).mockResolvedValue("users:1" as never);
+    vi.mocked(requirePackagePublishAuth).mockResolvedValue({
+      kind: "user",
+      userId: "users:1",
+      user: { _id: "users:1", handle: "p" },
+    } as never);
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const runAction = vi
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          'Documents read from or written to the "publishers" table changed while this mutation was being run and on every subsequent retry.',
+        ),
+      );
+
+    const response = await __handlers.publishPackageV1Handler(
+      makeCtx({ runAction, runMutation }),
+      new Request("https://example.com/api/v1/packages", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer clh_test",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          name: "demo-plugin",
+          ownerHandle: "openclaw",
+          family: "bundle-plugin",
+          version: "1.0.0",
+          changelog: "init",
+          bundle: { hostTargets: ["desktop"] },
+          files: [
+            {
+              path: "openclaw.plugin.json",
+              size: 2,
+              storageId: "storage:1",
+              sha256: "a".repeat(64),
+            },
+            {
+              path: ".codex-plugin/plugin.json",
+              size: 2,
+              storageId: "storage:1",
+              sha256: "a".repeat(64),
+            },
+          ],
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("1");
+    await expect(response.text()).resolves.toContain("Transient ClawHub write contention");
+  });
+
   it("multipart package publish ignores macOS junk files", async () => {
     vi.mocked(getOptionalApiTokenUserId).mockResolvedValue("users:1" as never);
     vi.mocked(requirePackagePublishAuth).mockResolvedValue({
@@ -7447,6 +7640,194 @@ describe("httpApiV1 handlers", () => {
         toOwner: "opik",
       }),
     );
+  });
+
+  it("dry-runs package name repair without mutating packages", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-15T12:00:00Z"));
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:admin",
+      user: { _id: "users:admin", role: "admin", handle: "patrick" },
+    } as never);
+    const sourcePackage = {
+      _id: "packages:source",
+      name: "@openclaw/openviking",
+      normalizedName: "@openclaw/openviking",
+      runtimeId: "openviking",
+      ownerUserId: "users:lin",
+      ownerPublisherId: "publishers:lin",
+      channel: "community",
+      softDeletedAt: undefined,
+    };
+    const targetPackage = {
+      _id: "packages:target",
+      name: "@openviking/openclaw-plugin",
+      normalizedName: "@openviking/openclaw-plugin",
+      runtimeId: "openviking-openclaw-plugin-placeholder",
+      ownerUserId: "users:openviking",
+      ownerPublisherId: "publishers:openviking",
+      channel: "private",
+      softDeletedAt: undefined,
+    };
+    const runMutation = vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {
+      if ("key" in args) return okRate();
+      return { ok: true };
+    });
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("key" in args) return okRate();
+      if (args.name === "@openclaw/openviking") return sourcePackage;
+      if (args.name === "@openviking/openclaw-plugin") return targetPackage;
+      if (args.name === "@openviking/openclaw-plugin-retired-20260515") return null;
+      return null;
+    });
+
+    const response = await __handlers.packagesPostRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages/%40openclaw%2Fopenviking/repair-name", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer clh_test",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          nextName: "@openviking/openclaw-plugin",
+          retireTarget: true,
+          reason: "Admin repair for openclaw/clawhub#2133",
+          dryRun: true,
+        }),
+      }),
+    );
+
+    if (response.status !== 200) throw new Error(await response.text());
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      dryRun: true,
+      source: { packageId: "packages:source", name: "@openclaw/openviking" },
+      target: { packageId: "packages:target", name: "@openviking/openclaw-plugin" },
+      retiredName: "@openviking/openclaw-plugin-retired-20260515",
+      operations: [
+        {
+          action: "retire-target",
+          from: "@openviking/openclaw-plugin",
+          to: "@openviking/openclaw-plugin-retired-20260515",
+        },
+        {
+          action: "rename-source",
+          from: "@openclaw/openviking",
+          to: "@openviking/openclaw-plugin",
+        },
+      ],
+    });
+    expect(runMutation).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ name: "@openviking/openclaw-plugin" }),
+    );
+    vi.useRealTimers();
+  });
+
+  it("applies package name repair by retiring the occupied target first", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-15T12:00:00Z"));
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:admin",
+      user: { _id: "users:admin", role: "admin", handle: "patrick" },
+    } as never);
+    const sourcePackage = {
+      _id: "packages:source",
+      name: "@openclaw/openviking",
+      normalizedName: "@openclaw/openviking",
+      runtimeId: "openviking",
+      ownerUserId: "users:lin",
+      ownerPublisherId: "publishers:lin",
+      channel: "community",
+      softDeletedAt: undefined,
+    };
+    const targetPackage = {
+      _id: "packages:target",
+      name: "@openviking/openclaw-plugin",
+      normalizedName: "@openviking/openclaw-plugin",
+      runtimeId: "openviking-openclaw-plugin-placeholder",
+      ownerUserId: "users:openviking",
+      ownerPublisherId: "publishers:openviking",
+      channel: "private",
+      softDeletedAt: undefined,
+    };
+    const ownerPublisher = {
+      _id: "publishers:openviking",
+      handle: "openviking",
+      kind: "org",
+      deletedAt: undefined,
+    };
+    const runMutation = vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {
+      if ("key" in args) return okRate();
+      return { ok: true, packageId: "packages:source" };
+    });
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("key" in args) return okRate();
+      if (args.name === "@openclaw/openviking") return sourcePackage;
+      if (args.name === "@openviking/openclaw-plugin") return targetPackage;
+      if (args.name === "@openviking/openclaw-plugin-retired-20260515") return null;
+      if (args.handle === "openviking") return ownerPublisher;
+      return null;
+    });
+
+    const response = await __handlers.packagesPostRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages/%40openclaw%2Fopenviking/repair-name", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer clh_test",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          nextName: "@openviking/openclaw-plugin",
+          retireTarget: true,
+          owner: "openviking",
+          reason: "Admin repair for openclaw/clawhub#2133",
+          dryRun: false,
+        }),
+      }),
+    );
+
+    if (response.status !== 200) throw new Error(await response.text());
+    expect(runMutation).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      expect.objectContaining({
+        actorUserId: "users:admin",
+        name: "@openviking/openclaw-plugin",
+        nextName: "@openviking/openclaw-plugin-retired-20260515",
+      }),
+    );
+    expect(runMutation).toHaveBeenNthCalledWith(
+      3,
+      expect.anything(),
+      expect.objectContaining({
+        userId: "users:admin",
+        name: "@openviking/openclaw-plugin-retired-20260515",
+      }),
+    );
+    expect(runMutation).toHaveBeenNthCalledWith(
+      4,
+      expect.anything(),
+      expect.objectContaining({
+        actorUserId: "users:admin",
+        name: "@openclaw/openviking",
+        nextName: "@openviking/openclaw-plugin",
+      }),
+    );
+    expect(runMutation).toHaveBeenNthCalledWith(
+      5,
+      expect.anything(),
+      expect.objectContaining({
+        actorUserId: "users:admin",
+        name: "@openviking/openclaw-plugin",
+        ownerUserId: "users:lin",
+        ownerPublisherId: "publishers:openviking",
+        channel: "community",
+      }),
+    );
+    vi.useRealTimers();
   });
 
   it("package transfer maps ownership denials to 403", async () => {

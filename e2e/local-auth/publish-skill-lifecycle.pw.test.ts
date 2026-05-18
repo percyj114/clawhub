@@ -92,11 +92,17 @@ async function publishSkillVersion(
 
   await expect(page.getByText("All checks passed.")).toBeVisible();
   await page.getByRole("button", { name: "Publish skill" }).click();
-  await expect(page).toHaveURL(
-    new RegExp(`/${escapeRegExp(encodeURIComponent(args.ownerHandle))}/${args.slug}$`),
-    { timeout: 60_000 },
-  );
+  await expect(page).toHaveURL(new RegExp(`/[^/]+/${escapeRegExp(args.slug)}$`), {
+    timeout: 60_000,
+  });
+  const [, actualOwnerHandle, actualSlug] = new URL(page.url()).pathname
+    .split("/")
+    .map(decodeURIComponent);
+  expect(actualOwnerHandle).toBeTruthy();
+  expect(actualOwnerHandle?.toLowerCase()).toContain(args.ownerHandle.toLowerCase());
+  expect(actualSlug).toBe(args.slug);
   await expect(page.locator(".skill-page-title")).toHaveText(args.displayName);
+  return actualOwnerHandle!;
 }
 
 test("skill publishers can create a skill and publish a new version", async ({
@@ -106,9 +112,9 @@ test("skill publishers can create a skill and publish a new version", async ({
   const slug = `pw-life-${Date.now().toString(36)}`;
   const displayName = "Playwright Lifecycle Skill";
 
-  const ownerHandle = await signInAsLocalOwner(page);
+  let ownerHandle = await signInAsLocalOwner(page);
 
-  await publishSkillVersion(page, testInfo, {
+  ownerHandle = await publishSkillVersion(page, testInfo, {
     ownerHandle,
     slug,
     displayName,

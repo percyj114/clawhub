@@ -7,6 +7,7 @@ import {
   PackageAppealResolveRequestSchema,
   PackageAppealRequestSchema,
   PackageOfficialMigrationUpsertRequestSchema,
+  PackageRepairNameRequestSchema,
   PackageReportRequestSchema,
   PackageReportTriageRequestSchema,
   PackageReleaseModerationRequestSchema,
@@ -55,6 +56,7 @@ import {
   json,
   resolveTagsBatch,
   requireApiTokenUserOrResponse,
+  requireAdminOrResponse,
   requirePackagePublishAuthOrResponse,
   safeTextFileResponse,
   softDeleteErrorToResponse,
@@ -69,7 +71,6 @@ const apiRefs = api as unknown as {
   };
   skills: {
     listPackageCatalogPage: unknown;
-    searchPackageCatalogPublic: unknown;
     getBySlug: unknown;
     listVersionsPage: unknown;
     getVersionBySkillAndVersion: unknown;
@@ -98,7 +99,9 @@ const internalRefs = internal as unknown as {
     recordPackageInstallInternal: unknown;
     softDeletePackageInternal: unknown;
     restorePackageInternal: unknown;
+    repairPackageIdentityInternal: unknown;
     moderatePackageReleaseForUserInternal: unknown;
+    transferPackageOwnerInternal: unknown;
     reportPackageForUserInternal: unknown;
     listPackageReportsInternal: unknown;
     triagePackageReportForUserInternal: unknown;
@@ -116,8 +119,12 @@ const internalRefs = internal as unknown as {
   };
   skills: {
     getSkillBySlugInternal: unknown;
+    searchPackageCatalogForHttpInternal: unknown;
     getVersionByIdInternal: unknown;
     getVersionBySkillAndVersionInternal: unknown;
+  };
+  publishers: {
+    getByHandleInternal: unknown;
   };
 };
 
@@ -134,6 +141,28 @@ function packageOperationErrorToResponse(
     return text(formatAuthzMessage(error, "Forbidden"), 403, headers);
   if (lower.includes("not found")) return text(message, 404, headers);
   return text(message, 400, headers);
+}
+
+function isTransientConvexContentionMessage(message: string) {
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("optimistic concurrency") ||
+    lower.includes("write conflict") ||
+    (/documents read from or written to the ".+" table changed/.test(lower) &&
+      lower.includes("while this mutation was being run"))
+  );
+}
+
+function packagePublishErrorToResponse(error: unknown, headers: HeadersInit) {
+  const message = error instanceof Error ? error.message : "Publish failed";
+  if (!isTransientConvexContentionMessage(message)) {
+    return text(message, 400, headers);
+  }
+  return text(
+    `Transient ClawHub write contention. Package validation was not the cause; retrying usually succeeds. ${message}`,
+    503,
+    mergeHeaders(headers, { "Retry-After": "1" }),
+  );
 }
 
 async function runQueryRef<T>(ctx: ActionCtx, ref: unknown, args: unknown): Promise<T> {
@@ -417,6 +446,20 @@ type PackageTrustedPublisherLike = {
   updatedAt: number;
 };
 
+type AdminRepairPackageLike = Pick<
+  Doc<"packages">,
+  | "_id"
+  | "name"
+  | "normalizedName"
+  | "runtimeId"
+  | "ownerUserId"
+  | "ownerPublisherId"
+  | "channel"
+  | "softDeletedAt"
+>;
+
+type RepairOwnerPublisherLike = Pick<Doc<"publishers">, "_id" | "handle" | "deletedAt">;
+
 function toVisibleRelease(release: ReleaseLike | null) {
   if (!release || ("softDeletedAt" in release && release.softDeletedAt !== undefined)) return null;
   return release;
@@ -433,6 +476,28 @@ function toPublicTrustedPublisher(trustedPublisher: PackageTrustedPublisherLike 
     workflowFilename: trustedPublisher.workflowFilename,
     ...(trustedPublisher.environment ? { environment: trustedPublisher.environment } : {}),
   };
+}
+
+function toRepairPackageSnapshot(pkg: AdminRepairPackageLike) {
+  return {
+    packageId: String(pkg._id),
+    name: pkg.normalizedName || pkg.name,
+    runtimeId: pkg.runtimeId ?? null,
+    ownerUserId: String(pkg.ownerUserId),
+    ownerPublisherId: pkg.ownerPublisherId ? String(pkg.ownerPublisherId) : null,
+    channel: pkg.channel,
+    softDeletedAt: pkg.softDeletedAt ?? null,
+  };
+}
+
+function defaultRetiredPackageName(name: string) {
+  const yyyymmdd = new Date(Date.now()).toISOString().slice(0, 10).replaceAll("-", "");
+  return `${name}-retired-${yyyymmdd}`;
+}
+
+function normalizePublisherHandleInput(value: string | undefined) {
+  const normalized = value?.trim().replace(/^@+/, "").toLowerCase();
+  return normalized || undefined;
 }
 
 function getReleaseSecurityBlock(release: ReleaseLike) {
@@ -691,7 +756,11 @@ type CatalogListItem = {
   verificationTier?: string | null;
 };
 
-type CatalogSearchEntry = { score: number; package: CatalogListItem };
+type CatalogSearchEntry = {
+  score: number;
+  rankTier?: number;
+  package: CatalogListItem;
+};
 
 type CatalogSourceCursorState = {
   cursor: string | null;
@@ -892,10 +961,18 @@ function compareCatalogItems(a: CatalogListItem, b: CatalogListItem) {
 
 function compareCatalogSearchEntries(a: CatalogSearchEntry, b: CatalogSearchEntry) {
   return (
+    (a.rankTier ?? Number.POSITIVE_INFINITY) - (b.rankTier ?? Number.POSITIVE_INFINITY) ||
     b.score - a.score ||
     Number(b.package.isOfficial) - Number(a.package.isOfficial) ||
     compareCatalogItems(a.package, b.package)
   );
+}
+
+function toPublicCatalogSearchEntry(entry: CatalogSearchEntry) {
+  return {
+    score: entry.score,
+    package: entry.package,
+  };
 }
 
 async function searchPackageCatalog(
@@ -1459,7 +1536,7 @@ export async function publishPackageV1Handler(ctx: ActionCtx, request: Request) 
           });
     return json(result, 200, rate.headers);
   } catch (error) {
-    return text(error instanceof Error ? error.message : "Publish failed", 400, rate.headers);
+    return packagePublishErrorToResponse(error, rate.headers);
   }
 }
 
@@ -1750,6 +1827,165 @@ export async function packagesPostRouterV1Handler(ctx: ActionCtx, request: Reque
   if (!packageRoute) return text("Not found", 404);
   const packageName = packageRoute.packageName;
   const packageSegments = packageRoute.rest;
+
+  if (packageSegments[0] === "repair-name" && packageSegments.length === 1) {
+    const rate = await applyRateLimit(ctx, request, "write");
+    if (!rate.ok) return rate.response;
+    const auth = await requireApiTokenUserOrResponse(ctx, request, rate.headers);
+    if (!auth.ok) return auth.response;
+    const admin = requireAdminOrResponse(auth.user, rate.headers);
+    if (!admin.ok) return admin.response;
+
+    try {
+      const body = parseArk(
+        PackageRepairNameRequestSchema,
+        await request.json(),
+        "Package name repair payload",
+      ) as {
+        nextName: string;
+        retireTarget?: boolean;
+        owner?: string;
+        reason: string;
+        dryRun?: boolean;
+      };
+      const nextName = tryNormalizePackageName(body.nextName);
+      if (!nextName) {
+        return text(
+          "Target package name must be lowercase and npm-safe (example: @scope/name).",
+          400,
+          rate.headers,
+        );
+      }
+      const reason = body.reason.trim();
+      if (!reason) return text("Repair reason required", 400, rate.headers);
+      const dryRun = body.dryRun !== false;
+      const ownerHandle = normalizePublisherHandleInput(body.owner);
+
+      const source = await runQueryRef<AdminRepairPackageLike | null>(
+        ctx,
+        internalRefs.packages.getPackageByNameInternal,
+        { name: packageName },
+      );
+      if (!source || source.softDeletedAt) return text("Package not found", 404, rate.headers);
+
+      const target = await runQueryRef<AdminRepairPackageLike | null>(
+        ctx,
+        internalRefs.packages.getPackageByNameInternal,
+        { name: nextName },
+      );
+      const targetIsDifferentPackage = Boolean(target && target._id !== source._id);
+      if (targetIsDifferentPackage && target?.softDeletedAt) {
+        return text(
+          `Target package "${nextName}" is held by a soft-deleted package; restore or repair that row first.`,
+          409,
+          rate.headers,
+        );
+      }
+      if (targetIsDifferentPackage && !body.retireTarget) {
+        return text(
+          `Target package "${nextName}" already exists; pass retireTarget.`,
+          409,
+          rate.headers,
+        );
+      }
+
+      const retiredName = targetIsDifferentPackage ? defaultRetiredPackageName(nextName) : null;
+      if (retiredName) {
+        const existingRetiredName = await runQueryRef<AdminRepairPackageLike | null>(
+          ctx,
+          internalRefs.packages.getPackageByNameInternal,
+          { name: retiredName },
+        );
+        if (existingRetiredName && existingRetiredName._id !== target?._id) {
+          return text(`Retired package name "${retiredName}" already exists.`, 409, rate.headers);
+        }
+      }
+
+      const ownerPublisher = ownerHandle
+        ? await runQueryRef<RepairOwnerPublisherLike | null>(
+            ctx,
+            internalRefs.publishers.getByHandleInternal,
+            { handle: ownerHandle },
+          )
+        : null;
+      if (ownerHandle && (!ownerPublisher || ownerPublisher.deletedAt)) {
+        return text(`Publisher "@${ownerHandle}" not found.`, 404, rate.headers);
+      }
+
+      const operations: Array<Record<string, string>> = [];
+      if (targetIsDifferentPackage && target && retiredName) {
+        operations.push({
+          action: "retire-target",
+          packageId: String(target._id),
+          from: target.normalizedName || target.name,
+          to: retiredName,
+        });
+      }
+      if ((source.normalizedName || source.name) !== nextName) {
+        operations.push({
+          action: "rename-source",
+          packageId: String(source._id),
+          from: source.normalizedName || source.name,
+          to: nextName,
+        });
+      }
+      if (ownerHandle && ownerPublisher) {
+        operations.push({
+          action: "transfer-owner",
+          packageId: String(source._id),
+          owner: ownerHandle,
+        });
+      }
+
+      if (!dryRun) {
+        if (targetIsDifferentPackage && retiredName) {
+          await runMutationRef(ctx, internalRefs.packages.repairPackageIdentityInternal, {
+            actorUserId: auth.userId,
+            name: nextName,
+            nextName: retiredName,
+            reason,
+          });
+          await runMutationRef(ctx, internalRefs.packages.softDeletePackageInternal, {
+            userId: auth.userId,
+            name: retiredName,
+          });
+        }
+        if ((source.normalizedName || source.name) !== nextName) {
+          await runMutationRef(ctx, internalRefs.packages.repairPackageIdentityInternal, {
+            actorUserId: auth.userId,
+            name: packageName,
+            nextName,
+            reason,
+          });
+        }
+        if (ownerHandle && ownerPublisher) {
+          await runMutationRef(ctx, internalRefs.packages.transferPackageOwnerInternal, {
+            actorUserId: auth.userId,
+            name: nextName,
+            ownerUserId: source.ownerUserId,
+            ownerPublisherId: ownerPublisher._id,
+            channel: source.channel,
+            reason,
+          });
+        }
+      }
+
+      return json(
+        {
+          ok: true,
+          dryRun,
+          source: toRepairPackageSnapshot(source),
+          target: target ? toRepairPackageSnapshot(target) : null,
+          retiredName,
+          operations,
+        },
+        200,
+        rate.headers,
+      );
+    } catch (error) {
+      return packageOperationErrorToResponse(error, rate.headers, "Package name repair failed");
+    }
+  }
 
   if (
     packageSegments[0] === "versions" &&
@@ -2155,7 +2391,7 @@ async function searchPackages(
   if (family === "skill") {
     results = await runQueryRef<CatalogSearchEntry[]>(
       ctx,
-      apiRefs.skills.searchPackageCatalogPublic,
+      internalRefs.skills.searchPackageCatalogForHttpInternal,
       {
         query: queryText,
         limit,
@@ -2222,15 +2458,19 @@ async function searchPackages(
         category,
         viewerUserId: viewerUserId ?? undefined,
       }),
-      runQueryRef<CatalogSearchEntry[]>(ctx, apiRefs.skills.searchPackageCatalogPublic, {
-        query: queryText,
-        limit,
-        channel: channelParam.value,
-        isOfficial: isOfficial.value,
-        highlightedOnly: highlightedOnly || undefined,
-        executesCode: executesCode.value,
-        capabilityTag,
-      }),
+      runQueryRef<CatalogSearchEntry[]>(
+        ctx,
+        internalRefs.skills.searchPackageCatalogForHttpInternal,
+        {
+          query: queryText,
+          limit,
+          channel: channelParam.value,
+          isOfficial: isOfficial.value,
+          highlightedOnly: highlightedOnly || undefined,
+          executesCode: executesCode.value,
+          capabilityTag,
+        },
+      ),
     ]);
     const seen = new Set<string>();
     results = [...packageResults, ...skillResults]
@@ -2243,7 +2483,7 @@ async function searchPackages(
       .sort(compareCatalogSearchEntries)
       .slice(0, limit);
   }
-  return json({ results }, 200, rate.headers);
+  return json({ results: results.map(toPublicCatalogSearchEntry) }, 200, rate.headers);
 }
 
 export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Request) {

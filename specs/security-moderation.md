@@ -70,6 +70,10 @@ See also: [acceptable-usage.md](./acceptable-usage.md) for the marketplace polic
 - Any scanner path that determines a skill is malicious must hide the skill and
   schedule the same account-level autoban/token-revocation workflow. Static
   scan malicious findings must not diverge into a softer moderation-only state.
+- Pending skill ownership transfers must not be accepted when the requesting
+  owner is deleted/deactivated or when the skill is malicious, hidden, or
+  removed. The accept path is the final shared gate before ownership changes,
+  so it must cancel the pending transfer before reporting the rejection.
 - `clawScanNote` is optional publisher-authored context stored directly on a
   `skillVersions` or `packageReleases` row. It is not an appeal, has no
   accepted/rejected state, does not imply staff response, and must not drive
@@ -98,19 +102,28 @@ See also: [acceptable-usage.md](./acceptable-usage.md) for the marketplace polic
 ## Skill moderation pipeline
 
 - New skill publishes now persist a deterministic static scan result on the version.
-- Static suspicious findings are advisory evidence only. They no longer produce
-  an aggregate suspicious verdict or public package scan status without VT/LLM
-  corroboration. Static malicious findings still block immediately.
-- ClawScan LLM verdicts treat purpose-aligned notes as user guidance, not a
+- Static suspicious findings are advisory evidence only. Static malicious findings
+  hold the artifact until Codex-backed ClawScan completes.
+- ClawScan verdicts come from a GitHub Actions Codex worker, not a single
+  hosted LLM call. Publishes enqueue a scan job that waits at most 10 minutes
+  for VirusTotal telemetry, then Codex reviews the materialized artifact
+  workspace with static and VT signals as context.
+- ClawScan verdicts treat purpose-aligned notes as user guidance, not a
   suspicious verdict. Medium-only material concerns are visible
   `flagged.review` guidance and must not set `isSuspicious`; high or critical
   concerns remain `flagged.suspicious` and are hidden by the suspicious filter.
-- VirusTotal is telemetry for skills, not the primary classifier. Real AV
-  engine malicious/suspicious hits can still contribute malicious/suspicious
-  reason codes, but Code Insight/Palm suspicious verdicts do not set
-  `isSuspicious` without corroborating engine detections or LLM/static
-  malicious evidence.
-- Operators can schedule targeted LLM rescans for suspicious skills by bucket
+- VirusTotal is telemetry only. It is included in the Codex workspace as signal,
+  but VT alone must never hide, block, or set malicious/suspicious public status.
+- Prompt-injection pre-scan hits are also context for Codex, not a deterministic
+  post-Codex veto. The release worker must not downgrade a benign Codex verdict
+  solely from regex telemetry.
+- Artifacts without non-VT malicious indications are visible immediately while
+  Codex runs. Artifacts with non-VT malicious indications stay hidden/blocked
+  until Codex returns; Codex malicious verdicts hide/block.
+- Plugins under `@openclaw/*` owned by the OpenClaw publisher are trusted by
+  default. They may still be audited, but scanner telemetry alone must not
+  downgrade them.
+- Operators can schedule targeted ClawScan rescans for suspicious skills by bucket
   (`all`, `llm-only`, `vt-only`, `both`) and for suspicious plugin releases.
 - Package/plugin scan backfills now also recompute deterministic static scan results for older releases,
   so legacy plugin versions can surface OpenClaw scan findings without republishing.
@@ -170,6 +183,12 @@ See also: [acceptable-usage.md](./acceptable-usage.md) for the marketplace polic
   - sets `deletedAt` on the user
 - Admins can manually unban (`deletedAt` + `banReason` cleared); revoked API tokens
   stay revoked and should be recreated by the user.
+- Manual unbans and autoban remediation schedule a best-effort account-restored
+  email when the target user has an email address. The notice is sent through
+  Resend from/reply-to `security@openclaw.org`, states that sign-in works again,
+  mentions restored eligible listings, and reminds the user that revoked API
+  tokens stay revoked. Email delivery failures must not block the unban or
+  remediation.
 - Optional ban reason is stored in `users.banReason` and audit logs.
 - Bans schedule a best-effort email notice when the target user has an email
   address. The notice is sent through Resend from/reply-to
