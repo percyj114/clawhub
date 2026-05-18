@@ -225,6 +225,175 @@ describe("httpApiV1 handlers", () => {
     expect(runAction).not.toHaveBeenCalled();
   });
 
+  it("security summary requires staff token and returns rollups", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:moderator",
+      user: { _id: "users:moderator", role: "moderator" },
+    } as never);
+    const runQuery = vi.fn(async (_ref, args) => {
+      if (isRateLimitArgs(args)) return okRate();
+      return {
+        generatedAt: 123,
+        updatedAt: 122,
+        stale: false,
+        totals: {
+          skills: { benign: 1, suspicious: 2, malicious: 3, pending: 4, unknown: 5 },
+          plugins: { benign: 6, suspicious: 7, malicious: 8, pending: 9, unknown: 10 },
+        },
+      };
+    });
+    const response = await __handlers.securityGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation: vi.fn().mockResolvedValue(okRate()) }),
+      new Request("https://example.com/api/v1/security/summary", {
+        headers: { authorization: "Bearer token" },
+      }),
+    );
+
+    if (response.status !== 200) throw new Error(await response.text());
+    expect(await response.json()).toEqual({
+      generatedAt: 123,
+      updatedAt: 122,
+      stale: false,
+      totals: {
+        skills: { benign: 1, suspicious: 2, malicious: 3, pending: 4, unknown: 5 },
+        plugins: { benign: 6, suspicious: 7, malicious: 8, pending: 9, unknown: 10 },
+      },
+    });
+  });
+
+  it("security skill rescan posts to staff mutation", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:moderator",
+      user: { _id: "users:moderator", role: "moderator" },
+    } as never);
+    const runMutation = vi.fn(async (_ref, args) => {
+      if (isRateLimitArgs(args)) return okRate();
+      expect(args).toEqual({ actorUserId: "users:moderator", slug: "demo" });
+      return {
+        ok: true,
+        state: "queued",
+        entityType: "skill",
+        target: "demo",
+        version: "1.0.0",
+        scheduledScanners: ["static", "clawscan", "virustotal"],
+      };
+    });
+    const response = await __handlers.securityPostRouterV1Handler(
+      makeCtx({ runMutation }),
+      new Request("https://example.com/api/v1/security/skills/demo/rescan", {
+        method: "POST",
+        headers: { authorization: "Bearer token" },
+      }),
+    );
+
+    if (response.status !== 200) throw new Error(await response.text());
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      state: "queued",
+      entityType: "skill",
+      target: "demo",
+    });
+  });
+
+  it("security summary returns forbidden for non-staff tokens", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:regular",
+      user: { _id: "users:regular", role: "user" },
+    } as never);
+    const runQuery = vi.fn(async (_ref, args) => {
+      if (isRateLimitArgs(args)) return okRate();
+      throw new Error("Forbidden");
+    });
+
+    const response = await __handlers.securityGetRouterV1Handler(
+      makeCtx({ runQuery }),
+      new Request("https://example.com/api/v1/security/summary", {
+        headers: { authorization: "Bearer token" },
+      }),
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.text()).toBe("Forbidden");
+  });
+
+  it("security plugin rescan rejects malformed json", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:moderator",
+      user: { _id: "users:moderator", role: "moderator" },
+    } as never);
+    const runMutation = vi.fn(async (_ref, args) => {
+      if (isRateLimitArgs(args)) return okRate();
+      throw new Error("Security rescan should not run");
+    });
+
+    const response = await __handlers.securityPostRouterV1Handler(
+      makeCtx({ runMutation }),
+      new Request("https://example.com/api/v1/security/plugins/demo/rescan", {
+        method: "POST",
+        headers: { authorization: "Bearer token", "content-type": "application/json" },
+        body: "{",
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe("Invalid JSON");
+    expect(runMutation).toHaveBeenCalledTimes(1);
+  });
+
+  it("security rescan returns typed target-not-found results", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:moderator",
+      user: { _id: "users:moderator", role: "moderator" },
+    } as never);
+    const runMutation = vi.fn(async (_ref, args) => {
+      if (isRateLimitArgs(args)) return okRate();
+      return {
+        ok: false,
+        state: "target_not_found",
+        entityType: "skill",
+        target: "missing",
+        scheduledScanners: [],
+      };
+    });
+
+    const response = await __handlers.securityPostRouterV1Handler(
+      makeCtx({ runMutation }),
+      new Request("https://example.com/api/v1/security/skills/missing/rescan", {
+        method: "POST",
+        headers: { authorization: "Bearer token" },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      ok: false,
+      state: "target_not_found",
+      target: "missing",
+    });
+  });
+
+  it("security rescan returns forbidden for non-staff tokens", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:regular",
+      user: { _id: "users:regular", role: "user" },
+    } as never);
+    const runMutation = vi.fn(async (_ref, args) => {
+      if (isRateLimitArgs(args)) return okRate();
+      throw new Error("Forbidden");
+    });
+
+    const response = await __handlers.securityPostRouterV1Handler(
+      makeCtx({ runMutation }),
+      new Request("https://example.com/api/v1/security/skills/demo/rescan", {
+        method: "POST",
+        headers: { authorization: "Bearer token" },
+      }),
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.text()).toBe("Forbidden");
+  });
+
   it("users/restore calls restore action for admin", async () => {
     const runAction = vi.fn().mockResolvedValue({ ok: true, totalRestored: 1, results: [] });
     const runMutation = vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {

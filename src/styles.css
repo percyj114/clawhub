@@ -7362,6 +7362,74 @@ code {
   color: var(--ink-soft);
 }
 
+.management-security-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  margin-top: 12px;
+}
+
+.management-security-group {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.management-security-counts {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+}
+
+.management-security-count {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+}
+
+.management-security-count span {
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+}
+
+.management-security-count strong {
+  color: var(--ink);
+  font-size: 1.15rem;
+  line-height: 1.1;
+}
+
+.management-security-problems {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.management-security-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--surface) 84%, transparent);
+}
+
+.management-actions.compact {
+  flex-wrap: nowrap;
+  gap: 8px;
+}
+
+.management-actions.compact .management-action-btn {
+  min-height: 34px;
+  width: auto;
+}
+
 .management-sublist {
   display: grid;
   gap: 8px;

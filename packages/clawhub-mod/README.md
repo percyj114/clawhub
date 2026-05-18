@@ -98,12 +98,15 @@ bun run mod -- set-role <handleOrId> <user|moderator|admin>
 Package moderation and operations:
 
 ```bash
+bun run mod -- security summary [--json]
+
 bun run mod -- skills reports [--status open|confirmed|dismissed|all]
+bun run mod -- skills rescan <slug> [--yes]
 bun run mod -- skills unhide <slug> --reason <text> [--yes]
 bun run mod -- skills triage-report <report-id> --status open|confirmed|dismissed [--note <text>] [--action none|hide] [--yes]
 
 bun run mod -- plugins moderate <name> --version <version> --state approved|quarantined|revoked --reason <text>
-bun run mod -- plugins rescan <name> [--yes]
+bun run mod -- plugins rescan <name> [--version <version>] [--yes]
 bun run mod -- plugins status <name>
 bun run mod -- plugins queue [--status open|blocked|manual|all]
 bun run mod -- plugins reports [--status open|confirmed|dismissed|all]

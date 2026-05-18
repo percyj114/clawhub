@@ -23,6 +23,7 @@ export const ApiRoutes = {
   stars: "/api/v1/stars",
   transfers: "/api/v1/transfers",
   souls: "/api/v1/souls",
+  security: "/api/v1/security",
   users: "/api/v1/users",
   whoami: "/api/v1/whoami",
 } as const;

@@ -23,6 +23,7 @@ export declare const ApiRoutes: {
     readonly stars: "/api/v1/stars";
     readonly transfers: "/api/v1/transfers";
     readonly souls: "/api/v1/souls";
+    readonly security: "/api/v1/security";
     readonly users: "/api/v1/users";
     readonly whoami: "/api/v1/whoami";
 };

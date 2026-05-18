@@ -125,6 +125,14 @@ See also: [acceptable-usage.md](./acceptable-usage.md) for the marketplace polic
   downgrade them.
 - Operators can schedule targeted ClawScan rescans for suspicious skills by bucket
   (`all`, `llm-only`, `vt-only`, `both`) and for suspicious plugin releases.
+- Staff security scan dashboards and CLI summaries read from the
+  `securityScanRollups` read model, not live full-table aggregate scans. Scanner
+  write paths must keep `securityScanEntityStates` and rollups in sync, and
+  backfills must use cursor pagination instead of whole-table collection.
+- Staff-triggered security rescans schedule the existing static, ClawScan/LLM,
+  and VirusTotal scanners when the target artifact has a hash suitable for VT.
+  Requests must be staff-only, audit logged, and deduplicated while a matching
+  queued request is still active.
 - Package/plugin scan backfills now also recompute deterministic static scan results for older releases,
   so legacy plugin versions can surface OpenClaw scan findings without republishing.
 - ClawPack package releases keep static/LLM scan inputs intentionally metadata-only for now:

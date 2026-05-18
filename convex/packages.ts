@@ -81,6 +81,10 @@ import {
 } from "./lib/publishLimits";
 import { MAX_ACTIVE_REPORTS_PER_USER, MAX_REPORT_REASON_LENGTH } from "./lib/reporting";
 import { matchesAllTokens, matchesExploratoryTokenPrefixes, tokenize } from "./lib/searchText";
+import {
+  securityScanStatusFromPackage,
+  syncSecurityScanEntityState,
+} from "./lib/securityScanRollups";
 import { hashSkillFiles } from "./lib/skills";
 import { runStaticPublishScan } from "./lib/staticPublishScan";
 
@@ -2600,6 +2604,12 @@ async function softDeletePackageDoc(
         updatedAt: Date.now(),
       });
     }
+    await syncSecurityScanEntityState(ctx, {
+      entityType: "plugin",
+      targetId: String(pkg._id),
+      label: pkg.name,
+      status: null,
+    });
     return {
       ok: true as const,
       packageId: pkg._id,
@@ -2638,6 +2648,12 @@ async function softDeletePackageDoc(
     ...extractPackageDigestFields(nextPackage),
     ownerHandle: deleteOwner?.handle ?? "",
     ownerKind: deleteOwner?.kind,
+  });
+  await syncSecurityScanEntityState(ctx, {
+    entityType: "plugin",
+    targetId: String(pkg._id),
+    label: pkg.name,
+    status: securityScanStatusFromPackage(nextPackage),
   });
   await ctx.db.insert("auditLogs", {
     actorUserId: params.actorUserId,
@@ -2729,6 +2745,12 @@ async function restorePackageDoc(
   },
 ) {
   if (!pkg.softDeletedAt) {
+    await syncSecurityScanEntityState(ctx, {
+      entityType: "plugin",
+      targetId: String(pkg._id),
+      label: pkg.name,
+      status: pkg.family === "skill" ? null : securityScanStatusFromPackage(pkg),
+    });
     return {
       ok: true as const,
       packageId: pkg._id,
@@ -2816,6 +2838,12 @@ async function restorePackageDoc(
     ...extractPackageDigestFields(nextPackage),
     ownerHandle: restoreOwner?.handle ?? "",
     ownerKind: restoreOwner?.kind,
+  });
+  await syncSecurityScanEntityState(ctx, {
+    entityType: "plugin",
+    targetId: String(pkg._id),
+    label: pkg.name,
+    status: nextPackage.family === "skill" ? null : securityScanStatusFromPackage(nextPackage),
   });
   await ctx.db.insert("auditLogs", {
     actorUserId: params.actorUserId,
@@ -5371,7 +5399,7 @@ export const insertReleaseInternal = internalMutation({
       await ctx.db.patch(priorRelease._id, { distTags: nextDistTags });
     }
 
-    await ctx.db.patch(pkgId, {
+    const packagePatch: Partial<Doc<"packages">> = {
       displayName: args.displayName,
       ownerUserId: args.ownerUserId,
       ownerPublisherId: args.ownerPublisherId ?? pkg.ownerPublisherId,
@@ -5406,6 +5434,14 @@ export const insertReleaseInternal = internalMutation({
       scanStatus: shouldPromoteLatest ? args.verification?.scanStatus : pkg.scanStatus,
       stats: { ...pkg.stats, versions: (pkg.stats?.versions ?? 0) + 1 },
       updatedAt: now,
+    };
+    await ctx.db.patch(pkgId, packagePatch);
+    const nextPackage = { ...pkg, ...packagePatch } as Doc<"packages">;
+    await syncSecurityScanEntityState(ctx, {
+      entityType: "plugin",
+      targetId: String(pkgId),
+      label: nextPackage.name,
+      status: nextPackage.family === "skill" ? null : securityScanStatusFromPackage(nextPackage),
     });
 
     return {
@@ -5447,6 +5483,18 @@ async function syncLatestPackageVerification(ctx: MutationCtx, release: Doc<"pac
           verification: nextVerification,
         }
       : pkg.latestVersionSummary,
+  });
+  await syncSecurityScanEntityState(ctx, {
+    entityType: "plugin",
+    targetId: String(pkg._id),
+    label: pkg.name,
+    status:
+      pkg.family === "skill"
+        ? null
+        : securityScanStatusFromPackage({
+            softDeletedAt: pkg.softDeletedAt,
+            scanStatus,
+          }),
   });
 }
 
@@ -5686,10 +5734,19 @@ export const backfillLatestPackageScanStatusInternal = internalMutation({
         pkg.latestVersionSummary?.verification?.scanStatus !==
           nextLatestVersionSummary?.verification?.scanStatus
       ) {
-        await ctx.db.patch(pkg._id, {
+        const packagePatch: Partial<Doc<"packages">> = {
           verification: nextVerification,
           scanStatus,
           latestVersionSummary: nextLatestVersionSummary,
+        };
+        const nextPackage = { ...pkg, ...packagePatch } as Doc<"packages">;
+        await ctx.db.patch(pkg._id, packagePatch);
+        await syncSecurityScanEntityState(ctx, {
+          entityType: "plugin",
+          targetId: String(pkg._id),
+          label: pkg.name,
+          status:
+            nextPackage.family === "skill" ? null : securityScanStatusFromPackage(nextPackage),
         });
         patched++;
       }

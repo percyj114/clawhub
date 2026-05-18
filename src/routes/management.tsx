@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useMutation, useQuery } from "convex/react";
+import { useMutation, usePaginatedQuery, useQuery } from "convex/react";
 import { useEffect, useState } from "react";
 import { api } from "../../convex/_generated/api";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
@@ -92,6 +92,32 @@ type PluginByNameResult = {
   highlighted: { byUserId: Id<"users">; at: number } | null;
 } | null;
 
+type SecurityScanCounts = {
+  benign: number;
+  suspicious: number;
+  malicious: number;
+  pending: number;
+  unknown: number;
+};
+
+type SecurityScanItem = {
+  entityType: "skill" | "plugin";
+  targetId: string;
+  label: string;
+  status: "suspicious" | "malicious";
+  updatedAt: number;
+};
+
+type SecurityScanSummary = {
+  generatedAt: number;
+  updatedAt: number | null;
+  stale: boolean;
+  totals: {
+    skills: SecurityScanCounts;
+    plugins: SecurityScanCounts;
+  };
+};
+
 function resolveOwnerParam(
   handle: string | null | undefined,
   ownerId?: Id<"users"> | Id<"publishers">,
@@ -149,6 +175,30 @@ function Management() {
     api.skills.listDuplicateCandidates,
     staff ? { limit: 20 } : "skip",
   ) as DuplicateCandidateEntry[] | undefined;
+  const securitySummary = useQuery(
+    api.securityScans.getSecurityScanSummaryForStaff,
+    staff ? {} : "skip",
+  ) as SecurityScanSummary | undefined;
+  const { results: suspiciousSkillRows, status: suspiciousSkillRowsStatus } = usePaginatedQuery(
+    api.securityScans.listSecurityScanItemsForStaff,
+    staff ? { entityType: "skill", status: "suspicious" } : "skip",
+    { initialNumItems: 5 },
+  );
+  const { results: maliciousSkillRows, status: maliciousSkillRowsStatus } = usePaginatedQuery(
+    api.securityScans.listSecurityScanItemsForStaff,
+    staff ? { entityType: "skill", status: "malicious" } : "skip",
+    { initialNumItems: 5 },
+  );
+  const { results: suspiciousPluginRows, status: suspiciousPluginRowsStatus } = usePaginatedQuery(
+    api.securityScans.listSecurityScanItemsForStaff,
+    staff ? { entityType: "plugin", status: "suspicious" } : "skip",
+    { initialNumItems: 5 },
+  );
+  const { results: maliciousPluginRows, status: maliciousPluginRowsStatus } = usePaginatedQuery(
+    api.securityScans.listSecurityScanItemsForStaff,
+    staff ? { entityType: "plugin", status: "malicious" } : "skip",
+    { initialNumItems: 5 },
+  );
 
   const setRole = useMutation(api.users.setRole);
   const banUser = useMutation(api.users.banUser);
@@ -163,6 +213,12 @@ function Management() {
   const setDeprecatedBadge = useMutation(api.skills.setDeprecatedBadge);
   const setSkillManualOverride = useMutation(api.skills.setSkillManualOverride);
   const clearSkillManualOverride = useMutation(api.skills.clearSkillManualOverride);
+  const requestSkillSecurityRescan = useMutation(
+    api.securityScans.requestSkillSecurityRescanForStaff,
+  );
+  const requestPluginSecurityRescan = useMutation(
+    api.securityScans.requestPluginSecurityRescanForStaff,
+  );
 
   const [selectedDuplicate, setSelectedDuplicate] = useState("");
   const [selectedOwner, setSelectedOwner] = useState("");
@@ -172,6 +228,7 @@ function Management() {
   const [userSearchDebounced, setUserSearchDebounced] = useState("");
   const [pluginSearch, setPluginSearch] = useState(selectedPluginName ?? "");
   const [skillOverrideNote, setSkillOverrideNote] = useState("");
+  const [securityRescanMessage, setSecurityRescanMessage] = useState("");
 
   const userQuery = userSearchDebounced.trim();
   const userResult = useQuery(
@@ -262,6 +319,18 @@ function Management() {
         : "No users yet."
       : ""
     : "Loading users…";
+  const securityProblemRows = [
+    ...((maliciousSkillRows ?? []) as SecurityScanItem[]),
+    ...((suspiciousSkillRows ?? []) as SecurityScanItem[]),
+    ...((maliciousPluginRows ?? []) as SecurityScanItem[]),
+    ...((suspiciousPluginRows ?? []) as SecurityScanItem[]),
+  ].slice(0, 12);
+  const securityProblemRowsLoading = [
+    maliciousSkillRowsStatus,
+    suspiciousSkillRowsStatus,
+    maliciousPluginRowsStatus,
+    suspiciousPluginRowsStatus,
+  ].some((status) => status === "LoadingFirstPage");
 
   const applySkillOverride = () => {
     if (!selectedSkill?.skill) return;
@@ -296,10 +365,99 @@ function Management() {
     });
   };
 
+  const requestSelectedSkillRescan = (slug: string) => {
+    setSecurityRescanMessage("");
+    void requestSkillSecurityRescan({ slug })
+      .then((result) => {
+        setSecurityRescanMessage(formatSecurityRescanResult(result));
+      })
+      .catch((error) => window.alert(formatMutationError(error)));
+  };
+
+  const requestSelectedPluginRescan = (name: string, version?: string) => {
+    setSecurityRescanMessage("");
+    void requestPluginSecurityRescan({ name, version })
+      .then((result) => {
+        setSecurityRescanMessage(formatSecurityRescanResult(result));
+      })
+      .catch((error) => window.alert(formatMutationError(error)));
+  };
+
   return (
     <main className="section">
       <h1 className="section-title">Management console</h1>
       <p className="section-subtitle">Moderation, curation, and ownership tools.</p>
+
+      <Card>
+        <h2 className="section-title text-[1.2rem] m-0">Security scans</h2>
+        {securitySummary ? (
+          <>
+            <div className="management-security-grid">
+              <SecurityScanCountGroup label="Skills" counts={securitySummary.totals.skills} />
+              <SecurityScanCountGroup label="Plugins" counts={securitySummary.totals.plugins} />
+            </div>
+            <div className="section-subtitle mt-2">
+              {securitySummary.updatedAt
+                ? `Updated ${formatTimestamp(securitySummary.updatedAt)}`
+                : "Rollups have not been built yet."}
+              {securitySummary.stale ? " Rollups need rebuild before counts are complete." : ""}
+              {securityRescanMessage ? ` ${securityRescanMessage}` : ""}
+            </div>
+            <div className="management-security-problems">
+              <div className="management-report-meta">Problem rows</div>
+              {securityProblemRowsLoading ? (
+                <div className="stat">Loading scan rows…</div>
+              ) : securityProblemRows.length > 0 ? (
+                securityProblemRows.map((row) => (
+                  <div
+                    className="management-security-row"
+                    key={`${row.entityType}:${row.targetId}:${row.status}`}
+                  >
+                    <div>
+                      <strong>{row.label}</strong>
+                      <div className="section-subtitle">
+                        {row.entityType} · {row.status} · {formatTimestamp(row.updatedAt)}
+                      </div>
+                    </div>
+                    <div className="management-actions compact">
+                      <Button
+                        className="management-action-btn"
+                        type="button"
+                        onClick={() =>
+                          row.entityType === "skill"
+                            ? requestSelectedSkillRescan(row.label)
+                            : requestSelectedPluginRescan(row.label)
+                        }
+                      >
+                        Rescan
+                      </Button>
+                      <Button
+                        className="management-action-btn"
+                        type="button"
+                        onClick={() =>
+                          void navigate({
+                            to: "/management",
+                            search:
+                              row.entityType === "skill"
+                                ? { skill: row.label, plugin: undefined }
+                                : { skill: undefined, plugin: row.label },
+                          })
+                        }
+                      >
+                        Open
+                      </Button>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="stat">No suspicious or malicious scan rows.</div>
+              )}
+            </div>
+          </>
+        ) : (
+          <div className="stat">Loading security scan summary…</div>
+        )}
+      </Card>
 
       <Card>
         <h2 className="section-title text-[1.2rem] m-0">Reported skills</h2>
@@ -623,6 +781,14 @@ function Management() {
                     <Button
                       className="management-action-btn"
                       type="button"
+                      disabled={!latestVersion}
+                      onClick={() => requestSelectedSkillRescan(skill.slug)}
+                    >
+                      Rescan
+                    </Button>
+                    <Button
+                      className="management-action-btn"
+                      type="button"
                       onClick={() => {
                         const reason = window.prompt(
                           skill.softDeletedAt ? "Restore reason:" : "Hide reason:",
@@ -802,6 +968,16 @@ function Management() {
                       <Link to="/plugins/$name" params={{ name: plugin.name }}>
                         View
                       </Link>
+                    </Button>
+                    <Button
+                      className="management-action-btn"
+                      type="button"
+                      disabled={!latestRelease}
+                      onClick={() =>
+                        requestSelectedPluginRescan(plugin.name, latestRelease?.version)
+                      }
+                    >
+                      Rescan
                     </Button>
                     <Button
                       className="management-action-btn"
@@ -1066,6 +1242,46 @@ function formatTimestamp(value: number) {
 
 function formatMutationError(error: unknown) {
   return getUserFacingConvexError(error, "Request failed.");
+}
+
+function SecurityScanCountGroup({ label, counts }: { label: string; counts: SecurityScanCounts }) {
+  return (
+    <div className="management-security-group">
+      <div className="management-report-meta">{label}</div>
+      <div className="management-security-counts">
+        <SecurityScanCount label="Benign" value={counts.benign} />
+        <SecurityScanCount label="Suspicious" value={counts.suspicious} />
+        <SecurityScanCount label="Malicious" value={counts.malicious} />
+        <SecurityScanCount label="Pending" value={counts.pending} />
+        <SecurityScanCount label="Unknown" value={counts.unknown} />
+      </div>
+    </div>
+  );
+}
+
+function SecurityScanCount({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="management-security-count">
+      <span>{label}</span>
+      <strong>{value.toLocaleString()}</strong>
+    </div>
+  );
+}
+
+function formatSecurityRescanResult(result: {
+  state: string;
+  target: string;
+  version?: string;
+  scheduledScanners: string[];
+}) {
+  const version = result.version ? `@${result.version}` : "";
+  if (result.state === "queued") {
+    return `Queued ${result.scheduledScanners.join(", ")} rescan for ${result.target}${version}.`;
+  }
+  if (result.state === "already_in_progress") {
+    return `Rescan already in progress for ${result.target}${version}.`;
+  }
+  return `Rescan not queued for ${result.target}: ${result.state}.`;
 }
 
 function formatManualOverrideState(

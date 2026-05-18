@@ -257,8 +257,13 @@ export async function soulsGetRouterV1Handler(ctx: ActionCtx, request: Request) 
     const normalized = path.trim();
     const normalizedLower = normalized.toLowerCase();
     const file =
-      version.files.find((entry) => entry.path === normalized) ??
-      version.files.find((entry) => entry.path.toLowerCase() === normalizedLower);
+      version.files.find(
+        (entry: Doc<"soulVersions">["files"][number]) => entry.path === normalized,
+      ) ??
+      version.files.find(
+        (entry: Doc<"soulVersions">["files"][number]) =>
+          entry.path.toLowerCase() === normalizedLower,
+      );
     if (!file) return text("File not found", 404, rate.headers);
     if (file.size > MAX_RAW_FILE_BYTES) return text("File exceeds 200KB limit", 413, rate.headers);
 

@@ -33,6 +33,8 @@ import {
   publishSoulV1Http,
   resolveSkillVersionV1Http,
   searchSkillsV1Http,
+  securityGetRouterV1Http,
+  securityPostRouterV1Http,
   skillsDeleteRouterV1Http,
   skillsGetRouterV1Http,
   skillsPostRouterV1Http,
@@ -114,6 +116,12 @@ http.route({
 });
 
 http.route({
+  pathPrefix: `${ApiRoutes.security}/`,
+  method: "GET",
+  handler: securityGetRouterV1Http,
+});
+
+http.route({
   pathPrefix: "/api/npm/",
   method: "GET",
   handler: npmMirrorGetHttp,
@@ -147,6 +155,12 @@ http.route({
   pathPrefix: `${ApiRoutes.packages}/`,
   method: "POST",
   handler: packagesPostRouterV1Http,
+});
+
+http.route({
+  pathPrefix: `${ApiRoutes.security}/`,
+  method: "POST",
+  handler: securityPostRouterV1Http,
 });
 
 http.route({

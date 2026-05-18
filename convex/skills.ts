@@ -98,6 +98,10 @@ import {
   upsertReservedSlugForRightfulOwner,
 } from "./lib/reservedSlugs";
 import { matchesAllTokens, matchesExploratoryTokenPrefixes, tokenize } from "./lib/searchText";
+import {
+  securityScanStatusFromSkill,
+  syncSecurityScanEntityState,
+} from "./lib/securityScanRollups";
 import { SKILL_CAPABILITY_TAGS } from "./lib/skillCapabilityTags";
 import { normalizeSkillIconValue } from "./lib/skillIcon";
 import {
@@ -454,6 +458,12 @@ async function patchStructuredModerationFromVersion(
   const nextSkill = { ...skill, ...patch };
   await ctx.db.patch(skill._id, patch);
   await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill);
+  await syncSecurityScanEntityState(ctx, {
+    entityType: "skill",
+    targetId: String(skill._id),
+    label: skill.slug,
+    status: securityScanStatusFromSkill(nextSkill),
+  });
 }
 const TRUSTED_PUBLISHER_SKILL_THRESHOLD = 10;
 const LOW_TRUST_BURST_THRESHOLD_PER_HOUR = 8;
@@ -644,6 +654,12 @@ async function syncSkillModerationFromLatestVersion(
   const nextSkill = { ...skill, ...patch };
   await ctx.db.patch(skill._id, patch);
   await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill);
+  await syncSecurityScanEntityState(ctx, {
+    entityType: "skill",
+    targetId: String(skill._id),
+    label: skill.slug,
+    status: securityScanStatusFromSkill(nextSkill),
+  });
 }
 
 function buildConflictingSkillUrl(skill: Doc<"skills">, owner: SkillOwnerRef) {
@@ -1231,6 +1247,12 @@ async function hardDeleteSkillStep(
     await ctx.db.patch(skill._id, patch);
     await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill);
     await adjustUserSkillStatsForSkillChange(ctx, skill, nextSkill);
+    await syncSecurityScanEntityState(ctx, {
+      entityType: "skill",
+      targetId: String(skill._id),
+      label: skill.slug,
+      status: securityScanStatusFromSkill(nextSkill),
+    });
   }
 
   switch (phase) {
@@ -2511,6 +2533,12 @@ export const clearOwnerSuspiciousFlagsInternal = internalMutation({
       const nextSkill = { ...skill, ...patch };
       await ctx.db.patch(skill._id, patch);
       await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill);
+      await syncSecurityScanEntityState(ctx, {
+        entityType: "skill",
+        targetId: String(skill._id),
+        label: skill.slug,
+        status: securityScanStatusFromSkill(nextSkill),
+      });
       updated += 1;
     }
 
@@ -3226,6 +3254,12 @@ export const report = mutation({
     await ctx.db.patch(skill._id, updates);
     await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill);
     await adjustUserSkillStatsForSkillChange(ctx, skill, nextSkill);
+    await syncSecurityScanEntityState(ctx, {
+      entityType: "skill",
+      targetId: String(skill._id),
+      label: skill.slug,
+      status: securityScanStatusFromSkill(nextSkill),
+    });
 
     if (shouldAutoHide) {
       await setSkillEmbeddingsSoftDeleted(ctx, skill._id, true, now);
@@ -3536,6 +3570,12 @@ async function applySkillReportFinalAction(
   const nextSkill = { ...params.skill, ...patch };
   await ctx.db.patch(params.skill._id, patch);
   await adjustGlobalPublicCountForSkillChange(ctx, params.skill, nextSkill);
+  await syncSecurityScanEntityState(ctx, {
+    entityType: "skill",
+    targetId: String(params.skill._id),
+    label: params.skill.slug,
+    status: securityScanStatusFromSkill(nextSkill),
+  });
   await setSkillEmbeddingsSoftDeleted(ctx, params.skill._id, true, params.now);
 
   await ctx.db.insert("auditLogs", {
@@ -3589,6 +3629,12 @@ async function applySkillAppealFinalAction(
   const nextSkill = { ...params.skill, ...patch };
   await ctx.db.patch(params.skill._id, patch);
   await adjustGlobalPublicCountForSkillChange(ctx, params.skill, nextSkill);
+  await syncSecurityScanEntityState(ctx, {
+    entityType: "skill",
+    targetId: String(params.skill._id),
+    label: params.skill.slug,
+    status: securityScanStatusFromSkill(nextSkill),
+  });
   await setSkillEmbeddingsSoftDeleted(ctx, params.skill._id, false, params.now);
 
   await ctx.db.insert("auditLogs", {
@@ -5703,7 +5749,7 @@ export const hideObviousJunkSuspiciousSkillsInternal = internalMutation({
       if (examples.length < 25) examples.push(skill.slug);
       if (dryRun || accHidden >= maxToHide) continue;
 
-      await ctx.db.patch(skill._id, {
+      const patch: Partial<Doc<"skills">> = {
         softDeletedAt: now,
         moderationStatus: "hidden",
         moderationReason: "cleanup.obvious_junk",
@@ -5712,6 +5758,14 @@ export const hideObviousJunkSuspiciousSkillsInternal = internalMutation({
         hiddenBy: undefined,
         lastReviewedAt: now,
         updatedAt: now,
+      };
+      const nextSkill = { ...skill, ...patch };
+      await ctx.db.patch(skill._id, patch);
+      await syncSecurityScanEntityState(ctx, {
+        entityType: "skill",
+        targetId: String(skill._id),
+        label: skill.slug,
+        status: securityScanStatusFromSkill(nextSkill),
       });
       accHidden++;
     }
@@ -5944,6 +5998,12 @@ export const updateSkillVersionStaticScanInternal = internalMutation({
     const nextSkill = { ...skill, ...patch };
     await ctx.db.patch(skill._id, patch);
     await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill);
+    await syncSecurityScanEntityState(ctx, {
+      entityType: "skill",
+      targetId: String(skill._id),
+      label: skill.slug,
+      status: securityScanStatusFromSkill(nextSkill),
+    });
 
     if (patch.moderationVerdict === "malicious" && skill.ownerUserId) {
       const trigger =
@@ -6243,6 +6303,12 @@ export const escalateSkillByIdInternal = internalMutation({
     const nextSkill = { ...skill, ...patch };
     await ctx.db.patch(skill._id, patch);
     await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill);
+    await syncSecurityScanEntityState(ctx, {
+      entityType: "skill",
+      targetId: String(skill._id),
+      label: skill.slug,
+      status: securityScanStatusFromSkill(nextSkill),
+    });
   },
 });
 
@@ -6256,13 +6322,23 @@ export const updateSkillModerationReasonInternal = internalMutation({
   },
   handler: async (ctx, args) => {
     const skill = await ctx.db.get(args.skillId);
-    await ctx.db.patch(args.skillId, {
+    const patch: Partial<Doc<"skills">> = {
       moderationReason: args.moderationReason,
       isSuspicious: computeIsSuspicious({
         moderationFlags: skill?.moderationFlags,
         moderationReason: args.moderationReason,
       }),
-    });
+    };
+    await ctx.db.patch(args.skillId, patch);
+    if (skill) {
+      const nextSkill = { ...skill, ...patch };
+      await syncSecurityScanEntityState(ctx, {
+        entityType: "skill",
+        targetId: String(skill._id),
+        label: skill.slug,
+        status: securityScanStatusFromSkill(nextSkill),
+      });
+    }
   },
 });
 
@@ -6427,6 +6503,12 @@ export const applyBanToOwnedSkillsBatchInternal = internalMutation({
       await ctx.db.patch(skill._id, patch);
       await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill);
       await adjustUserSkillStatsForSkillChange(ctx, skill, nextSkill);
+      await syncSecurityScanEntityState(ctx, {
+        entityType: "skill",
+        targetId: String(skill._id),
+        label: skill.slug,
+        status: securityScanStatusFromSkill(nextSkill),
+      });
       await setSkillEmbeddingsSoftDeleted(ctx, skill._id, true, args.bannedAt);
     }
 
@@ -6495,6 +6577,12 @@ export const applyUserModerationToOwnedSkillsBatchInternal = internalMutation({
       const nextSkill = { ...skill, ...patch };
       await ctx.db.patch(skill._id, patch);
       await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill);
+      await syncSecurityScanEntityState(ctx, {
+        entityType: "skill",
+        targetId: String(skill._id),
+        label: skill.slug,
+        status: securityScanStatusFromSkill(nextSkill),
+      });
       hiddenCount += 1;
     }
 
@@ -6554,6 +6642,12 @@ export const restoreOwnedSkillsForUnbanBatchInternal = internalMutation({
       await ctx.db.patch(skill._id, patch);
       await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill);
       await adjustUserSkillStatsForSkillChange(ctx, skill, nextSkill);
+      await syncSecurityScanEntityState(ctx, {
+        entityType: "skill",
+        targetId: String(skill._id),
+        label: skill.slug,
+        status: securityScanStatusFromSkill(nextSkill),
+      });
 
       await setSkillEmbeddingsSoftDeleted(ctx, skill._id, false, now);
       restoredCount += 1;
@@ -6656,6 +6750,12 @@ export const restoreOwnedSkillsForModerationLiftBatchInternal = internalMutation
       const nextSkill = { ...skill, ...patch };
       await ctx.db.patch(skill._id, patch);
       await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill);
+      await syncSecurityScanEntityState(ctx, {
+        entityType: "skill",
+        targetId: String(skill._id),
+        label: skill.slug,
+        status: securityScanStatusFromSkill(nextSkill),
+      });
       restoredCount += 1;
     }
 
@@ -6769,13 +6869,21 @@ export const markScanStaleInternal = internalMutation({
     const skill = await ctx.db.get(args.skillId);
     if (!skill) return;
 
-    await ctx.db.patch(args.skillId, {
+    const patch: Partial<Doc<"skills">> = {
       moderationReason: "pending.scan.stale",
       isSuspicious: computeIsSuspicious({
         moderationFlags: skill.moderationFlags,
         moderationReason: "pending.scan.stale",
       }),
       updatedAt: Date.now(),
+    };
+    const nextSkill = { ...skill, ...patch };
+    await ctx.db.patch(args.skillId, patch);
+    await syncSecurityScanEntityState(ctx, {
+      entityType: "skill",
+      targetId: String(skill._id),
+      label: skill.slug,
+      status: securityScanStatusFromSkill(nextSkill),
     });
   },
 });
@@ -7021,6 +7129,12 @@ export const approveSkillByHashInternal = internalMutation({
       const nextSkill = { ...skill, ...patch };
       await ctx.db.patch(skill._id, patch);
       await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill);
+      await syncSecurityScanEntityState(ctx, {
+        entityType: "skill",
+        targetId: String(skill._id),
+        label: skill.slug,
+        status: securityScanStatusFromSkill(nextSkill),
+      });
 
       // Auto-ban authors of malicious skills (skips moderators/admins)
       if (nextVerdict === "malicious" && skill.ownerUserId) {
@@ -7164,6 +7278,12 @@ export const escalateByVtInternal = internalMutation({
     const nextSkill = { ...skill, ...patch };
     await ctx.db.patch(skill._id, patch);
     await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill);
+    await syncSecurityScanEntityState(ctx, {
+      entityType: "skill",
+      targetId: String(skill._id),
+      label: skill.slug,
+      status: securityScanStatusFromSkill(nextSkill),
+    });
 
     // Auto-ban authors of malicious skills
     if (nextVerdict === "malicious" && skill.ownerUserId) {
@@ -7674,6 +7794,12 @@ export const setSkillManualOverride = mutation({
     });
     const nextSkill = { ...skill, manualOverride, ...patch };
     await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill);
+    await syncSecurityScanEntityState(ctx, {
+      entityType: "skill",
+      targetId: String(skill._id),
+      label: skill.slug,
+      status: securityScanStatusFromSkill(nextSkill),
+    });
 
     await ctx.db.insert("auditLogs", {
       actorUserId: user._id,
@@ -7770,6 +7896,12 @@ export const setSoftDeleted = mutation({
     await ctx.db.patch(skill._id, patch);
     await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill);
     await adjustUserSkillStatsForSkillChange(ctx, skill, nextSkill);
+    await syncSecurityScanEntityState(ctx, {
+      entityType: "skill",
+      targetId: String(skill._id),
+      label: skill.slug,
+      status: securityScanStatusFromSkill(nextSkill),
+    });
 
     await setSkillEmbeddingsSoftDeleted(ctx, skill._id, args.deleted, now);
 
@@ -9544,6 +9676,12 @@ export const insertVersion = internalMutation({
     const nextSkill = { ...skill, ...patch };
     await ctx.db.patch(skill._id, patch);
     await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill);
+    await syncSecurityScanEntityState(ctx, {
+      entityType: "skill",
+      targetId: String(skill._id),
+      label: skill.slug,
+      status: securityScanStatusFromSkill(nextSkill),
+    });
 
     if (moderationSnapshot.verdict === "malicious" && skill.ownerUserId) {
       const trigger =

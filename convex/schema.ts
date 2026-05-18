@@ -1726,6 +1726,53 @@ const vtScanLogs = defineTable({
   createdAt: v.number(),
 }).index("by_type_date", ["type", "createdAt"]);
 
+const securityScanStatusValidator = v.union(
+  v.literal("benign"),
+  v.literal("suspicious"),
+  v.literal("malicious"),
+  v.literal("pending"),
+  v.literal("unknown"),
+);
+
+const securityScanEntityTypeValidator = v.union(v.literal("skill"), v.literal("plugin"));
+
+const securityScanRollups = defineTable({
+  entityType: securityScanEntityTypeValidator,
+  status: securityScanStatusValidator,
+  count: v.number(),
+  updatedAt: v.number(),
+}).index("by_entity_status", ["entityType", "status"]);
+
+const securityScanEntityStates = defineTable({
+  entityType: securityScanEntityTypeValidator,
+  targetId: v.string(),
+  label: v.string(),
+  status: securityScanStatusValidator,
+  updatedAt: v.number(),
+})
+  .index("by_entity_target", ["entityType", "targetId"])
+  .index("by_entity_status_updated", ["entityType", "status", "updatedAt"]);
+
+const securityScanRequests = defineTable({
+  entityType: securityScanEntityTypeValidator,
+  targetId: v.string(),
+  targetLabel: v.string(),
+  version: v.optional(v.string()),
+  status: v.union(v.literal("queued")),
+  scanners: v.array(v.string()),
+  requestedByUserId: v.id("users"),
+  createdAt: v.number(),
+  expiresAt: v.number(),
+})
+  .index("by_entity_target_status_expires", ["entityType", "targetId", "status", "expiresAt"])
+  .index("by_requester_created", ["requestedByUserId", "createdAt"]);
+
+const securityScanRollupMetadata = defineTable({
+  key: v.string(),
+  completedAt: v.number(),
+  updatedAt: v.number(),
+}).index("by_key", ["key"]);
+
 const apiTokens = defineTable({
   userId: v.id("users"),
   label: v.string(),
@@ -1934,6 +1981,10 @@ export default defineSchema({
   soulStars,
   auditLogs,
   vtScanLogs,
+  securityScanRollups,
+  securityScanEntityStates,
+  securityScanRequests,
+  securityScanRollupMetadata,
   apiTokens,
   cliDeviceCodes,
   rateLimits,

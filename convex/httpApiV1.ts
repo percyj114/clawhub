@@ -13,6 +13,7 @@ import {
   pluginsGetRouterV1Handler,
   publishPackageV1Handler,
 } from "./httpApiV1/packagesV1";
+import { securityGetRouterV1Handler, securityPostRouterV1Handler } from "./httpApiV1/securityV1";
 import {
   listSkillsV1Handler,
   publishSkillV1Handler,
@@ -46,6 +47,8 @@ export const npmMirrorGetHttp = httpAction(npmMirrorGetHandler);
 export const listCodePluginsV1Http = httpAction(listCodePluginsV1Handler);
 export const listBundlePluginsV1Http = httpAction(listBundlePluginsV1Handler);
 export const verifyDocsSessionV1Http = httpAction(verifyDocsSessionV1Handler);
+export const securityGetRouterV1Http = httpAction(securityGetRouterV1Handler);
+export const securityPostRouterV1Http = httpAction(securityPostRouterV1Handler);
 
 export const searchSkillsV1Http = httpAction(searchSkillsV1Handler);
 export const resolveSkillVersionV1Http = httpAction(resolveSkillVersionV1Handler);
@@ -82,6 +85,8 @@ export const __handlers = {
   listCodePluginsV1Handler,
   listBundlePluginsV1Handler,
   verifyDocsSessionV1Handler,
+  securityGetRouterV1Handler,
+  securityPostRouterV1Handler,
   searchSkillsV1Handler,
   resolveSkillVersionV1Handler,
   listSkillsV1Handler,

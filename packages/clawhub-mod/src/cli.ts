@@ -35,6 +35,11 @@ import {
   cmdTriagePackageReport,
   cmdUpsertPackageMigration,
 } from "./commands/packages.js";
+import {
+  cmdPluginSecurityRescan,
+  cmdSecuritySummary,
+  cmdSkillSecurityRescan,
+} from "./commands/security.js";
 
 const program = new Command()
   .name("clawhub-mod")
@@ -284,6 +289,21 @@ registerPluginModerationCommands(plugins);
 registerPluginGovernanceCommands(plugins);
 registerSkillModerationCommands(skills);
 
+const security = program
+  .command("security")
+  .description("Security scan operations")
+  .showHelpAfterError()
+  .showSuggestionAfterError();
+
+security
+  .command("summary")
+  .description("Show staff security scan counts")
+  .option("--json", "Output JSON")
+  .action(async (options) => {
+    const opts = await resolveGlobalOpts();
+    await cmdSecuritySummary(opts, options);
+  });
+
 function registerPluginGovernanceCommands(command: Command) {
   command
     .command("backfill-artifacts")
@@ -428,6 +448,18 @@ function registerPluginModerationCommands(command: Command) {
 
 function registerPluginOperations(command: Command) {
   command
+    .command("rescan")
+    .description("Request a staff security rescan for a plugin package")
+    .argument("<name>", "Plugin package name")
+    .option("--version <version>", "Plugin package version; defaults to latest")
+    .option("--yes", "Skip confirmation")
+    .option("--json", "Output JSON")
+    .action(async (name, options) => {
+      const opts = await resolveGlobalOpts();
+      await cmdPluginSecurityRescan(opts, name, options, isInputAllowed());
+    });
+
+  command
     .command("moderate")
     .description("Set plugin release moderation state")
     .argument("<name>", "Plugin package name")
@@ -468,6 +500,17 @@ function registerPluginOperations(command: Command) {
 }
 
 function registerSkillModerationCommands(command: Command) {
+  command
+    .command("rescan")
+    .description("Request a staff security rescan for a skill")
+    .argument("<slug>", "Skill slug")
+    .option("--yes", "Skip confirmation")
+    .option("--json", "Output JSON")
+    .action(async (slug, options) => {
+      const opts = await resolveGlobalOpts();
+      await cmdSkillSecurityRescan(opts, slug, options, isInputAllowed());
+    });
+
   command
     .command("unhide")
     .description("Manually restore a hidden skill after moderator review")
