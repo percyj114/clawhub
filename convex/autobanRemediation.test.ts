@@ -619,18 +619,20 @@ describe("autoban remediation users", () => {
     );
 
     expect(result.items[0]).toMatchObject({ decision: "unbanned" });
-    expect(runAfter).toHaveBeenCalledWith(
-      0,
-      expect.anything(),
-      expect.objectContaining({
-        userId: "users:target",
-        restoredAt: 1_700_000_100_000,
-        to: "target@example.com",
-        handle: "false-positive-owner",
-        restoredListings: [{ kind: "skill", name: "false-positive-owner/false-positive" }],
-        source: "autoban_remediation",
-      }),
-    );
+    const scheduledEmail = runAfter.mock.calls.at(-1);
+    expect(scheduledEmail?.[0]).toBe(0);
+    expect(scheduledEmail?.[2]).toMatchObject({
+      userId: "users:target",
+      restoredAt: 1_700_000_100_000,
+      to: "target@example.com",
+      handle: "false-positive-owner",
+      listingContext: {
+        targetUserId: "users:target",
+        bannedAt,
+        triggerSkillIds: ["skills:trigger"],
+      },
+      source: "autoban_remediation",
+    });
   });
 
   it("blocks pending trigger skill scans even when the preview verdict is clean", async () => {

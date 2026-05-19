@@ -74,6 +74,12 @@ const sendUnbanNotificationHandler = (
         to: string;
         handle?: string;
         restoredListings?: Array<{ kind: "skill" | "plugin"; name: string }>;
+        listingContext?: {
+          targetUserId: string;
+          bannedAt: number;
+          triggerSkillIds?: string[];
+        };
+        listingCollectionAttempt?: number;
         source: "manual" | "autoban_remediation";
       },
     ) => Promise<unknown>;
@@ -2158,7 +2164,10 @@ describe("users.unbanUserInternal", () => {
         restoredAt: 1_700_000_100_000,
         to: "target@example.com",
         handle: "target-user",
-        restoredListings: [{ kind: "skill", name: "target-user/wallet-sync" }],
+        listingContext: {
+          targetUserId: "users:target",
+          bannedAt: 1_700_000_000_000,
+        },
         source: "manual",
       }),
     );
@@ -2378,6 +2387,48 @@ describe("users.sendUnbanNotificationInternal", () => {
     expect(payload.html).toContain("Your ClawHub account can sign in again.");
     expect(payload.html).toContain("Skill: target-user/wallet-sync");
     expect(payload.html).toContain("Plugin: @target/demo-plugin");
+  });
+
+  it("waits for restore batches before sending a restored listings email", async () => {
+    process.env.RESEND_API_KEY = "resend-test-key";
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const runQuery = vi.fn().mockResolvedValue({
+      listings: [],
+      hasRemaining: true,
+      continueCursor: undefined,
+    });
+    const runAfter = vi.fn();
+
+    const result = await sendUnbanNotificationHandler(
+      { runQuery, scheduler: { runAfter } } as never,
+      {
+        userId: "users:target",
+        restoredAt: 1_700_000_100_000,
+        to: "target@example.com",
+        handle: "target-user",
+        listingContext: {
+          targetUserId: "users:target",
+          bannedAt: 1_700_000_000_000,
+        },
+        source: "manual",
+      },
+    );
+
+    expect(result).toEqual({ ok: false, reason: "listing_collection_pending" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(runAfter).toHaveBeenCalledWith(
+      5_000,
+      expect.anything(),
+      expect.objectContaining({
+        userId: "users:target",
+        listingCollectionAttempt: 1,
+        listingContext: {
+          targetUserId: "users:target",
+          bannedAt: 1_700_000_000_000,
+        },
+      }),
+    );
   });
 });
 
