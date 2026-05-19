@@ -1,4 +1,6 @@
 import { v } from "convex/values";
+import { Resend } from "resend";
+import type { CreateEmailOptions } from "resend";
 import type { Id } from "../_generated/dataModel";
 
 const DEFAULT_SECURITY_EMAIL = "security@openclaw.org";
@@ -59,89 +61,72 @@ type UnbanNotificationEmailArgs = {
 };
 
 export async function sendBanNotificationEmail(args: BanNotificationEmailArgs) {
-  const apiKey = process.env.RESEND_API_KEY?.trim();
-  if (!apiKey) {
-    console.warn(`[ban-email] RESEND_API_KEY missing; skipped email for ${args.userId}`);
-    return { ok: false as const, reason: "missing_api_key" as const };
-  }
-
   const from = getBanNotificationFromAddress();
   const replyTo = getSecurityEmailAddress();
   const text = buildBanNotificationText(args);
   const html = buildBanNotificationHtml(args);
 
-  try {
-    const response = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "Idempotency-Key": `clawhub-ban-${args.userId}-${args.bannedAt}`,
-      },
-      body: JSON.stringify({
-        from,
-        to: args.to,
-        reply_to: replyTo,
-        subject: "Your ClawHub account was disabled",
-        text,
-        html,
-      }),
-    });
-
-    if (!response.ok) {
-      const body = await response.text().catch(() => "");
-      console.warn(
-        `[ban-email] Resend failed for ${args.userId}: ${response.status} ${body.slice(0, 500)}`,
-      );
-      return { ok: false as const, reason: "resend_error" as const, status: response.status };
-    }
-  } catch (error) {
-    console.warn(`[ban-email] Failed to send ban notification for ${args.userId}`, error);
-    return { ok: false as const, reason: "send_error" as const };
-  }
-
-  return { ok: true as const };
+  return sendTransactionalEmail({
+    logPrefix: "ban-email",
+    recipientLogKey: args.userId,
+    idempotencyKey: `clawhub-ban-${args.userId}-${args.bannedAt}`,
+    message: {
+      from,
+      to: args.to,
+      replyTo,
+      subject: "Your ClawHub account was disabled",
+      text,
+      html,
+    },
+  });
 }
 
 export async function sendUnbanNotificationEmail(args: UnbanNotificationEmailArgs) {
-  const apiKey = process.env.RESEND_API_KEY?.trim();
-  if (!apiKey) {
-    console.warn(`[unban-email] RESEND_API_KEY missing; skipped email for ${args.userId}`);
-    return { ok: false as const, reason: "missing_api_key" as const };
-  }
-
   const from = getBanNotificationFromAddress();
   const replyTo = getSecurityEmailAddress();
   const text = buildUnbanNotificationText(args);
   const html = buildUnbanNotificationHtml(args);
 
-  try {
-    const response = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "Idempotency-Key": `clawhub-unban-${args.userId}-${args.restoredAt}`,
-      },
-      body: JSON.stringify({
-        from,
-        to: args.to,
-        reply_to: replyTo,
-        subject: "Your ClawHub account was restored",
-        text,
-        html,
-      }),
-    });
+  return sendTransactionalEmail({
+    logPrefix: "unban-email",
+    recipientLogKey: args.userId,
+    idempotencyKey: `clawhub-unban-${args.userId}-${args.restoredAt}`,
+    message: {
+      from,
+      to: args.to,
+      replyTo,
+      subject: "Your ClawHub account was restored",
+      text,
+      html,
+    },
+  });
+}
 
-    if (!response.ok) {
-      const body = await response.text().catch(() => "");
-      console.warn(
-        `[unban-email] Resend failed for ${args.userId}: ${response.status} ${body.slice(0, 500)}`,
-      );
-      return { ok: false as const, reason: "resend_error" as const, status: response.status };
+async function sendTransactionalEmail(args: {
+  logPrefix: string;
+  recipientLogKey: string;
+  idempotencyKey: string;
+  message: CreateEmailOptions;
+}) {
+  const apiKey = process.env.RESEND_API_KEY?.trim();
+  if (!apiKey) {
+    console.warn(
+      `[${args.logPrefix}] RESEND_API_KEY missing; skipped email for ${args.recipientLogKey}`,
+    );
+    return { ok: false as const, reason: "missing_api_key" as const };
+  }
+
+  try {
+    const resend = new Resend(apiKey);
+    const { error } = await resend.emails.send(args.message, {
+      idempotencyKey: args.idempotencyKey,
+    });
+    if (error) {
+      console.warn(`[${args.logPrefix}] Resend failed for ${args.recipientLogKey}`, error);
+      return { ok: false as const, reason: "resend_error" as const };
     }
   } catch (error) {
-    console.warn(`[unban-email] Failed to send unban notification for ${args.userId}`, error);
+    console.warn(`[${args.logPrefix}] Failed to send email for ${args.recipientLogKey}`, error);
     return { ok: false as const, reason: "send_error" as const };
   }
 

@@ -10,6 +10,19 @@ import {
   requireUser,
 } from "./lib/access";
 import { isLocalDevAuthEnabled } from "./lib/devAuth";
+import {
+  banNotificationArtifactValidator,
+  restoredListingValidator,
+  sendBanNotificationEmail,
+  sendUnbanNotificationEmail,
+  type BanNotificationArtifact,
+  type BanNotificationArtifactKind,
+  type BanNotificationSource,
+  type RestoredListing,
+  type UnbanNotificationListingContext,
+  type UnbanNotificationSource,
+  unbanNotificationListingContextValidator,
+} from "./lib/emails";
 import { syncGitHubProfile } from "./lib/githubAccount";
 import { resolvePackageReleaseScanStatus } from "./lib/packageSecurity";
 import { toPublicUser } from "./lib/public";
@@ -26,19 +39,6 @@ import {
   normalizeReservedHandle,
   upsertReservedHandleForRightfulOwner,
 } from "./lib/reservedHandles";
-import {
-  banNotificationArtifactValidator,
-  restoredListingValidator,
-  sendBanNotificationEmail,
-  sendUnbanNotificationEmail,
-  type BanNotificationArtifact,
-  type BanNotificationArtifactKind,
-  type BanNotificationSource,
-  type RestoredListing,
-  type UnbanNotificationListingContext,
-  type UnbanNotificationSource,
-  unbanNotificationListingContextValidator,
-} from "./lib/securityEmails";
 import { buildUserSearchResults } from "./lib/userSearch";
 import { insertStatEvent } from "./skillStatEvents";
 

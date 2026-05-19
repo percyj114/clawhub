@@ -2221,14 +2221,11 @@ describe("users.sendBanNotificationInternal", () => {
 
     expect(result).toEqual({ ok: true });
     expect(fetchCalls[0]?.[0]).toBe("https://api.resend.com/emails");
-    expect(fetchCalls[0]?.[1]).toMatchObject({
-      method: "POST",
-      headers: {
-        Authorization: "Bearer resend-test-key",
-        "Content-Type": "application/json",
-        "Idempotency-Key": "clawhub-ban-users:target-1700000000000",
-      },
-    });
+    expect(fetchCalls[0]?.[1]?.method).toBe("POST");
+    const headers = new Headers(fetchCalls[0]?.[1]?.headers);
+    expect(headers.get("Authorization")).toBe("Bearer resend-test-key");
+    expect(headers.get("Content-Type")).toBe("application/json");
+    expect(headers.get("Idempotency-Key")).toBe("clawhub-ban-users:target-1700000000000");
     const firstCall = fetchCalls[0];
     expect(firstCall).toBeDefined();
     const rawBody = firstCall?.[1]?.body;
@@ -2353,14 +2350,11 @@ describe("users.sendUnbanNotificationInternal", () => {
 
     expect(result).toEqual({ ok: true });
     expect(fetchCalls[0]?.[0]).toBe("https://api.resend.com/emails");
-    expect(fetchCalls[0]?.[1]).toMatchObject({
-      method: "POST",
-      headers: {
-        Authorization: "Bearer resend-test-key",
-        "Content-Type": "application/json",
-        "Idempotency-Key": "clawhub-unban-users:target-1700000100000",
-      },
-    });
+    expect(fetchCalls[0]?.[1]?.method).toBe("POST");
+    const headers = new Headers(fetchCalls[0]?.[1]?.headers);
+    expect(headers.get("Authorization")).toBe("Bearer resend-test-key");
+    expect(headers.get("Content-Type")).toBe("application/json");
+    expect(headers.get("Idempotency-Key")).toBe("clawhub-unban-users:target-1700000100000");
     const rawBody = fetchCalls[0]?.[1]?.body;
     expect(typeof rawBody).toBe("string");
     const payload = JSON.parse(rawBody as string) as {
