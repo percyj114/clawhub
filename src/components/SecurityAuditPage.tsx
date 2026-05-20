@@ -109,6 +109,26 @@ function getVirusTotalEngineStats(analysis?: VtAnalysis | null) {
   return analysis?.engineStats ?? analysis?.metadata?.stats ?? null;
 }
 
+function getVirusTotalFindingCounts(analysis?: VtAnalysis | null) {
+  const stats = getVirusTotalEngineStats(analysis);
+  if (!stats) return [];
+
+  return [
+    {
+      status: "malicious",
+      title: "Malicious detection",
+      count: stats.malicious ?? 0,
+      description: "VirusTotal vendor engines flagged this artifact as malicious.",
+    },
+    {
+      status: "suspicious",
+      title: "Suspicious detection",
+      count: stats.suspicious ?? 0,
+      description: "VirusTotal vendor engines flagged this artifact as suspicious.",
+    },
+  ].filter((finding) => finding.count > 0);
+}
+
 function hasEngineVirusTotalSource(analysis?: VtAnalysis | null) {
   const source = analysis?.source?.trim().toLowerCase();
   const scanner = analysis?.scanner?.trim().toLowerCase();
@@ -128,8 +148,8 @@ function getArtifactKindLabel(entity: EntityRef) {
   return entity.kind === "plugin" ? "plugin" : "skill";
 }
 
-function getVirusTotalNoFindingsCopy(entity: EntityRef) {
-  return `No VirusTotal findings for this ${getArtifactKindLabel(entity)} version.`;
+function getVirusTotalNoFindingsCopy(_entity: EntityRef) {
+  return "No VirusTotal findings";
 }
 
 function getVirusTotalPendingCopy(entity: EntityRef) {
@@ -277,32 +297,33 @@ function PublisherNoteSection(props: SecurityAuditPageProps) {
 }
 
 function VirusTotalSection(props: SecurityAuditPageProps) {
-  const stats = getVirusTotalEngineStats(props.vtAnalysis);
+  const findings = getVirusTotalFindingCounts(props.vtAnalysis);
   const vtUrl = props.sha256hash ? `https://www.virustotal.com/gui/file/${props.sha256hash}` : null;
   return (
     <div className="security-report-panel-body">
       <div className="security-report-overview-body">
         <p>{getVirusTotalOverviewCopy(props.vtAnalysis, props.entity)}</p>
       </div>
-      {stats ? (
-        <dl className="security-audit-stat-grid" aria-label="VirusTotal engine stats">
-          <div>
-            <dt>Malicious</dt>
-            <dd>{stats.malicious ?? 0}</dd>
-          </div>
-          <div>
-            <dt>Suspicious</dt>
-            <dd>{stats.suspicious ?? 0}</dd>
-          </div>
-          <div>
-            <dt>Harmless</dt>
-            <dd>{stats.harmless ?? 0}</dd>
-          </div>
-          <div>
-            <dt>Undetected</dt>
-            <dd>{stats.undetected ?? 0}</dd>
-          </div>
-        </dl>
+      {findings.length > 0 ? (
+        <div className="virustotal-findings" aria-label="VirusTotal findings">
+          {findings.map((finding) => (
+            <article className="virustotal-finding" key={finding.status}>
+              <div className="agentic-risk-finding-header">
+                <h3 className="agentic-risk-finding-title">
+                  {finding.title}
+                  {finding.count === 1 ? "" : "s"}
+                </h3>
+                <div className="agentic-risk-finding-badges">
+                  <ScanResultBadge
+                    status={finding.status}
+                    label={`${finding.count} engine${finding.count === 1 ? "" : "s"}`}
+                  />
+                </div>
+              </div>
+              <p>{finding.description}</p>
+            </article>
+          ))}
+        </div>
       ) : null}
       {vtUrl ? (
         <a

@@ -565,7 +565,8 @@ describe("SecurityScanResults static guidance", () => {
       ),
     ).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Overview" })).toBeTruthy();
-    expect(screen.getByText(/No VirusTotal findings for this skill version/i)).toBeTruthy();
+    expect(screen.getByText("No VirusTotal findings")).toBeTruthy();
+    expect(screen.queryByLabelText("VirusTotal findings")).toBeNull();
     expect(screen.getByRole("heading", { name: "Security Audit Metadata" })).toBeTruthy();
     expect(screen.getByRole("link", { name: /View on VirusTotal/i }).getAttribute("href")).toBe(
       "https://www.virustotal.com/gui/file/abc123",
@@ -602,8 +603,38 @@ describe("SecurityScanResults static guidance", () => {
     );
 
     expect(screen.getByRole("heading", { name: "Overview" })).toBeTruthy();
-    expect(screen.getByText(/No VirusTotal findings for this skill version/i)).toBeTruthy();
+    expect(screen.getByText("No VirusTotal findings")).toBeTruthy();
+    expect(screen.queryByLabelText("VirusTotal findings")).toBeNull();
     expect(screen.queryByText(/No VirusTotal analysis has been recorded/i)).toBeNull();
+  });
+
+  it("shows non-zero VirusTotal detection counts as findings", () => {
+    render(
+      <SecurityAuditPage
+        entity={{
+          kind: "skill",
+          title: "Hash Guard",
+          name: "hash-guard",
+          version: "1.2.3",
+          detailPath: "/local/hash-guard",
+        }}
+        sha256hash="abc123"
+        vtAnalysis={{
+          status: "malicious",
+          source: "engines",
+          engineStats: { malicious: 2, suspicious: 1, harmless: 3, undetected: 58 },
+          checkedAt: Date.now(),
+        }}
+      />,
+    );
+
+    expect(screen.getByLabelText("VirusTotal findings")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Malicious detections" })).toBeTruthy();
+    expect(screen.getByText("2 engines")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Suspicious detection" })).toBeTruthy();
+    expect(screen.getByText("1 engine")).toBeTruthy();
+    expect(screen.queryByText("Harmless")).toBeNull();
+    expect(screen.queryByText("Undetected")).toBeNull();
   });
 
   it("renders VirusTotal undetected-only fallback as pass", () => {
@@ -675,7 +706,7 @@ describe("SecurityScanResults static guidance", () => {
     expect(screen.queryByText(/multi-engine malware detections/i)).toBeNull();
     expect(screen.queryByRole("heading", { name: /Findings/ })).toBeNull();
     expect(screen.queryByText(/raw AI context/i)).toBeNull();
-    expect(screen.getByText(/No VirusTotal findings for this skill version/i)).toBeTruthy();
+    expect(screen.getByText("No VirusTotal findings")).toBeTruthy();
   });
 
   it("shows static analysis reports in the shared scanner report shell", () => {
@@ -818,7 +849,7 @@ describe("SecurityScanResults static guidance", () => {
       screen.getByText("VirusTotal findings are pending for this skill version."),
     ).toBeTruthy();
     expect(screen.getByText("Static analysis findings are pending for this release.")).toBeTruthy();
-    expect(screen.queryByText("No VirusTotal findings for this skill version.")).toBeNull();
+    expect(screen.queryByText("No VirusTotal findings")).toBeNull();
     expect(
       screen.queryByText("No static analysis findings were reported for this release."),
     ).toBeNull();
