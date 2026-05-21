@@ -23,6 +23,7 @@
 - API: return `400` for invalid known public package filters and invalid skill list sort values, while continuing to ignore unknown query parameters (#2184).
 - API/docs: document v1 plain-text error responses and expose owner metadata in the OpenAPI search result schema (#2187) (thanks @vyctorbrzezowski).
 - Web: rank publisher card preview items by downloads instead of recent publish order (thanks @vyctorbrzezowski).
+- Web: remove the desktop Files tab height cap and make mobile truncation explicit (thanks @vyctorbrzezowski).
 - Web: keep skill/plugin detail tabs at mobile-friendly touch target height.
 
 ### Changes
