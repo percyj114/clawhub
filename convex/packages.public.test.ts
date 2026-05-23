@@ -3342,6 +3342,52 @@ describe("packages public queries", () => {
     );
   });
 
+  it("downgrades package owner transfers into community publishers to community", async () => {
+    const { ctx, patch } = makeUserTransferPackageOwnerCtx({
+      destinationMembershipRole: "owner",
+      pkg: makePackageDoc({
+        _id: "packages:opik",
+        name: "@opik/opik-openclaw",
+        normalizedName: "@opik/opik-openclaw",
+        ownerUserId: "users:vincent",
+        ownerPublisherId: "publishers:vincent",
+        channel: "official",
+        isOfficial: true,
+      }),
+    });
+
+    await expect(
+      transferPackageOwnerForUserInternalHandler(ctx, {
+        actorUserId: "users:vincent",
+        name: "@opik/opik-openclaw",
+        toOwner: "opik",
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      packageId: "packages:opik",
+      ownerPublisherId: "publishers:opik",
+      channel: "community",
+      isOfficial: false,
+    });
+
+    expect(patch).toHaveBeenCalledWith(
+      "packages:opik",
+      expect.objectContaining({
+        ownerPublisherId: "publishers:opik",
+        channel: "community",
+        isOfficial: false,
+      }),
+    );
+    expect(patch).toHaveBeenCalledWith(
+      "packageSearchDigest:opik",
+      expect.objectContaining({
+        ownerPublisherId: "publishers:opik",
+        channel: "community",
+        isOfficial: false,
+      }),
+    );
+  });
+
   it("rejects user package transfers without source admin access", async () => {
     const { ctx } = makeUserTransferPackageOwnerCtx({
       pkg: makePackageDoc({
@@ -3587,6 +3633,57 @@ describe("packages public queries", () => {
       "packages:demo",
       expect.objectContaining({
         ownerPublisherId: undefined,
+        channel: "official",
+        isOfficial: true,
+      }),
+    );
+  });
+
+  it("keeps public publishes by official publishers official when a community channel is requested", async () => {
+    const ctx = makeInsertReleaseCtx(
+      makePackageDoc({
+        ownerUserId: "users:openclaw",
+        ownerPublisherId: "publishers:openclaw",
+        channel: "community",
+        isOfficial: false,
+      }),
+      [],
+      {
+        "users:openclaw": {
+          _id: "users:openclaw",
+          role: "user",
+          personalPublisherId: "publishers:openclaw",
+        },
+        "publishers:openclaw": {
+          _id: "publishers:openclaw",
+          kind: "user",
+          handle: "openclaw",
+          linkedUserId: "users:openclaw",
+          official: { byUserId: "users:admin", at: 123 },
+        },
+      },
+    );
+
+    await insertReleaseInternalHandler(ctx, {
+      actorUserId: "users:openclaw",
+      ownerUserId: "users:openclaw",
+      ownerPublisherId: "publishers:openclaw",
+      name: "demo-plugin",
+      displayName: "Demo Plugin",
+      family: "code-plugin",
+      version: "1.0.1",
+      changelog: "owner release",
+      channel: "community",
+      tags: ["latest"],
+      summary: "demo",
+      files: [],
+      integritySha256: "abc123",
+    });
+
+    expect(ctx.patch).toHaveBeenCalledWith(
+      "packages:demo",
+      expect.objectContaining({
+        ownerPublisherId: "publishers:openclaw",
         channel: "official",
         isOfficial: true,
       }),

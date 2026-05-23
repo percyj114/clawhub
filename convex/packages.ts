@@ -5130,13 +5130,11 @@ async function patchPackageOwnerWithAudit(
 ) {
   const now = Date.now();
   const publisherOfficial = isOfficialPackagePublisher(args.ownerPublisher);
-  const nextChannel =
-    args.channel ??
-    (args.pkg.channel === "private"
-      ? "private"
-      : publisherOfficial
-        ? "official"
-        : args.pkg.channel);
+  const nextChannel = derivePackagePublisherChannel({
+    requestedChannel: args.channel,
+    currentChannel: args.pkg.channel,
+    publisherOfficial,
+  });
   if (nextChannel === "official" && !publisherOfficial) {
     throw new ConvexError("Only official publishers may own official packages");
   }
@@ -5181,6 +5179,19 @@ async function patchPackageOwnerWithAudit(
     channel: nextChannel,
     isOfficial: nextChannel === "official",
   };
+}
+
+function derivePackagePublisherChannel(args: {
+  requestedChannel?: PackageChannel;
+  currentChannel?: PackageChannel;
+  currentIsReservation?: boolean;
+  publisherOfficial: boolean;
+}) {
+  if (args.currentChannel === "private" && !args.currentIsReservation) return "private";
+  if (args.publisherOfficial) {
+    return args.requestedChannel === "private" ? "private" : "official";
+  }
+  return args.requestedChannel ?? "community";
 }
 
 async function transferPackageOwnerForUser(
@@ -5510,13 +5521,12 @@ export const insertReleaseInternal = internalMutation({
         `Package "${nextNameLabel}" was deleted. Restore it before publishing another release or choose a new package name.`,
       );
     }
-    const nextChannel =
-      args.channel ??
-      (existing?.channel === "private" && !existingIsReservation
-        ? "private"
-        : publisherOfficial
-          ? "official"
-          : "community");
+    const nextChannel = derivePackagePublisherChannel({
+      requestedChannel: args.channel,
+      currentChannel: existing?.channel,
+      currentIsReservation: existingIsReservation,
+      publisherOfficial,
+    });
     const nextIsOfficial = nextChannel === "official";
     const nextRuntimeIdLabel = typeof args.runtimeId === "string" ? args.runtimeId : "<unknown>";
     const nextVersionLabel = typeof args.version === "string" ? args.version : "<unknown>";
