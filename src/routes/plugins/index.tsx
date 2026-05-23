@@ -211,7 +211,7 @@ function PluginsIndexPending() {
           activeSort="updated"
           onSortChange={() => {}}
           filters={[
-            { key: "verified", label: "Verified only", active: false },
+            { key: "official", label: "Official only", active: false },
             { key: "executesCode", label: "Executes code", active: false },
           ]}
           onFilterToggle={() => {}}
@@ -435,7 +435,7 @@ function PluginsIndex() {
           activeSort={activeSort}
           onSortChange={handleSortChange}
           filters={[
-            { key: "verified", label: "Verified only", active: search.verified ?? false },
+            { key: "verified", label: "Official only", active: search.verified ?? false },
             { key: "executesCode", label: "Executes code", active: search.executesCode ?? false },
           ]}
           onFilterToggle={handleFilterToggle}

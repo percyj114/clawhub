@@ -277,6 +277,7 @@ describe("skills.getBySlug", () => {
       image: null,
       bio: "Ships demo skills",
       linkedUserId: "users:1",
+      official: false,
     });
     expect(result?.owner).not.toHaveProperty("email");
     expect(result?.owner).not.toHaveProperty("emailVerificationTime");

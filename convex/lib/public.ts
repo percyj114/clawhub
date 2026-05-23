@@ -9,7 +9,7 @@ export type PublicUser = Pick<
 export type PublicPublisher = Pick<
   Doc<"publishers">,
   "_id" | "_creationTime" | "kind" | "handle" | "displayName" | "image" | "bio" | "linkedUserId"
->;
+> & { official?: boolean };
 
 export type PublicSkill = Pick<
   Doc<"skills">,
@@ -112,6 +112,7 @@ export function toPublicPublisher(
     image: publisher.image,
     bio: publisher.bio,
     linkedUserId: publisher.linkedUserId,
+    official: Boolean(publisher.official),
   };
 }
 

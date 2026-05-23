@@ -526,10 +526,10 @@ We should introduce explicit **distribution channels**.
 Suggested channels:
 
 - `official`
-  - packages from GitHub accounts/logins explicitly marked official by a
-    moderator
-  - examples may include large known vendors such as xAI or Tencent when
-    their GitHub account/login is marked official
+  - packages from publisher accounts explicitly marked Official by ClawHub
+    admins
+  - Official is currently limited to OpenClaw/Foundation-affiliated publishers
+  - org membership alone does not make a member's personal publisher Official
   - highest default trust
 - `community`
   - public plugins that pass structural validation
@@ -539,9 +539,9 @@ Suggested channels:
 Channel rules:
 
 - channel is assigned by ClawHub policy, not self-declared by the publisher
-- `official` is a moderator-set flag on a GitHub account/login
-- marking an account/login `official` applies to all existing and future
-  packages from that account
+- `official` is an admin-set flag on a publisher account
+- marking a publisher `official` applies to its existing and future official
+  skill/package UI/API labels
 - package channel derives from the publisher account/login plus package
   visibility state
 - each release still has its own verification state

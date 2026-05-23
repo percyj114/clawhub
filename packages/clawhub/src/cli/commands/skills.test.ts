@@ -618,6 +618,41 @@ describe("cmdInstall", () => {
     expect(zipArgs?.token).toBe("tkn");
   });
 
+  it("writes official publisher metadata into installed skill origin", async () => {
+    mockApiRequest.mockResolvedValue({
+      skill: {
+        slug: "demo",
+        displayName: "Demo",
+        summary: null,
+        tags: {},
+        stats: {},
+        official: false,
+        createdAt: 0,
+        updatedAt: 0,
+      },
+      latestVersion: { version: "1.0.0" },
+      owner: { handle: "openclaw", official: true },
+      moderation: null,
+    });
+    mockDownloadZip.mockResolvedValue(new Uint8Array([1, 2, 3]));
+    vi.mocked(readLockfile).mockResolvedValue({ version: 1, skills: {} });
+    vi.mocked(writeLockfile).mockResolvedValue();
+    vi.mocked(writeSkillOrigin).mockResolvedValue();
+    vi.mocked(extractZipToDir).mockResolvedValue();
+    vi.mocked(stat).mockRejectedValue(new Error("missing"));
+    vi.mocked(rm).mockResolvedValue();
+
+    await cmdInstall(makeOpts(), "demo");
+
+    expect(writeSkillOrigin).toHaveBeenCalledWith(
+      "/work/skills/demo",
+      expect.objectContaining({
+        ownerHandle: "openclaw",
+        official: true,
+      }),
+    );
+  });
+
   it("blocks force reinstall when a skill is pinned", async () => {
     vi.mocked(readLockfile).mockResolvedValue({
       version: 1,

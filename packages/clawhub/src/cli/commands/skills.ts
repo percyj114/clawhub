@@ -98,6 +98,19 @@ function formatSearchOwner(entry: {
   return entry.owner?.displayName ?? "unknown owner";
 }
 
+function getSkillOriginMetadata(skillMeta: {
+  skill: { official?: boolean } | null;
+  owner: { handle: string | null; official?: boolean } | null;
+}) {
+  const ownerHandle = skillMeta.owner?.handle?.trim();
+  return {
+    ...(ownerHandle ? { ownerHandle } : {}),
+    ...(skillMeta.skill?.official === true || skillMeta.owner?.official === true
+      ? { official: true }
+      : {}),
+  };
+}
+
 export async function cmdSearch(opts: GlobalOpts, query: string, limit?: number) {
   if (!query) fail("Query required");
 
@@ -220,6 +233,7 @@ export async function cmdInstall(
       installedVersion: resolvedVersion,
       installedAt: Date.now(),
       fingerprint: installedFingerprint,
+      ...getSkillOriginMetadata(skillMeta),
     });
 
     lock.skills[trimmed] = withPinnedMetadata(resolvedVersion, Date.now(), existingEntry);
@@ -395,6 +409,7 @@ export async function cmdUpdate(
         installedVersion: targetVersion,
         installedAt: existingOrigin?.installedAt ?? Date.now(),
         fingerprint: installedFingerprint,
+        ...getSkillOriginMetadata(skillMeta),
       });
 
       lock.skills[entry] = withPinnedMetadata(targetVersion, Date.now(), lock.skills[entry]);

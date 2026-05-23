@@ -4,6 +4,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalMutation, internalQuery, mutation, query } from "./functions";
 import { assertAdmin, getOptionalActiveAuthUserId, requireUser } from "./lib/access";
+import { extractPackageDigestFields, upsertPackageSearchDigest } from "./lib/packageSearchDigest";
 import { toPublicPublisher } from "./lib/public";
 import {
   formatReservedPublicOwnerHandleMessage,
@@ -25,6 +26,8 @@ import { readCanonicalStat } from "./lib/skillStats";
 const PUBLISHER_HANDLE_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
 const MAX_PUBLIC_PUBLISHER_LIST_LIMIT = 500;
 const PUBLISHER_LIST_PREVIEW_LIMIT = 3;
+const PUBLISHER_OFFICIAL_PACKAGE_SYNC_LIMIT = 100;
+const PUBLISHER_OFFICIAL_SKILL_SYNC_LIMIT = 100;
 
 type PublisherListStats = {
   skills: number;
@@ -53,6 +56,7 @@ type PublisherCatalogItem = {
   href: string;
   downloads: number;
   stars: number;
+  isOfficial: boolean;
   updatedAt: number;
 };
 
@@ -183,6 +187,116 @@ async function getPublisherPublishedPreviewRows(
   return { skills, packages };
 }
 
+async function syncPublisherPackageOfficialState(
+  ctx: Pick<MutationCtx, "db">,
+  publisherId: Id<"publishers">,
+  official: boolean,
+  now: number,
+) {
+  const packages = await ctx.db
+    .query("packages")
+    .withIndex("by_owner_publisher_active_updated", (q) =>
+      q.eq("ownerPublisherId", publisherId).eq("softDeletedAt", undefined),
+    )
+    .take(PUBLISHER_OFFICIAL_PACKAGE_SYNC_LIMIT);
+
+  let updatedPackages = 0;
+  for (const pkg of packages) {
+    const nextChannel: Doc<"packages">["channel"] =
+      pkg.channel === "private" ? "private" : official ? "official" : "community";
+    const nextIsOfficial = nextChannel === "official";
+    if (pkg.channel === nextChannel && pkg.isOfficial === nextIsOfficial) continue;
+
+    const nextPackage = {
+      ...pkg,
+      channel: nextChannel,
+      isOfficial: nextIsOfficial,
+      updatedAt: now,
+    };
+    await ctx.db.patch(pkg._id, {
+      channel: nextChannel,
+      isOfficial: nextIsOfficial,
+      updatedAt: now,
+    });
+    await upsertPackageSearchDigest(ctx, extractPackageDigestFields(nextPackage));
+    updatedPackages += 1;
+  }
+
+  return {
+    updatedPackages,
+    packageSyncTruncated: packages.length === PUBLISHER_OFFICIAL_PACKAGE_SYNC_LIMIT,
+  };
+}
+
+async function syncPublisherSkillOfficialState(
+  ctx: Pick<MutationCtx, "db">,
+  publisherId: Id<"publishers">,
+  official: boolean,
+  byUserId: Id<"users">,
+  now: number,
+) {
+  const skills = await ctx.db
+    .query("skills")
+    .withIndex("by_owner_publisher_active_updated", (q) =>
+      q.eq("ownerPublisherId", publisherId).eq("softDeletedAt", undefined),
+    )
+    .take(PUBLISHER_OFFICIAL_SKILL_SYNC_LIMIT);
+
+  let updatedSkills = 0;
+  for (const skill of skills) {
+    const existingBadge = await ctx.db
+      .query("skillBadges")
+      .withIndex("by_skill_kind", (q) => q.eq("skillId", skill._id).eq("kind", "official"))
+      .unique();
+
+    const nextBadges = official
+      ? {
+          ...skill.badges,
+          official: { byUserId, at: now },
+        }
+      : removeOfficialSkillBadge(skill.badges ?? {});
+
+    if (official) {
+      if (existingBadge) {
+        await ctx.db.patch(existingBadge._id, { byUserId, at: now });
+      } else {
+        await ctx.db.insert("skillBadges", {
+          skillId: skill._id,
+          kind: "official",
+          byUserId,
+          at: now,
+        });
+      }
+    } else if (existingBadge) {
+      await ctx.db.delete(existingBadge._id);
+    }
+
+    const previousBadge = skill.badges?.official;
+    const badgeChanged =
+      Boolean(previousBadge) !== official ||
+      (official && (previousBadge?.byUserId !== byUserId || previousBadge?.at !== now));
+    if (badgeChanged) {
+      await ctx.db.patch(skill._id, { badges: nextBadges });
+      const digest = await ctx.db
+        .query("skillSearchDigest")
+        .withIndex("by_skill", (q) => q.eq("skillId", skill._id))
+        .unique();
+      if (digest) await ctx.db.patch(digest._id, { badges: nextBadges });
+      updatedSkills += 1;
+    }
+  }
+
+  return {
+    updatedSkills,
+    skillSyncTruncated: skills.length === PUBLISHER_OFFICIAL_SKILL_SYNC_LIMIT,
+  };
+}
+
+function removeOfficialSkillBadge(badges: NonNullable<Doc<"skills">["badges"]>) {
+  const { official: _official, ...remainingBadges } = badges;
+  return remainingBadges;
+}
+
 function getIndexedPublisherStatsFromRows(rows: PublisherPublishedRows): PublisherListStats {
   const stats = emptyPublisherListStats();
 
@@ -268,6 +382,7 @@ function getPublisherCatalogItems(
       href: `/${encodeURIComponent(publisher.handle)}/${encodeURIComponent(skill.slug)}`,
       downloads: readCanonicalStat(skill, "downloads"),
       stars: readCanonicalStat(skill, "stars"),
+      isOfficial: Boolean(skill.badges?.official),
       updatedAt: skill.updatedAt,
     })),
     ...rows.packages.map((pkg) => ({
@@ -279,6 +394,7 @@ function getPublisherCatalogItems(
       href: buildPluginDetailHref(pkg.name),
       downloads: pkg.stats.downloads,
       stars: pkg.stats.stars,
+      isOfficial: pkg.isOfficial,
       updatedAt: pkg.updatedAt,
     })),
   ].sort(comparePublisherCatalogItems(sort));
@@ -1080,6 +1196,7 @@ export const listStarredPage = query({
             href: `/${encodeURIComponent(ownerHandle)}/${encodeURIComponent(skill.slug)}`,
             downloads: readCanonicalStat(skill, "downloads"),
             stars: readCanonicalStat(skill, "stars"),
+            isOfficial: Boolean(skill.badges?.official),
             updatedAt: skill.updatedAt,
           };
         }),
@@ -1260,6 +1377,7 @@ export const listMembers = query({
       memberships.map(async (membership) => {
         const user = await ctx.db.get(membership.userId);
         if (!user || user.deletedAt || user.deactivatedAt) return null;
+        const memberPublisher = await getPersonalPublisherForUser(ctx, user._id);
         return {
           role: membership.role,
           user: {
@@ -1267,6 +1385,7 @@ export const listMembers = query({
             handle: user.handle ?? null,
             displayName: user.displayName ?? user.name ?? null,
             image: user.image ?? null,
+            official: Boolean(memberPublisher?.official),
           },
         };
       }),
@@ -1363,6 +1482,60 @@ export const updateProfile = mutation({
     return {
       ok: true as const,
       publisher: toPublicPublisher(await ctx.db.get(publisher._id)),
+    };
+  },
+});
+
+export const setOfficialPublisher = mutation({
+  args: {
+    handle: v.string(),
+    official: v.boolean(),
+  },
+  handler: async (ctx, args) => {
+    const { userId, user } = await requireUser(ctx);
+    assertAdmin(user);
+
+    const publisher = await getPublisherByHandle(ctx, args.handle);
+    if (!publisher || publisher.deletedAt || publisher.deactivatedAt) {
+      throw new ConvexError(
+        `Publisher "@${normalizePublisherHandle(args.handle) ?? args.handle}" not found`,
+      );
+    }
+
+    const now = Date.now();
+    await ctx.db.patch(publisher._id, {
+      official: args.official ? { byUserId: userId, at: now } : undefined,
+      updatedAt: now,
+    });
+    const skillSync = await syncPublisherSkillOfficialState(
+      ctx,
+      publisher._id,
+      args.official,
+      userId,
+      now,
+    );
+    const packageSync = await syncPublisherPackageOfficialState(
+      ctx,
+      publisher._id,
+      args.official,
+      now,
+    );
+    await ctx.db.insert("auditLogs", {
+      actorUserId: userId,
+      action: args.official ? "publisher.official.set" : "publisher.official.unset",
+      targetType: "publisher",
+      targetId: publisher._id,
+      metadata: {
+        handle: publisher.handle,
+      },
+      createdAt: now,
+    });
+
+    return {
+      ok: true as const,
+      publisher: toPublicPublisher(await ctx.db.get(publisher._id)),
+      skillSync,
+      packageSync,
     };
   },
 });

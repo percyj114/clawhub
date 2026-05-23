@@ -293,7 +293,7 @@ export function SkillHeader({
                   {showTitleBadges ? (
                     <div className="skill-title-badges">
                       {badges.map((badge) =>
-                        badge === "Verified" ? (
+                        badge === "Official" ? (
                           <VerifiedBadge key={badge} />
                         ) : (
                           <Badge key={badge} variant="compact">

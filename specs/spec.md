@@ -48,6 +48,8 @@ read_when:
 - `badges`: `{ redactionApproved?: { byUserId, at }, highlighted?: { byUserId, at }, official?: { byUserId, at }, deprecated?: { byUserId, at } }`
   - `official` marks admin-verified/official skills.
   - `deprecated` marks skills that should not be used for new integrations.
+- Publisher `official?: { byUserId, at }` marks OpenClaw/Foundation-affiliated
+  publishers and drives the public `Official` badge.
 - `moderationStatus`: `active | hidden | removed`
 - `moderationFlags`: `string[]` (automatic detection)
 - `moderationNotes`, `moderationReason`

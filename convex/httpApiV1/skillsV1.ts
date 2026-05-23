@@ -72,6 +72,7 @@ type ListSkillsResult = {
       displayName: string;
       summary?: string;
       tags: Record<string, Id<"skillVersions">>;
+      badges?: { official?: unknown };
       stats: unknown;
       createdAt: number;
       updatedAt: number;
@@ -153,13 +154,20 @@ type GetBySlugResult = {
     displayName: string;
     summary?: string;
     tags: Record<string, Id<"skillVersions">>;
+    badges?: { official?: unknown };
     stats: unknown;
     createdAt: number;
     updatedAt: number;
     latestVersionId?: Id<"skillVersions">;
   } | null;
   latestVersion: PublicSkillVersionResponse | null;
-  owner: { _id: Id<"users">; handle?: string; displayName?: string; image?: string } | null;
+  owner: {
+    _id: Id<"publishers">;
+    handle?: string;
+    displayName?: string;
+    image?: string;
+    official?: boolean;
+  } | null;
   moderationInfo?: {
     isPendingScan: boolean;
     isMalwareBlocked: boolean;
@@ -623,6 +631,7 @@ export async function listSkillsV1Handler(ctx: ActionCtx, request: Request) {
     summary: item.skill.summary ?? null,
     tags: resolvedTagsList[idx],
     stats: item.skill.stats,
+    official: Boolean(item.skill.badges?.official),
     createdAt: item.skill.createdAt,
     updatedAt: item.skill.updatedAt,
     latestVersion: item.latestVersion
@@ -756,6 +765,7 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
           summary: result.skill.summary ?? null,
           tags,
           stats: result.skill.stats,
+          official: Boolean(result.skill.badges?.official),
           createdAt: result.skill.createdAt,
           updatedAt: result.skill.updatedAt,
         },
@@ -776,9 +786,10 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
         owner: result.owner
           ? {
               handle: result.owner.handle ?? null,
-              userId: result.owner._id,
+              publisherId: result.owner._id,
               displayName: result.owner.displayName ?? null,
               image: result.owner.image ?? null,
+              official: result.owner.official === true,
             }
           : null,
         moderation: result.moderationInfo

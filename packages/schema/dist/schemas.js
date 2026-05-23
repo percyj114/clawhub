@@ -162,6 +162,7 @@ export const ApiV1SkillListResponseSchema = type({
         summary: "string|null?",
         tags: "unknown",
         stats: "unknown",
+        official: "boolean?",
         createdAt: "number",
         updatedAt: "number",
         latestVersion: type({
@@ -180,6 +181,7 @@ export const ApiV1SkillResponseSchema = type({
         summary: "string|null?",
         tags: "unknown",
         stats: "unknown",
+        official: "boolean?",
         createdAt: "number",
         updatedAt: "number",
     }).or("null"),
@@ -193,6 +195,7 @@ export const ApiV1SkillResponseSchema = type({
         handle: "string|null",
         displayName: "string|null?",
         image: "string|null?",
+        official: "boolean?",
     }).or("null"),
     moderation: type({
         isSuspicious: "boolean",

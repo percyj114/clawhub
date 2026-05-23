@@ -12,6 +12,7 @@ import {
   createOrg,
   removeMember,
   createOrgPublisherForUserInternal,
+  setOfficialPublisher,
   setTrustedPublisherInternal,
   updateProfile,
 } from "./publishers";
@@ -128,6 +129,18 @@ const listPublishedPageHandler = (
   >
 )._handler;
 
+const setOfficialPublisherHandler = (
+  setOfficialPublisher as unknown as WrappedHandler<
+    { handle: string; official: boolean },
+    {
+      ok: true;
+      publisher: { handle: string; official: boolean } | null;
+      skillSync: { updatedSkills: number; skillSyncTruncated: boolean };
+      packageSync: { updatedPackages: number; packageSyncTruncated: boolean };
+    }
+  >
+)._handler;
+
 const updateProfileHandler = (
   updateProfile as unknown as WrappedHandler<{
     publisherId: string;
@@ -179,6 +192,7 @@ const createOrgHandler = (
 function indexedRows<T>(rows: T[]) {
   return {
     collect: vi.fn(async () => rows),
+    take: vi.fn(async (limit: number) => rows.slice(0, limit)),
     order: vi.fn(() => ({ take: vi.fn(async (limit: number) => rows.slice(0, limit)) })),
   };
 }
@@ -790,6 +804,384 @@ describe("publishers membership controls", () => {
     ]);
   });
 
+  it("lets admins mark publishers official by handle", async () => {
+    vi.mocked(getAuthUserId).mockResolvedValue("users:admin" as never);
+    const now = vi.spyOn(Date, "now").mockReturnValue(123);
+    const publishers = new Map<string, Record<string, unknown>>([
+      [
+        "publishers:steipete",
+        {
+          _id: "publishers:steipete",
+          _creationTime: 1,
+          kind: "user",
+          handle: "steipete",
+          displayName: "Peter",
+          linkedUserId: "users:steipete",
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+    ]);
+    const packages = new Map<string, Record<string, unknown>>([
+      [
+        "packages:plugin",
+        {
+          _id: "packages:plugin",
+          _creationTime: 1,
+          name: "demo-plugin",
+          normalizedName: "demo-plugin",
+          displayName: "Demo Plugin",
+          family: "code-plugin",
+          channel: "community",
+          isOfficial: false,
+          ownerUserId: "users:steipete",
+          ownerPublisherId: "publishers:steipete",
+          tags: {},
+          summary: "Demo",
+          latestReleaseId: "packageReleases:plugin",
+          latestVersionSummary: { version: "1.0.0" },
+          stats: { downloads: 0, installs: 0, stars: 0, versions: 1 },
+          createdAt: 1,
+          updatedAt: 1,
+          softDeletedAt: undefined,
+        },
+      ],
+      [
+        "packages:private-plugin",
+        {
+          _id: "packages:private-plugin",
+          _creationTime: 1,
+          name: "@steipete/private-plugin",
+          normalizedName: "@steipete/private-plugin",
+          displayName: "Private Plugin",
+          family: "code-plugin",
+          channel: "private",
+          isOfficial: false,
+          ownerUserId: "users:steipete",
+          ownerPublisherId: "publishers:steipete",
+          tags: {},
+          summary: "Private",
+          latestReleaseId: "packageReleases:private-plugin",
+          latestVersionSummary: { version: "1.0.0" },
+          stats: { downloads: 0, installs: 0, stars: 0, versions: 1 },
+          createdAt: 1,
+          updatedAt: 1,
+          softDeletedAt: undefined,
+        },
+      ],
+    ]);
+    const skills = new Map<string, Record<string, unknown>>([
+      [
+        "skills:helper",
+        {
+          _id: "skills:helper",
+          _creationTime: 1,
+          slug: "helper",
+          displayName: "Helper",
+          summary: "Helper",
+          icon: undefined,
+          ownerUserId: "users:steipete",
+          ownerPublisherId: "publishers:steipete",
+          canonicalSkillId: undefined,
+          forkOf: undefined,
+          latestVersionId: "skillVersions:helper",
+          latestVersionSummary: { version: "1.0.0", createdAt: 1, changelog: "init" },
+          tags: {},
+          capabilityTags: [],
+          badges: {},
+          stats: { downloads: 0, installsCurrent: 0, installsAllTime: 0, stars: 0 },
+          statsDownloads: 0,
+          statsStars: 0,
+          statsInstallsCurrent: 0,
+          statsInstallsAllTime: 0,
+          moderationStatus: "active",
+          moderationFlags: [],
+          moderationReason: undefined,
+          isSuspicious: false,
+          createdAt: 1,
+          updatedAt: 1,
+          softDeletedAt: undefined,
+        },
+      ],
+    ]);
+    const skillBadges = new Map<string, Record<string, unknown>>();
+    const skillSearchDigests = new Map<string, Record<string, unknown>>([
+      [
+        "skillSearchDigest:helper",
+        {
+          _id: "skillSearchDigest:helper",
+          skillId: "skills:helper",
+          badges: {},
+        },
+      ],
+    ]);
+    const packageSearchDigests = new Map<string, Record<string, unknown>>([
+      [
+        "packageSearchDigest:plugin",
+        {
+          _id: "packageSearchDigest:plugin",
+          packageId: "packages:plugin",
+          channel: "community",
+          isOfficial: false,
+        },
+      ],
+    ]);
+    const patch = vi.fn(async (id: string, value: Record<string, unknown>) => {
+      if (publishers.has(id)) publishers.set(id, { ...publishers.get(id), ...value });
+      if (packages.has(id)) packages.set(id, { ...packages.get(id), ...value });
+      if (skills.has(id)) skills.set(id, { ...skills.get(id), ...value });
+      if (skillBadges.has(id)) skillBadges.set(id, { ...skillBadges.get(id), ...value });
+      if (skillSearchDigests.has(id)) {
+        skillSearchDigests.set(id, { ...skillSearchDigests.get(id), ...value });
+      }
+      if (packageSearchDigests.has(id)) {
+        packageSearchDigests.set(id, { ...packageSearchDigests.get(id), ...value });
+      }
+    });
+    const insert = vi.fn(async (table: string, value: Record<string, unknown>) => {
+      if (table === "skillBadges") {
+        const id = `skillBadges:${skillBadges.size + 1}`;
+        skillBadges.set(id, { _id: id, ...value });
+        return id;
+      }
+      return "auditLogs:1";
+    });
+    const deleteRow = vi.fn(async (id: string) => {
+      skillBadges.delete(id);
+    });
+    const ctx = {
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === "users:admin") return { _id: id, role: "admin" };
+          return publishers.get(id) ?? null;
+        }),
+        query: vi.fn((table: string) => {
+          if (table === "packages") {
+            return {
+              withIndex: vi.fn((indexName: string) => {
+                if (indexName !== "by_owner_publisher_active_updated") {
+                  throw new Error(`unexpected index ${indexName}`);
+                }
+                return indexedRows([...packages.values()]);
+              }),
+            };
+          }
+          if (table === "skills") {
+            return {
+              withIndex: vi.fn((indexName: string) => {
+                if (indexName !== "by_owner_publisher_active_updated") {
+                  throw new Error(`unexpected index ${indexName}`);
+                }
+                return indexedRows([...skills.values()]);
+              }),
+            };
+          }
+          if (table === "skillBadges") {
+            return {
+              withIndex: vi.fn((indexName: string, buildQuery: (query: unknown) => unknown) => {
+                const fields: Record<string, unknown> = {};
+                const q = {
+                  eq(field: string, value: unknown) {
+                    fields[field] = value;
+                    return q;
+                  },
+                };
+                buildQuery(q);
+                if (indexName !== "by_skill_kind") {
+                  throw new Error(`unexpected index ${indexName}`);
+                }
+                return {
+                  unique: vi.fn(
+                    async () =>
+                      [...skillBadges.values()].find(
+                        (badge) => badge.skillId === fields.skillId && badge.kind === fields.kind,
+                      ) ?? null,
+                  ),
+                };
+              }),
+            };
+          }
+          if (table === "skillSearchDigest") {
+            return {
+              withIndex: vi.fn((indexName: string, buildQuery: (query: unknown) => unknown) => {
+                const fields: Record<string, unknown> = {};
+                const q = {
+                  eq(field: string, value: unknown) {
+                    fields[field] = value;
+                    return q;
+                  },
+                };
+                buildQuery(q);
+                if (indexName !== "by_skill") throw new Error(`unexpected index ${indexName}`);
+                return {
+                  unique: vi.fn(
+                    async () =>
+                      [...skillSearchDigests.values()].find(
+                        (digest) => digest.skillId === fields.skillId,
+                      ) ?? null,
+                  ),
+                };
+              }),
+            };
+          }
+          if (table === "packageSearchDigest") {
+            return {
+              withIndex: vi.fn((indexName: string, buildQuery: (query: unknown) => unknown) => {
+                const fields: Record<string, unknown> = {};
+                const q = {
+                  eq(field: string, value: unknown) {
+                    fields[field] = value;
+                    return q;
+                  },
+                };
+                buildQuery(q);
+                if (indexName !== "by_package") throw new Error(`unexpected index ${indexName}`);
+                return {
+                  unique: vi.fn(
+                    async () =>
+                      [...packageSearchDigests.values()].find(
+                        (digest) => digest.packageId === fields.packageId,
+                      ) ?? null,
+                  ),
+                };
+              }),
+            };
+          }
+          if (table === "packageCapabilitySearchDigest") {
+            return {
+              withIndex: vi.fn((indexName: string) => {
+                if (indexName !== "by_package") throw new Error(`unexpected index ${indexName}`);
+                return indexedRows([]);
+              }),
+            };
+          }
+          if (table === "packagePluginCategorySearchDigest") {
+            return {
+              withIndex: vi.fn((indexName: string) => {
+                if (indexName !== "by_package") throw new Error(`unexpected index ${indexName}`);
+                return indexedRows([]);
+              }),
+            };
+          }
+          if (table !== "publishers") throw new Error(`unexpected table ${table}`);
+          return {
+            withIndex: vi.fn((indexName: string, buildQuery: (query: unknown) => unknown) => {
+              const fields: Record<string, unknown> = {};
+              const q = {
+                eq(field: string, value: unknown) {
+                  fields[field] = value;
+                  return q;
+                },
+              };
+              buildQuery(q);
+              if (indexName !== "by_handle") throw new Error(`unexpected index ${indexName}`);
+              return {
+                unique: vi.fn(
+                  async () =>
+                    [...publishers.values()].find(
+                      (publisher) => publisher.handle === fields.handle,
+                    ) ?? null,
+                ),
+              };
+            }),
+          };
+        }),
+        patch,
+        insert,
+        delete: deleteRow,
+        replace: vi.fn(),
+        normalizeId: vi.fn(),
+      },
+    };
+
+    const result = await setOfficialPublisherHandler(ctx as never, {
+      handle: "steipete",
+      official: true,
+    });
+
+    expect(result.publisher?.official).toBe(true);
+    expect(result.skillSync.updatedSkills).toBe(1);
+    expect(result.packageSync.updatedPackages).toBe(1);
+    expect(patch).toHaveBeenCalledWith("publishers:steipete", {
+      official: { byUserId: "users:admin", at: 123 },
+      updatedAt: 123,
+    });
+    expect(patch).toHaveBeenCalledWith(
+      "packages:plugin",
+      expect.objectContaining({
+        channel: "official",
+        isOfficial: true,
+        updatedAt: 123,
+      }),
+    );
+    expect(insert).toHaveBeenCalledWith("skillBadges", {
+      skillId: "skills:helper",
+      kind: "official",
+      byUserId: "users:admin",
+      at: 123,
+    });
+    expect(patch).toHaveBeenCalledWith("skills:helper", {
+      badges: { official: { byUserId: "users:admin", at: 123 } },
+    });
+    expect(patch).toHaveBeenCalledWith("skillSearchDigest:helper", {
+      badges: { official: { byUserId: "users:admin", at: 123 } },
+    });
+    expect(patch).toHaveBeenCalledWith(
+      "packageSearchDigest:plugin",
+      expect.objectContaining({
+        channel: "official",
+        isOfficial: true,
+      }),
+    );
+    expect(insert).toHaveBeenCalledWith(
+      "auditLogs",
+      expect.objectContaining({
+        action: "publisher.official.set",
+        targetId: "publishers:steipete",
+      }),
+    );
+
+    patch.mockClear();
+    insert.mockClear();
+    deleteRow.mockClear();
+
+    const unsetResult = await setOfficialPublisherHandler(ctx as never, {
+      handle: "steipete",
+      official: false,
+    });
+
+    expect(unsetResult.publisher?.official).toBe(false);
+    expect(unsetResult.skillSync.updatedSkills).toBe(1);
+    expect(unsetResult.packageSync.updatedPackages).toBe(1);
+    expect(patch).toHaveBeenCalledWith("publishers:steipete", {
+      official: undefined,
+      updatedAt: 123,
+    });
+    expect(deleteRow).toHaveBeenCalledWith("skillBadges:1");
+    expect(patch).toHaveBeenCalledWith("skills:helper", { badges: {} });
+    expect(patch).toHaveBeenCalledWith("skillSearchDigest:helper", { badges: {} });
+    expect(patch).toHaveBeenCalledWith(
+      "packages:plugin",
+      expect.objectContaining({
+        channel: "community",
+        isOfficial: false,
+        updatedAt: 123,
+      }),
+    );
+    expect(patch).not.toHaveBeenCalledWith(
+      "packages:private-plugin",
+      expect.objectContaining({ channel: "community" }),
+    );
+    expect(insert).toHaveBeenCalledWith(
+      "auditLogs",
+      expect.objectContaining({
+        action: "publisher.official.unset",
+        targetId: "publishers:steipete",
+      }),
+    );
+    now.mockRestore();
+  });
+
   it("includes skill.icon on catalog items and surfaces null for plugins (F7)", async () => {
     // Regression guard for F2: listPublishedPage must mirror `skills.icon`
     // onto the catalog DTO so the publisher profile page (/p/<handle>) can
@@ -832,6 +1224,7 @@ describe("publishers membership controls", () => {
                   displayName: "Icon Skill",
                   summary: "Has a custom icon",
                   icon: "lucide:Plug",
+                  badges: { official: { byUserId: "users:admin", at: 1 } },
                   stats: {
                     downloads: 10,
                     downloadsAllTime: 10,
@@ -870,6 +1263,7 @@ describe("publishers membership controls", () => {
                   name: "@openclaw/example-plugin",
                   displayName: "Example Plugin",
                   summary: "A plugin",
+                  isOfficial: true,
                   stats: { downloads: 5, installs: 2, stars: 0, versions: 1 },
                   updatedAt: 4,
                 },
@@ -889,17 +1283,26 @@ describe("publishers membership controls", () => {
         displayName: string;
         kind: "skill" | "plugin";
         icon: string | null;
+        isOfficial: boolean;
       }>;
     };
 
     const byName = Object.fromEntries(result.page.map((item) => [item.displayName, item]));
     // Skill with a stored icon must surface it on the DTO.
-    expect(byName["Icon Skill"]).toMatchObject({ kind: "skill", icon: "lucide:Plug" });
+    expect(byName["Icon Skill"]).toMatchObject({
+      kind: "skill",
+      icon: "lucide:Plug",
+      isOfficial: true,
+    });
     // Skill without an icon must surface null (not undefined) so the client
     // type is uniform and MarketplaceIcon can safely pass it to parseSkillIcon.
     expect(byName["Plain Skill"]).toMatchObject({ kind: "skill", icon: null });
     // Plugins always carry null in Phase 1.
-    expect(byName["Example Plugin"]).toMatchObject({ kind: "plugin", icon: null });
+    expect(byName["Example Plugin"]).toMatchObject({
+      kind: "plugin",
+      icon: null,
+      isOfficial: true,
+    });
   });
 
   it("prevents admins from promoting members to owner", async () => {

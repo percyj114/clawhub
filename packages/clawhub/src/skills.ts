@@ -24,6 +24,8 @@ export type SkillOrigin = {
   installedVersion: string;
   installedAt: number;
   fingerprint?: string;
+  ownerHandle?: string;
+  official?: boolean;
 };
 
 export async function extractZipToDir(zipBytes: Uint8Array, targetDir: string) {
@@ -144,6 +146,10 @@ export async function readSkillOrigin(skillFolder: string): Promise<SkillOrigin 
         installedVersion: parsed.installedVersion,
         installedAt: parsed.installedAt,
         fingerprint: typeof parsed.fingerprint === "string" ? parsed.fingerprint : undefined,
+        ...(typeof parsed.ownerHandle === "string" && parsed.ownerHandle.trim()
+          ? { ownerHandle: parsed.ownerHandle.trim() }
+          : {}),
+        ...(parsed.official === true ? { official: true } : {}),
       };
     } catch {
       // try next

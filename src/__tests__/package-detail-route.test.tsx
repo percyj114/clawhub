@@ -193,6 +193,27 @@ describe("plugin detail route", () => {
     ).toBeTruthy();
   });
 
+  it("labels official packages as Official", async () => {
+    loaderDataMock = {
+      ...loaderDataMock,
+      detail: {
+        package: {
+          ...loaderDataMock.detail.package!,
+          channel: "official",
+          isOfficial: true,
+        },
+        owner: { handle: "openclaw", displayName: "OpenClaw", image: null, official: true },
+      },
+    };
+    const route = await loadRoute();
+    const Component = route.__config.component as ComponentType;
+
+    render(<Component />);
+
+    expect(screen.getAllByText("Official").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Verified")).toBeNull();
+  });
+
   it("shows plugin settings when the viewer can manage the plugin", async () => {
     useAuthStatusMock.mockReturnValue({
       isAuthenticated: true,

@@ -463,6 +463,10 @@ function getRequestedPackageOwnerKey(args: {
   return args.ownerPublisherId ? `publisher:${args.ownerPublisherId}` : `user:${args.ownerUserId}`;
 }
 
+function isOfficialPackagePublisher(ownerPublisher?: Pick<Doc<"publishers">, "official"> | null) {
+  return Boolean(ownerPublisher?.official);
+}
+
 function isReservedPackagePlaceholder(pkg: PackageDoc | null | undefined) {
   return Boolean(pkg && !pkg.latestReleaseId && !pkg.latestVersionSummary);
 }
@@ -5103,9 +5107,9 @@ async function patchPackageOwnerWithAudit(
 ) {
   const now = Date.now();
   const nextChannel = args.channel ?? args.pkg.channel;
-  const publisherTrusted = args.ownerPublisher?.trustedPublisher ?? args.owner.trustedPublisher;
-  if (nextChannel === "official" && !publisherTrusted) {
-    throw new ConvexError("Only trusted publishers may own official packages");
+  const publisherOfficial = isOfficialPackagePublisher(args.ownerPublisher);
+  if (nextChannel === "official" && !publisherOfficial) {
+    throw new ConvexError("Only official publishers may own official packages");
   }
   const nextPackageFields = {
     ownerUserId: args.owner._id,
@@ -5452,9 +5456,9 @@ export const insertReleaseInternal = internalMutation({
     if (args.ownerUserId !== args.actorUserId) {
       assertAdmin(actor);
     }
-    const publisherTrusted = ownerPublisher?.trustedPublisher ?? owner.trustedPublisher;
-    if (args.channel === "official" && !publisherTrusted) {
-      throw new ConvexError("Only trusted publishers may publish to the official channel");
+    const publisherOfficial = isOfficialPackagePublisher(ownerPublisher);
+    if (args.channel === "official" && !publisherOfficial) {
+      throw new ConvexError("Only official publishers may publish to the official channel");
     }
     const nextCapabilities = withArtifactCapabilityTags(args.capabilities, args);
     const nextCapabilityTags = mergeArtifactCapabilityTags(args.capabilities?.capabilityTags, args);
@@ -5470,7 +5474,7 @@ export const insertReleaseInternal = internalMutation({
       args.channel ??
       (existing?.channel === "private" && !existingIsReservation
         ? "private"
-        : publisherTrusted
+        : publisherOfficial
           ? "official"
           : "community");
     const nextIsOfficial = nextChannel === "official";

@@ -3065,8 +3065,17 @@ describe("packages public queries", () => {
     ).rejects.toThrow("Package already exists and belongs to another publisher");
   });
 
-  it("lets admins transfer a package to a trusted publisher and make it official", async () => {
-    const { ctx, patch, insert } = makeTransferPackageOwnerCtx();
+  it("lets admins transfer a package to an official publisher and make it official", async () => {
+    const { ctx, patch, insert } = makeTransferPackageOwnerCtx({
+      ownerPublisher: {
+        _id: "publishers:openclaw",
+        kind: "org",
+        handle: "openclaw",
+        displayName: "OpenClaw",
+        trustedPublisher: false,
+        official: { byUserId: "users:admin", at: 123 },
+      },
+    });
 
     await expect(
       transferPackageOwnerInternalHandler(ctx, {
@@ -3292,14 +3301,14 @@ describe("packages public queries", () => {
     );
   });
 
-  it("rejects official package transfers to untrusted publishers", async () => {
+  it("rejects official package transfers to unofficial publishers", async () => {
     const { ctx } = makeTransferPackageOwnerCtx({
       ownerPublisher: {
         _id: "publishers:openclaw",
         kind: "org",
         handle: "openclaw",
         displayName: "OpenClaw",
-        trustedPublisher: false,
+        trustedPublisher: true,
       },
     });
 
@@ -3311,7 +3320,7 @@ describe("packages public queries", () => {
         ownerPublisherId: "publishers:openclaw",
         channel: "official",
       }),
-    ).rejects.toThrow("Only trusted publishers may own official packages");
+    ).rejects.toThrow("Only official publishers may own official packages");
   });
 
   it("lets owners publish real releases into reserved package placeholders", async () => {
@@ -3347,6 +3356,7 @@ describe("packages public queries", () => {
           handle: "openclaw",
           displayName: "OpenClaw",
           trustedPublisher: true,
+          official: { byUserId: "users:admin", at: 123 },
         },
       },
     );
@@ -3565,22 +3575,32 @@ describe("packages public queries", () => {
     ).resolves.toMatchObject({ ok: true, packageId: "packages:new" });
   });
 
-  it("promotes existing packages to official when publisher becomes trusted", async () => {
+  it("promotes existing packages to official when publisher becomes official", async () => {
     const ctx = makeInsertReleaseCtx(
       makePackageDoc({
+        ownerPublisherId: "publishers:owner",
         channel: "community",
         isOfficial: false,
         stats: { downloads: 0, installs: 0, stars: 0, versions: 1 },
       }),
+      [],
+      {
+        "publishers:owner": {
+          _id: "publishers:owner",
+          kind: "user",
+          handle: "owner",
+          displayName: "Owner",
+          linkedUserId: "users:owner",
+          trustedPublisher: false,
+          official: { byUserId: "users:admin", at: 123 },
+        },
+      },
     );
-    ctx.db.get.mockImplementation(async (id: string) => {
-      if (id === "users:owner") return { _id: id, trustedPublisher: true };
-      return null;
-    });
 
     await insertReleaseInternalHandler(ctx, {
       actorUserId: "users:owner",
       ownerUserId: "users:owner",
+      ownerPublisherId: "publishers:owner",
       name: "demo-plugin",
       displayName: "Demo Plugin",
       family: "code-plugin",
@@ -3606,6 +3626,7 @@ describe("packages public queries", () => {
     const ctx = makeInsertReleaseCtx(
       makePackageDoc({
         ownerUserId: "users:openclaw",
+        ownerPublisherId: "publishers:openclaw",
         channel: "official",
         isOfficial: true,
         stats: { downloads: 0, installs: 0, stars: 0, versions: 1 },
@@ -3622,12 +3643,20 @@ describe("packages public queries", () => {
           role: "user",
           trustedPublisher: true,
         },
+        "publishers:openclaw": {
+          _id: "publishers:openclaw",
+          kind: "org",
+          handle: "openclaw",
+          displayName: "OpenClaw",
+          official: { byUserId: "users:admin", at: 123 },
+        },
       },
     );
 
     await insertReleaseInternalHandler(ctx, {
       actorUserId: "users:admin",
       ownerUserId: "users:openclaw",
+      ownerPublisherId: "publishers:openclaw",
       name: "demo-plugin",
       displayName: "Demo Plugin",
       family: "code-plugin",

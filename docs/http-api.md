@@ -166,6 +166,7 @@ Response:
       "summary": "…",
       "tags": { "latest": "1.2.3" },
       "stats": {},
+      "official": true,
       "createdAt": 0,
       "updatedAt": 0,
       "latestVersion": { "version": "1.2.3", "createdAt": 0, "changelog": "…" },
@@ -188,12 +189,13 @@ Response:
     "summary": "…",
     "tags": { "latest": "1.2.3" },
     "stats": {},
+    "official": true,
     "createdAt": 0,
     "updatedAt": 0
   },
   "latestVersion": { "version": "1.2.3", "createdAt": 0, "changelog": "…" },
   "metadata": { "os": ["macos"], "systems": ["aarch64-darwin"] },
-  "owner": { "handle": "steipete", "displayName": "Peter", "image": null },
+  "owner": { "handle": "steipete", "displayName": "Peter", "image": null, "official": true },
   "moderation": {
     "isSuspicious": false,
     "isMalwareBlocked": false,
@@ -507,6 +509,7 @@ Notes:
 
 - Skills can also resolve through this route in the unified catalog.
 - Private packages return `404` unless the caller can read the owning publisher.
+- `owner.official` means the publisher is OpenClaw/Foundation-affiliated.
 
 ### `DELETE /api/v1/packages/{name}`
 
@@ -1152,8 +1155,10 @@ Validation highlights:
   metadata, config schema metadata, `openclaw.compat.pluginApi`, and
   `openclaw.build.openclawVersion`.
 - `openclaw.hostTargets` and `openclaw.environment` are optional metadata.
-- Only trusted publishers may publish to the `official` channel.
+- Only publishers marked Official may publish to the `official` channel.
 - On-behalf publishes still validate official-channel eligibility against the target owner account.
+- Official is the user-facing policy label for OpenClaw/Foundation-affiliated publishers. It is not accepted from package metadata.
+- `trustedPublisher` is an internal automated-publish permission; it does not make a publisher or package Official.
 
 ### `DELETE /api/v1/skills/{slug}` / `POST /api/v1/skills/{slug}/undelete`
 

@@ -187,6 +187,7 @@ export declare const ApiV1SkillListResponseSchema: import("arktype/internal/vari
         createdAt: number;
         updatedAt: number;
         summary?: string | null | undefined;
+        official?: boolean | undefined;
         latestVersion?: {
             version: string;
             createdAt: number;
@@ -205,6 +206,7 @@ export declare const ApiV1SkillResponseSchema: import("arktype/internal/variants
         createdAt: number;
         updatedAt: number;
         summary?: string | null | undefined;
+        official?: boolean | undefined;
     } | null;
     latestVersion: {
         version: string;
@@ -216,6 +218,7 @@ export declare const ApiV1SkillResponseSchema: import("arktype/internal/variants
         handle: string | null;
         displayName?: string | null | undefined;
         image?: string | null | undefined;
+        official?: boolean | undefined;
     } | null;
     moderation?: {
         isSuspicious: boolean;

@@ -154,6 +154,7 @@ const publishers = defineTable({
   image: v.optional(v.string()),
   linkedUserId: v.optional(v.id("users")),
   trustedPublisher: v.optional(v.boolean()),
+  official: v.optional(v.object({ byUserId: v.id("users"), at: v.number() })),
   publishedSkills: v.optional(v.number()),
   publishedPackages: v.optional(v.number()),
   totalInstalls: v.optional(v.number()),

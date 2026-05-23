@@ -231,6 +231,8 @@ describe("skills", () => {
       slug: "demo",
       installedVersion: "1.2.3",
       installedAt: 123,
+      ownerHandle: "openclaw",
+      official: true,
     };
     await writeSkillOrigin(workdir, origin);
     expect(await readSkillOrigin(workdir)).toEqual(origin);

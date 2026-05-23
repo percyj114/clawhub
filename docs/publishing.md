@@ -19,6 +19,24 @@ Personal owners are created for users. Org owners can have multiple members.
 When you publish, you either use your personal owner or choose an org owner
 where you have publisher access.
 
+## Official
+
+Official is a ClawHub admin-set publisher flag. For now, it only means the
+publisher is OpenClaw/Foundation-affiliated. The first official handles are
+`openclaw` and `steipete`.
+
+Official does not come from uploaded skill or package metadata, and org
+membership does not make a personal publisher Official. For example, `steipete`
+can be Official while another `@openclaw` org member remains community unless
+ClawHub admins explicitly mark that member's publisher Official too.
+
+The same policy shows as an `Official` badge on publisher/profile UI. Skills and
+packages owned by an Official publisher also show `Official` in UI/API/install
+metadata. Packages use the `official` channel.
+
+`trustedPublisher` is an internal automated-publish permission. It does not make
+a publisher or package Official.
+
 ## Skills
 
 Skills are published from a skill folder. The public page is:

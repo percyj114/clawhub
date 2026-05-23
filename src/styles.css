@@ -4717,17 +4717,28 @@ code {
   align-items: center;
 }
 
-.verified-badge {
-  color: var(--ink-soft);
+.official-badge-icon {
+  color: currentColor;
 }
 
-.verified-badge-icon {
-  color: #6aa9ff;
+.official-badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--status-warning-bg);
+  color: var(--status-warning-fg);
+  line-height: 1;
+  vertical-align: middle;
 }
 
-.skill-list-item-main .verified-badge {
-  padding-block: 0;
-  line-height: 1.35;
+.official-badge svg {
+  width: 12px;
+  height: 12px;
 }
 
 .skill-hero-scan-row {
@@ -11553,13 +11564,20 @@ a.publisher-profile-detail:hover {
   text-decoration: none;
 }
 
-.publisher-profile-member span {
+.publisher-profile-member-copy {
   min-width: 0;
   display: grid;
   gap: 2px;
 }
 
-.publisher-profile-member strong,
+.publisher-profile-member-name {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.publisher-profile-member-name-text,
 .publisher-profile-member small {
   overflow: hidden;
   text-overflow: ellipsis;

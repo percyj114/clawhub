@@ -74,6 +74,10 @@ Suggested fields:
   - set for personal publishers
   - unset for org publishers
 - `trustedPublisher`
+- `official?: { byUserId, at }`
+  - admin-set public badge for OpenClaw/Foundation-affiliated publishers
+  - does not inherit from org membership; members need their own publisher flag
+    to show Official on their personal profile or personal publications
 - `deactivatedAt?`
 - `deletedAt?`
 - `createdAt`

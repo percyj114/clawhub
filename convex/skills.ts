@@ -9484,15 +9484,21 @@ export const insertVersion = internalMutation({
     // upgrade can never re-own an org-owned skill into a personal namespace.
     const callerExplicitlySpecifiedOwner = args.ownerPublisherId !== undefined;
     const ownerPublisherId = args.ownerPublisherId ?? personalPublisher._id;
+    let ownerPublisher = personalPublisher;
     if (ownerPublisherId !== personalPublisher._id) {
-      await requirePublisherRole(ctx, {
+      const publishAccess = await requirePublisherRole(ctx, {
         publisherId: ownerPublisherId,
         userId,
         allowed: ["publisher"],
       });
+      if (!publishAccess.publisher) throw new ConvexError("Publisher not found");
+      ownerPublisher = publishAccess.publisher;
     }
 
     const now = Date.now();
+    const ownerOfficialBadge = ownerPublisher.official
+      ? { byUserId: ownerPublisher.official.byUserId, at: ownerPublisher.official.at }
+      : null;
 
     let skill = await ctx.db
       .query("skills")
@@ -9829,6 +9835,7 @@ export const insertVersion = internalMutation({
       const newSkillFlags = Array.from(
         new Set([...(derivedFlags ?? []), ...(staticSnapshot.legacyFlags ?? [])]),
       );
+      const officialBadge = ownerOfficialBadge ?? undefined;
       const skillId = await ctx.db.insert("skills", {
         slug,
         displayName: args.displayName,
@@ -9845,7 +9852,7 @@ export const insertVersion = internalMutation({
         badges: {
           redactionApproved: undefined,
           highlighted: undefined,
-          official: undefined,
+          official: officialBadge,
           deprecated: undefined,
         },
         moderationStatus: initialModerationStatus,
@@ -9885,6 +9892,22 @@ export const insertVersion = internalMutation({
       });
       skill = await ctx.db.get(skillId);
       if (skill) {
+        if (ownerOfficialBadge) {
+          await upsertSkillBadge(
+            ctx,
+            skill._id,
+            "official",
+            ownerOfficialBadge.byUserId,
+            ownerOfficialBadge.at,
+          );
+          skill = {
+            ...skill,
+            badges: {
+              ...skill.badges,
+              official: ownerOfficialBadge,
+            },
+          };
+        }
         // Digest sync is handled after the version patch below (line ~4222),
         // which captures the final state including latestVersionId and tags.
         await adjustGlobalPublicCountForSkillChange(ctx, null, skill);
@@ -9893,6 +9916,22 @@ export const insertVersion = internalMutation({
     }
 
     if (!skill) throw new Error("Skill creation failed");
+    if (ownerOfficialBadge && !skill.badges?.official) {
+      await upsertSkillBadge(
+        ctx,
+        skill._id,
+        "official",
+        ownerOfficialBadge.byUserId,
+        ownerOfficialBadge.at,
+      );
+      skill = {
+        ...skill,
+        badges: {
+          ...skill.badges,
+          official: ownerOfficialBadge,
+        },
+      };
+    }
 
     const existingVersion = await ctx.db
       .query("skillVersions")
