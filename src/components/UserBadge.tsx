@@ -6,7 +6,7 @@ import { convexHttp } from "../convex/client";
 import { hasOwnProperty } from "../lib/hasOwnProperty";
 import { formatCompactStat } from "../lib/numberFormat";
 import type { PublicPublisher, PublicUser } from "../lib/publicUser";
-import { OfficialTag } from "./OfficialBadge";
+import { OfficialBadge } from "./OfficialBadge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 
 type UserBadgeProps = {
@@ -78,7 +78,7 @@ export function UserBadge({
       ) : showHandle ? (
         <span className="user-handle">{label}</span>
       ) : null}
-      {isOfficial ? <OfficialTag /> : null}
+      {isOfficial ? <OfficialBadge /> : null}
     </>
   );
 

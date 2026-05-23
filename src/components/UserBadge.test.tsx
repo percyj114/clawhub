@@ -71,9 +71,11 @@ describe("UserBadge", () => {
     expect(screen.getByText("Acme")).toBeTruthy();
   });
 
-  it("shows Official for official publishers", () => {
-    renderBadge(orgPublisher);
+  it("shows a compact Official badge for official publishers", () => {
+    const { container } = renderBadge(orgPublisher);
 
-    expect(screen.getByText("Official")).toBeTruthy();
+    expect(screen.getByLabelText("Official")).toBeTruthy();
+    expect(container.querySelector(".official-badge")).toBeTruthy();
+    expect(container.querySelector(".official-tag")).toBeFalsy();
   });
 });
