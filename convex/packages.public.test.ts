@@ -3690,6 +3690,55 @@ describe("packages public queries", () => {
     );
   });
 
+  it("allows explicit public channel publishes for existing private packages", async () => {
+    const ctx = makeInsertReleaseCtx(
+      makePackageDoc({
+        ownerUserId: "users:owner",
+        ownerPublisherId: "publishers:owner",
+        channel: "private",
+        isOfficial: false,
+      }),
+      [],
+      {
+        "users:owner": {
+          _id: "users:owner",
+          role: "user",
+          personalPublisherId: "publishers:owner",
+        },
+        "publishers:owner": {
+          _id: "publishers:owner",
+          kind: "user",
+          handle: "owner",
+          linkedUserId: "users:owner",
+        },
+      },
+    );
+
+    await insertReleaseInternalHandler(ctx, {
+      actorUserId: "users:owner",
+      ownerUserId: "users:owner",
+      ownerPublisherId: "publishers:owner",
+      name: "demo-plugin",
+      displayName: "Demo Plugin",
+      family: "code-plugin",
+      version: "1.0.1",
+      changelog: "publish publicly",
+      channel: "community",
+      tags: ["latest"],
+      summary: "demo",
+      files: [],
+      integritySha256: "abc123",
+    });
+
+    expect(ctx.patch).toHaveBeenCalledWith(
+      "packages:demo",
+      expect.objectContaining({
+        channel: "community",
+        isOfficial: false,
+      }),
+    );
+  });
+
   it("rejects family changes on an existing package name", async () => {
     const ctx = makeInsertReleaseCtx(makePackageDoc({ family: "bundle-plugin" }));
 

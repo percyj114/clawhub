@@ -5187,7 +5187,13 @@ function derivePackagePublisherChannel(args: {
   currentIsReservation?: boolean;
   publisherOfficial: boolean;
 }) {
-  if (args.currentChannel === "private" && !args.currentIsReservation) return "private";
+  if (
+    args.currentChannel === "private" &&
+    !args.currentIsReservation &&
+    args.requestedChannel === undefined
+  ) {
+    return "private";
+  }
   if (args.publisherOfficial) {
     return args.requestedChannel === "private" ? "private" : "official";
   }
