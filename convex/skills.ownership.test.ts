@@ -5,10 +5,12 @@ vi.mock("@convex-dev/auth/server", () => ({
   authTables: {},
 }));
 
+import { getAuthUserId } from "@convex-dev/auth/server";
 import {
   getSkillBySlugInternal,
   mergeOwnedSkillIntoCanonicalInternal,
   renameOwnedSkillInternal,
+  setOfficialBadge,
   transferSkillOwnerForUserInternal,
 } from "./skills";
 
@@ -41,6 +43,12 @@ const transferSkillOwnerForUserInternalHandler = (
     reason?: string;
   }>
 )._handler;
+const setOfficialBadgeHandler = (
+  setOfficialBadge as unknown as WrappedHandler<{
+    skillId: string;
+    official: boolean;
+  }>
+)._handler;
 
 function chainEq(constraints: Record<string, unknown>) {
   return {
@@ -52,6 +60,86 @@ function chainEq(constraints: Record<string, unknown>) {
 }
 
 describe("skills ownership", () => {
+  it("clears publisher source when a manual official badge overwrites one", async () => {
+    vi.mocked(getAuthUserId).mockResolvedValue("users:admin" as never);
+    const patch = vi.fn(async (_id: string, _value: Record<string, unknown>) => {});
+    const insert = vi.fn(async () => "auditLogs:1");
+    const existingBadge = {
+      _id: "skillBadges:official",
+      skillId: "skills:source",
+      kind: "official",
+      byUserId: "users:publisher-admin",
+      at: 111,
+      sourcePublisherId: "publishers:openclaw",
+    };
+    const skill = {
+      _id: "skills:source",
+      slug: "portable",
+      displayName: "Portable",
+      badges: {
+        official: {
+          byUserId: "users:publisher-admin",
+          at: 111,
+          sourcePublisherId: "publishers:openclaw",
+        },
+      },
+    };
+
+    await setOfficialBadgeHandler(
+      {
+        db: {
+          get: vi.fn(async (id: string) => {
+            if (id === "users:admin") return { _id: "users:admin", role: "admin" };
+            if (id === "skills:source") return skill;
+            return null;
+          }),
+          query: vi.fn((table: string) => {
+            if (table !== "skillBadges") throw new Error(`unexpected table ${table}`);
+            return {
+              withIndex: (name: string) => {
+                if (name !== "by_skill_kind") {
+                  throw new Error(`unexpected skillBadges index ${name}`);
+                }
+                return { unique: async () => existingBadge };
+              },
+            };
+          }),
+          patch,
+          insert,
+          delete: vi.fn(async () => {}),
+          replace: vi.fn(async () => {}),
+          normalizeId: vi.fn(() => null),
+          system: {},
+        },
+      } as never,
+      {
+        skillId: "skills:source",
+        official: true,
+      },
+    );
+
+    const badgePatch = patch.mock.calls.find((call) => call[0] === "skillBadges:official")?.[1];
+    expect(badgePatch).toBeDefined();
+    if (!badgePatch) throw new Error("Missing skill badge patch");
+    expect(badgePatch).toMatchObject({
+      byUserId: "users:admin",
+      at: expect.any(Number),
+    });
+    expect(Object.hasOwn(badgePatch, "sourcePublisherId")).toBe(true);
+    expect(badgePatch.sourcePublisherId).toBeUndefined();
+    expect(patch).toHaveBeenCalledWith(
+      "skills:source",
+      expect.objectContaining({
+        badges: {
+          official: {
+            byUserId: "users:admin",
+            at: expect.any(Number),
+          },
+        },
+      }),
+    );
+  });
+
   it("resolves alias slugs to the live target skill", async () => {
     const result = await getSkillBySlugInternalHandler(
       {

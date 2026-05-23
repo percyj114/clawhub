@@ -2062,7 +2062,11 @@ async function upsertSkillBadge(
     .withIndex("by_skill_kind", (q) => q.eq("skillId", skillId).eq("kind", kind))
     .unique();
   if (existing) {
-    await ctx.db.patch(existing._id, badgeEntry);
+    await ctx.db.patch(existing._id, {
+      byUserId: userId,
+      at,
+      sourcePublisherId: sourcePublisherId ?? undefined,
+    });
   } else {
     await ctx.db.insert("skillBadges", {
       skillId,
