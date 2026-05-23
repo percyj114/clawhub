@@ -2180,8 +2180,7 @@ async function getOfficialBadgePatchForSkillOwnerTransfer(
       await ctx.db.insert("skillBadges", {
         skillId: skill._id,
         kind: "official",
-        byUserId: destinationOfficialBadge.byUserId,
-        at: destinationOfficialBadge.at,
+        ...destinationOfficialBadge,
       });
     }
 
