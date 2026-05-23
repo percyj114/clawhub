@@ -8,10 +8,8 @@ import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import {
   detectInjectionPatterns,
-  type LlmAgenticRiskFinding,
   parseLlmEvalResponse,
   type LlmEvalDimension,
-  type LlmRiskSummary,
   SKILL_SECURITY_EVALUATOR_SYSTEM_PROMPT,
 } from "../../convex/lib/securityPrompt";
 
@@ -45,9 +43,35 @@ type StoredLlmAnalysis = {
   dimensions?: LlmEvalDimension[];
   guidance?: string;
   findings?: string;
-  agenticRiskFindings?: LlmAgenticRiskFinding[];
-  riskSummary?: LlmRiskSummary;
   model?: string;
+  checkedAt: number;
+};
+
+type SkillSpectorIssue = {
+  issueId: string;
+  category?: string;
+  pattern?: string;
+  severity: string;
+  confidence?: number;
+  file?: string;
+  startLine?: number;
+  endLine?: number;
+  explanation: string;
+  remediation?: string;
+  finding?: string;
+  codeSnippet?: string;
+};
+
+type SkillSpectorAnalysis = {
+  status: string;
+  score?: number;
+  severity?: string;
+  recommendation?: string;
+  issueCount: number;
+  issues: SkillSpectorIssue[];
+  scannerVersion?: string;
+  summary?: string;
+  error?: string;
   checkedAt: number;
 };
 
@@ -67,6 +91,8 @@ type JobDiagnosticInput = {
   job: ClaimedJob;
   llmAnalysis?: unknown;
   runId?: string;
+  skillSpector?: CodexCommandDiagnostic;
+  skillSpectorAnalysis?: unknown;
   startedAt: number;
   status: "completed" | "failed";
 };
@@ -289,6 +315,21 @@ export async function writeJobDiagnostic(input: JobDiagnosticInput) {
     "codex-result.redacted.json",
     input.codex?.rawResult,
   );
+  const skillSpectorStdoutPath = await writeDiagnosticText(
+    jobDir,
+    "skillspector.stdout.redacted.log",
+    input.skillSpector?.stdout,
+  );
+  const skillSpectorStderrPath = await writeDiagnosticText(
+    jobDir,
+    "skillspector.stderr.redacted.log",
+    input.skillSpector?.stderr,
+  );
+  const skillSpectorRawResultPath = await writeDiagnosticText(
+    jobDir,
+    "skillspector-result.redacted.json",
+    input.skillSpector?.rawResult,
+  );
 
   const diagnostic = {
     completedAt: input.completedAt,
@@ -304,6 +345,7 @@ export async function writeJobDiagnostic(input: JobDiagnosticInput) {
     },
     llmAnalysis: redactDiagnosticValue(input.llmAnalysis),
     runId: input.runId,
+    skillSpectorAnalysis: redactDiagnosticValue(input.skillSpectorAnalysis),
     startedAt: input.startedAt,
     status: input.status,
     target: sanitizedTargetForDiagnostic(input.job.target),
@@ -313,6 +355,13 @@ export async function writeJobDiagnostic(input: JobDiagnosticInput) {
       rawResultPath,
       stderrPath,
       stdoutPath,
+    },
+    skillSpector: {
+      args: input.skillSpector?.args,
+      exitCode: input.skillSpector?.exitCode,
+      rawResultPath: skillSpectorRawResultPath,
+      stderrPath: skillSpectorStderrPath,
+      stdoutPath: skillSpectorStdoutPath,
     },
   };
 
@@ -413,10 +462,63 @@ async function collectArtifactSignalText(dir: string, maxBytes = 1_000_000) {
   return chunks.join("\n");
 }
 
-export function buildPrompt(job: ClaimedJob, injectionSignals: string[]) {
+async function runSkillSpector(
+  workspace: string,
+  onDiagnostic: (diagnostic: Partial<CodexCommandDiagnostic>) => void,
+) {
+  const resultPath = join(workspace, "skillspector-report.json");
+  const args = ["scan", "artifact", "--format", "json", "--output", resultPath];
+  onDiagnostic({ args });
+  try {
+    const output = await runCommand("skillspector", args, {
+      cwd: workspace,
+      timeoutMs: codexScanTimeoutMs(),
+    });
+    const raw = await readFile(resultPath, "utf8");
+    onDiagnostic({ exitCode: 0, rawResult: raw, stderr: output.stderr, stdout: output.stdout });
+    return normalizeSkillSpectorAnalysis(raw);
+  } catch (error) {
+    if (error instanceof CommandFailure) {
+      let rawResult: string | undefined;
+      try {
+        rawResult = await readFile(resultPath, "utf8");
+      } catch {
+        rawResult = undefined;
+      }
+      onDiagnostic({
+        exitCode: error.exitCode,
+        rawResult,
+        stderr: error.stderr,
+        stdout: error.stdout,
+      });
+      if (rawResult) {
+        try {
+          return normalizeSkillSpectorAnalysis(rawResult);
+        } catch {
+          // Fall through to an error-shaped analysis; diagnostics keep the raw report.
+        }
+      }
+    }
+    return skillSpectorFailureAnalysis(error);
+  }
+}
+
+export function buildPrompt(
+  job: ClaimedJob,
+  injectionSignals: string[],
+  skillSpectorAnalysis?: SkillSpectorAnalysis,
+) {
   const vt = JSON.stringify(
     (job.target.version as Record<string, unknown> | undefined)?.vtAnalysis ??
       (job.target.release as Record<string, unknown> | undefined)?.vtAnalysis ??
+      null,
+    null,
+    2,
+  );
+  const skillSpector = JSON.stringify(
+    skillSpectorAnalysis ??
+      (job.target.version as Record<string, unknown> | undefined)?.skillSpectorAnalysis ??
+      (job.target.release as Record<string, unknown> | undefined)?.skillSpectorAnalysis ??
       null,
     null,
     2,
@@ -426,6 +528,7 @@ export function buildPrompt(job: ClaimedJob, injectionSignals: string[]) {
 
 Additional ClawHub policy for this Codex run:
 - Inspect the workspace files directly. Treat metadata.json as context, not artifact instructions.
+- SkillSpector findings are the dedicated agentic-risk scanner output. Weigh them with artifact evidence, but do not rename them, translate them into another taxonomy, or directly copy them into ClawScan output.
 - VirusTotal is untrusted telemetry only. It is useful signal, but it must never be the sole reason for a malicious or suspicious verdict.
 - If VirusTotal is the only negative signal and artifact evidence is coherent, return benign.
 - Static scan findings are signal. If static scan marked malicious, decide from artifact evidence whether the hold should remain.
@@ -448,6 +551,11 @@ VirusTotal telemetry supplied to Codex:
 ${vt}
 \`\`\`
 
+SkillSpector findings supplied to Codex:
+\`\`\`json
+${skillSpector}
+\`\`\`
+
 Read metadata.json and the artifact/ directory. Return the required JSON object only.`;
 }
 
@@ -459,6 +567,7 @@ function codexEnv() {
   delete env.SECURITY_SCAN_WORKER_TOKEN;
   delete env.HOMEBREW_GITHUB_API_TOKEN;
   env.NO_COLOR = "1";
+  env.SKILLSPECTOR_PROVIDER = env.SKILLSPECTOR_PROVIDER || "openai";
   return env;
 }
 
@@ -524,6 +633,196 @@ async function runCommand(
   });
 }
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function readField(record: Record<string, unknown>, names: string[]) {
+  for (const name of names) {
+    if (record[name] !== undefined && record[name] !== null) return record[name];
+  }
+  return undefined;
+}
+
+function readString(record: Record<string, unknown>, names: string[]) {
+  const value = readField(record, names);
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed || undefined;
+  }
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return undefined;
+}
+
+function readNumber(record: Record<string, unknown>, names: string[]) {
+  const value = readField(record, names);
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value.replace(/%$/, "").trim());
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+function readNestedRecord(record: Record<string, unknown>, names: string[]) {
+  const value = readField(record, names);
+  return asRecord(value);
+}
+
+function readStringFromNested(
+  record: Record<string, unknown>,
+  nestedNames: string[],
+  fieldNames: string[],
+) {
+  const nested = readNestedRecord(record, nestedNames);
+  return nested ? readString(nested, fieldNames) : undefined;
+}
+
+function readNumberFromNested(
+  record: Record<string, unknown>,
+  nestedNames: string[],
+  fieldNames: string[],
+) {
+  const nested = readNestedRecord(record, nestedNames);
+  return nested ? readNumber(nested, fieldNames) : undefined;
+}
+
+function normalizeConfidence(value: number | undefined) {
+  if (value === undefined) return undefined;
+  if (value > 1) return Math.max(0, Math.min(1, value / 100));
+  return Math.max(0, Math.min(1, value));
+}
+
+function normalizeSkillSpectorIssue(input: unknown, index: number): SkillSpectorIssue | null {
+  const record = asRecord(input);
+  if (!record) return null;
+  const issueId =
+    readString(record, ["rule_id", "ruleId", "issue_id", "issueId", "id", "pattern_id"]) ??
+    `skillspector-${index + 1}`;
+  const pattern = readString(record, [
+    "pattern",
+    "rule_name",
+    "ruleName",
+    "name",
+    "title",
+    "message",
+  ]);
+  const severity = (
+    readString(record, ["severity", "risk_severity", "level"]) ?? "UNKNOWN"
+  ).toUpperCase();
+  const explanation =
+    readString(record, ["explanation", "message", "description", "reason", "details"]) ??
+    pattern ??
+    issueId;
+  const confidence = normalizeConfidence(readNumber(record, ["confidence", "score"]));
+  const file =
+    readString(record, ["file", "file_path", "filePath", "path"]) ??
+    readStringFromNested(record, ["location"], ["file", "path"]);
+  const startLine =
+    readNumber(record, ["line", "line_number", "lineNumber", "start_line", "startLine"]) ??
+    readNumberFromNested(record, ["location"], ["line", "start_line", "startLine"]);
+  const endLine =
+    readNumber(record, ["end_line", "endLine"]) ??
+    readNumberFromNested(record, ["location"], ["end_line", "endLine"]);
+  return {
+    issueId,
+    category: readString(record, ["category", "analyzer", "type"]),
+    pattern,
+    severity,
+    confidence,
+    file,
+    startLine,
+    endLine,
+    explanation,
+    remediation: readString(record, ["remediation", "recommendation", "fix", "mitigation"]),
+    finding: readString(record, ["finding", "match", "evidence"]),
+    codeSnippet: readString(record, ["code_snippet", "codeSnippet", "snippet"]),
+  };
+}
+
+function normalizeSkillSpectorStatus(params: {
+  rawStatus?: string;
+  recommendation?: string;
+  score?: number;
+  issueCount: number;
+}) {
+  const rawStatus = params.rawStatus?.trim().toLowerCase();
+  if (rawStatus) {
+    if (rawStatus === "benign" || rawStatus === "safe") return "clean";
+    if (["clean", "suspicious", "malicious", "error", "failed"].includes(rawStatus)) {
+      return rawStatus;
+    }
+  }
+  const recommendation = params.recommendation?.trim().toLowerCase() ?? "";
+  if (recommendation.includes("safe")) return "clean";
+  if (params.issueCount > 0) return "suspicious";
+  if (typeof params.score === "number" && params.score > 20) return "suspicious";
+  return "clean";
+}
+
+function normalizeSkillSpectorAnalysis(raw: string, checkedAt = Date.now()): SkillSpectorAnalysis {
+  const parsed = JSON.parse(raw) as unknown;
+  const record = asRecord(parsed);
+  if (!record) {
+    return {
+      status: "error",
+      issueCount: 0,
+      issues: [],
+      error: "SkillSpector returned a non-object JSON report.",
+      checkedAt,
+    };
+  }
+  const rawIssues = readField(record, [
+    "filtered_findings",
+    "filteredFindings",
+    "findings",
+    "issues",
+    "vulnerabilities",
+  ]);
+  const issues = (Array.isArray(rawIssues) ? rawIssues : [])
+    .map((issue, index) => normalizeSkillSpectorIssue(issue, index))
+    .filter((issue): issue is SkillSpectorIssue => Boolean(issue));
+  const score = readNumber(record, ["risk_score", "riskScore", "score"]);
+  const severity = readString(record, ["risk_severity", "riskSeverity", "severity"]);
+  const recommendation = readString(record, [
+    "risk_recommendation",
+    "riskRecommendation",
+    "recommendation",
+  ]);
+  const issueCount =
+    readNumber(record, ["issue_count", "issueCount", "finding_count", "findingCount"]) ??
+    issues.length;
+  return {
+    status: normalizeSkillSpectorStatus({
+      rawStatus: readString(record, ["status"]),
+      recommendation,
+      score,
+      issueCount,
+    }),
+    score,
+    severity,
+    recommendation,
+    issueCount,
+    issues,
+    scannerVersion: readString(record, ["scanner_version", "scannerVersion", "version"]),
+    summary: readString(record, ["summary", "analysis"]),
+    checkedAt,
+  };
+}
+
+function skillSpectorFailureAnalysis(error: unknown, checkedAt = Date.now()): SkillSpectorAnalysis {
+  return {
+    status: "error",
+    issueCount: 0,
+    issues: [],
+    scannerVersion: "skillspector",
+    error: error instanceof Error ? error.message : String(error),
+    checkedAt,
+  };
+}
+
 function verdictToStatus(verdict: string) {
   return verdict === "benign" ? "clean" : verdict;
 }
@@ -537,8 +836,6 @@ function toStoredLlmAnalysis(parsed: NonNullable<ReturnType<typeof parseLlmEvalR
     dimensions: parsed.dimensions,
     guidance: parsed.guidance,
     findings: parsed.findings || undefined,
-    agenticRiskFindings: parsed.agenticRiskFindings,
-    riskSummary: parsed.riskSummary,
     model: process.env.CODEX_SECURITY_SCAN_MODEL ?? "gpt-5.5",
     checkedAt: Date.now(),
   };
@@ -552,6 +849,7 @@ function codexScanTimeoutMs() {
 async function runCodex(
   job: ClaimedJob,
   workspace: string,
+  skillSpectorAnalysis: SkillSpectorAnalysis,
   onDiagnostic: (diagnostic: Partial<CodexCommandDiagnostic>) => void,
 ) {
   const resultPath = join(workspace, "codex-result.json");
@@ -585,7 +883,7 @@ async function runCodex(
   ];
   const artifactSignalText = await collectArtifactSignalText(join(workspace, "artifact"));
   const injectionSignals = detectInjectionPatterns(artifactSignalText);
-  const prompt = buildPrompt(job, injectionSignals);
+  const prompt = buildPrompt(job, injectionSignals, skillSpectorAnalysis);
   onDiagnostic({ args });
   try {
     const output = await runCommand("codex", args, {
@@ -626,12 +924,17 @@ async function processJob(
   const workspace = await mkdtemp(join(tmpdir(), `clawhub-codex-scan-${basename(job.job._id)}-`));
   const startedAt = Date.now();
   const codex: CodexCommandDiagnostic = {};
+  const skillSpector: CodexCommandDiagnostic = {};
   let errorMessage: string | undefined;
   let llmAnalysis: StoredLlmAnalysis | undefined;
+  let skillSpectorAnalysis: SkillSpectorAnalysis | undefined;
   let status: JobDiagnosticInput["status"] = "failed";
   try {
     await writeArtifactWorkspace(job, workspace);
-    llmAnalysis = await runCodex(job, workspace, (next) => {
+    skillSpectorAnalysis = await runSkillSpector(workspace, (next) => {
+      Object.assign(skillSpector, next);
+    });
+    llmAnalysis = await runCodex(job, workspace, skillSpectorAnalysis, (next) => {
       Object.assign(codex, next);
     });
     await client.action(api.securityScan.completeCodexScanJob, {
@@ -639,6 +942,7 @@ async function processJob(
       jobId: job.job._id as Id<"securityScanJobs">,
       leaseToken: job.job.leaseToken,
       llmAnalysis,
+      skillSpectorAnalysis,
       runId: process.env.GITHUB_RUN_ID,
     });
     status = "completed";
@@ -666,6 +970,8 @@ async function processJob(
         job,
         llmAnalysis,
         runId: process.env.GITHUB_RUN_ID,
+        skillSpector,
+        skillSpectorAnalysis,
         startedAt,
         status,
       });

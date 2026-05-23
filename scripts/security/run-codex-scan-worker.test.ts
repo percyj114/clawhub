@@ -40,6 +40,52 @@ describe("run-codex-scan-worker diagnostics", () => {
     expect(prompt).toContain("Do not treat unreadable artifacts as benign evidence");
   });
 
+  it("passes SkillSpector findings to Codex without asking for OWASP finding output", () => {
+    const prompt = buildPrompt(
+      {
+        job: {
+          _id: "job123",
+          hasMaliciousSignal: false,
+          leaseToken: "lease-secret",
+          source: "publish",
+          targetKind: "skillVersion",
+          waitForVtUntil: 0,
+        },
+        target: {
+          version: {
+            skillSpectorAnalysis: {
+              status: "suspicious",
+              score: 55,
+              recommendation: "DO_NOT_INSTALL",
+              issueCount: 1,
+              checkedAt: 123,
+              issues: [
+                {
+                  issueId: "SDI-1",
+                  severity: "HIGH",
+                  confidence: 0.98,
+                  file: "SKILL.md",
+                  startLine: 3,
+                  endLine: 6,
+                  explanation:
+                    "The manifest advertises a generic benchmark while the skill body executes shell commands.",
+                  remediation: "Make the manifest and skill body describe the same behavior.",
+                },
+              ],
+            },
+          },
+        },
+      },
+      [],
+    );
+
+    expect(prompt).toContain("SkillSpector findings supplied to Codex");
+    expect(prompt).toContain("SDI-1");
+    expect(prompt).toContain("DO_NOT_INSTALL");
+    expect(prompt).not.toContain("agentic_risk_findings");
+    expect(prompt).not.toContain("OWASP");
+  });
+
   it("writes scanner metadata without lease tokens or signed file URLs", async () => {
     const workspace = await tempDir();
 

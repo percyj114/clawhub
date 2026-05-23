@@ -117,6 +117,7 @@ type PublicSkillVersionResponse = {
   softDeletedAt?: number;
   sha256hash?: string;
   vtAnalysis?: Doc<"skillVersions">["vtAnalysis"];
+  skillSpectorAnalysis?: Doc<"skillVersions">["skillSpectorAnalysis"];
   llmAnalysis?: Doc<"skillVersions">["llmAnalysis"];
   staticScan?: PublicSkillVersionStaticScan;
   capabilityTags?: string[];
@@ -246,6 +247,15 @@ type SkillSecuritySnapshot = {
       source: string | null;
       checkedAt: number | null;
     } | null;
+    skillspector: {
+      status: string;
+      normalizedStatus: NormalizedSecurityStatus;
+      score: number | null;
+      severity: string | null;
+      recommendation: string | null;
+      issueCount: number;
+      checkedAt: number | null;
+    } | null;
     llm: {
       status: string;
       verdict: string | null;
@@ -343,37 +353,49 @@ function hasLlmDimensionWarnings(dimensions: LlmEvalDimension[] | undefined) {
 function buildSkillSecuritySnapshot(
   version: Pick<
     PublicSkillVersionResponse,
-    "sha256hash" | "vtAnalysis" | "llmAnalysis" | "staticScan" | "capabilityTags"
+    | "sha256hash"
+    | "vtAnalysis"
+    | "skillSpectorAnalysis"
+    | "llmAnalysis"
+    | "staticScan"
+    | "capabilityTags"
   >,
 ): SkillSecuritySnapshot | null {
   const capabilityTags = version.capabilityTags ?? [];
   const sha256hash = version.sha256hash ?? null;
   const vt = version.vtAnalysis;
+  const skillSpector = version.skillSpectorAnalysis;
   const llm = version.llmAnalysis;
   const staticScan = version.staticScan;
 
-  if (!sha256hash && !vt && !llm && !staticScan && capabilityTags.length === 0) return null;
+  if (!sha256hash && !vt && !skillSpector && !llm && !staticScan && capabilityTags.length === 0) {
+    return null;
+  }
 
   const staticStatus =
     staticScan?.status?.trim().toLowerCase() === "malicious"
       ? ("malicious" satisfies NormalizedSecurityStatus)
       : null;
   const vtStatus = vt ? normalizeSecurityStatus(vt.verdict ?? vt.status) : null;
+  const skillSpectorStatus = skillSpector ? normalizeSecurityStatus(skillSpector.status) : null;
   const llmStatus = llm ? normalizeSecurityStatus(llm.verdict ?? llm.status) : null;
 
   const statuses: NormalizedSecurityStatus[] = [];
   if (staticStatus) statuses.push(staticStatus);
   if (llmStatus) statuses.push(llmStatus);
-  if (statuses.length === 0 && sha256hash) statuses.push("pending");
+  if (statuses.length === 0 && (sha256hash || skillSpector)) statuses.push("pending");
   const status = mergeSecurityStatuses(statuses);
   const hasScanResult =
     isDefinitiveSecurityStatus(staticStatus) || isDefinitiveSecurityStatus(llmStatus);
   const hasWarnings =
     status === "suspicious" || status === "malicious" || hasLlmDimensionWarnings(llm?.dimensions);
 
-  const checkedAtCandidates = [staticScan?.checkedAt, vt?.checkedAt, llm?.checkedAt].filter(
-    (value): value is number => typeof value === "number",
-  );
+  const checkedAtCandidates = [
+    staticScan?.checkedAt,
+    vt?.checkedAt,
+    skillSpector?.checkedAt,
+    llm?.checkedAt,
+  ].filter((value): value is number => typeof value === "number");
   const checkedAt = checkedAtCandidates.length > 0 ? Math.max(...checkedAtCandidates) : null;
 
   return {
@@ -404,6 +426,17 @@ function buildSkillSecuritySnapshot(
             analysis: vt.analysis ?? null,
             source: vt.source ?? null,
             checkedAt: vt.checkedAt ?? null,
+          }
+        : null,
+      skillspector: skillSpector
+        ? {
+            status: skillSpector.status,
+            normalizedStatus: skillSpectorStatus ?? "pending",
+            score: skillSpector.score ?? null,
+            severity: skillSpector.severity ?? null,
+            recommendation: skillSpector.recommendation ?? null,
+            issueCount: skillSpector.issueCount ?? 0,
+            checkedAt: skillSpector.checkedAt ?? null,
           }
         : null,
       llm: llm

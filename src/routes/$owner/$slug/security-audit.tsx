@@ -112,6 +112,7 @@ function SkillSecurityAuditRoute() {
       sha256hash={latestVersion.sha256hash ?? null}
       vtAnalysis={latestVersion.vtAnalysis ?? null}
       llmAnalysis={latestVersion.llmAnalysis ?? null}
+      skillSpectorAnalysis={latestVersion.skillSpectorAnalysis ?? null}
       staticScan={latestVersion.staticScan ?? null}
       clawScanNote={latestVersion.clawScanNote ?? null}
       canManageArtifact={canManageArtifact}

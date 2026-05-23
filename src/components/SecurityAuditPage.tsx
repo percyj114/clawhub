@@ -18,11 +18,15 @@ import { SidebarMetadata } from "./SidebarMetadata";
 import {
   ClawScanRiskReview,
   FindingSeverityBadge,
-  getClawScanRiskLevel,
+  getSkillSpectorIssueCount,
+  getSkillSpectorOverviewCopy,
   hasClawScanRiskReview,
-  RiskLevelBadge,
+  hasSkillSpectorFindings,
   ScanResultBadge,
+  SkillSpectorFindings,
   type LlmAnalysis,
+  type SkillSpectorAnalysis,
+  type SkillSpectorIssue,
   type VtAnalysis,
 } from "./SkillSecurityScanResults";
 import { Alert, AlertDescription } from "./ui/alert";
@@ -50,6 +54,7 @@ type SecurityAuditPageProps = {
   sha256hash?: string | null;
   vtAnalysis?: VtAnalysis | null;
   llmAnalysis?: LlmAnalysis | null;
+  skillSpectorAnalysis?: SkillSpectorAnalysis | null;
   staticScan?: StaticScanAnalysis | null;
   source?: Record<string, unknown> | null;
   clawScanNote?: string | null;
@@ -58,8 +63,9 @@ type SecurityAuditPageProps = {
 };
 
 const EMPTY_STATIC_FINDINGS: StaticScanAnalysis["findings"] = [];
+const EMPTY_SKILLSPECTOR_ISSUES: SkillSpectorIssue[] = [];
 const RISK_ANALYSIS_SCOPE_COPY =
-  "Risk analysis is mapped to the OWASP Agentic Skills Top 10 using artifact evidence from this release.";
+  "ClawHub reviews SkillSpector, VirusTotal, static analysis, and artifact evidence before producing the final verdict.";
 
 function formatTime(value?: number | null) {
   if (!value) return "Not checked yet";
@@ -264,12 +270,20 @@ function SecurityAuditOverview(props: SecurityAuditPageProps) {
 }
 
 function ClawScanSection(props: SecurityAuditPageProps) {
+  const skillSpectorFindingsAvailable = hasSkillSpectorFindings(props.skillSpectorAnalysis);
   const riskAnalysis =
-    props.llmAnalysis && hasClawScanRiskReview(props.llmAnalysis) ? props.llmAnalysis : null;
+    !skillSpectorFindingsAvailable && props.llmAnalysis && hasClawScanRiskReview(props.llmAnalysis)
+      ? props.llmAnalysis
+      : null;
 
   return (
     <div className="security-report-panel-body security-report-panel-body-findings">
-      {riskAnalysis ? (
+      {skillSpectorFindingsAvailable ? (
+        <p className="security-audit-empty-detail">
+          Agentic-risk findings are shown in SkillSpector. ClawScan uses those findings with the
+          other scanners to make the final verdict.
+        </p>
+      ) : riskAnalysis ? (
         <ClawScanRiskReview analysis={riskAnalysis} showTitle={false} />
       ) : (
         <p className="security-audit-empty-detail">
@@ -324,6 +338,47 @@ function VirusTotalSection(props: SecurityAuditPageProps) {
           <ExternalLink className="h-3 w-3" aria-hidden="true" />
         </a>
       ) : null}
+    </div>
+  );
+}
+
+function SkillSpectorSection(props: SecurityAuditPageProps) {
+  const analysis = props.skillSpectorAnalysis ?? null;
+  const hasLegacyFindings =
+    props.llmAnalysis && hasClawScanRiskReview(props.llmAnalysis) && !analysis;
+  const overviewCopy = hasLegacyFindings
+    ? "SkillSpector has not run for this release. Legacy ClawScan findings remain available under Risk analysis."
+    : getSkillSpectorOverviewCopy(analysis);
+  const contentSnippets = useSkillSpectorContentSnippets(
+    props.entity,
+    analysis?.issues ?? EMPTY_SKILLSPECTOR_ISSUES,
+  );
+  const showOverview = !(analysis && hasSkillSpectorFindings(analysis));
+
+  return (
+    <div className="security-report-panel-body security-report-panel-body-findings">
+      {showOverview ? (
+        <div className="security-report-overview-body">
+          <p>{overviewCopy}</p>
+        </div>
+      ) : null}
+      {analysis && hasSkillSpectorFindings(analysis) ? (
+        <SkillSpectorFindings analysis={analysis} contentSnippets={contentSnippets} />
+      ) : null}
+    </div>
+  );
+}
+
+function SkillSpectorAttribution() {
+  return (
+    <div className="skillspector-attribution" aria-label="By NVIDIA">
+      <img
+        className="skillspector-nvidia-mark"
+        src="https://www.nvidia.com/favicon.ico"
+        alt=""
+        aria-hidden="true"
+      />
+      <span>By NVIDIA</span>
     </div>
   );
 }
@@ -385,6 +440,18 @@ function extractLineFromFile(content: string, line: number) {
   return value?.trim() ? value : null;
 }
 
+function extractLineRangeFromFile(content: string, startLine: number, endLine?: number) {
+  if (!Number.isFinite(startLine) || startLine < 1) return null;
+  const lines = content.split(/\r?\n/);
+  const start = Math.floor(startLine);
+  const end = Math.max(start, Math.min(Math.floor(endLine ?? start), start + 12));
+  const value = lines
+    .slice(start - 1, end)
+    .map((line) => line.trimEnd())
+    .join("\n");
+  return value.trim() ? value : null;
+}
+
 function useStaticFindingSnippets(entity: EntityRef, findings: StaticScanAnalysis["findings"]) {
   const [snippets, setSnippets] = useState<Record<string, string>>({});
 
@@ -425,6 +492,69 @@ function useStaticFindingSnippets(entity: EntityRef, findings: StaticScanAnalysi
     void loadSnippets();
     return () => controller.abort();
   }, [entity.kind, entity.name, entity.version, findings]);
+
+  return snippets;
+}
+
+function useSkillSpectorContentSnippets(entity: EntityRef, issues: SkillSpectorIssue[]) {
+  const [snippets, setSnippets] = useState<Record<number, string>>({});
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const issuesWithLocations = issues
+      .map((issue, index) => ({ issue, index }))
+      .filter(
+        ({ issue }) =>
+          Boolean(issue.file?.trim()) &&
+          typeof issue.startLine === "number" &&
+          Number.isFinite(issue.startLine),
+      );
+
+    if (!issuesWithLocations.length) {
+      setSnippets((current) => (Object.keys(current).length ? {} : current));
+      return () => controller.abort();
+    }
+
+    const uniqueFiles = Array.from(
+      new Set(
+        issuesWithLocations
+          .map(({ issue }) => issue.file?.trim())
+          .filter((file): file is string => Boolean(file)),
+      ),
+    );
+
+    async function loadSnippets() {
+      const fileContents = new Map<string, string>();
+      await Promise.all(
+        uniqueFiles.map(async (file) => {
+          try {
+            const response = await fetch(buildArtifactFileUrl(entity, file), {
+              signal: controller.signal,
+            });
+            if (!response.ok) return;
+            fileContents.set(file, await response.text());
+          } catch {
+            return;
+          }
+        }),
+      );
+
+      const entries = issuesWithLocations
+        .map(({ issue, index }) => {
+          const file = issue.file?.trim();
+          const content = file ? fileContents.get(file) : null;
+          if (!content || typeof issue.startLine !== "number") return null;
+          const snippet = extractLineRangeFromFile(content, issue.startLine, issue.endLine);
+          return snippet ? ([index, snippet] as const) : null;
+        })
+        .filter((entry): entry is readonly [number, string] => entry !== null);
+
+      if (!controller.signal.aborted) setSnippets(Object.fromEntries(entries));
+    }
+
+    void loadSnippets();
+    return () => controller.abort();
+  }, [entity.kind, entity.name, entity.version, issues]);
 
   return snippets;
 }
@@ -521,6 +651,12 @@ function SecurityAuditScannerSection({
   props: SecurityAuditPageProps;
 }) {
   const label = AUDIT_SCANNER_LABELS[kind];
+  const skillSpectorIssueCount =
+    kind === "skillspector" ? getSkillSpectorIssueCount(props.skillSpectorAnalysis) : 0;
+  const heading =
+    kind === "skillspector" && skillSpectorIssueCount > 0
+      ? `${label} (${skillSpectorIssueCount})`
+      : label;
   return (
     <section
       className="security-report-panel security-report-panel-compact"
@@ -529,13 +665,15 @@ function SecurityAuditScannerSection({
       <div className="security-report-panel-header">
         <div className="security-report-panel-title-row">
           <h2 id={`${kind}-heading`} className="skill-install-panel-title">
-            {label}
+            {heading}
           </h2>
           {kind === "clawscan" ? <RiskAnalysisInfoLink /> : null}
+          {kind === "skillspector" ? <SkillSpectorAttribution /> : null}
         </div>
       </div>
       {kind === "clawscan" ? <ClawScanSection {...props} /> : null}
       {kind === "virustotal" ? <VirusTotalSection {...props} /> : null}
+      {kind === "skillspector" ? <SkillSpectorSection {...props} /> : null}
       {kind === "static-analysis" ? <StaticAnalysisSection {...props} /> : null}
     </section>
   );
@@ -543,7 +681,6 @@ function SecurityAuditScannerSection({
 
 function SecurityAuditSidebar(props: SecurityAuditPageProps) {
   const latestCheckedAt = getLatestAuditCheckedAt(props);
-  const clawScanRiskLevel = getClawScanRiskLevel(props.llmAnalysis);
   const verdict = aggregateAuditVerdict(props);
 
   return (
@@ -554,10 +691,6 @@ function SecurityAuditSidebar(props: SecurityAuditPageProps) {
         {
           label: "Outcome",
           value: <ScanResultBadge status={verdict} />,
-        },
-        {
-          label: "Risk",
-          value: clawScanRiskLevel ? <RiskLevelBadge level={clawScanRiskLevel} /> : "Not reported",
         },
         {
           label: "Latest audit",
@@ -575,7 +708,7 @@ function SecurityAuditSidebar(props: SecurityAuditPageProps) {
 }
 
 export function SecurityAuditPage(props: SecurityAuditPageProps) {
-  const orderedScanners = getAuditScannerOrder();
+  const orderedScanners = getAuditScannerOrder(props);
 
   return (
     <main className="section detail-page-section security-report-section">

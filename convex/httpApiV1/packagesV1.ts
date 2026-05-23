@@ -414,6 +414,7 @@ type ReleaseLike = {
   extractedPackageJson?: Doc<"packageReleases">["extractedPackageJson"];
   sha256hash?: string;
   vtAnalysis?: Doc<"packageReleases">["vtAnalysis"];
+  skillSpectorAnalysis?: Doc<"packageReleases">["skillSpectorAnalysis"];
   llmAnalysis?: Doc<"packageReleases">["llmAnalysis"];
   clawScanNote?: string;
   clawScanNoteUpdatedAt?: number;
@@ -2902,6 +2903,7 @@ export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Reques
           artifact: toReleaseArtifact(result.version, result.package.name),
           sha256hash: result.version.sha256hash ?? null,
           vtAnalysis: result.version.vtAnalysis ?? null,
+          skillSpectorAnalysis: result.version.skillSpectorAnalysis ?? null,
           llmAnalysis: result.version.llmAnalysis ?? null,
           clawScanNote: result.version.clawScanNote ?? null,
           clawScanNoteUpdatedAt: result.version.clawScanNoteUpdatedAt ?? null,

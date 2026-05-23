@@ -1388,6 +1388,24 @@ code {
   min-width: 0;
 }
 
+.skillspector-attribution {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+  font-weight: 650;
+  line-height: 1;
+  text-transform: none;
+}
+
+.skillspector-nvidia-mark {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  border-radius: 3px;
+}
+
 .security-report-title-info-link {
   display: inline-flex;
   align-items: center;
@@ -8084,10 +8102,6 @@ code {
   font-style: italic;
 }
 
-.scan-result-risk {
-  justify-self: end;
-}
-
 /* LLM Analysis Detail */
 .analysis-detail {
   margin-top: 10px;
@@ -8574,40 +8588,6 @@ a.agentic-risk-finding-title:focus-visible {
   }
 }
 
-.scan-risk-level-badge {
-  width: fit-content;
-  max-width: 100%;
-  gap: 8px;
-  padding: 0.25rem 0.55rem;
-  font-family: var(--font-mono);
-  font-size: 0.78rem;
-  font-weight: 500;
-  line-height: 1.2;
-  overflow-wrap: normal;
-}
-
-.scan-risk-level-bars {
-  display: inline-grid;
-  grid-template-columns: repeat(3, 3px);
-  gap: 3px;
-  align-items: center;
-  height: 10px;
-}
-
-.scan-risk-level-bars span {
-  display: block;
-  width: 3px;
-  height: 10px;
-  border-radius: 999px;
-  background: color-mix(in srgb, currentColor 22%, transparent);
-}
-
-.scan-risk-level-badge[data-level="1"] .scan-risk-level-bars span:nth-child(-n + 1),
-.scan-risk-level-badge[data-level="2"] .scan-risk-level-bars span:nth-child(-n + 2),
-.scan-risk-level-badge[data-level="3"] .scan-risk-level-bars span:nth-child(-n + 3) {
-  background: currentColor;
-}
-
 .agentic-risk-impact span,
 .agentic-risk-recommendation span {
   font-size: 0.68rem;
@@ -8817,8 +8797,7 @@ a.agentic-risk-finding-title:focus-visible {
     gap: 6px 10px;
   }
 
-  .scan-result-link,
-  .scan-result-risk {
+  .scan-result-link {
     grid-column: 1 / -1;
     justify-self: start;
   }

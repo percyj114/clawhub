@@ -29,6 +29,34 @@ const vtAnalysisValidator = v.object({
   checkedAt: v.number(),
 });
 
+const skillSpectorIssueValidator = v.object({
+  issueId: v.string(),
+  category: v.optional(v.string()),
+  pattern: v.optional(v.string()),
+  severity: v.string(),
+  confidence: v.optional(v.number()),
+  file: v.optional(v.string()),
+  startLine: v.optional(v.number()),
+  endLine: v.optional(v.number()),
+  explanation: v.string(),
+  remediation: v.optional(v.string()),
+  finding: v.optional(v.string()),
+  codeSnippet: v.optional(v.string()),
+});
+
+const skillSpectorAnalysisValidator = v.object({
+  status: v.string(),
+  score: v.optional(v.number()),
+  severity: v.optional(v.string()),
+  recommendation: v.optional(v.string()),
+  issueCount: v.number(),
+  issues: v.array(skillSpectorIssueValidator),
+  scannerVersion: v.optional(v.string()),
+  summary: v.optional(v.string()),
+  error: v.optional(v.string()),
+  checkedAt: v.number(),
+});
+
 const depRegistryStatusValidator = v.union(
   v.literal("clean"),
   v.literal("suspicious"),
@@ -583,6 +611,7 @@ const skillVersions = defineTable({
   softDeletedAt: v.optional(v.number()),
   sha256hash: v.optional(v.string()),
   vtAnalysis: v.optional(vtAnalysisValidator),
+  skillSpectorAnalysis: v.optional(skillSpectorAnalysisValidator),
   llmAnalysis: v.optional(
     v.object({
       status: v.string(),
@@ -685,9 +714,11 @@ const skillVersionFingerprints = defineTable({
   skillId: v.id("skills"),
   versionId: v.id("skillVersions"),
   fingerprint: v.string(),
+  kind: v.optional(v.union(v.literal("source"), v.literal("generated-bundle"))),
   createdAt: v.number(),
 })
   .index("by_version", ["versionId"])
+  .index("by_version_kind", ["versionId", "kind"])
   .index("by_fingerprint", ["fingerprint"])
   .index("by_skill_fingerprint", ["skillId", "fingerprint"]);
 
@@ -948,6 +979,7 @@ const packageReleases = defineTable({
   verification: packageVerificationValidator,
   sha256hash: v.optional(v.string()),
   vtAnalysis: v.optional(vtAnalysisValidator),
+  skillSpectorAnalysis: v.optional(skillSpectorAnalysisValidator),
   llmAnalysis: v.optional(
     v.object({
       status: v.string(),

@@ -1,12 +1,14 @@
 import {
   getClawScanDisplayStatus,
+  getSkillSpectorDisplayStatus,
   getVirusTotalDisplayStatus,
   type LlmAnalysis,
+  type SkillSpectorAnalysis,
   type StaticFinding,
   type VtAnalysis,
 } from "./SkillSecurityScanResults";
 
-export type AuditScannerKind = "clawscan" | "virustotal" | "static-analysis";
+export type AuditScannerKind = "clawscan" | "virustotal" | "skillspector" | "static-analysis";
 
 export const SECURITY_AUDIT_SUBTEXT =
   "Security checks across static analysis, malware telemetry, and agentic risk";
@@ -23,17 +25,26 @@ export type StaticScanAnalysis = {
 type SecurityAuditSignals = {
   vtAnalysis?: VtAnalysis | null;
   llmAnalysis?: LlmAnalysis | null;
+  skillSpectorAnalysis?: SkillSpectorAnalysis | null;
   staticScan?: StaticScanAnalysis | null;
   suppressScanResults?: boolean;
 };
 
 export const AUDIT_SCANNER_LABELS: Record<AuditScannerKind, string> = {
   clawscan: "Risk analysis",
+  skillspector: "SkillSpector",
   virustotal: "VirusTotal",
   "static-analysis": "Static analysis",
 };
 
 const DEFAULT_AUDIT_SCANNER_ORDER: AuditScannerKind[] = [
+  "skillspector",
+  "static-analysis",
+  "virustotal",
+  "clawscan",
+];
+
+const POLICY_VERDICT_SCANNER_ORDER: AuditScannerKind[] = [
   "static-analysis",
   "virustotal",
   "clawscan",
@@ -52,11 +63,12 @@ export function getAuditScannerStatus(kind: AuditScannerKind, signals: SecurityA
   if (signals.suppressScanResults) return "cleared";
   if (kind === "clawscan") return getClawScanDisplayStatus(signals.llmAnalysis);
   if (kind === "virustotal") return getVirusTotalDisplayStatus(signals.vtAnalysis);
+  if (kind === "skillspector") return getSkillSpectorDisplayStatus(signals.skillSpectorAnalysis);
   return getStaticScanDisplayStatus(signals.staticScan);
 }
 
 export function aggregateAuditVerdict(signals: SecurityAuditSignals) {
-  const statuses = DEFAULT_AUDIT_SCANNER_ORDER.map((kind) => getAuditScannerStatus(kind, signals));
+  const statuses = POLICY_VERDICT_SCANNER_ORDER.map((kind) => getAuditScannerStatus(kind, signals));
   const normalized = statuses.map((status) => status.toLowerCase());
   if (normalized.some((status) => status === "malicious")) return "malicious";
   if (normalized.some((status) => status === "warn" || status === "warning")) return "warn";
@@ -89,13 +101,17 @@ export function getSecurityAuditOverviewCopy({
   ].filter((copy): copy is string => Boolean(copy));
 }
 
-export function getAuditScannerOrder() {
+export function getAuditScannerOrder(signals?: SecurityAuditSignals) {
+  if (signals?.skillSpectorAnalysis) {
+    return DEFAULT_AUDIT_SCANNER_ORDER.filter((kind) => kind !== "clawscan");
+  }
   return DEFAULT_AUDIT_SCANNER_ORDER;
 }
 
 export function getLatestAuditCheckedAt(signals: SecurityAuditSignals) {
   const values = [
     signals.llmAnalysis?.checkedAt,
+    signals.skillSpectorAnalysis?.checkedAt,
     signals.vtAnalysis?.checkedAt,
     signals.staticScan?.checkedAt,
   ].filter((value): value is number => typeof value === "number" && Number.isFinite(value));

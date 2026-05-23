@@ -112,11 +112,40 @@ const llmAnalysisValidator = v.object({
   checkedAt: v.number(),
 });
 
+const skillSpectorIssueValidator = v.object({
+  issueId: v.string(),
+  category: v.optional(v.string()),
+  pattern: v.optional(v.string()),
+  severity: v.string(),
+  confidence: v.optional(v.number()),
+  file: v.optional(v.string()),
+  startLine: v.optional(v.number()),
+  endLine: v.optional(v.number()),
+  explanation: v.string(),
+  remediation: v.optional(v.string()),
+  finding: v.optional(v.string()),
+  codeSnippet: v.optional(v.string()),
+});
+
+const skillSpectorAnalysisValidator = v.object({
+  status: v.string(),
+  score: v.optional(v.number()),
+  severity: v.optional(v.string()),
+  recommendation: v.optional(v.string()),
+  issueCount: v.number(),
+  issues: v.array(skillSpectorIssueValidator),
+  scannerVersion: v.optional(v.string()),
+  summary: v.optional(v.string()),
+  error: v.optional(v.string()),
+  checkedAt: v.number(),
+});
+
 const internalRefs = internal as unknown as {
   packages: {
     getPackageByIdInternal: unknown;
     getReleaseByIdInternal: unknown;
     updateReleaseLlmAnalysisInternal: unknown;
+    updateReleaseSkillSpectorAnalysisInternal: unknown;
   };
   securityScan: {
     claimQueuedJobsInternal: unknown;
@@ -130,6 +159,7 @@ const internalRefs = internal as unknown as {
     getSkillByIdInternal: unknown;
     getVersionByIdInternal: unknown;
     updateVersionLlmAnalysisInternal: unknown;
+    updateVersionSkillSpectorAnalysisInternal: unknown;
   };
 };
 
@@ -751,6 +781,7 @@ export const completeCodexScanJob = action({
     jobId: v.id("securityScanJobs"),
     leaseToken: v.string(),
     llmAnalysis: llmAnalysisValidator,
+    skillSpectorAnalysis: v.optional(skillSpectorAnalysisValidator),
     runId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
@@ -766,11 +797,23 @@ export const completeCodexScanJob = action({
     if (target.job.leaseToken !== args.leaseToken) throw new ConvexError("Lease mismatch");
 
     if (target.job.targetKind === "skillVersion" && target.version) {
+      if (args.skillSpectorAnalysis) {
+        await runMutationRef(ctx, internalRefs.skills.updateVersionSkillSpectorAnalysisInternal, {
+          versionId: target.version._id,
+          skillSpectorAnalysis: args.skillSpectorAnalysis,
+        });
+      }
       await runMutationRef(ctx, internalRefs.skills.updateVersionLlmAnalysisInternal, {
         versionId: target.version._id,
         llmAnalysis: args.llmAnalysis,
       });
     } else if (target.job.targetKind === "packageRelease" && target.release) {
+      if (args.skillSpectorAnalysis) {
+        await runMutationRef(ctx, internalRefs.packages.updateReleaseSkillSpectorAnalysisInternal, {
+          releaseId: target.release._id,
+          skillSpectorAnalysis: args.skillSpectorAnalysis,
+        });
+      }
       await runMutationRef(ctx, internalRefs.packages.updateReleaseLlmAnalysisInternal, {
         releaseId: target.release._id,
         llmAnalysis: args.llmAnalysis,

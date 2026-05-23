@@ -147,6 +147,7 @@ export function PluginSecurityAuditPage({
       sha256hash={release.sha256hash ?? null}
       vtAnalysis={release.vtAnalysis ?? null}
       llmAnalysis={release.llmAnalysis ?? null}
+      skillSpectorAnalysis={release.skillSpectorAnalysis ?? null}
       staticScan={release.staticScan ?? null}
       clawScanNote={release.clawScanNote ?? null}
       canManageArtifact={Boolean(settings)}

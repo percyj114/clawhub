@@ -189,6 +189,34 @@ const vtAnalysisValidator = v.object({
   checkedAt: v.number(),
 });
 
+const skillSpectorIssueValidator = v.object({
+  issueId: v.string(),
+  category: v.optional(v.string()),
+  pattern: v.optional(v.string()),
+  severity: v.string(),
+  confidence: v.optional(v.number()),
+  file: v.optional(v.string()),
+  startLine: v.optional(v.number()),
+  endLine: v.optional(v.number()),
+  explanation: v.string(),
+  remediation: v.optional(v.string()),
+  finding: v.optional(v.string()),
+  codeSnippet: v.optional(v.string()),
+});
+
+const skillSpectorAnalysisValidator = v.object({
+  status: v.string(),
+  score: v.optional(v.number()),
+  severity: v.optional(v.string()),
+  recommendation: v.optional(v.string()),
+  issueCount: v.number(),
+  issues: v.array(skillSpectorIssueValidator),
+  scannerVersion: v.optional(v.string()),
+  summary: v.optional(v.string()),
+  error: v.optional(v.string()),
+  checkedAt: v.number(),
+});
+
 const depRegistryStatusValidator = v.union(
   v.literal("clean"),
   v.literal("suspicious"),
@@ -1649,6 +1677,7 @@ type PublicSkillVersion = {
   capabilityTags?: string[];
   sha256hash?: string;
   vtAnalysis?: Doc<"skillVersions">["vtAnalysis"];
+  skillSpectorAnalysis?: Doc<"skillVersions">["skillSpectorAnalysis"];
   llmAnalysis?: Doc<"skillVersions">["llmAnalysis"];
   apiKeyRequired?: boolean;
   staticScan?: {
@@ -1867,6 +1896,7 @@ function toPublicSkillVersion(
     capabilityTags: version.capabilityTags,
     sha256hash: version.sha256hash,
     vtAnalysis: version.vtAnalysis,
+    skillSpectorAnalysis: version.skillSpectorAnalysis,
     llmAnalysis: version.llmAnalysis,
     apiKeyRequired: version.apiKeyRequired,
     clawScanNote: version.clawScanNote,
@@ -7235,6 +7265,20 @@ export const updateVersionScanResultsInternal = internalMutation({
     if (Object.keys(patch).length > 0) {
       await ctx.db.patch(args.versionId, patch);
     }
+  },
+});
+
+export const updateVersionSkillSpectorAnalysisInternal = internalMutation({
+  args: {
+    versionId: v.id("skillVersions"),
+    skillSpectorAnalysis: skillSpectorAnalysisValidator,
+  },
+  handler: async (ctx, args) => {
+    const version = await ctx.db.get(args.versionId);
+    if (!version) return;
+    await ctx.db.patch(args.versionId, {
+      skillSpectorAnalysis: args.skillSpectorAnalysis,
+    });
   },
 });
 
