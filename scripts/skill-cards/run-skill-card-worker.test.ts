@@ -9,6 +9,7 @@ import {
   buildPrompt,
   neutralTemplatePath,
   prepareNvidiaSkillCardSkill,
+  trustedRendererPath,
 } from "./run-skill-card-worker";
 
 const tempDirs: string[] = [];
@@ -49,6 +50,14 @@ describe("run-skill-card-worker Codex skill setup", () => {
     expect(skillEntry).toContain("First read `Skill Card Generator.md`");
     expect(skillEntry).toContain("skill-card.context.json");
     expect(skillEntry).toContain("Do not render or write `skill-card.md`");
+  });
+
+  it("resolves the renderer from the trusted tool checkout", async () => {
+    const toolDir = "/trusted/nvidia-tooling";
+
+    expect(trustedRendererPath(toolDir)).toBe(
+      "/trusted/nvidia-tooling/AI Transparency Card Automation/scripts/render_card.py",
+    );
   });
 
   it("prompts Codex to use the wrapped NVIDIA skill and write context JSON only", () => {

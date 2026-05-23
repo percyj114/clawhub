@@ -58,6 +58,10 @@ export function neutralTemplatePath() {
   return join(root, "scripts", "skill-cards", "templates", "clawhub-skill-card.md.j2");
 }
 
+export function trustedRendererPath(toolDir: string) {
+  return join(resolve(toolDir), NVIDIA_AUTOMATION_DIR, "scripts", "render_card.py");
+}
+
 function parseArgs() {
   const args = process.argv.slice(2);
   const get = (name: string) => {
@@ -311,7 +315,11 @@ async function writeWorkspace(job: ClaimedSkillCardJob, workspace: string) {
   }
 }
 
-async function generateSkillCardWithCodex(job: ClaimedSkillCardJob, workspace: string) {
+async function generateSkillCardWithCodex(
+  job: ClaimedSkillCardJob,
+  workspace: string,
+  toolDir: string,
+) {
   const resultPath = join(workspace, "codex-final.txt");
   const args = [
     "exec",
@@ -352,18 +360,18 @@ async function generateSkillCardWithCodex(job: ClaimedSkillCardJob, workspace: s
     job.target.evidence,
   );
   await writeFile(contextPath, `${JSON.stringify(context, null, 2)}\n`);
-  await renderSkillCardMarkdown(workspace);
+  await renderSkillCardMarkdown(workspace, toolDir);
   const markdown = await readFile(join(workspace, SKILL_CARD_OUTPUT_FILE), "utf8");
   if (!markdown.trim()) throw new Error("Generated skill-card.md is empty");
   assertPublicSkillCardMarkdown(markdown);
   return markdown;
 }
 
-async function renderSkillCardMarkdown(workspace: string) {
+async function renderSkillCardMarkdown(workspace: string, toolDir: string) {
   await runCommand(
     "python3",
     [
-      join(workspace, ".agents", "skills", NVIDIA_SKILL_DIR, "scripts", "render_card.py"),
+      trustedRendererPath(toolDir),
       "--context",
       join(workspace, SKILL_CARD_CONTEXT_FILE),
       "--template",
@@ -393,7 +401,7 @@ async function processJob(
   try {
     await writeWorkspace(job, workspace);
     await prepareNvidiaSkillCardSkill(workspace, toolDir);
-    const markdown = await generateSkillCardWithCodex(job, workspace);
+    const markdown = await generateSkillCardWithCodex(job, workspace, toolDir);
     await client.action(api.skillCards.completeSkillCardJob, {
       token,
       jobId: job.job._id as Id<"skillCardGenerationJobs">,

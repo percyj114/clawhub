@@ -74,6 +74,20 @@ describe("dev-workers", () => {
     expect(env.SECURITY_SCAN_WORKER_TOKEN).toBe("from-shell");
   });
 
+  it("aliases VITE_CONVEX_URL from shell env when .env.local is absent", async () => {
+    const root = await tempDir();
+    const env: NodeJS.ProcessEnv = {
+      VITE_CONVEX_URL: "https://dev.example",
+      SECURITY_SCAN_WORKER_TOKEN: "from-shell",
+    };
+
+    const loaded = await loadDevWorkerEnv({ cwd: root, env });
+
+    expect(loaded).toEqual({ envFile: null, loaded: ["CONVEX_URL"] });
+    expect(env.CONVEX_URL).toBe("https://dev.example");
+    expect(validateWorkerEnv(WORKERS[0]!, env)).toEqual([]);
+  });
+
   it("resolves enabled workers from include and skip lists", () => {
     const selected = resolveEnabledWorkers({
       workers: ["security-scan", "skill-card"],

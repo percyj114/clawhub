@@ -141,10 +141,16 @@ export async function loadDevWorkerEnv(options: {
   envFile?: string | null;
 }) {
   const envFile = resolveEnvFile(options.cwd, options.envFile ?? null);
-  if (!envFile) return { envFile: null, loaded: [] as string[] };
+  const loaded: string[] = [];
+  if (!envFile) {
+    if (!options.env.CONVEX_URL && options.env.VITE_CONVEX_URL) {
+      options.env.CONVEX_URL = options.env.VITE_CONVEX_URL;
+      loaded.push("CONVEX_URL");
+    }
+    return { envFile: null, loaded };
+  }
 
   const parsed = parseEnv(await readFile(envFile, "utf8"));
-  const loaded: string[] = [];
   for (const [key, value] of Object.entries(parsed)) {
     if (options.env[key] !== undefined) continue;
     options.env[key] = value;
