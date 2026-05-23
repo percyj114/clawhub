@@ -6,6 +6,7 @@ import { action, internalMutation, internalQuery } from "./functions";
 import {
   hasSettledSkillCardInputs,
   isSkillCardPath,
+  normalizeSkillCardSecurityStatus,
   replaceGeneratedSkillCardFile,
   SKILL_CARD_FILE_PATH,
 } from "./lib/skillCards";
@@ -77,6 +78,13 @@ function clawScanRiskFindings(version: Doc<"skillVersions">) {
     userImpact: finding.userImpact,
     recommendation: finding.recommendation,
   }));
+}
+
+function versionClawScanVerdict(version: Doc<"skillVersions">) {
+  const status = normalizeSkillCardSecurityStatus(
+    version.llmAnalysis?.verdict ?? version.llmAnalysis?.status,
+  );
+  return status === "pending" ? null : status;
 }
 
 async function enqueueSkillCardJob(
@@ -288,8 +296,8 @@ function buildEvidencePacket(target: Required<Omit<SkillCardTarget, "missing">>)
     })),
     security: {
       source: "clawscan",
-      verdict: skill.moderationVerdict ?? null,
-      summary: skill.moderationSummary ?? version.llmAnalysis?.summary ?? null,
+      verdict: versionClawScanVerdict(version),
+      summary: version.llmAnalysis?.summary ?? null,
       guidance: version.llmAnalysis?.guidance ?? null,
       riskFindings: clawScanRiskFindings(version),
     },

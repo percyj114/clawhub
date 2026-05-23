@@ -41,12 +41,23 @@ export async function replaceGeneratedSkillCardFile<T extends SkillCardFile>(
   return { files: replaced, bundleFingerprint };
 }
 
+export function normalizeSkillCardSecurityStatus(value: string | null | undefined) {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) return "pending";
+  if (normalized === "clean" || normalized === "benign") return "clean";
+  if (normalized === "suspicious" || normalized === "review") return "suspicious";
+  if (normalized === "malicious") return "malicious";
+  if (normalized === "error" || normalized === "failed") return "error";
+  if (normalized === "completed") return "pending";
+  return normalized;
+}
+
 export function hasSettledSkillCardInputs(version: {
   staticScan?: unknown;
-  llmAnalysis?: { status?: string };
+  llmAnalysis?: { status?: string; verdict?: string };
 }) {
-  const status = version.llmAnalysis?.status?.trim().toLowerCase();
-  return Boolean(
-    version.staticScan && ["clean", "benign", "suspicious", "malicious"].includes(status ?? ""),
+  const status = normalizeSkillCardSecurityStatus(
+    version.llmAnalysis?.verdict ?? version.llmAnalysis?.status,
   );
+  return Boolean(version.staticScan && ["clean", "suspicious", "malicious"].includes(status));
 }

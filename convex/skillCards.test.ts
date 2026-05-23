@@ -203,8 +203,8 @@ describe("skillCards queue", () => {
           badges: null,
           ownerUserId: "users:1",
           ownerPublisherId: null,
-          moderationVerdict: "clean",
-          moderationSummary: "ClawScan found no suspicious behavior.",
+          moderationVerdict: "malicious",
+          moderationSummary: "Latest version should not leak into this card.",
           moderationReasonCodes: ["clean.llm_clean"],
           moderationEvidence: [],
           moderationEngineVersion: "test-engine",
@@ -300,6 +300,37 @@ describe("skillCards queue", () => {
         source: "scan",
       }),
     );
+  });
+
+  it("enqueues when ClawScan stores a final verdict with a generic completed status", async () => {
+    const version = makeSettledVersion({
+      llmAnalysis: {
+        status: "completed",
+        verdict: "benign",
+        checkedAt: 2,
+      },
+    });
+    const insert = vi.fn(async () => "skillCardGenerationJobs:1");
+    const ctx = {
+      db: completeDb({
+        get: vi.fn(async () => version),
+        query: vi.fn(() => makeQueryWithCollect([])),
+        insert,
+        patch: vi.fn(),
+      }),
+    };
+
+    const result = await enqueueHandler(ctx, {
+      versionId: "skillVersions:1",
+      source: "scan",
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      jobId: "skillCardGenerationJobs:1",
+      alreadyQueued: false,
+    });
+    expect(insert).toHaveBeenCalled();
   });
 
   it("generation failure is non-blocking and retryable", async () => {
