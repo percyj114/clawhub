@@ -377,10 +377,10 @@ describe("maintenance badge denormalization", () => {
     });
   });
 
-  it("resyncs denormalized badge with source when table record already exists", async () => {
+  it("updates existing badge records and resyncs denormalized badge source", async () => {
     const unique = vi.fn().mockResolvedValue({
       _id: "skillBadges:existing",
-      sourcePublisherId: "publishers:openclaw",
+      sourcePublisherId: undefined,
     });
     const query = vi.fn().mockReturnValue({
       withIndex: () => ({ unique }),
@@ -406,10 +406,16 @@ describe("maintenance badge denormalization", () => {
       kind: "official",
       byUserId: "users:2",
       at: 456,
+      sourcePublisherId: "publishers:openclaw",
     });
 
     expect(result).toEqual({ inserted: false });
     expect(insert).not.toHaveBeenCalled();
+    expect(patch).toHaveBeenCalledWith("skillBadges:existing", {
+      byUserId: "users:2",
+      at: 456,
+      sourcePublisherId: "publishers:openclaw",
+    });
     expect(patch).toHaveBeenCalledWith("skills:1", {
       badges: {
         official: {
