@@ -224,6 +224,8 @@ export const ApiV1SkillResponseSchema = type({
   }).or("null"),
   owner: type({
     handle: "string|null",
+    userId: "string|null?",
+    publisherId: "string|null?",
     displayName: "string|null?",
     image: "string|null?",
     official: "boolean?",

@@ -164,6 +164,7 @@ type GetBySlugResult = {
   owner: {
     _id: Id<"publishers">;
     handle?: string;
+    linkedUserId?: Id<"users">;
     displayName?: string;
     image?: string;
     official?: boolean;
@@ -787,6 +788,7 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
           ? {
               handle: result.owner.handle ?? null,
               publisherId: result.owner._id,
+              userId: result.owner.linkedUserId ?? null,
               displayName: result.owner.displayName ?? null,
               image: result.owner.image ?? null,
               official: result.owner.official === true,

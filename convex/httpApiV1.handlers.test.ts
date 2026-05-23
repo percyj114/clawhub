@@ -1003,6 +1003,7 @@ describe("httpApiV1 handlers", () => {
                 slug: "demo",
                 displayName: "Demo",
                 summary: "s",
+                badges: { official: { byUserId: "users:admin", at: 1 } },
                 tags: { latest: "versions:1" },
                 stats: { downloads: 0, stars: 0, versions: 1, comments: 0 },
                 createdAt: 1,
@@ -1028,6 +1029,7 @@ describe("httpApiV1 handlers", () => {
     expect(response.status).toBe(200);
     const json = await response.json();
     expect(json.items[0].tags.latest).toBe("1.0.0");
+    expect(json.items[0].official).toBe(true);
   });
 
   it("batches tag resolution across multiple skills into single query", async () => {
@@ -1460,6 +1462,7 @@ describe("httpApiV1 handlers", () => {
           owner: {
             _id: "publishers:p",
             handle: "p",
+            linkedUserId: "users:peter",
             displayName: "Peter",
             image: null,
             official: true,
@@ -1490,6 +1493,8 @@ describe("httpApiV1 handlers", () => {
     const json = await response.json();
     expect(json.skill.slug).toBe("demo");
     expect(json.skill.official).toBe(true);
+    expect(json.owner.userId).toBe("users:peter");
+    expect(json.owner.publisherId).toBe("publishers:p");
     expect(json.owner.official).toBe(true);
     expect(json.latestVersion.version).toBe("1.0.0");
     expect(json.moderation).toEqual({
@@ -1501,6 +1506,48 @@ describe("httpApiV1 handlers", () => {
       engineVersion: "v2.0.0",
       updatedAt: 4,
     });
+  });
+
+  it("get skill returns null owner user id for org-owned skills", async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+            displayName: "Demo",
+            summary: "s",
+            badges: { official: { byUserId: "users:admin", at: 1 } },
+            tags: { latest: "versions:1" },
+            stats: { downloads: 0, stars: 0, versions: 1, comments: 0 },
+            createdAt: 1,
+            updatedAt: 2,
+          },
+          latestVersion: null,
+          owner: {
+            _id: "publishers:openclaw",
+            handle: "openclaw",
+            displayName: "OpenClaw",
+            image: null,
+            official: true,
+          },
+          moderationInfo: null,
+        };
+      }
+      if ("versionIds" in args) return [];
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/skills/demo"),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.owner.userId).toBeNull();
+    expect(json.owner.publisherId).toBe("publishers:openclaw");
+    expect(json.owner.official).toBe(true);
   });
 
   it("get skill treats reports as a valid slug", async () => {

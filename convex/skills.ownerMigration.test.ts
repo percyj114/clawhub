@@ -53,19 +53,23 @@ type PublisherMemberRecord = {
   role: "owner" | "admin" | "publisher";
 };
 
+type OfficialBadgeRecord = { byUserId: string; at: number };
+
 type OrgMigrationFixture = {
   db: {
     get: ReturnType<typeof vi.fn>;
     query: ReturnType<typeof vi.fn>;
     patch: ReturnType<typeof vi.fn>;
     insert: ReturnType<typeof vi.fn>;
+    delete: ReturnType<typeof vi.fn>;
     normalizeId: ReturnType<typeof vi.fn>;
   };
   patchCalls: Array<{ id: string; value: Record<string, unknown> }>;
   insertCalls: Array<{ table: string; value: Record<string, unknown> }>;
+  deleteCalls: string[];
 };
 
-type SkillSourceMode = "other-personal" | "caller-personal" | "source-org";
+type SkillSourceMode = "other-personal" | "caller-personal" | "legacy-caller" | "source-org";
 
 function createMigrationFixture(params: {
   sourceMemberships: PublisherMemberRecord[];
@@ -82,10 +86,13 @@ function createMigrationFixture(params: {
    */
   skillSource?: SkillSourceMode;
   sourcePersonalLinkedUserId?: string | null;
+  sourceOfficialBadge?: OfficialBadgeRecord;
+  destinationOfficialBadge?: OfficialBadgeRecord;
 }): OrgMigrationFixture {
   const now = Date.now();
   const patchCalls: Array<{ id: string; value: Record<string, unknown> }> = [];
   const insertCalls: Array<{ table: string; value: Record<string, unknown> }> = [];
+  const deleteCalls: string[] = [];
 
   const db = {
     get: vi.fn(async (id: string) => {
@@ -110,6 +117,11 @@ function createMigrationFixture(params: {
             params.sourcePersonalLinkedUserId === undefined
               ? "users:caller"
               : params.sourcePersonalLinkedUserId,
+          official:
+            (params.skillSource ?? "other-personal") === "caller-personal" ||
+            (params.skillSource ?? "other-personal") === "legacy-caller"
+              ? params.sourceOfficialBadge
+              : undefined,
           deletedAt: undefined,
           deactivatedAt: undefined,
         };
@@ -120,6 +132,7 @@ function createMigrationFixture(params: {
           kind: "org",
           handle: "casualsecurityinc",
           displayName: "Casual Security",
+          official: params.destinationOfficialBadge,
           deletedAt: undefined,
           deactivatedAt: undefined,
         };
@@ -139,6 +152,10 @@ function createMigrationFixture(params: {
           handle: "cbrunnkvist",
           displayName: "cbrunnkvist",
           linkedUserId: "users:sourceOwner",
+          official:
+            (params.skillSource ?? "other-personal") === "other-personal"
+              ? params.sourceOfficialBadge
+              : undefined,
           deletedAt: undefined,
           deactivatedAt: undefined,
         };
@@ -149,6 +166,10 @@ function createMigrationFixture(params: {
           kind: "org",
           handle: "sourceorg",
           displayName: "Source Org",
+          official:
+            (params.skillSource ?? "other-personal") === "source-org"
+              ? params.sourceOfficialBadge
+              : undefined,
           deletedAt: undefined,
           deactivatedAt: undefined,
         };
@@ -236,12 +257,17 @@ function createMigrationFixture(params: {
               build?.(q);
               const mode: SkillSourceMode = params.skillSource ?? "other-personal";
               const ownerPublisherId =
-                mode === "caller-personal"
-                  ? "publishers:personalCaller"
-                  : mode === "source-org"
-                    ? "publishers:sourceOrg"
-                    : "publishers:personalSource";
-              const ownerUserId = mode === "caller-personal" ? "users:caller" : "users:sourceOwner";
+                mode === "legacy-caller"
+                  ? undefined
+                  : mode === "caller-personal"
+                    ? "publishers:personalCaller"
+                    : mode === "source-org"
+                      ? "publishers:sourceOrg"
+                      : "publishers:personalSource";
+              const ownerUserId =
+                mode === "caller-personal" || mode === "legacy-caller"
+                  ? "users:caller"
+                  : "users:sourceOwner";
               return {
                 unique: async () => ({
                   _id: "skills:1",
@@ -261,6 +287,9 @@ function createMigrationFixture(params: {
                     comments: 0,
                     versions: 1,
                   },
+                  badges: params.sourceOfficialBadge
+                    ? { official: params.sourceOfficialBadge }
+                    : undefined,
                 }),
               };
             }
@@ -294,7 +323,10 @@ function createMigrationFixture(params: {
               // `ownerId` is the source owner derived from the skill source
               // mode, mirroring how embeddings get written at publish time.
               const mode: SkillSourceMode = params.skillSource ?? "other-personal";
-              const ownerId = mode === "caller-personal" ? "users:caller" : "users:sourceOwner";
+              const ownerId =
+                mode === "caller-personal" || mode === "legacy-caller"
+                  ? "users:caller"
+                  : "users:sourceOwner";
               return {
                 collect: async () => [
                   {
@@ -306,6 +338,26 @@ function createMigrationFixture(params: {
               };
             }
             throw new Error(`unexpected skillEmbeddings index ${name}`);
+          },
+        };
+      }
+      if (table === "skillBadges") {
+        return {
+          withIndex: (name: string) => {
+            if (name !== "by_skill_kind") {
+              throw new Error(`unexpected skillBadges index ${name}`);
+            }
+            return {
+              unique: async () =>
+                params.sourceOfficialBadge
+                  ? {
+                      _id: "skillBadges:official",
+                      skillId: "skills:1",
+                      kind: "official",
+                      ...params.sourceOfficialBadge,
+                    }
+                  : null,
+            };
           },
         };
       }
@@ -329,10 +381,13 @@ function createMigrationFixture(params: {
       insertCalls.push({ table, value });
       return `${table}:inserted`;
     }),
+    delete: vi.fn(async (id: string) => {
+      deleteCalls.push(id);
+    }),
     normalizeId: vi.fn(),
   };
 
-  return { db, patchCalls, insertCalls };
+  return { db, patchCalls, insertCalls, deleteCalls };
 }
 
 describe("skills.insertVersion owner migration", () => {
@@ -473,6 +528,70 @@ describe("skills.insertVersion owner migration", () => {
     const embeddingPatches = fixture.patchCalls.filter((p) => p.id === "skillEmbeddings:1");
     expect(embeddingPatches).toHaveLength(1);
     expect(embeddingPatches[0]?.value).toMatchObject({ ownerId: "users:caller" });
+  });
+
+  it("replaces a source-derived official badge when migrating between official publishers", async () => {
+    const fixture = createMigrationFixture({
+      skillSource: "source-org",
+      sourceOfficialBadge: { byUserId: "users:sourceAdmin", at: 111 },
+      destinationOfficialBadge: { byUserId: "users:destAdmin", at: 222 },
+      sourceMemberships: [
+        {
+          _id: "publisherMembers:sourceAdmin",
+          publisherId: "publishers:sourceOrg",
+          userId: "users:caller",
+          role: "admin",
+        },
+        {
+          _id: "publisherMembers:orgAdminCaller",
+          publisherId: "publishers:org",
+          userId: "users:caller",
+          role: "admin",
+        },
+      ],
+    });
+
+    await expect(
+      insertVersionHandler(
+        { db: fixture.db } as never,
+        buildPublishArgs({ migrateOwner: true }) as never,
+      ),
+    ).rejects.toThrow(SENTINEL_BAIL_MESSAGE);
+
+    const skillBadgePatch = fixture.patchCalls.find((p) => p.id === "skillBadges:official");
+    expect(skillBadgePatch?.value).toEqual({ byUserId: "users:destAdmin", at: 222 });
+
+    const skillPatch = fixture.patchCalls.find((p) => p.id === "skills:1");
+    expect(skillPatch?.value).toMatchObject({
+      ownerPublisherId: "publishers:org",
+      ownerUserId: "users:caller",
+      badges: { official: { byUserId: "users:destAdmin", at: 222 } },
+    });
+  });
+
+  it("removes source-derived official badges when legacy skills attach to community publishers", async () => {
+    const fixture = createMigrationFixture({
+      skillSource: "legacy-caller",
+      sourceOfficialBadge: { byUserId: "users:sourceAdmin", at: 111 },
+      sourceMemberships: [],
+    });
+
+    await expect(
+      insertVersionHandler({ db: fixture.db } as never, buildPublishArgs() as never),
+    ).rejects.toThrow(SENTINEL_BAIL_MESSAGE);
+
+    expect(fixture.deleteCalls).toContain("skillBadges:official");
+    const skillPatches = fixture.patchCalls.filter((p) => p.id === "skills:1");
+    expect(skillPatches).toHaveLength(1);
+    expect(skillPatches[0]?.value).toMatchObject({
+      ownerPublisherId: "publishers:org",
+      badges: {},
+    });
+
+    const migrationAudits = fixture.insertCalls.filter(
+      (call) => call.table === "auditLogs" && call.value.action === "skill.ownership.migrate",
+    );
+    expect(migrationAudits).toHaveLength(0);
   });
 
   it("migrates ownership when caller moves their OWN personal skill into an org they belong to", async () => {

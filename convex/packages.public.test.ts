@@ -1034,6 +1034,13 @@ function makeInsertReleaseCtx(
             ),
           };
         }
+        if (table === "publishers") {
+          return {
+            withIndex: vi.fn(() => ({
+              unique: vi.fn().mockResolvedValue(null),
+            })),
+          };
+        }
         throw new Error(`Unexpected table ${table}`);
       }),
       insert,
@@ -1067,15 +1074,14 @@ function makeReservePackageNameCtx(options?: {
             return options?.owner ?? { _id: id, role: "user" };
           }
           if (id === "publishers:openclaw") {
-            return (
-              options?.ownerPublisher ?? {
-                _id: id,
-                kind: "org",
-                handle: "openclaw",
-                displayName: "OpenClaw",
-                trustedPublisher: true,
-              }
-            );
+            if (options && "ownerPublisher" in options) return options.ownerPublisher;
+            return {
+              _id: id,
+              kind: "org",
+              handle: "openclaw",
+              displayName: "OpenClaw",
+              trustedPublisher: true,
+            };
           }
           return null;
         }),
@@ -1102,6 +1108,7 @@ function makeTransferPackageOwnerCtx(options?: {
   actor?: Record<string, unknown> | null;
   owner?: Record<string, unknown> | null;
   ownerPublisher?: Record<string, unknown> | null;
+  ownerPersonalPublisher?: Record<string, unknown> | null;
 }) {
   const pkg = options?.pkg ?? makePackageDoc();
   const packageSearchDigest = { _id: "packageSearchDigest:demo", packageId: pkg?._id };
@@ -1119,16 +1126,27 @@ function makeTransferPackageOwnerCtx(options?: {
           if (id === "users:openclaw") {
             return options?.owner ?? { _id: id, role: "user" };
           }
+          if (id === "publishers:personal-openclaw") {
+            return options?.ownerPersonalPublisher === undefined
+              ? {
+                  _id: id,
+                  kind: "user",
+                  handle: "openclaw",
+                  linkedUserId: "users:openclaw",
+                  trustedPublisher: false,
+                }
+              : options.ownerPersonalPublisher;
+          }
           if (id === "publishers:openclaw") {
-            return (
-              options?.ownerPublisher ?? {
-                _id: id,
-                kind: "org",
-                handle: "openclaw",
-                displayName: "OpenClaw",
-                trustedPublisher: true,
-              }
-            );
+            return options?.ownerPublisher === undefined
+              ? {
+                  _id: id,
+                  kind: "org",
+                  handle: "openclaw",
+                  displayName: "OpenClaw",
+                  trustedPublisher: true,
+                }
+              : options.ownerPublisher;
           }
           return null;
         }),
@@ -3118,6 +3136,99 @@ describe("packages public queries", () => {
     );
   });
 
+  it("rejects package transfers when the requested owner publisher is missing", async () => {
+    const { ctx } = makeTransferPackageOwnerCtx({
+      owner: {
+        _id: "users:openclaw",
+        role: "user",
+        personalPublisherId: "publishers:personal-openclaw",
+      },
+      ownerPublisher: null,
+    });
+
+    await expect(
+      transferPackageOwnerInternalHandler(ctx, {
+        actorUserId: "users:admin",
+        name: "demo-plugin",
+        ownerUserId: "users:openclaw",
+        ownerPublisherId: "publishers:openclaw",
+        channel: "official",
+      }),
+    ).rejects.toThrow("Owner publisher not found");
+  });
+
+  it("does not write synthesized personal publisher ids on user-owned package transfers", async () => {
+    const { ctx, patch } = makeTransferPackageOwnerCtx({
+      owner: { _id: "users:openclaw", role: "user" },
+    });
+
+    await expect(
+      transferPackageOwnerInternalHandler(ctx, {
+        actorUserId: "users:admin",
+        name: "demo-plugin",
+        ownerUserId: "users:openclaw",
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      packageId: "packages:demo",
+      ownerUserId: "users:openclaw",
+      ownerPublisherId: undefined,
+      channel: "community",
+    });
+
+    expect(patch).toHaveBeenCalledWith(
+      "packages:demo",
+      expect.objectContaining({
+        ownerUserId: "users:openclaw",
+        ownerPublisherId: undefined,
+        channel: "community",
+        isOfficial: false,
+      }),
+    );
+  });
+
+  it("keeps admin transfers user-owned when ownerPublisherId is omitted", async () => {
+    const { ctx, patch } = makeTransferPackageOwnerCtx({
+      owner: {
+        _id: "users:openclaw",
+        role: "user",
+        personalPublisherId: "publishers:personal-openclaw",
+      },
+      ownerPersonalPublisher: {
+        _id: "publishers:personal-openclaw",
+        kind: "user",
+        handle: "openclaw",
+        linkedUserId: "users:openclaw",
+        official: { byUserId: "users:admin", at: 123 },
+      },
+    });
+
+    await expect(
+      transferPackageOwnerInternalHandler(ctx, {
+        actorUserId: "users:admin",
+        name: "demo-plugin",
+        ownerUserId: "users:openclaw",
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      packageId: "packages:demo",
+      ownerUserId: "users:openclaw",
+      ownerPublisherId: undefined,
+      channel: "community",
+      isOfficial: false,
+    });
+
+    expect(patch).toHaveBeenCalledWith(
+      "packages:demo",
+      expect.objectContaining({
+        ownerUserId: "users:openclaw",
+        ownerPublisherId: undefined,
+        channel: "community",
+        isOfficial: false,
+      }),
+    );
+  });
+
   it("lets package owners transfer legacy scoped plugins to the matching org without changing package identity", async () => {
     const trustedPublisher = {
       _id: "packageTrustedPublishers:opik",
@@ -3184,6 +3295,49 @@ describe("packages public queries", () => {
           previousOwnerPublisherId: "publishers:vincent",
           nextOwnerPublisherId: "publishers:opik",
         }),
+      }),
+    );
+  });
+
+  it("defaults package owner transfers into official publishers to official", async () => {
+    const { ctx, patch } = makeUserTransferPackageOwnerCtx({
+      destinationMembershipRole: "owner",
+      destinationPublisher: {
+        _id: "publishers:opik",
+        kind: "org",
+        handle: "opik",
+        displayName: "Opik",
+        official: { byUserId: "users:admin", at: 123 },
+      },
+    });
+
+    await expect(
+      transferPackageOwnerForUserInternalHandler(ctx, {
+        actorUserId: "users:vincent",
+        name: "@opik/opik-openclaw",
+        toOwner: "opik",
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      packageId: "packages:opik",
+      ownerPublisherId: "publishers:opik",
+      channel: "official",
+    });
+
+    expect(patch).toHaveBeenCalledWith(
+      "packages:opik",
+      expect.objectContaining({
+        ownerPublisherId: "publishers:opik",
+        channel: "official",
+        isOfficial: true,
+      }),
+    );
+    expect(patch).toHaveBeenCalledWith(
+      "packageSearchDigest:opik",
+      expect.objectContaining({
+        ownerPublisherId: "publishers:opik",
+        channel: "official",
+        isOfficial: true,
       }),
     );
   });
@@ -3385,6 +3539,56 @@ describe("packages public queries", () => {
         latestReleaseId: "packageReleases:new",
         tags: { latest: "packageReleases:new" },
         stats: { downloads: 0, installs: 0, stars: 0, versions: 1 },
+      }),
+    );
+  });
+
+  it("preserves official state for legacy packages owned by an official personal publisher", async () => {
+    const ctx = makeInsertReleaseCtx(
+      makePackageDoc({
+        ownerUserId: "users:owner",
+        ownerPublisherId: undefined,
+        channel: "community",
+        isOfficial: false,
+      }),
+      [],
+      {
+        "users:owner": {
+          _id: "users:owner",
+          role: "user",
+          personalPublisherId: "publishers:owner",
+        },
+        "publishers:owner": {
+          _id: "publishers:owner",
+          kind: "user",
+          handle: "owner",
+          linkedUserId: "users:owner",
+          official: { byUserId: "users:admin", at: 123 },
+        },
+      },
+    );
+
+    await insertReleaseInternalHandler(ctx, {
+      actorUserId: "users:owner",
+      ownerUserId: "users:owner",
+      name: "demo-plugin",
+      displayName: "Demo Plugin",
+      family: "code-plugin",
+      version: "1.0.1",
+      changelog: "legacy owner release",
+      channel: "official",
+      tags: ["latest"],
+      summary: "demo",
+      files: [],
+      integritySha256: "abc123",
+    });
+
+    expect(ctx.patch).toHaveBeenCalledWith(
+      "packages:demo",
+      expect.objectContaining({
+        ownerPublisherId: undefined,
+        channel: "official",
+        isOfficial: true,
       }),
     );
   });

@@ -25,8 +25,13 @@ describe("skills reclaim ownership transfer", () => {
     const existingSkill = {
       _id: "skills:1",
       slug: "capability-evolver",
+      displayName: "Capability Evolver",
       ownerUserId: "users:old",
+      tags: {},
+      moderationStatus: "active",
       stats: { downloads: 3, stars: 2, installsCurrent: 0, installsAllTime: 0 },
+      createdAt: now - 2_000,
+      updatedAt: now - 1_000,
     };
     const activeReservation = {
       _id: "reservedSlugs:1",
@@ -152,6 +157,136 @@ describe("skills reclaim ownership transfer", () => {
         releasedAt: expect.any(Number),
       }),
     );
+  });
+
+  it("keeps official badges when in-place reclaim keeps the same official publisher", async () => {
+    const now = Date.now();
+    const officialBadge = { byUserId: "users:admin", at: 111 };
+    const patch = vi.fn(async () => {});
+    const insert = vi.fn(async () => {});
+    const deleteRow = vi.fn(async () => {});
+    const runAfter = vi.fn(async () => {});
+
+    const existingSkill = {
+      _id: "skills:1",
+      slug: "capability-evolver",
+      displayName: "Capability Evolver",
+      ownerUserId: "users:old",
+      ownerPublisherId: "publishers:openclaw",
+      badges: { official: officialBadge },
+      tags: {},
+      moderationStatus: "active",
+      stats: { downloads: 3, stars: 2, installsCurrent: 0, installsAllTime: 0 },
+      createdAt: now - 2_000,
+      updatedAt: now - 1_000,
+    };
+
+    const db = {
+      normalizeId: vi.fn(),
+      get: vi.fn(async (id: string) => {
+        if (id === "users:admin") return { _id: "users:admin", role: "admin" };
+        if (id === "users:new") return { _id: "users:new", role: "user" };
+        if (id === "users:old") {
+          return {
+            _id: "users:old",
+            role: "user",
+            publishedSkills: 1,
+            totalDownloads: 3,
+            totalStars: 2,
+          };
+        }
+        if (id === "publishers:openclaw") {
+          return {
+            _id: "publishers:openclaw",
+            kind: "org",
+            handle: "openclaw",
+            displayName: "OpenClaw",
+            official: officialBadge,
+          };
+        }
+        return null;
+      }),
+      query: vi.fn((table: string) => {
+        if (table === "skills") {
+          return {
+            withIndex: (name: string) => {
+              if (name !== "by_slug") throw new Error(`unexpected skills index ${name}`);
+              return { unique: async () => existingSkill };
+            },
+          };
+        }
+        if (table === "skillBadges") {
+          return {
+            withIndex: (name: string) => {
+              if (name !== "by_skill_kind") throw new Error(`unexpected badges index ${name}`);
+              return {
+                unique: async () => ({
+                  _id: "skillBadges:official",
+                  skillId: "skills:1",
+                  kind: "official",
+                  ...officialBadge,
+                }),
+              };
+            },
+          };
+        }
+        if (table === "skillEmbeddings") {
+          return {
+            withIndex: (name: string) => {
+              if (name !== "by_skill") throw new Error(`unexpected embeddings index ${name}`);
+              return { collect: async () => [] };
+            },
+          };
+        }
+        if (table === "skillSlugAliases") {
+          return {
+            withIndex: (name: string) => {
+              if (name !== "by_skill") throw new Error(`unexpected aliases index ${name}`);
+              return { collect: async () => [] };
+            },
+          };
+        }
+        if (table === "reservedSlugs") {
+          return {
+            withIndex: (name: string) => {
+              if (name !== "by_slug_active_deletedAt") {
+                throw new Error(`unexpected reservedSlugs index ${name}`);
+              }
+              return { order: () => ({ take: async () => [] }) };
+            },
+          };
+        }
+        if (table === "skillSearchDigest") {
+          return {
+            withIndex: () => ({
+              unique: async () => null,
+            }),
+          };
+        }
+        throw new Error(`unexpected table ${table}`);
+      }),
+      patch,
+      insert,
+      delete: deleteRow,
+    };
+
+    await reclaimSlugInternalHandler(
+      { db, scheduler: { runAfter } } as never,
+      {
+        actorUserId: "users:admin",
+        slug: "capability-evolver",
+        rightfulOwnerUserId: "users:new",
+        transferRootSlugOnly: true,
+      } as never,
+    );
+
+    expect(deleteRow).not.toHaveBeenCalled();
+    expect(patch).toHaveBeenCalledWith("skills:1", {
+      ownerUserId: "users:new",
+      lastReviewedAt: expect.any(Number),
+      updatedAt: expect.any(Number),
+      badges: { official: officialBadge },
+    });
   });
 
   it("returns missing without reserving when transferRootSlugOnly is true and slug does not exist", async () => {

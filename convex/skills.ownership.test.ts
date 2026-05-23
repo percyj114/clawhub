@@ -409,13 +409,22 @@ describe("skills ownership", () => {
   it("allows publisher admins to move a skill into an org they administer", async () => {
     const patch = vi.fn(async () => {});
     const insert = vi.fn(async () => "auditLogs:1");
+    const deleteRow = vi.fn(async () => {});
     const skill = {
       _id: "skills:source",
       slug: "portable",
       displayName: "Portable",
       ownerUserId: "users:actor",
       ownerPublisherId: "publishers:personal",
+      badges: { official: { byUserId: "users:admin", at: 111 } },
       softDeletedAt: undefined,
+    };
+    const officialBadge = {
+      _id: "skillBadges:official",
+      skillId: "skills:source",
+      kind: "official",
+      byUserId: "users:admin",
+      at: 111,
     };
     const aliases = [
       {
@@ -439,6 +448,7 @@ describe("skills ownership", () => {
                 kind: "user",
                 handle: "actor",
                 linkedUserId: "users:actor",
+                official: { byUserId: "users:admin", at: 111 },
               };
             }
             if (id === "publishers:org") {
@@ -505,6 +515,16 @@ describe("skills ownership", () => {
                 },
               };
             }
+            if (table === "skillBadges") {
+              return {
+                withIndex: (name: string) => {
+                  if (name !== "by_skill_kind") {
+                    throw new Error(`unexpected skillBadges index ${name}`);
+                  }
+                  return { unique: async () => officialBadge };
+                },
+              };
+            }
             if (table === "skillSearchDigest") {
               return {
                 withIndex: (name: string) => {
@@ -519,6 +539,7 @@ describe("skills ownership", () => {
           }),
           patch,
           insert,
+          delete: deleteRow,
         },
       } as never,
       {
@@ -541,8 +562,10 @@ describe("skills ownership", () => {
       expect.objectContaining({
         ownerUserId: "users:actor",
         ownerPublisherId: "publishers:org",
+        badges: {},
       }),
     );
+    expect(deleteRow).toHaveBeenCalledWith("skillBadges:official");
     expect(patch).toHaveBeenCalledWith(
       "skillSlugAliases:old",
       expect.objectContaining({
@@ -557,6 +580,176 @@ describe("skills ownership", () => {
         ownerPublisherId: "publishers:org",
         ownerHandle: "team",
         ownerKind: "org",
+        badges: {},
+      }),
+    );
+  });
+
+  it("removes legacy personal-publisher official badges when moving to a community org", async () => {
+    const patch = vi.fn(async () => {});
+    const insert = vi.fn(async () => "auditLogs:1");
+    const deleteRow = vi.fn(async () => {});
+    const skill = {
+      _id: "skills:source",
+      slug: "legacy-portable",
+      displayName: "Legacy Portable",
+      ownerUserId: "users:actor",
+      ownerPublisherId: undefined,
+      badges: { official: { byUserId: "users:admin", at: 111 } },
+      softDeletedAt: undefined,
+    };
+    const officialBadge = {
+      _id: "skillBadges:official",
+      skillId: "skills:source",
+      kind: "official",
+      byUserId: "users:admin",
+      at: 111,
+    };
+
+    await expect(
+      transferSkillOwnerForUserInternalHandler(
+        {
+          db: {
+            normalizeId: vi.fn(() => null),
+            get: vi.fn(async (id: string) => {
+              if (id === "users:actor") {
+                return {
+                  _id: "users:actor",
+                  role: "user",
+                  personalPublisherId: "publishers:personal",
+                };
+              }
+              if (id === "publishers:personal") {
+                return {
+                  _id: "publishers:personal",
+                  kind: "user",
+                  handle: "actor",
+                  linkedUserId: "users:actor",
+                  official: { byUserId: "users:admin", at: 111 },
+                };
+              }
+              if (id === "publishers:org") {
+                return {
+                  _id: "publishers:org",
+                  kind: "org",
+                  handle: "team",
+                  displayName: "Team",
+                };
+              }
+              return null;
+            }),
+            query: vi.fn((table: string) => {
+              if (table === "skills") {
+                return {
+                  withIndex: (name: string, build: (q: ReturnType<typeof chainEq>) => unknown) => {
+                    const constraints: Record<string, unknown> = {};
+                    build(chainEq(constraints));
+                    if (name !== "by_slug") throw new Error(`unexpected skills index ${name}`);
+                    return {
+                      unique: async () => (constraints.slug === "legacy-portable" ? skill : null),
+                    };
+                  },
+                };
+              }
+              if (table === "publishers") {
+                return {
+                  withIndex: (name: string) => {
+                    if (name !== "by_handle") {
+                      throw new Error(`unexpected publishers index ${name}`);
+                    }
+                    return {
+                      unique: async () => ({
+                        _id: "publishers:org",
+                        kind: "org",
+                        handle: "team",
+                        deletedAt: undefined,
+                        deactivatedAt: undefined,
+                      }),
+                    };
+                  },
+                };
+              }
+              if (table === "publisherMembers") {
+                return {
+                  withIndex: (name: string) => {
+                    if (name !== "by_publisher_user") {
+                      throw new Error(`unexpected publisherMembers index ${name}`);
+                    }
+                    return {
+                      unique: async () => ({
+                        _id: "publisherMembers:1",
+                        publisherId: "publishers:org",
+                        userId: "users:actor",
+                        role: "admin",
+                      }),
+                    };
+                  },
+                };
+              }
+              if (table === "skillSlugAliases") {
+                return {
+                  withIndex: (name: string) => {
+                    if (name !== "by_skill") {
+                      throw new Error(`unexpected skillSlugAliases index ${name}`);
+                    }
+                    return { collect: async () => [] };
+                  },
+                };
+              }
+              if (table === "skillBadges") {
+                return {
+                  withIndex: (name: string) => {
+                    if (name !== "by_skill_kind") {
+                      throw new Error(`unexpected skillBadges index ${name}`);
+                    }
+                    return { unique: async () => officialBadge };
+                  },
+                };
+              }
+              if (table === "skillSearchDigest") {
+                return {
+                  withIndex: (name: string) => {
+                    if (name !== "by_skill") {
+                      throw new Error(`unexpected skillSearchDigest index ${name}`);
+                    }
+                    return { unique: async () => ({ _id: "skillSearchDigest:source" }) };
+                  },
+                };
+              }
+              throw new Error(`unexpected table ${table}`);
+            }),
+            patch,
+            insert,
+            delete: deleteRow,
+          },
+        } as never,
+        {
+          actorUserId: "users:actor",
+          slug: "legacy-portable",
+          toOwner: "team",
+        },
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      transferred: true,
+      skillSlug: "legacy-portable",
+    });
+
+    expect(patch).toHaveBeenCalledWith(
+      "skills:source",
+      expect.objectContaining({
+        ownerPublisherId: "publishers:org",
+        badges: {},
+      }),
+    );
+    expect(deleteRow).toHaveBeenCalledWith("skillBadges:official");
+    expect(patch).toHaveBeenCalledWith(
+      "skillSearchDigest:source",
+      expect.objectContaining({
+        ownerPublisherId: "publishers:org",
+        ownerHandle: "team",
+        ownerKind: "org",
+        badges: {},
       }),
     );
   });

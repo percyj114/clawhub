@@ -13,6 +13,8 @@ import {
   removeMember,
   createOrgPublisherForUserInternal,
   setOfficialPublisher,
+  syncPublisherPackageOfficialStateBatchInternal,
+  syncPublisherSkillOfficialStateBatchInternal,
   setTrustedPublisherInternal,
   updateProfile,
 } from "./publishers";
@@ -141,6 +143,34 @@ const setOfficialPublisherHandler = (
   >
 )._handler;
 
+const syncPublisherPackageOfficialStateBatchInternalHandler = (
+  syncPublisherPackageOfficialStateBatchInternal as unknown as WrappedHandler<
+    {
+      publisherId: string;
+      official: boolean;
+      officialAt?: number;
+      now: number;
+      phase: "scoped" | "legacy";
+      cursor?: string | null;
+    },
+    { updatedPackages: number; packageSyncTruncated: boolean }
+  >
+)._handler;
+
+const syncPublisherSkillOfficialStateBatchInternalHandler = (
+  syncPublisherSkillOfficialStateBatchInternal as unknown as WrappedHandler<
+    {
+      publisherId: string;
+      official: boolean;
+      officialBadge?: { byUserId: string; at: number };
+      now: number;
+      phase: "scoped" | "legacy";
+      cursor?: string | null;
+    },
+    { updatedSkills: number; skillSyncTruncated: boolean }
+  >
+)._handler;
+
 const updateProfileHandler = (
   updateProfile as unknown as WrappedHandler<{
     publisherId: string;
@@ -193,6 +223,16 @@ function indexedRows<T>(rows: T[]) {
   return {
     collect: vi.fn(async () => rows),
     take: vi.fn(async (limit: number) => rows.slice(0, limit)),
+    paginate: vi.fn(async ({ cursor, numItems }: { cursor: string | null; numItems: number }) => {
+      const offset = cursor ? Number(cursor) : 0;
+      const nextOffset = offset + numItems;
+      const isDone = nextOffset >= rows.length;
+      return {
+        page: rows.slice(offset, nextOffset),
+        continueCursor: isDone ? "" : String(nextOffset),
+        isDone,
+      };
+    }),
     order: vi.fn(() => ({ take: vi.fn(async (limit: number) => rows.slice(0, limit)) })),
   };
 }
@@ -843,6 +883,28 @@ describe("publishers membership controls", () => {
           stats: { downloads: 0, installs: 0, stars: 0, versions: 1 },
           createdAt: 1,
           updatedAt: 1,
+          softDeletedAt: 9,
+        },
+      ],
+      [
+        "packages:legacy-plugin",
+        {
+          _id: "packages:legacy-plugin",
+          _creationTime: 1,
+          name: "legacy-plugin",
+          normalizedName: "legacy-plugin",
+          displayName: "Legacy Plugin",
+          family: "code-plugin",
+          channel: "community",
+          isOfficial: false,
+          ownerUserId: "users:steipete",
+          tags: {},
+          summary: "Legacy",
+          latestReleaseId: "packageReleases:legacy-plugin",
+          latestVersionSummary: { version: "1.0.0" },
+          stats: { downloads: 0, installs: 0, stars: 0, versions: 1 },
+          createdAt: 1,
+          updatedAt: 1,
           softDeletedAt: undefined,
         },
       ],
@@ -870,6 +932,28 @@ describe("publishers membership controls", () => {
         },
       ],
     ]);
+    for (let index = 0; index < 100; index += 1) {
+      packages.set(`packages:paged-plugin-${index}`, {
+        _id: `packages:paged-plugin-${index}`,
+        _creationTime: 1,
+        name: `paged-plugin-${index}`,
+        normalizedName: `paged-plugin-${index}`,
+        displayName: `Paged Plugin ${index}`,
+        family: "code-plugin",
+        channel: "community",
+        isOfficial: false,
+        ownerUserId: "users:steipete",
+        ownerPublisherId: "publishers:steipete",
+        tags: {},
+        summary: "Paged",
+        latestReleaseId: `packageReleases:paged-plugin-${index}`,
+        latestVersionSummary: { version: "1.0.0" },
+        stats: { downloads: 0, installs: 0, stars: 0, versions: 1 },
+        createdAt: 1,
+        updatedAt: 1,
+        softDeletedAt: undefined,
+      });
+    }
     const skills = new Map<string, Record<string, unknown>>([
       [
         "skills:helper",
@@ -900,10 +984,72 @@ describe("publishers membership controls", () => {
           isSuspicious: false,
           createdAt: 1,
           updatedAt: 1,
+          softDeletedAt: 9,
+        },
+      ],
+      [
+        "skills:legacy-helper",
+        {
+          _id: "skills:legacy-helper",
+          _creationTime: 1,
+          slug: "legacy-helper",
+          displayName: "Legacy Helper",
+          summary: "Legacy Helper",
+          icon: undefined,
+          ownerUserId: "users:steipete",
+          canonicalSkillId: undefined,
+          forkOf: undefined,
+          latestVersionId: "skillVersions:legacy-helper",
+          latestVersionSummary: { version: "1.0.0", createdAt: 1, changelog: "init" },
+          tags: {},
+          capabilityTags: [],
+          badges: {},
+          stats: { downloads: 0, installsCurrent: 0, installsAllTime: 0, stars: 0 },
+          statsDownloads: 0,
+          statsStars: 0,
+          statsInstallsCurrent: 0,
+          statsInstallsAllTime: 0,
+          moderationStatus: "active",
+          moderationFlags: [],
+          moderationReason: undefined,
+          isSuspicious: false,
+          createdAt: 1,
+          updatedAt: 1,
           softDeletedAt: undefined,
         },
       ],
     ]);
+    for (let index = 0; index < 100; index += 1) {
+      skills.set(`skills:paged-helper-${index}`, {
+        _id: `skills:paged-helper-${index}`,
+        _creationTime: 1,
+        slug: `paged-helper-${index}`,
+        displayName: `Paged Helper ${index}`,
+        summary: "Paged Helper",
+        icon: undefined,
+        ownerUserId: "users:steipete",
+        ownerPublisherId: "publishers:steipete",
+        canonicalSkillId: undefined,
+        forkOf: undefined,
+        latestVersionId: `skillVersions:paged-helper-${index}`,
+        latestVersionSummary: { version: "1.0.0", createdAt: 1, changelog: "init" },
+        tags: {},
+        capabilityTags: [],
+        badges: {},
+        stats: { downloads: 0, installsCurrent: 0, installsAllTime: 0, stars: 0 },
+        statsDownloads: 0,
+        statsStars: 0,
+        statsInstallsCurrent: 0,
+        statsInstallsAllTime: 0,
+        moderationStatus: "active",
+        moderationFlags: [],
+        moderationReason: undefined,
+        isSuspicious: false,
+        createdAt: 1,
+        updatedAt: 1,
+        softDeletedAt: undefined,
+      });
+    }
     const skillBadges = new Map<string, Record<string, unknown>>();
     const skillSearchDigests = new Map<string, Record<string, unknown>>([
       [
@@ -914,6 +1060,14 @@ describe("publishers membership controls", () => {
           badges: {},
         },
       ],
+      [
+        "skillSearchDigest:legacy-helper",
+        {
+          _id: "skillSearchDigest:legacy-helper",
+          skillId: "skills:legacy-helper",
+          badges: {},
+        },
+      ],
     ]);
     const packageSearchDigests = new Map<string, Record<string, unknown>>([
       [
@@ -921,6 +1075,15 @@ describe("publishers membership controls", () => {
         {
           _id: "packageSearchDigest:plugin",
           packageId: "packages:plugin",
+          channel: "community",
+          isOfficial: false,
+        },
+      ],
+      [
+        "packageSearchDigest:legacy-plugin",
+        {
+          _id: "packageSearchDigest:legacy-plugin",
+          packageId: "packages:legacy-plugin",
           channel: "community",
           isOfficial: false,
         },
@@ -949,7 +1112,9 @@ describe("publishers membership controls", () => {
     const deleteRow = vi.fn(async (id: string) => {
       skillBadges.delete(id);
     });
+    const runAfter = vi.fn(async (_delay: number, _ref: unknown, _args: unknown) => undefined);
     const ctx = {
+      scheduler: { runAfter },
       db: {
         get: vi.fn(async (id: string) => {
           if (id === "users:admin") return { _id: id, role: "admin" };
@@ -958,21 +1123,51 @@ describe("publishers membership controls", () => {
         query: vi.fn((table: string) => {
           if (table === "packages") {
             return {
-              withIndex: vi.fn((indexName: string) => {
-                if (indexName !== "by_owner_publisher_active_updated") {
+              withIndex: vi.fn((indexName: string, buildQuery: (query: unknown) => unknown) => {
+                const fields: Record<string, unknown> = {};
+                const q = {
+                  eq(field: string, value: unknown) {
+                    fields[field] = value;
+                    return q;
+                  },
+                };
+                buildQuery(q);
+                if (indexName !== "by_owner_publisher" && indexName !== "by_owner") {
                   throw new Error(`unexpected index ${indexName}`);
                 }
-                return indexedRows([...packages.values()]);
+                return indexedRows(
+                  [...packages.values()].filter((pkg) => {
+                    if (indexName === "by_owner_publisher") {
+                      return pkg.ownerPublisherId === fields.ownerPublisherId;
+                    }
+                    return pkg.ownerUserId === fields.ownerUserId;
+                  }),
+                );
               }),
             };
           }
           if (table === "skills") {
             return {
-              withIndex: vi.fn((indexName: string) => {
-                if (indexName !== "by_owner_publisher_active_updated") {
+              withIndex: vi.fn((indexName: string, buildQuery: (query: unknown) => unknown) => {
+                const fields: Record<string, unknown> = {};
+                const q = {
+                  eq(field: string, value: unknown) {
+                    fields[field] = value;
+                    return q;
+                  },
+                };
+                buildQuery(q);
+                if (indexName !== "by_owner_publisher" && indexName !== "by_owner") {
                   throw new Error(`unexpected index ${indexName}`);
                 }
-                return indexedRows([...skills.values()]);
+                return indexedRows(
+                  [...skills.values()].filter((skill) => {
+                    if (indexName === "by_owner_publisher") {
+                      return skill.ownerPublisherId === fields.ownerPublisherId;
+                    }
+                    return skill.ownerUserId === fields.ownerUserId;
+                  }),
+                );
               }),
             };
           }
@@ -1100,8 +1295,18 @@ describe("publishers membership controls", () => {
     });
 
     expect(result.publisher?.official).toBe(true);
-    expect(result.skillSync.updatedSkills).toBe(1);
-    expect(result.packageSync.updatedPackages).toBe(1);
+    expect(result.skillSync).toEqual({ updatedSkills: 101, skillSyncTruncated: true });
+    expect(result.packageSync).toEqual({ updatedPackages: 100, packageSyncTruncated: true });
+    expect(runAfter.mock.calls.map((call) => call[2])).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ phase: "scoped", cursor: "100", officialAt: 123 }),
+        expect.objectContaining({
+          phase: "scoped",
+          cursor: "100",
+          officialBadge: expect.objectContaining({ byUserId: "users:admin" }),
+        }),
+      ]),
+    );
     expect(patch).toHaveBeenCalledWith("publishers:steipete", {
       official: { byUserId: "users:admin", at: 123 },
       updatedAt: 123,
@@ -1123,7 +1328,17 @@ describe("publishers membership controls", () => {
     expect(patch).toHaveBeenCalledWith("skills:helper", {
       badges: { official: { byUserId: "users:admin", at: 123 } },
     });
+    expect(patch).toHaveBeenCalledWith("skills:legacy-helper", {
+      badges: { official: { byUserId: "users:admin", at: 123 } },
+    });
+    expect(patch).toHaveBeenCalledWith("skills:paged-helper-98", {
+      badges: { official: { byUserId: "users:admin", at: 123 } },
+    });
+    expect(patch).not.toHaveBeenCalledWith("skills:paged-helper-99", expect.anything());
     expect(patch).toHaveBeenCalledWith("skillSearchDigest:helper", {
+      badges: { official: { byUserId: "users:admin", at: 123 } },
+    });
+    expect(patch).toHaveBeenCalledWith("skillSearchDigest:legacy-helper", {
       badges: { official: { byUserId: "users:admin", at: 123 } },
     });
     expect(patch).toHaveBeenCalledWith(
@@ -1131,6 +1346,34 @@ describe("publishers membership controls", () => {
       expect.objectContaining({
         channel: "official",
         isOfficial: true,
+        ownerHandle: "steipete",
+        ownerKind: "user",
+      }),
+    );
+    expect(patch).toHaveBeenCalledWith(
+      "packages:legacy-plugin",
+      expect.objectContaining({
+        channel: "official",
+        isOfficial: true,
+        updatedAt: 123,
+      }),
+    );
+    expect(patch).toHaveBeenCalledWith(
+      "packages:paged-plugin-97",
+      expect.objectContaining({
+        channel: "official",
+        isOfficial: true,
+        updatedAt: 123,
+      }),
+    );
+    expect(patch).not.toHaveBeenCalledWith("packages:paged-plugin-99", expect.anything());
+    expect(patch).toHaveBeenCalledWith(
+      "packageSearchDigest:legacy-plugin",
+      expect.objectContaining({
+        channel: "official",
+        isOfficial: true,
+        ownerHandle: "steipete",
+        ownerKind: "user",
       }),
     );
     expect(insert).toHaveBeenCalledWith(
@@ -1144,6 +1387,25 @@ describe("publishers membership controls", () => {
     patch.mockClear();
     insert.mockClear();
     deleteRow.mockClear();
+    now.mockReturnValue(456);
+
+    const setAgainResult = await setOfficialPublisherHandler(ctx as never, {
+      handle: "steipete",
+      official: true,
+    });
+
+    expect(setAgainResult.publisher?.official).toBe(true);
+    expect(setAgainResult.skillSync).toEqual({ updatedSkills: 0, skillSyncTruncated: true });
+    expect(setAgainResult.packageSync).toEqual({ updatedPackages: 0, packageSyncTruncated: true });
+    expect(patch).toHaveBeenCalledWith("publishers:steipete", {
+      official: { byUserId: "users:admin", at: 123 },
+      updatedAt: 456,
+    });
+    expect(deleteRow).not.toHaveBeenCalled();
+
+    patch.mockClear();
+    insert.mockClear();
+    deleteRow.mockClear();
 
     const unsetResult = await setOfficialPublisherHandler(ctx as never, {
       handle: "steipete",
@@ -1151,21 +1413,40 @@ describe("publishers membership controls", () => {
     });
 
     expect(unsetResult.publisher?.official).toBe(false);
-    expect(unsetResult.skillSync.updatedSkills).toBe(1);
-    expect(unsetResult.packageSync.updatedPackages).toBe(1);
+    expect(unsetResult.skillSync).toEqual({ updatedSkills: 101, skillSyncTruncated: true });
+    expect(unsetResult.packageSync).toEqual({ updatedPackages: 100, packageSyncTruncated: true });
     expect(patch).toHaveBeenCalledWith("publishers:steipete", {
       official: undefined,
-      updatedAt: 123,
+      updatedAt: 456,
     });
     expect(deleteRow).toHaveBeenCalledWith("skillBadges:1");
     expect(patch).toHaveBeenCalledWith("skills:helper", { badges: {} });
+    expect(patch).toHaveBeenCalledWith("skills:legacy-helper", { badges: {} });
+    expect(patch).toHaveBeenCalledWith("skills:paged-helper-98", { badges: {} });
     expect(patch).toHaveBeenCalledWith("skillSearchDigest:helper", { badges: {} });
+    expect(patch).toHaveBeenCalledWith("skillSearchDigest:legacy-helper", { badges: {} });
     expect(patch).toHaveBeenCalledWith(
       "packages:plugin",
       expect.objectContaining({
         channel: "community",
         isOfficial: false,
-        updatedAt: 123,
+        updatedAt: 456,
+      }),
+    );
+    expect(patch).toHaveBeenCalledWith(
+      "packages:legacy-plugin",
+      expect.objectContaining({
+        channel: "community",
+        isOfficial: false,
+        updatedAt: 456,
+      }),
+    );
+    expect(patch).toHaveBeenCalledWith(
+      "packages:paged-plugin-97",
+      expect.objectContaining({
+        channel: "community",
+        isOfficial: false,
+        updatedAt: 456,
       }),
     );
     expect(patch).not.toHaveBeenCalledWith(
@@ -1180,6 +1461,207 @@ describe("publishers membership controls", () => {
       }),
     );
     now.mockRestore();
+  });
+
+  it("does not remove manual skill official badges when publisher official is unset", async () => {
+    vi.mocked(getAuthUserId).mockResolvedValue("users:admin" as never);
+    const now = vi.spyOn(Date, "now").mockReturnValue(456);
+    const publishers = new Map<string, Record<string, unknown>>([
+      [
+        "publishers:steipete",
+        {
+          _id: "publishers:steipete",
+          _creationTime: 1,
+          kind: "user",
+          handle: "steipete",
+          displayName: "Peter",
+          linkedUserId: "users:steipete",
+          official: { byUserId: "users:admin", at: 123 },
+          createdAt: 1,
+          updatedAt: 123,
+        },
+      ],
+    ]);
+    const manualBadge = { byUserId: "users:reviewer", at: 222 };
+    const skills = new Map<string, Record<string, unknown>>([
+      [
+        "skills:manual",
+        {
+          _id: "skills:manual",
+          _creationTime: 1,
+          slug: "manual",
+          displayName: "Manual",
+          ownerUserId: "users:steipete",
+          ownerPublisherId: "publishers:steipete",
+          badges: { official: manualBadge },
+          tags: {},
+          stats: { downloads: 0, installsCurrent: 0, installsAllTime: 0, stars: 0 },
+          statsDownloads: 0,
+          statsStars: 0,
+          statsInstallsCurrent: 0,
+          statsInstallsAllTime: 0,
+          createdAt: 1,
+          updatedAt: 222,
+        },
+      ],
+    ]);
+    const skillBadges = new Map<string, Record<string, unknown>>([
+      [
+        "skillBadges:manual",
+        {
+          _id: "skillBadges:manual",
+          skillId: "skills:manual",
+          kind: "official",
+          ...manualBadge,
+        },
+      ],
+    ]);
+    const patch = vi.fn(async (id: string, value: Record<string, unknown>) => {
+      if (publishers.has(id)) publishers.set(id, { ...publishers.get(id), ...value });
+      if (skills.has(id)) skills.set(id, { ...skills.get(id), ...value });
+    });
+    const deleteRow = vi.fn();
+    const ctx = {
+      scheduler: { runAfter: vi.fn() },
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === "users:admin") return { _id: id, role: "admin" };
+          return publishers.get(id) ?? null;
+        }),
+        query: vi.fn((table: string) => {
+          if (table === "publishers") {
+            return {
+              withIndex: vi.fn(() => ({
+                unique: vi.fn(async () => publishers.get("publishers:steipete") ?? null),
+              })),
+            };
+          }
+          if (table === "skills") {
+            return { withIndex: vi.fn(() => indexedRows([...skills.values()])) };
+          }
+          if (table === "packages") {
+            return { withIndex: vi.fn(() => indexedRows([])) };
+          }
+          if (table === "skillBadges") {
+            return {
+              withIndex: vi.fn(() => ({
+                unique: vi.fn(async () => skillBadges.get("skillBadges:manual") ?? null),
+              })),
+            };
+          }
+          if (table === "skillSearchDigest") {
+            return { withIndex: vi.fn(() => ({ unique: vi.fn(async () => null) })) };
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
+        patch,
+        insert: vi.fn(async () => "auditLogs:1"),
+        delete: deleteRow,
+        replace: vi.fn(),
+        normalizeId: vi.fn(),
+      },
+    };
+
+    await setOfficialPublisherHandler(ctx as never, {
+      handle: "steipete",
+      official: false,
+    });
+
+    expect(deleteRow).not.toHaveBeenCalledWith("skillBadges:manual");
+    expect(patch).not.toHaveBeenCalledWith(
+      "skills:manual",
+      expect.objectContaining({ badges: {} }),
+    );
+    expect(skills.get("skills:manual")?.badges).toEqual({ official: manualBadge });
+    now.mockRestore();
+  });
+
+  it("ignores stale scheduled official sync batches", async () => {
+    const patch = vi.fn();
+    const ctx = {
+      scheduler: { runAfter: vi.fn() },
+      db: {
+        get: vi.fn(async () => ({
+          _id: "publishers:steipete",
+          kind: "user",
+          handle: "steipete",
+          linkedUserId: "users:steipete",
+          official: { byUserId: "users:admin", at: 456 },
+        })),
+        query: vi.fn(() => {
+          throw new Error("stale batches should not query owned content");
+        }),
+        patch,
+        insert: vi.fn(),
+        delete: vi.fn(),
+        replace: vi.fn(),
+        normalizeId: vi.fn(),
+      },
+    };
+
+    await expect(
+      syncPublisherPackageOfficialStateBatchInternalHandler(ctx as never, {
+        publisherId: "publishers:steipete",
+        official: true,
+        now: 123,
+        phase: "scoped",
+        cursor: "100",
+      }),
+    ).resolves.toEqual({ updatedPackages: 0, packageSyncTruncated: false });
+    await expect(
+      syncPublisherSkillOfficialStateBatchInternalHandler(ctx as never, {
+        publisherId: "publishers:steipete",
+        official: true,
+        officialBadge: { byUserId: "users:admin", at: 123 },
+        now: 123,
+        phase: "scoped",
+        cursor: "100",
+      }),
+    ).resolves.toEqual({ updatedSkills: 0, skillSyncTruncated: false });
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("continues package official sync reruns using the stable official marker time", async () => {
+    const ctx = {
+      scheduler: { runAfter: vi.fn() },
+      db: {
+        get: vi.fn(async () => ({
+          _id: "publishers:steipete",
+          kind: "user",
+          handle: "steipete",
+          linkedUserId: "users:steipete",
+          official: { byUserId: "users:admin", at: 123 },
+        })),
+        query: vi.fn((table: string) => {
+          if (table !== "packages") throw new Error(`unexpected table ${table}`);
+          return {
+            withIndex: vi.fn((indexName: string) => {
+              if (indexName !== "by_owner_publisher") {
+                throw new Error(`unexpected index ${indexName}`);
+              }
+              return indexedRows([]);
+            }),
+          };
+        }),
+        patch: vi.fn(),
+        insert: vi.fn(),
+        delete: vi.fn(),
+        replace: vi.fn(),
+        normalizeId: vi.fn(),
+      },
+    };
+
+    await expect(
+      syncPublisherPackageOfficialStateBatchInternalHandler(ctx as never, {
+        publisherId: "publishers:steipete",
+        official: true,
+        officialAt: 123,
+        now: 456,
+        phase: "scoped",
+        cursor: "100",
+      }),
+    ).resolves.toEqual({ updatedPackages: 0, packageSyncTruncated: false });
+    expect(ctx.db.query).toHaveBeenCalledWith("packages");
   });
 
   it("includes skill.icon on catalog items and surfaces null for plugins (F7)", async () => {

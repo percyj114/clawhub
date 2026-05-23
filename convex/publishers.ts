@@ -1,5 +1,6 @@
 import { paginationOptsValidator } from "convex/server";
 import { ConvexError, v } from "convex/values";
+import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalMutation, internalQuery, mutation, query } from "./functions";
@@ -28,6 +29,13 @@ const MAX_PUBLIC_PUBLISHER_LIST_LIMIT = 500;
 const PUBLISHER_LIST_PREVIEW_LIMIT = 3;
 const PUBLISHER_OFFICIAL_PACKAGE_SYNC_LIMIT = 100;
 const PUBLISHER_OFFICIAL_SKILL_SYNC_LIMIT = 100;
+
+type OfficialSyncPhase = "scoped" | "legacy";
+type OfficialPublisherSyncTarget = Pick<
+  Doc<"publishers">,
+  "_id" | "kind" | "handle" | "linkedUserId" | "official"
+>;
+type OfficialSkillBadge = { byUserId: Id<"users">; at: number };
 
 type PublisherListStats = {
   skills: number;
@@ -188,113 +196,349 @@ async function getPublisherPublishedPreviewRows(
 }
 
 async function syncPublisherPackageOfficialState(
-  ctx: Pick<MutationCtx, "db">,
-  publisherId: Id<"publishers">,
+  ctx: Pick<MutationCtx, "db" | "scheduler">,
+  publisher: OfficialPublisherSyncTarget,
   official: boolean,
+  officialAt: number,
   now: number,
 ) {
-  const packages = await ctx.db
-    .query("packages")
-    .withIndex("by_owner_publisher_active_updated", (q) =>
-      q.eq("ownerPublisherId", publisherId).eq("softDeletedAt", undefined),
-    )
-    .take(PUBLISHER_OFFICIAL_PACKAGE_SYNC_LIMIT);
-
-  let updatedPackages = 0;
-  for (const pkg of packages) {
-    const nextChannel: Doc<"packages">["channel"] =
-      pkg.channel === "private" ? "private" : official ? "official" : "community";
-    const nextIsOfficial = nextChannel === "official";
-    if (pkg.channel === nextChannel && pkg.isOfficial === nextIsOfficial) continue;
-
-    const nextPackage = {
-      ...pkg,
-      channel: nextChannel,
-      isOfficial: nextIsOfficial,
-      updatedAt: now,
-    };
-    await ctx.db.patch(pkg._id, {
-      channel: nextChannel,
-      isOfficial: nextIsOfficial,
-      updatedAt: now,
-    });
-    await upsertPackageSearchDigest(ctx, extractPackageDigestFields(nextPackage));
-    updatedPackages += 1;
-  }
+  const scoped = await syncPublisherPackageOfficialStatePage(ctx, {
+    publisher,
+    official,
+    officialAt,
+    now,
+    phase: "scoped",
+    cursor: null,
+  });
+  const legacy =
+    publisher.kind === "user" && publisher.linkedUserId
+      ? await syncPublisherPackageOfficialStatePage(ctx, {
+          publisher,
+          official,
+          officialAt,
+          now,
+          phase: "legacy",
+          cursor: null,
+        })
+      : { updatedPackages: 0, packageSyncTruncated: false };
 
   return {
-    updatedPackages,
-    packageSyncTruncated: packages.length === PUBLISHER_OFFICIAL_PACKAGE_SYNC_LIMIT,
+    updatedPackages: scoped.updatedPackages + legacy.updatedPackages,
+    packageSyncTruncated: scoped.packageSyncTruncated || legacy.packageSyncTruncated,
   };
+}
+
+async function syncPublisherPackageOfficialStatePage(
+  ctx: Pick<MutationCtx, "db" | "scheduler">,
+  params: {
+    publisher: OfficialPublisherSyncTarget;
+    official: boolean;
+    officialAt: number;
+    now: number;
+    phase: OfficialSyncPhase;
+    cursor: string | null;
+  },
+) {
+  const { publisher, official, officialAt, now, phase, cursor } = params;
+  const linkedUserId = publisher.kind === "user" ? publisher.linkedUserId : undefined;
+  if (phase === "legacy" && !linkedUserId) {
+    return { updatedPackages: 0, packageSyncTruncated: false };
+  }
+
+  const syncPackagePage = async (
+    packages: Doc<"packages">[],
+    isDone: boolean,
+    continueCursor: string | null,
+  ) => {
+    let updatedPackages = 0;
+    for (const pkg of packages) {
+      if (phase === "legacy" && pkg.ownerPublisherId) continue;
+
+      const nextChannel: Doc<"packages">["channel"] =
+        pkg.channel === "private" ? "private" : official ? "official" : "community";
+      const nextIsOfficial = nextChannel === "official";
+      if (pkg.channel === nextChannel && pkg.isOfficial === nextIsOfficial) continue;
+
+      const nextPackage = {
+        ...pkg,
+        channel: nextChannel,
+        isOfficial: nextIsOfficial,
+        updatedAt: now,
+      };
+      await ctx.db.patch(pkg._id, {
+        channel: nextChannel,
+        isOfficial: nextIsOfficial,
+        updatedAt: now,
+      });
+      await upsertPackageSearchDigest(ctx, {
+        ...extractPackageDigestFields(nextPackage),
+        ownerHandle: publisher.handle,
+        ownerKind: publisher.kind,
+      });
+      updatedPackages += 1;
+    }
+
+    if (!isDone && continueCursor) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.publishers.syncPublisherPackageOfficialStateBatchInternal,
+        {
+          publisherId: publisher._id,
+          official,
+          officialAt,
+          now,
+          phase,
+          cursor: continueCursor,
+        },
+      );
+    }
+
+    return {
+      updatedPackages,
+      packageSyncTruncated: !isDone,
+    };
+  };
+
+  if (phase === "legacy") {
+    if (!linkedUserId) return { updatedPackages: 0, packageSyncTruncated: false };
+    const page = await ctx.db
+      .query("packages")
+      .withIndex("by_owner", (q) => q.eq("ownerUserId", linkedUserId))
+      .paginate({ cursor, numItems: PUBLISHER_OFFICIAL_PACKAGE_SYNC_LIMIT });
+    return await syncPackagePage(page.page, page.isDone, page.continueCursor);
+  }
+
+  const page = await ctx.db
+    .query("packages")
+    .withIndex("by_owner_publisher", (q) => q.eq("ownerPublisherId", publisher._id))
+    .paginate({ cursor, numItems: PUBLISHER_OFFICIAL_PACKAGE_SYNC_LIMIT });
+  return await syncPackagePage(page.page, page.isDone, page.continueCursor);
 }
 
 async function syncPublisherSkillOfficialState(
-  ctx: Pick<MutationCtx, "db">,
-  publisherId: Id<"publishers">,
+  ctx: Pick<MutationCtx, "db" | "scheduler">,
+  publisher: OfficialPublisherSyncTarget,
   official: boolean,
-  byUserId: Id<"users">,
+  officialBadge: OfficialSkillBadge | null,
   now: number,
 ) {
-  const skills = await ctx.db
-    .query("skills")
-    .withIndex("by_owner_publisher_active_updated", (q) =>
-      q.eq("ownerPublisherId", publisherId).eq("softDeletedAt", undefined),
-    )
-    .take(PUBLISHER_OFFICIAL_SKILL_SYNC_LIMIT);
+  const scoped = await syncPublisherSkillOfficialStatePage(ctx, {
+    publisher,
+    official,
+    officialBadge,
+    now,
+    phase: "scoped",
+    cursor: null,
+  });
+  const legacy =
+    publisher.kind === "user" && publisher.linkedUserId
+      ? await syncPublisherSkillOfficialStatePage(ctx, {
+          publisher,
+          official,
+          officialBadge,
+          now,
+          phase: "legacy",
+          cursor: null,
+        })
+      : { updatedSkills: 0, skillSyncTruncated: false };
 
-  let updatedSkills = 0;
-  for (const skill of skills) {
-    const existingBadge = await ctx.db
-      .query("skillBadges")
-      .withIndex("by_skill_kind", (q) => q.eq("skillId", skill._id).eq("kind", "official"))
-      .unique();
+  return {
+    updatedSkills: scoped.updatedSkills + legacy.updatedSkills,
+    skillSyncTruncated: scoped.skillSyncTruncated || legacy.skillSyncTruncated,
+  };
+}
 
-    const nextBadges = official
-      ? {
+async function syncPublisherSkillOfficialStatePage(
+  ctx: Pick<MutationCtx, "db" | "scheduler">,
+  params: {
+    publisher: OfficialPublisherSyncTarget;
+    official: boolean;
+    officialBadge: OfficialSkillBadge | null;
+    now: number;
+    phase: OfficialSyncPhase;
+    cursor: string | null;
+  },
+) {
+  const { publisher, official, officialBadge, now, phase, cursor } = params;
+  const linkedUserId = publisher.kind === "user" ? publisher.linkedUserId : undefined;
+  if (phase === "legacy" && !linkedUserId) {
+    return { updatedSkills: 0, skillSyncTruncated: false };
+  }
+
+  const syncSkillPage = async (
+    skills: Doc<"skills">[],
+    isDone: boolean,
+    continueCursor: string | null,
+  ) => {
+    let updatedSkills = 0;
+    for (const skill of skills) {
+      if (phase === "legacy" && skill.ownerPublisherId) continue;
+
+      const existingBadge = await ctx.db
+        .query("skillBadges")
+        .withIndex("by_skill_kind", (q) => q.eq("skillId", skill._id).eq("kind", "official"))
+        .unique();
+      const previousBadge = skill.badges?.official;
+
+      if (official) {
+        if (previousBadge || !officialBadge) continue;
+
+        const nextBadges = {
           ...skill.badges,
-          official: { byUserId, at: now },
-        }
-      : removeOfficialSkillBadge(skill.badges ?? {});
-
-    if (official) {
-      if (existingBadge) {
-        await ctx.db.patch(existingBadge._id, { byUserId, at: now });
-      } else {
+          official: officialBadge,
+        };
         await ctx.db.insert("skillBadges", {
           skillId: skill._id,
           kind: "official",
-          byUserId,
-          at: now,
+          byUserId: officialBadge.byUserId,
+          at: officialBadge.at,
         });
+        await ctx.db.patch(skill._id, { badges: nextBadges });
+        const digest = await ctx.db
+          .query("skillSearchDigest")
+          .withIndex("by_skill", (q) => q.eq("skillId", skill._id))
+          .unique();
+        if (digest) await ctx.db.patch(digest._id, { badges: nextBadges });
+        updatedSkills += 1;
+        continue;
       }
-    } else if (existingBadge) {
-      await ctx.db.delete(existingBadge._id);
+
+      if (
+        existingBadge &&
+        previousBadge &&
+        officialBadgeMatches(existingBadge, officialBadge) &&
+        officialBadgeMatches(previousBadge, officialBadge)
+      ) {
+        const nextBadges = removeOfficialSkillBadge(skill.badges ?? {});
+        await ctx.db.delete(existingBadge._id);
+        await ctx.db.patch(skill._id, { badges: nextBadges });
+        const digest = await ctx.db
+          .query("skillSearchDigest")
+          .withIndex("by_skill", (q) => q.eq("skillId", skill._id))
+          .unique();
+        if (digest) await ctx.db.patch(digest._id, { badges: nextBadges });
+        updatedSkills += 1;
+      }
     }
 
-    const previousBadge = skill.badges?.official;
-    const badgeChanged =
-      Boolean(previousBadge) !== official ||
-      (official && (previousBadge?.byUserId !== byUserId || previousBadge?.at !== now));
-    if (badgeChanged) {
-      await ctx.db.patch(skill._id, { badges: nextBadges });
-      const digest = await ctx.db
-        .query("skillSearchDigest")
-        .withIndex("by_skill", (q) => q.eq("skillId", skill._id))
-        .unique();
-      if (digest) await ctx.db.patch(digest._id, { badges: nextBadges });
-      updatedSkills += 1;
+    if (!isDone && continueCursor) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.publishers.syncPublisherSkillOfficialStateBatchInternal,
+        {
+          publisherId: publisher._id,
+          official,
+          officialBadge: officialBadge ?? undefined,
+          now,
+          phase,
+          cursor: continueCursor,
+        },
+      );
     }
+
+    return {
+      updatedSkills,
+      skillSyncTruncated: !isDone,
+    };
+  };
+
+  if (phase === "legacy") {
+    if (!linkedUserId) return { updatedSkills: 0, skillSyncTruncated: false };
+    const page = await ctx.db
+      .query("skills")
+      .withIndex("by_owner", (q) => q.eq("ownerUserId", linkedUserId))
+      .paginate({ cursor, numItems: PUBLISHER_OFFICIAL_SKILL_SYNC_LIMIT });
+    return await syncSkillPage(page.page, page.isDone, page.continueCursor);
   }
 
-  return {
-    updatedSkills,
-    skillSyncTruncated: skills.length === PUBLISHER_OFFICIAL_SKILL_SYNC_LIMIT,
-  };
+  const page = await ctx.db
+    .query("skills")
+    .withIndex("by_owner_publisher", (q) => q.eq("ownerPublisherId", publisher._id))
+    .paginate({ cursor, numItems: PUBLISHER_OFFICIAL_SKILL_SYNC_LIMIT });
+  return await syncSkillPage(page.page, page.isDone, page.continueCursor);
 }
+
+export const syncPublisherPackageOfficialStateBatchInternal = internalMutation({
+  args: {
+    publisherId: v.id("publishers"),
+    official: v.boolean(),
+    officialAt: v.optional(v.number()),
+    now: v.number(),
+    phase: v.union(v.literal("scoped"), v.literal("legacy")),
+    cursor: v.optional(v.union(v.string(), v.null())),
+  },
+  handler: async (ctx, args) => {
+    const publisher = await ctx.db.get(args.publisherId);
+    if (!publisher || publisher.deletedAt || publisher.deactivatedAt) {
+      return { updatedPackages: 0, packageSyncTruncated: false };
+    }
+    if (!isPublisherOfficialSyncCurrent(publisher, args.official, args.officialAt ?? args.now)) {
+      return { updatedPackages: 0, packageSyncTruncated: false };
+    }
+    return await syncPublisherPackageOfficialStatePage(ctx, {
+      publisher,
+      official: args.official,
+      officialAt: args.officialAt ?? args.now,
+      now: args.now,
+      phase: args.phase,
+      cursor: args.cursor ?? null,
+    });
+  },
+});
+
+export const syncPublisherSkillOfficialStateBatchInternal = internalMutation({
+  args: {
+    publisherId: v.id("publishers"),
+    official: v.boolean(),
+    officialBadge: v.optional(v.object({ byUserId: v.id("users"), at: v.number() })),
+    now: v.number(),
+    phase: v.union(v.literal("scoped"), v.literal("legacy")),
+    cursor: v.optional(v.union(v.string(), v.null())),
+  },
+  handler: async (ctx, args) => {
+    const publisher = await ctx.db.get(args.publisherId);
+    if (!publisher || publisher.deletedAt || publisher.deactivatedAt) {
+      return { updatedSkills: 0, skillSyncTruncated: false };
+    }
+    if (
+      !isPublisherOfficialSyncCurrent(publisher, args.official, args.officialBadge?.at ?? args.now)
+    ) {
+      return { updatedSkills: 0, skillSyncTruncated: false };
+    }
+    return await syncPublisherSkillOfficialStatePage(ctx, {
+      publisher,
+      official: args.official,
+      officialBadge: args.officialBadge ?? null,
+      now: args.now,
+      phase: args.phase,
+      cursor: args.cursor ?? null,
+    });
+  },
+});
 
 function removeOfficialSkillBadge(badges: NonNullable<Doc<"skills">["badges"]>) {
   const { official: _official, ...remainingBadges } = badges;
   return remainingBadges;
+}
+
+function officialBadgeMatches(
+  badge:
+    | Pick<Doc<"skillBadges">, "byUserId" | "at">
+    | NonNullable<Doc<"skills">["badges"]>["official"]
+    | undefined
+    | null,
+  expected: OfficialSkillBadge | null,
+) {
+  return Boolean(expected && badge?.byUserId === expected.byUserId && badge.at === expected.at);
+}
+
+function isPublisherOfficialSyncCurrent(
+  publisher: Pick<Doc<"publishers">, "official">,
+  official: boolean,
+  officialAt: number,
+) {
+  if (official) return publisher.official?.at === officialAt;
+  return !publisher.official;
 }
 
 function getIndexedPublisherStatsFromRows(rows: PublisherPublishedRows): PublisherListStats {
@@ -1503,21 +1747,26 @@ export const setOfficialPublisher = mutation({
     }
 
     const now = Date.now();
+    const nextOfficialBadge = args.official
+      ? (publisher.official ?? { byUserId: userId, at: now })
+      : undefined;
+    const syncOfficialBadge = nextOfficialBadge ?? publisher.official ?? null;
     await ctx.db.patch(publisher._id, {
-      official: args.official ? { byUserId: userId, at: now } : undefined,
+      official: nextOfficialBadge,
       updatedAt: now,
     });
     const skillSync = await syncPublisherSkillOfficialState(
       ctx,
-      publisher._id,
+      publisher,
       args.official,
-      userId,
+      syncOfficialBadge,
       now,
     );
     const packageSync = await syncPublisherPackageOfficialState(
       ctx,
-      publisher._id,
+      publisher,
       args.official,
+      syncOfficialBadge?.at ?? now,
       now,
     );
     await ctx.db.insert("auditLogs", {

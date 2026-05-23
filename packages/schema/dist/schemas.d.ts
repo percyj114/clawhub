@@ -216,6 +216,8 @@ export declare const ApiV1SkillResponseSchema: import("arktype/internal/variants
     } | null;
     owner: {
         handle: string | null;
+        userId?: string | null | undefined;
+        publisherId?: string | null | undefined;
         displayName?: string | null | undefined;
         image?: string | null | undefined;
         official?: boolean | undefined;

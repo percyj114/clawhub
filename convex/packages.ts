@@ -68,6 +68,7 @@ import {
 import { toPublicPublisher } from "./lib/public";
 import {
   assertCanManageOwnedResource,
+  getPersonalPublisherForUser,
   getPublisherByHandle,
   getOwnerPublisher,
   getPublisherMembership,
@@ -465,6 +466,28 @@ function getRequestedPackageOwnerKey(args: {
 
 function isOfficialPackagePublisher(ownerPublisher?: Pick<Doc<"publishers">, "official"> | null) {
   return Boolean(ownerPublisher?.official);
+}
+
+async function getRequestedPackageOwnerPublisher(
+  ctx: Pick<MutationCtx, "db">,
+  args: {
+    ownerUserId: Id<"users">;
+    ownerPublisherId?: Id<"publishers">;
+  },
+) {
+  if (args.ownerPublisherId) return await ctx.db.get(args.ownerPublisherId);
+  const owner = await ctx.db.get(args.ownerUserId);
+  if (!owner || owner.deletedAt || owner.deactivatedAt) return null;
+  if (owner.personalPublisherId) {
+    const publisher = await ctx.db.get(owner.personalPublisherId);
+    if (publisher && !isInactivePublisher(publisher)) return publisher;
+  }
+  const publisher = await getPersonalPublisherForUser(ctx, owner._id);
+  return publisher && !isInactivePublisher(publisher) ? publisher : null;
+}
+
+function isInactivePublisher(publisher: Pick<Doc<"publishers">, "deletedAt" | "deactivatedAt">) {
+  return Boolean(publisher.deletedAt || publisher.deactivatedAt);
 }
 
 function isReservedPackagePlaceholder(pkg: PackageDoc | null | undefined) {
@@ -5106,8 +5129,14 @@ async function patchPackageOwnerWithAudit(
   },
 ) {
   const now = Date.now();
-  const nextChannel = args.channel ?? args.pkg.channel;
   const publisherOfficial = isOfficialPackagePublisher(args.ownerPublisher);
+  const nextChannel =
+    args.channel ??
+    (args.pkg.channel === "private"
+      ? "private"
+      : publisherOfficial
+        ? "official"
+        : args.pkg.channel);
   if (nextChannel === "official" && !publisherOfficial) {
     throw new ConvexError("Only official publishers may own official packages");
   }
@@ -5283,8 +5312,13 @@ export const transferPackageOwnerInternal = internalMutation({
       throw new ConvexError("Owner user not found");
     }
 
-    const ownerPublisher = args.ownerPublisherId ? await ctx.db.get(args.ownerPublisherId) : null;
-    if (args.ownerPublisherId && (!ownerPublisher || ownerPublisher.deletedAt)) {
+    const ownerPublisher = args.ownerPublisherId
+      ? await getRequestedPackageOwnerPublisher(ctx, {
+          ownerPublisherId: args.ownerPublisherId,
+          ownerUserId: args.ownerUserId,
+        })
+      : null;
+    if (args.ownerPublisherId && (!ownerPublisher || isInactivePublisher(ownerPublisher))) {
       throw new ConvexError("Owner publisher not found");
     }
 
@@ -5452,7 +5486,13 @@ export const insertReleaseInternal = internalMutation({
     if (!actor) throw new ConvexError("Unauthorized");
     const owner = await ctx.db.get(args.ownerUserId);
     if (!owner) throw new ConvexError("Unauthorized");
-    const ownerPublisher = args.ownerPublisherId ? await ctx.db.get(args.ownerPublisherId) : null;
+    const ownerPublisher = await getRequestedPackageOwnerPublisher(ctx, {
+      ownerPublisherId: args.ownerPublisherId,
+      ownerUserId: args.ownerUserId,
+    });
+    if (args.ownerPublisherId && (!ownerPublisher || isInactivePublisher(ownerPublisher))) {
+      throw new ConvexError("Owner publisher not found");
+    }
     if (args.ownerUserId !== args.actorUserId) {
       assertAdmin(actor);
     }

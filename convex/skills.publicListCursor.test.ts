@@ -167,6 +167,34 @@ describe("public skill list deterministic cursors", () => {
     });
   });
 
+  it("carries skill badges through the public API list result", async () => {
+    getPageMock.mockResolvedValueOnce({
+      page: [
+        makeDigest({
+          slug: "official-helper",
+          displayName: "Official Helper",
+          badges: { official: { byUserId: "users:admin", at: 123 } },
+        }),
+      ],
+      hasMore: false,
+      indexKeys: [[undefined, 200, 201, "skillSearchDigest:official-helper"]],
+    });
+
+    const result = await listPublicApiPageV1Handler({} as never, {
+      sort: "updated",
+      nonSuspiciousOnly: false,
+      numItems: 1,
+    });
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]).toMatchObject({
+      skill: {
+        slug: "official-helper",
+        badges: { official: { byUserId: "users:admin", at: 123 } },
+      },
+    });
+  });
+
   it("paginates the public API list from getPage's full self-describing cursor", async () => {
     getPageMock
       .mockResolvedValueOnce({

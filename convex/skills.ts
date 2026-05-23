@@ -2097,6 +2097,100 @@ async function removeSkillBadge(ctx: MutationCtx, skillId: Id<"skills">, kind: B
   }
 }
 
+type SkillBadgeEntry = { byUserId: Id<"users">; at: number };
+
+function skillBadgeEntryMatches(
+  badge:
+    | Pick<Doc<"skillBadges">, "byUserId" | "at">
+    | NonNullable<Doc<"skills">["badges"]>["official"]
+    | undefined
+    | null,
+  expected: SkillBadgeEntry | null,
+) {
+  return Boolean(expected && badge?.byUserId === expected.byUserId && badge.at === expected.at);
+}
+
+function removeOfficialBadgeFromSkillMap(badges: Doc<"skills">["badges"]) {
+  const { official: _official, ...remainingBadges } = badges ?? {};
+  return remainingBadges;
+}
+
+async function getPublisherDerivedOfficialBadgeRemoval(
+  ctx: MutationCtx,
+  skill: Doc<"skills">,
+  expected: SkillBadgeEntry | null,
+) {
+  if (!skillBadgeEntryMatches(skill.badges?.official, expected)) return null;
+  const existing = await ctx.db
+    .query("skillBadges")
+    .withIndex("by_skill_kind", (q) => q.eq("skillId", skill._id).eq("kind", "official"))
+    .unique();
+  if (existing && !skillBadgeEntryMatches(existing, expected)) return null;
+  return {
+    badgeId: existing?._id,
+    badges: removeOfficialBadgeFromSkillMap(skill.badges),
+  };
+}
+
+function officialPublisherBadgeEntry(
+  publisher: Pick<Doc<"publishers">, "official"> | null | undefined,
+): SkillBadgeEntry | null {
+  return publisher?.official
+    ? { byUserId: publisher.official.byUserId, at: publisher.official.at }
+    : null;
+}
+
+async function getOfficialBadgePatchForSkillOwnerTransfer(
+  ctx: MutationCtx,
+  skill: Doc<"skills">,
+  sourceOfficialBadge: SkillBadgeEntry | null,
+  destinationOfficialBadge: SkillBadgeEntry | null,
+) {
+  const currentOfficialBadge = skill.badges?.official;
+  const currentBadgeIsSourceDerived = skillBadgeEntryMatches(
+    currentOfficialBadge,
+    sourceOfficialBadge,
+  );
+
+  if (destinationOfficialBadge) {
+    if (currentOfficialBadge && !currentBadgeIsSourceDerived) return undefined;
+
+    const existing = await ctx.db
+      .query("skillBadges")
+      .withIndex("by_skill_kind", (q) => q.eq("skillId", skill._id).eq("kind", "official"))
+      .unique();
+    if (existing && !currentOfficialBadge) return undefined;
+    if (existing && !skillBadgeEntryMatches(existing, sourceOfficialBadge)) return undefined;
+
+    if (existing) {
+      await ctx.db.patch(existing._id, destinationOfficialBadge);
+    } else {
+      await ctx.db.insert("skillBadges", {
+        skillId: skill._id,
+        kind: "official",
+        byUserId: destinationOfficialBadge.byUserId,
+        at: destinationOfficialBadge.at,
+      });
+    }
+
+    return {
+      ...skill.badges,
+      official: destinationOfficialBadge,
+    };
+  }
+
+  const officialBadgeRemoval = await getPublisherDerivedOfficialBadgeRemoval(
+    ctx,
+    skill,
+    sourceOfficialBadge,
+  );
+  if (!officialBadgeRemoval) return undefined;
+  if (officialBadgeRemoval.badgeId) {
+    await ctx.db.delete(officialBadgeRemoval.badgeId);
+  }
+  return officialBadgeRemoval.badges;
+}
+
 export const getBySlug = query({
   args: { slug: v.string() },
   handler: async (ctx, args) => {
@@ -4840,6 +4934,7 @@ function buildPublicSkillApiListEntryFromDigest(digest: Doc<"skillSearchDigest">
       displayName: publicSkill.displayName,
       summary: publicSkill.summary,
       tags: publicSkill.tags,
+      badges: publicSkill.badges,
       stats: publicSkill.stats,
       createdAt: publicSkill.createdAt,
       updatedAt: publicSkill.updatedAt,
@@ -8725,6 +8820,27 @@ async function transferSkillOwnershipAndEmbeddings(
     "ownerPublisherId" in params && params.skill.ownerPublisherId !== params.ownerPublisherId;
   if (!ownerChanged && !publisherChanged) return;
 
+  const sourcePublisher = await getOwnerPublisher(ctx, {
+    ownerPublisherId: params.skill.ownerPublisherId,
+    ownerUserId: params.skill.ownerUserId,
+  });
+  const nextOwnerPublisherId =
+    "ownerPublisherId" in params ? params.ownerPublisherId : params.skill.ownerPublisherId;
+  const destinationPublisher = await getOwnerPublisher(ctx, {
+    ownerPublisherId: nextOwnerPublisherId,
+    ownerUserId: params.ownerUserId,
+  });
+  const nextBadges = await getOfficialBadgePatchForSkillOwnerTransfer(
+    ctx,
+    params.skill,
+    officialPublisherBadgeEntry(sourcePublisher),
+    officialPublisherBadgeEntry(destinationPublisher),
+  );
+  if (nextBadges) {
+    patch.badges = nextBadges;
+  }
+
+  const nextSkill = { ...params.skill, ...patch };
   await ctx.db.patch(params.skill._id, patch);
 
   const aliases = await listSkillSlugAliasesForSkill(ctx, params.skill._id);
@@ -8746,11 +8862,9 @@ async function transferSkillOwnershipAndEmbeddings(
         updatedAt: params.now,
       });
     }
-    await adjustUserSkillStatsForSkillChange(ctx, params.skill, {
-      ...params.skill,
-      ...patch,
-    });
+    await adjustUserSkillStatsForSkillChange(ctx, params.skill, nextSkill);
   }
+  await syncSkillSearchDigestForSkillDoc(ctx, nextSkill);
 }
 
 async function syncSkillSearchDigestForSkillDoc(ctx: MutationCtx, skill: Doc<"skills">) {
@@ -8832,13 +8946,6 @@ export const transferSkillOwnerForUserInternal = internalMutation({
       ownerUserId: nextOwner._id,
       ownerPublisherId: destinationPublisher._id,
       now,
-    });
-    await syncSkillSearchDigestForSkillDoc(ctx, {
-      ...skill,
-      ownerUserId: nextOwner._id,
-      ownerPublisherId: destinationPublisher._id,
-      lastReviewedAt: now,
-      updatedAt: now,
     });
 
     await ctx.db.insert("auditLogs", {
@@ -9584,6 +9691,9 @@ export const insertVersion = internalMutation({
       // persisted skill owner is accepted as the compatibility fallback.
       const callerRequestedMigration = args.migrateOwner === true;
       const sourcePublisher = await ctx.db.get(skill.ownerPublisherId);
+      const sourceOfficialBadge = sourcePublisher?.official
+        ? { byUserId: sourcePublisher.official.byUserId, at: sourcePublisher.official.at }
+        : null;
       const callerOwnsSourceViaPersonalLink =
         sourcePublisher?.kind === "user" &&
         (sourcePublisher.linkedUserId === userId || skill.ownerUserId === userId);
@@ -9622,19 +9732,29 @@ export const insertVersion = internalMutation({
 
       const previousOwnerPublisherId = skill.ownerPublisherId;
       const previousOwnerUserId = skill.ownerUserId;
+      const nextBadges = await getOfficialBadgePatchForSkillOwnerTransfer(
+        ctx,
+        skill,
+        sourceOfficialBadge,
+        ownerOfficialBadge,
+      );
 
       const nextSkill: Doc<"skills"> = {
         ...skill,
         ownerPublisherId,
         ownerUserId: userId,
+        ...(nextBadges ? { badges: nextBadges } : {}),
         updatedAt: now,
       };
 
-      await ctx.db.patch(skill._id, {
+      const ownerMigrationPatch: Partial<Doc<"skills">> = {
         ownerPublisherId,
         ownerUserId: userId,
+        ...(nextBadges ? { badges: nextBadges } : {}),
         updatedAt: now,
-      });
+      };
+
+      await ctx.db.patch(skill._id, ownerMigrationPatch);
 
       // Reassign per-user counters from the previous owner to the new one.
       // Without this, `users.publishedSkills / totalStars / totalDownloads`
@@ -9698,6 +9818,7 @@ export const insertVersion = internalMutation({
         ownerPublisherId: skill.ownerPublisherId,
         ownerUserId: skill.ownerUserId,
       });
+      const sourceOfficialBadge = officialPublisherBadgeEntry(owner);
       const slugTakenMessage = buildSlugTakenErrorMessage(skill, owner);
 
       // Check GitHub identity FIRST so ownership healing works even when the
@@ -9714,21 +9835,41 @@ export const insertVersion = internalMutation({
           callerProviderAccountId,
         )
       ) {
-        await ctx.db.patch(skill._id, {
+        const nextBadges = await getOfficialBadgePatchForSkillOwnerTransfer(
+          ctx,
+          skill,
+          sourceOfficialBadge,
+          ownerOfficialBadge,
+        );
+        const legacyOwnershipPatch: Partial<Doc<"skills">> = {
           ownerUserId: userId,
           ownerPublisherId,
+          ...(nextBadges ? { badges: nextBadges } : {}),
           updatedAt: now,
-        });
-        skill = { ...skill, ownerUserId: userId, ownerPublisherId };
+        };
+        await ctx.db.patch(skill._id, legacyOwnershipPatch);
+        skill = { ...skill, ...legacyOwnershipPatch };
       } else {
         throw new ConvexError(slugTakenMessage);
       }
     } else if (skill && !skill.ownerPublisherId) {
-      await ctx.db.patch(skill._id, {
-        ownerPublisherId,
-        updatedAt: now,
+      const sourceOwner = await getOwnerPublisher(ctx, {
+        ownerPublisherId: skill.ownerPublisherId,
+        ownerUserId: skill.ownerUserId,
       });
-      skill = { ...skill, ownerPublisherId };
+      const nextBadges = await getOfficialBadgePatchForSkillOwnerTransfer(
+        ctx,
+        skill,
+        officialPublisherBadgeEntry(sourceOwner),
+        ownerOfficialBadge,
+      );
+      const legacyPublisherPatch: Partial<Doc<"skills">> = {
+        ownerPublisherId,
+        ...(nextBadges ? { badges: nextBadges } : {}),
+        updatedAt: now,
+      };
+      await ctx.db.patch(skill._id, legacyPublisherPatch);
+      skill = { ...skill, ...legacyPublisherPatch };
     }
 
     const qualityAssessment = args.qualityAssessment;

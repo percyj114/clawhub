@@ -195,7 +195,14 @@ Response:
   },
   "latestVersion": { "version": "1.2.3", "createdAt": 0, "changelog": "…" },
   "metadata": { "os": ["macos"], "systems": ["aarch64-darwin"] },
-  "owner": { "handle": "steipete", "displayName": "Peter", "image": null, "official": true },
+  "owner": {
+    "handle": "steipete",
+    "userId": "users:…",
+    "publisherId": "publishers:…",
+    "displayName": "Peter",
+    "image": null,
+    "official": true
+  },
   "moderation": {
     "isSuspicious": false,
     "isMalwareBlocked": false,
