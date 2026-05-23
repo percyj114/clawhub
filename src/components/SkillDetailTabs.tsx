@@ -187,6 +187,14 @@ export function SkillDetailTabs({
 
       {activeTab === "skill-card" ? (
         <div className="tab-body">
+          <p className="skill-card-info-callout">
+            Skill Cards follow{" "}
+            <a href="https://docs.nvidia.com/skills/skill-cards" target="_blank" rel="noreferrer">
+              NVIDIA&apos;s trust-card pattern for agent skills
+            </a>
+            , giving a compact release record of what a skill does, who published it, and what risks
+            or limits to review before use.
+          </p>
           {skillCardContent ? (
             <MarkdownPreview
               highlight={false}

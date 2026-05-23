@@ -86,6 +86,7 @@ export type PublishOptions = {
   skipBackup?: boolean;
   skipWebhook?: boolean;
   ownerPublisherId?: Id<"publishers">;
+  sourceProvenance?: PublishVersionArgs["source"];
   // Explicit opt-in to owner migration. The `insertVersion` mutation refuses
   // to rewrite a skill's `ownerPublisherId` unless this is `true`, so default
   // publishes (including older CLIs that never pass this flag) can never
@@ -317,7 +318,7 @@ export async function publishVersionForUser(
     changelog: changelogText,
     clawScanNote: clawScanNote || undefined,
     changelogSource,
-    sourceProvenance: args.source,
+    sourceProvenance: options.sourceProvenance,
     tags: args.tags?.map((tag) => tag.trim()).filter(Boolean),
     fingerprint,
     forkOf: args.forkOf

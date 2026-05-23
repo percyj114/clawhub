@@ -438,14 +438,15 @@ function normalizeVerificationStatus(value: string | null | undefined): Normaliz
 
 function buildVerifySecurity(version: Doc<"skillVersions">) {
   const staticStatus = normalizeVerificationStatus(version.staticScan?.status);
+  const blockingStaticStatus = staticStatus === "malicious" ? staticStatus : null;
   const clawRawStatus = version.llmAnalysis?.status ?? null;
   const clawStatus = normalizeVerificationStatus(version.llmAnalysis?.verdict ?? clawRawStatus);
   const depStatus = version.depRegistryAnalysis
     ? normalizeVerificationStatus(version.depRegistryAnalysis.status)
     : null;
   const status = mergeSecurityStatuses([
-    staticStatus,
     clawStatus,
+    ...(blockingStaticStatus ? [blockingStaticStatus] : []),
     ...(depStatus ? [depStatus] : []),
   ]);
 

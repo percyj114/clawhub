@@ -10,7 +10,7 @@ test.skip(
   "local-auth lifecycle tests require the local dev auth runner",
 );
 
-const WORKER_TOKEN = "local-e2e-worker-token";
+const WORKER_TOKEN = process.env.SECURITY_SCAN_WORKER_TOKEN ?? "local-e2e-worker-token";
 const { ConvexHttpClient } = convexBrowser;
 type ConvexHttpClientInstance = InstanceType<typeof ConvexHttpClient>;
 

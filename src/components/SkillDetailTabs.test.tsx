@@ -149,6 +149,11 @@ describe("SkillDetailTabs README links", () => {
 
     expect(screen.getByRole("tab", { name: "Skill Card" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Skill Card" })).toBeTruthy();
+    expect(
+      screen
+        .getByRole("link", { name: "NVIDIA's trust-card pattern for agent skills" })
+        .getAttribute("href"),
+    ).toBe("https://docs.nvidia.com/skills/skill-cards");
   });
 
   it("renders safe raw HTML in generated Skill Cards", () => {

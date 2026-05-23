@@ -5811,6 +5811,29 @@ code {
   line-height: 1.75;
 }
 
+.skill-card-info-callout {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--surface-muted) 64%, transparent);
+  color: var(--ink-soft);
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+}
+
+.skill-card-info-callout a {
+  color: var(--ink);
+  font-weight: 650;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.skill-card-info-callout a:hover,
+.skill-card-info-callout a:focus-visible {
+  color: var(--accent-deep);
+}
+
 .file-list {
   position: relative;
   display: grid;
