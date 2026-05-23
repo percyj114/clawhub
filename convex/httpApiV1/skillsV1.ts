@@ -18,7 +18,7 @@ import type {
   LlmEvalDimension,
   LlmRiskSummary,
 } from "../lib/securityPrompt";
-import { isSkillCardPath, selectSkillCardFile } from "../lib/skillCards";
+import { buildBundleFingerprint, isSkillCardPath, selectSkillCardFile } from "../lib/skillCards";
 import { publishVersionForUser } from "../skills";
 import {
   MAX_RAW_FILE_BYTES,
@@ -1142,13 +1142,6 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
     if (version.softDeletedAt) return text("Version not available", 410, rate.headers);
 
     const cardFile = selectSkillCardFile(version.files);
-    const security = buildVerifySecurity(version);
-    const reasons = buildVerifyReasons({
-      cardAvailable: Boolean(cardFile),
-      isMalwareBlocked: skillResult.moderationInfo?.isMalwareBlocked ?? false,
-      securityPassed: security.passed,
-      securityStatus: security.status,
-    });
     const fingerprintEntries = (await ctx.runQuery(
       internal.skills.listVersionFingerprintsInternal,
       { skillVersionId: version._id },
@@ -1156,6 +1149,18 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
     const bundleFingerprints = fingerprintEntries
       .filter((entry) => entry.kind === "generated-bundle")
       .map((entry) => entry.fingerprint);
+    const currentBundleFingerprint = cardFile ? await buildBundleFingerprint(version.files) : null;
+    const generatedCardFile =
+      cardFile && currentBundleFingerprint && bundleFingerprints.includes(currentBundleFingerprint)
+        ? cardFile
+        : null;
+    const security = buildVerifySecurity(version);
+    const reasons = buildVerifyReasons({
+      cardAvailable: Boolean(generatedCardFile),
+      isMalwareBlocked: skillResult.moderationInfo?.isMalwareBlocked ?? false,
+      securityPassed: security.passed,
+      securityStatus: security.status,
+    });
     const ownerHandle = skillResult.owner?.handle ?? null;
     const ownerDisplayName = skillResult.owner?.displayName ?? null;
 
@@ -1186,14 +1191,14 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
           tag: tagParam || null,
           createdAt: version.createdAt,
         },
-        card: cardFile
+        card: generatedCardFile
           ? {
               available: true,
-              path: cardFile.path,
+              path: generatedCardFile.path,
               url: buildCardUrl(request, skillResult.skill.slug, version.version),
-              sha256: cardFile.sha256,
-              size: cardFile.size,
-              contentType: cardFile.contentType ?? "text/markdown; charset=utf-8",
+              sha256: generatedCardFile.sha256,
+              size: generatedCardFile.size,
+              contentType: generatedCardFile.contentType ?? "text/markdown; charset=utf-8",
             }
           : {
               available: false,

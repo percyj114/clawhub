@@ -33,6 +33,7 @@ const {
 } = await import("./lib/apiTokenAuth");
 const { fetchGitHubRepositoryIdentity, verifyGitHubActionsTrustedPublishJwt } =
   await import("./lib/githubActionsOidc");
+const { buildBundleFingerprint } = await import("./lib/skillCards");
 const { publishVersionForUser } = await import("./skills");
 const { __handlers } = await import("./httpApiV1");
 
@@ -2595,6 +2596,7 @@ describe("httpApiV1 handlers", () => {
       capabilityTags: ["dev-tools"],
       softDeletedAt: undefined,
     };
+    const generatedBundleFingerprint = await buildBundleFingerprint(internalVersion.files);
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
       if ("slug" in args) {
         return {
@@ -2614,7 +2616,9 @@ describe("httpApiV1 handlers", () => {
         };
       }
       if ("skillVersionId" in args) {
-        return [{ fingerprint: "bundle-fingerprint", kind: "generated-bundle", createdAt: 5 }];
+        return [
+          { fingerprint: generatedBundleFingerprint, kind: "generated-bundle", createdAt: 5 },
+        ];
       }
       if ("versionId" in args) return internalVersion;
       return null;
@@ -2657,7 +2661,7 @@ describe("httpApiV1 handlers", () => {
       },
       artifact: {
         sourceFingerprint: "source-fingerprint",
-        bundleFingerprints: ["bundle-fingerprint"],
+        bundleFingerprints: [generatedBundleFingerprint],
         files: [{ path: "SKILL.md", sha256: "source-sha", size: 5 }],
       },
       provenance: {
@@ -2677,7 +2681,7 @@ describe("httpApiV1 handlers", () => {
     });
   });
 
-  it("fails verification when the skill is malware-blocked by moderation", async () => {
+  it("does not let publisher-supplied skill-card.md satisfy verification", async () => {
     const internalVersion = {
       _id: "skillVersions:1",
       skillId: "skills:1",
@@ -2721,6 +2725,80 @@ describe("httpApiV1 handlers", () => {
           },
           latestVersion: { _id: "skillVersions:1", version: "1.0.0" },
           owner: null,
+        };
+      }
+      if ("skillVersionId" in args) {
+        return [{ fingerprint: "source-fingerprint", kind: "source", createdAt: 4 }];
+      }
+      if ("versionId" in args) return internalVersion;
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation, storage: { get: vi.fn() } }),
+      new Request("https://example.com/api/v1/skills/demo/verify"),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.ok).toBe(false);
+    expect(json.decision).toBe("fail");
+    expect(json.reasons).toEqual(["card.missing"]);
+    expect(json.card).toMatchObject({
+      available: false,
+      path: "skill-card.md",
+      sha256: null,
+      size: null,
+    });
+    expect(json.artifact.bundleFingerprints).toEqual([]);
+  });
+
+  it("fails verification when the skill is malware-blocked by moderation", async () => {
+    const internalVersion = {
+      _id: "skillVersions:1",
+      skillId: "skills:1",
+      version: "1.0.0",
+      createdAt: 1,
+      changelog: "c",
+      fingerprint: "source-fingerprint",
+      files: [
+        { path: "SKILL.md", size: 5, storageId: "storage:1", sha256: "source-sha" },
+        { path: "skill-card.md", size: 12, storageId: "storage:card", sha256: "card-sha" },
+      ],
+      parsed: {},
+      staticScan: {
+        status: "clean",
+        reasonCodes: [],
+        findings: [],
+        summary: "Static scan clean.",
+        checkedAt: 2,
+      },
+      llmAnalysis: {
+        status: "clean",
+        verdict: "clean",
+        summary: "ClawScan clean.",
+        checkedAt: 3,
+      },
+      softDeletedAt: undefined,
+    };
+    const generatedBundleFingerprint = await buildBundleFingerprint(internalVersion.files);
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+            displayName: "Demo",
+            summary: "s",
+            tags: {},
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+            latestVersionId: "skillVersions:1",
+          },
+          latestVersion: { _id: "skillVersions:1", version: "1.0.0" },
+          owner: null,
           moderationInfo: {
             isPendingScan: false,
             isMalwareBlocked: true,
@@ -2730,7 +2808,11 @@ describe("httpApiV1 handlers", () => {
           },
         };
       }
-      if ("skillVersionId" in args) return [];
+      if ("skillVersionId" in args) {
+        return [
+          { fingerprint: generatedBundleFingerprint, kind: "generated-bundle", createdAt: 4 },
+        ];
+      }
       if ("versionId" in args) return internalVersion;
       return null;
     });
@@ -2778,6 +2860,7 @@ describe("httpApiV1 handlers", () => {
       },
       softDeletedAt: undefined,
     };
+    const generatedBundleFingerprint = await buildBundleFingerprint(internalVersion.files);
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
       if ("slug" in args) {
         return {
@@ -2796,7 +2879,11 @@ describe("httpApiV1 handlers", () => {
           owner: null,
         };
       }
-      if ("skillVersionId" in args) return [];
+      if ("skillVersionId" in args) {
+        return [
+          { fingerprint: generatedBundleFingerprint, kind: "generated-bundle", createdAt: 4 },
+        ];
+      }
       if ("versionId" in args) return internalVersion;
       return null;
     });

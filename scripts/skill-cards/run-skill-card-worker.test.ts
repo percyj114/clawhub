@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  applyServerPublisherToContext,
   assertPublicSkillCardMarkdown,
   buildPrompt,
   neutralTemplatePath,
@@ -105,5 +106,30 @@ describe("run-skill-card-worker Codex skill setup", () => {
     expect(() => assertPublicSkillCardMarkdown("## Review Table\n| Section | Field |")).toThrow(
       /Review Table/,
     );
+  });
+
+  it("overwrites model-authored publisher identity with server evidence", () => {
+    const context = applyServerPublisherToContext(
+      {
+        skill_name: "Demo Skill",
+        owner: { kind: "nvidia" },
+      },
+      {
+        publisher: {
+          handle: "acme",
+          displayName: "Acme Corp",
+          kind: "org",
+          source: "server-resolved-owner",
+        },
+      },
+    );
+
+    expect(context.owner).toEqual({
+      kind: "third_party",
+      name: "acme",
+      card_link: "https://clawhub.ai/user/acme",
+      verify: false,
+      verify_reason: "",
+    });
   });
 });

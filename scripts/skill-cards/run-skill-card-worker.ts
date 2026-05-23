@@ -33,6 +33,8 @@ type CommandResult = {
   stderr: string;
 };
 
+type JsonRecord = Record<string, unknown>;
+
 const DEFAULT_BATCH_LIMIT = 5;
 const DEFAULT_MAX_RUNTIME_MS = 30 * 60 * 1000;
 const DEFAULT_LEASE_MS = 30 * 60 * 1000;
@@ -226,6 +228,34 @@ Version: ${job.target.version.version}
 `;
 }
 
+function isRecord(value: unknown): value is JsonRecord {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function optionalTrimmedString(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+export function applyServerPublisherToContext(context: JsonRecord, evidence: JsonRecord) {
+  const publisher = isRecord(evidence.publisher) ? evidence.publisher : {};
+  const skill = isRecord(evidence.skill) ? evidence.skill : {};
+  const handle = optionalTrimmedString(publisher.handle);
+  const displayName = optionalTrimmedString(publisher.displayName);
+  const pageUrl = optionalTrimmedString(skill.pageUrl);
+  return {
+    ...context,
+    owner: {
+      kind: "third_party",
+      name: handle ?? displayName ?? "Unknown publisher",
+      card_link: handle
+        ? `https://clawhub.ai/user/${encodeURIComponent(handle)}`
+        : (pageUrl ?? "https://clawhub.ai"),
+      verify: false,
+      verify_reason: "",
+    },
+  };
+}
+
 function buildNvidiaSkillWrapper() {
   return `---
 name: nvidia-skill-card-generator
@@ -314,9 +344,14 @@ async function generateSkillCardWithCodex(job: ClaimedSkillCardJob, workspace: s
     input: buildPrompt(job),
     timeoutMs: codexTimeoutMs(),
   });
-  const contextJson = await readFile(join(workspace, SKILL_CARD_CONTEXT_FILE), "utf8");
+  const contextPath = join(workspace, SKILL_CARD_CONTEXT_FILE);
+  const contextJson = await readFile(contextPath, "utf8");
   if (!contextJson.trim()) throw new Error(`${SKILL_CARD_CONTEXT_FILE} is empty`);
-  JSON.parse(contextJson);
+  const context = applyServerPublisherToContext(
+    JSON.parse(contextJson) as JsonRecord,
+    job.target.evidence,
+  );
+  await writeFile(contextPath, `${JSON.stringify(context, null, 2)}\n`);
   await renderSkillCardMarkdown(workspace);
   const markdown = await readFile(join(workspace, SKILL_CARD_OUTPUT_FILE), "utf8");
   if (!markdown.trim()) throw new Error("Generated skill-card.md is empty");
