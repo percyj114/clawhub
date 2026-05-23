@@ -26,6 +26,18 @@ describe("skillPublish", () => {
     );
   });
 
+  it("excludes generated Skill Cards from the source fingerprint", async () => {
+    const fingerprint = await __test.buildPublishSourceFingerprint([
+      { path: "SKILL.md", sha256: "a".repeat(64) },
+      { path: "skill-card.md", sha256: "b".repeat(64) },
+    ]);
+    const expected = await __test.buildPublishSourceFingerprint([
+      { path: "SKILL.md", sha256: "a".repeat(64) },
+    ]);
+
+    expect(fingerprint).toBe(expected);
+  });
+
   it("rejects thin templated skill content for low-trust publishers", () => {
     const signals = __test.computeQualitySignals({
       readmeText: `---

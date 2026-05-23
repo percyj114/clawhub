@@ -6,6 +6,7 @@ import { action, internalMutation, internalQuery } from "./functions";
 import {
   hasSettledSkillCardInputs,
   isSkillCardPath,
+  MAX_SKILL_CARD_FILE_BYTES,
   normalizeSkillCardSecurityStatus,
   replaceGeneratedSkillCardFile,
   SKILL_CARD_FILE_PATH,
@@ -482,6 +483,10 @@ export const completeSkillCardJob = action({
     assertWorkerToken(args.token);
     const trimmed = args.markdown.trim();
     if (!trimmed) throw new ConvexError("Generated skill-card.md is empty");
+    const encoded = new TextEncoder().encode(args.markdown);
+    if (encoded.byteLength > MAX_SKILL_CARD_FILE_BYTES) {
+      throw new ConvexError("Generated skill-card.md exceeds 200KB limit");
+    }
     const sha256 = await sha256Hex(args.markdown);
     const storageId = await ctx.storage.store(
       new Blob([args.markdown], { type: "text/markdown; charset=utf-8" }),
@@ -492,7 +497,7 @@ export const completeSkillCardJob = action({
       runId: args.runId,
       cardFile: {
         path: SKILL_CARD_FILE_PATH,
-        size: new TextEncoder().encode(args.markdown).byteLength,
+        size: encoded.byteLength,
         storageId,
         sha256,
         contentType: "text/markdown; charset=utf-8",

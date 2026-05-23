@@ -3,6 +3,7 @@ import {
   cancelQueuedVtUpdateJobsInternal,
   claimCodexScanJobs,
   clearQueuedBackfillJobsForLocalDev,
+  completeCodexScanJob,
   failCodexScanJob,
 } from "./securityScan";
 
@@ -21,6 +22,19 @@ const failCodexScanJobHandler = (
   failCodexScanJob as unknown as WrappedHandler<
     { token: string; jobId: string; leaseToken: string; error: string },
     { ok: true; retry: boolean }
+  >
+)._handler;
+
+const completeCodexScanJobHandler = (
+  completeCodexScanJob as unknown as WrappedHandler<
+    {
+      token: string;
+      jobId: string;
+      leaseToken: string;
+      llmAnalysis: { status: string; checkedAt: number };
+      runId?: string;
+    },
+    { ok: true }
   >
 )._handler;
 
@@ -354,6 +368,50 @@ describe("securityScan", () => {
     expect(llmAnalysis?.findings).toContain("Worker error");
     expect(llmAnalysis?.findings).not.toContain("token=secret");
     expect(llmAnalysis?.findings).not.toContain("sk-short-secret");
+  });
+
+  it("completes skill scans without directly enqueueing duplicate Skill Card jobs", async () => {
+    vi.stubEnv("SECURITY_SCAN_WORKER_TOKEN", "worker-secret");
+
+    const runQuery = vi.fn(async () => ({
+      job: {
+        _id: "securityScanJobs:1",
+        targetKind: "skillVersion",
+        leaseToken: "lease-token",
+      },
+      version: {
+        _id: "skillVersions:1",
+      },
+    }));
+    const runMutation = vi.fn(async () => ({ ok: true }));
+
+    await completeCodexScanJobHandler(
+      { runQuery, runMutation },
+      {
+        token: "worker-secret",
+        jobId: "securityScanJobs:1",
+        leaseToken: "lease-token",
+        llmAnalysis: { status: "clean", checkedAt: 123 },
+      },
+    );
+
+    expect(runMutation).toHaveBeenCalledTimes(2);
+    expect(runMutation).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      expect.objectContaining({
+        versionId: "skillVersions:1",
+        llmAnalysis: { status: "clean", checkedAt: 123 },
+      }),
+    );
+    expect(runMutation).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      expect.objectContaining({
+        jobId: "securityScanJobs:1",
+        leaseToken: "lease-token",
+      }),
+    );
   });
 
   it("preserves a prior blocking skill ClawScan verdict when worker retries are exhausted", async () => {

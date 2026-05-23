@@ -17,6 +17,7 @@ import {
   MAX_PUBLISH_TOTAL_BYTES,
 } from "./publishLimits";
 import { deriveSkillCapabilityTags } from "./skillCapabilityTags";
+import { isSkillCardPath } from "./skillCards";
 import {
   computeQualitySignals,
   evaluateQuality,
@@ -44,6 +45,8 @@ const MAX_FILES_FOR_EMBEDDING = 40;
 const QUALITY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const QUALITY_ACTIVITY_LIMIT = 60;
 const PLATFORM_SKILL_LICENSE = "MIT-0" as const;
+
+type FingerprintFile = { path: string; sha256: string };
 
 export type PublishResult = {
   skillId: Id<"skills">;
@@ -283,7 +286,7 @@ export async function publishVersionForUser(
     fileContents,
   });
 
-  const fingerprintPromise = hashSkillFiles(
+  const fingerprintPromise = buildPublishSourceFingerprint(
     publishFiles.map((file) => ({ path: file.path, sha256: file.sha256 })),
   );
 
@@ -439,7 +442,12 @@ function mergeSourceIntoMetadata(
   return Object.keys(base).length ? base : undefined;
 }
 
+async function buildPublishSourceFingerprint(files: FingerprintFile[]) {
+  return await hashSkillFiles(files.filter((file) => !isSkillCardPath(file.path)));
+}
+
 export const __test = {
+  buildPublishSourceFingerprint,
   mergeSourceIntoMetadata,
   computeQualitySignals,
   evaluateQuality,

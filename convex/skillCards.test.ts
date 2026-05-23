@@ -3,6 +3,7 @@ import { hashSkillFiles } from "./lib/skills";
 import {
   attachCardAndSucceedJobInternal,
   claimSkillCardJobs,
+  completeSkillCardJob,
   enqueueForVersionInternal,
   failJobInternal,
 } from "./skillCards";
@@ -33,6 +34,19 @@ const attachHandler = (
       runId?: string;
     },
     { ok: true; bundleFingerprint: string }
+  >
+)._handler;
+
+const completeHandler = (
+  completeSkillCardJob as unknown as WrappedHandler<
+    {
+      token: string;
+      jobId: string;
+      leaseToken: string;
+      markdown: string;
+      runId?: string;
+    },
+    { ok: true }
   >
 )._handler;
 
@@ -410,6 +424,33 @@ describe("skillCards queue", () => {
 });
 
 describe("skillCards attach", () => {
+  it("rejects generated Skill Cards over the public reader size limit", async () => {
+    const previousToken = process.env.SECURITY_SCAN_WORKER_TOKEN;
+    process.env.SECURITY_SCAN_WORKER_TOKEN = "test-worker-token";
+    const markdown = `${"x".repeat(200 * 1024)}x`;
+    const store = vi.fn(async () => "_storage:card");
+    const runMutation = vi.fn(async () => ({ ok: true }));
+
+    await expect(
+      completeHandler(
+        {
+          storage: { store },
+          runMutation,
+        },
+        {
+          token: "test-worker-token",
+          jobId: "skillCardGenerationJobs:1",
+          leaseToken: "lease",
+          markdown,
+        },
+      ),
+    ).rejects.toThrow(/200KB/);
+
+    expect(store).not.toHaveBeenCalled();
+    expect(runMutation).not.toHaveBeenCalled();
+    process.env.SECURITY_SCAN_WORKER_TOKEN = previousToken;
+  });
+
   it("replaces skill-card.md, preserves source fingerprint, and inserts bundle fingerprint", async () => {
     const version = makeSettledVersion({
       files: [

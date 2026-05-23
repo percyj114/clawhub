@@ -1,6 +1,7 @@
 import { hashSkillFiles } from "./skills";
 
 export const SKILL_CARD_FILE_PATH = "skill-card.md";
+export const MAX_SKILL_CARD_FILE_BYTES = 200 * 1024;
 
 export type SkillCardFile = {
   path: string;

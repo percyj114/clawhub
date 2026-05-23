@@ -820,10 +820,6 @@ export const completeCodexScanJob = action({
         versionId: target.version._id,
         llmAnalysis: args.llmAnalysis,
       });
-      await runMutationRef(ctx, internalRefs.skillCards.enqueueForVersionInternal, {
-        versionId: target.version._id,
-        source: "scan",
-      });
     } else if (target.job.targetKind === "packageRelease" && target.release) {
       await runMutationRef(ctx, internalRefs.packages.updateReleaseLlmAnalysisInternal, {
         releaseId: target.release._id,
