@@ -208,12 +208,19 @@ const forkOfValidator = v.optional(
 );
 
 const badgeEntryValidator = v.optional(v.object({ byUserId: v.id("users"), at: v.number() }));
+const officialBadgeEntryValidator = v.optional(
+  v.object({
+    byUserId: v.id("users"),
+    at: v.number(),
+    sourcePublisherId: v.optional(v.id("publishers")),
+  }),
+);
 
 const badgesValidator = v.optional(
   v.object({
     redactionApproved: badgeEntryValidator,
     highlighted: badgeEntryValidator,
-    official: badgeEntryValidator,
+    official: officialBadgeEntryValidator,
     deprecated: badgeEntryValidator,
   }),
 );
@@ -734,6 +741,7 @@ const skillBadges = defineTable({
   ),
   byUserId: v.id("users"),
   at: v.number(),
+  sourcePublisherId: v.optional(v.id("publishers")),
 })
   .index("by_skill", ["skillId"])
   .index("by_skill_kind", ["skillId", "kind"])

@@ -162,7 +162,7 @@ const syncPublisherSkillOfficialStateBatchInternalHandler = (
     {
       publisherId: string;
       official: boolean;
-      officialBadge?: { byUserId: string; at: number };
+      officialBadge?: { byUserId: string; at: number; sourcePublisherId?: string };
       now: number;
       phase: "scoped" | "legacy";
       cursor?: string | null;
@@ -1324,22 +1324,53 @@ describe("publishers membership controls", () => {
       kind: "official",
       byUserId: "users:admin",
       at: 123,
+      sourcePublisherId: "publishers:steipete",
     });
     expect(patch).toHaveBeenCalledWith("skills:helper", {
-      badges: { official: { byUserId: "users:admin", at: 123 } },
+      badges: {
+        official: {
+          byUserId: "users:admin",
+          at: 123,
+          sourcePublisherId: "publishers:steipete",
+        },
+      },
     });
     expect(patch).toHaveBeenCalledWith("skills:legacy-helper", {
-      badges: { official: { byUserId: "users:admin", at: 123 } },
+      badges: {
+        official: {
+          byUserId: "users:admin",
+          at: 123,
+          sourcePublisherId: "publishers:steipete",
+        },
+      },
     });
     expect(patch).toHaveBeenCalledWith("skills:paged-helper-98", {
-      badges: { official: { byUserId: "users:admin", at: 123 } },
+      badges: {
+        official: {
+          byUserId: "users:admin",
+          at: 123,
+          sourcePublisherId: "publishers:steipete",
+        },
+      },
     });
     expect(patch).not.toHaveBeenCalledWith("skills:paged-helper-99", expect.anything());
     expect(patch).toHaveBeenCalledWith("skillSearchDigest:helper", {
-      badges: { official: { byUserId: "users:admin", at: 123 } },
+      badges: {
+        official: {
+          byUserId: "users:admin",
+          at: 123,
+          sourcePublisherId: "publishers:steipete",
+        },
+      },
     });
     expect(patch).toHaveBeenCalledWith("skillSearchDigest:legacy-helper", {
-      badges: { official: { byUserId: "users:admin", at: 123 } },
+      badges: {
+        official: {
+          byUserId: "users:admin",
+          at: 123,
+          sourcePublisherId: "publishers:steipete",
+        },
+      },
     });
     expect(patch).toHaveBeenCalledWith(
       "packageSearchDigest:plugin",
@@ -1574,6 +1605,92 @@ describe("publishers membership controls", () => {
     );
     expect(skills.get("skills:manual")?.badges).toEqual({ official: manualBadge });
     now.mockRestore();
+  });
+
+  it("updates stale publisher-derived skill badges when official is re-enabled", async () => {
+    const oldBadge = {
+      byUserId: "users:admin",
+      at: 123,
+      sourcePublisherId: "publishers:steipete",
+    };
+    const nextBadge = {
+      byUserId: "users:admin",
+      at: 456,
+      sourcePublisherId: "publishers:steipete",
+    };
+    const skill = {
+      _id: "skills:helper",
+      ownerUserId: "users:steipete",
+      ownerPublisherId: "publishers:steipete",
+      badges: { official: oldBadge },
+    };
+    const skillBadge = {
+      _id: "skillBadges:official",
+      skillId: "skills:helper",
+      kind: "official",
+      ...oldBadge,
+    };
+    const digest = {
+      _id: "skillSearchDigest:helper",
+      skillId: "skills:helper",
+      badges: { official: oldBadge },
+    };
+    const patch = vi.fn();
+
+    const ctx = {
+      scheduler: { runAfter: vi.fn() },
+      db: {
+        get: vi.fn(async (id: string) =>
+          id === "publishers:steipete"
+            ? {
+                _id: "publishers:steipete",
+                kind: "user",
+                handle: "steipete",
+                linkedUserId: "users:steipete",
+                official: { byUserId: "users:admin", at: 456 },
+              }
+            : null,
+        ),
+        query: vi.fn((table: string) => {
+          if (table === "skills") {
+            return { withIndex: vi.fn(() => indexedRows([skill])) };
+          }
+          if (table === "skillBadges") {
+            return {
+              withIndex: vi.fn(() => ({ unique: vi.fn(async () => skillBadge) })),
+            };
+          }
+          if (table === "skillSearchDigest") {
+            return {
+              withIndex: vi.fn(() => ({ unique: vi.fn(async () => digest) })),
+            };
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
+        patch,
+        insert: vi.fn(),
+        delete: vi.fn(),
+        replace: vi.fn(),
+        normalizeId: vi.fn(),
+      },
+    };
+
+    await expect(
+      syncPublisherSkillOfficialStateBatchInternalHandler(ctx as never, {
+        publisherId: "publishers:steipete",
+        official: true,
+        officialBadge: nextBadge,
+        now: 456,
+        phase: "scoped",
+        cursor: null,
+      }),
+    ).resolves.toEqual({ updatedSkills: 1, skillSyncTruncated: false });
+
+    expect(patch).toHaveBeenCalledWith("skillBadges:official", nextBadge);
+    expect(patch).toHaveBeenCalledWith("skills:helper", { badges: { official: nextBadge } });
+    expect(patch).toHaveBeenCalledWith("skillSearchDigest:helper", {
+      badges: { official: nextBadge },
+    });
   });
 
   it("ignores stale scheduled official sync batches", async () => {

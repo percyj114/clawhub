@@ -2054,19 +2054,20 @@ async function upsertSkillBadge(
   kind: BadgeKind,
   userId: Id<"users">,
   at: number,
+  sourcePublisherId?: Id<"publishers">,
 ) {
+  const badgeEntry = { byUserId: userId, at, ...(sourcePublisherId ? { sourcePublisherId } : {}) };
   const existing = await ctx.db
     .query("skillBadges")
     .withIndex("by_skill_kind", (q) => q.eq("skillId", skillId).eq("kind", kind))
     .unique();
   if (existing) {
-    await ctx.db.patch(existing._id, { byUserId: userId, at });
+    await ctx.db.patch(existing._id, badgeEntry);
   } else {
     await ctx.db.insert("skillBadges", {
       skillId,
       kind,
-      byUserId: userId,
-      at,
+      ...badgeEntry,
     });
   }
   // Keep denormalized badges field on skill doc in sync
@@ -2075,7 +2076,7 @@ async function upsertSkillBadge(
     await ctx.db.patch(skillId, {
       badges: {
         ...(skill.badges as Record<string, unknown> | undefined),
-        [kind]: { byUserId: userId, at },
+        [kind]: badgeEntry,
       },
     });
   }
@@ -2097,17 +2098,23 @@ async function removeSkillBadge(ctx: MutationCtx, skillId: Id<"skills">, kind: B
   }
 }
 
-type SkillBadgeEntry = { byUserId: Id<"users">; at: number };
+type SkillBadgeEntry = {
+  byUserId: Id<"users">;
+  at: number;
+  sourcePublisherId?: Id<"publishers">;
+};
 
 function skillBadgeEntryMatches(
   badge:
-    | Pick<Doc<"skillBadges">, "byUserId" | "at">
+    | Pick<Doc<"skillBadges">, "byUserId" | "at" | "sourcePublisherId">
     | NonNullable<Doc<"skills">["badges"]>["official"]
     | undefined
     | null,
   expected: SkillBadgeEntry | null,
 ) {
-  return Boolean(expected && badge?.byUserId === expected.byUserId && badge.at === expected.at);
+  if (!expected || badge?.byUserId !== expected.byUserId || badge.at !== expected.at) return false;
+  if (expected.sourcePublisherId) return badge.sourcePublisherId === expected.sourcePublisherId;
+  return true;
 }
 
 function removeOfficialBadgeFromSkillMap(badges: Doc<"skills">["badges"]) {
@@ -2133,10 +2140,14 @@ async function getPublisherDerivedOfficialBadgeRemoval(
 }
 
 function officialPublisherBadgeEntry(
-  publisher: Pick<Doc<"publishers">, "official"> | null | undefined,
+  publisher: Pick<Doc<"publishers">, "_id" | "official"> | null | undefined,
 ): SkillBadgeEntry | null {
   return publisher?.official
-    ? { byUserId: publisher.official.byUserId, at: publisher.official.at }
+    ? {
+        byUserId: publisher.official.byUserId,
+        at: publisher.official.at,
+        sourcePublisherId: publisher._id,
+      }
     : null;
 }
 
@@ -2264,6 +2275,7 @@ export const getBySlug = query({
       displayName: skill.displayName,
       summary: skill.summary,
       ownerUserId: skill.ownerUserId,
+      ownerPublisherId: skill.ownerPublisherId,
       canonicalSkillId: skill.canonicalSkillId,
       forkOf: skill.forkOf,
       latestVersionId: skill.latestVersionId,
@@ -9620,7 +9632,11 @@ export const insertVersion = internalMutation({
 
     const now = Date.now();
     const ownerOfficialBadge = ownerPublisher.official
-      ? { byUserId: ownerPublisher.official.byUserId, at: ownerPublisher.official.at }
+      ? {
+          byUserId: ownerPublisher.official.byUserId,
+          at: ownerPublisher.official.at,
+          sourcePublisherId: ownerPublisher._id,
+        }
       : null;
 
     let skill = await ctx.db
@@ -9708,7 +9724,11 @@ export const insertVersion = internalMutation({
       const callerRequestedMigration = args.migrateOwner === true;
       const sourcePublisher = await ctx.db.get(skill.ownerPublisherId);
       const sourceOfficialBadge = sourcePublisher?.official
-        ? { byUserId: sourcePublisher.official.byUserId, at: sourcePublisher.official.at }
+        ? {
+            byUserId: sourcePublisher.official.byUserId,
+            at: sourcePublisher.official.at,
+            sourcePublisherId: sourcePublisher._id,
+          }
         : null;
       const callerOwnsSourceViaPersonalLink =
         sourcePublisher?.kind === "user" &&
@@ -10059,6 +10079,7 @@ export const insertVersion = internalMutation({
             "official",
             ownerOfficialBadge.byUserId,
             ownerOfficialBadge.at,
+            ownerOfficialBadge.sourcePublisherId,
           );
           skill = {
             ...skill,
@@ -10083,6 +10104,7 @@ export const insertVersion = internalMutation({
         "official",
         ownerOfficialBadge.byUserId,
         ownerOfficialBadge.at,
+        ownerOfficialBadge.sourcePublisherId,
       );
       skill = {
         ...skill,

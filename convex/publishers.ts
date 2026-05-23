@@ -35,7 +35,11 @@ type OfficialPublisherSyncTarget = Pick<
   Doc<"publishers">,
   "_id" | "kind" | "handle" | "linkedUserId" | "official"
 >;
-type OfficialSkillBadge = { byUserId: Id<"users">; at: number };
+type OfficialSkillBadge = {
+  byUserId: Id<"users">;
+  at: number;
+  sourcePublisherId?: Id<"publishers">;
+};
 
 type PublisherListStats = {
   skills: number;
@@ -381,18 +385,33 @@ async function syncPublisherSkillOfficialStatePage(
       const previousBadge = skill.badges?.official;
 
       if (official) {
-        if (previousBadge || !officialBadge) continue;
+        if (!officialBadge) continue;
+        const hasCurrentOfficialBadge = officialBadgeMatches(previousBadge, officialBadge);
+        const shouldUpdateStalePublisherBadge =
+          previousBadge &&
+          !hasCurrentOfficialBadge &&
+          isPublisherDerivedOfficialBadge(existingBadge, previousBadge, publisher._id);
+        if (previousBadge && !shouldUpdateStalePublisherBadge) continue;
 
         const nextBadges = {
           ...skill.badges,
           official: officialBadge,
         };
-        await ctx.db.insert("skillBadges", {
-          skillId: skill._id,
-          kind: "official",
-          byUserId: officialBadge.byUserId,
-          at: officialBadge.at,
-        });
+        if (existingBadge) {
+          await ctx.db.patch(existingBadge._id, {
+            byUserId: officialBadge.byUserId,
+            at: officialBadge.at,
+            sourcePublisherId: officialBadge.sourcePublisherId,
+          });
+        } else {
+          await ctx.db.insert("skillBadges", {
+            skillId: skill._id,
+            kind: "official",
+            byUserId: officialBadge.byUserId,
+            at: officialBadge.at,
+            sourcePublisherId: officialBadge.sourcePublisherId,
+          });
+        }
         await ctx.db.patch(skill._id, { badges: nextBadges });
         const digest = await ctx.db
           .query("skillSearchDigest")
@@ -490,7 +509,13 @@ export const syncPublisherSkillOfficialStateBatchInternal = internalMutation({
   args: {
     publisherId: v.id("publishers"),
     official: v.boolean(),
-    officialBadge: v.optional(v.object({ byUserId: v.id("users"), at: v.number() })),
+    officialBadge: v.optional(
+      v.object({
+        byUserId: v.id("users"),
+        at: v.number(),
+        sourcePublisherId: v.optional(v.id("publishers")),
+      }),
+    ),
     now: v.number(),
     phase: v.union(v.literal("scoped"), v.literal("legacy")),
     cursor: v.optional(v.union(v.string(), v.null())),
@@ -523,13 +548,26 @@ function removeOfficialSkillBadge(badges: NonNullable<Doc<"skills">["badges"]>) 
 
 function officialBadgeMatches(
   badge:
-    | Pick<Doc<"skillBadges">, "byUserId" | "at">
+    | Pick<Doc<"skillBadges">, "byUserId" | "at" | "sourcePublisherId">
     | NonNullable<Doc<"skills">["badges"]>["official"]
     | undefined
     | null,
   expected: OfficialSkillBadge | null,
 ) {
-  return Boolean(expected && badge?.byUserId === expected.byUserId && badge.at === expected.at);
+  if (!expected || badge?.byUserId !== expected.byUserId || badge.at !== expected.at) return false;
+  if (expected.sourcePublisherId) return badge.sourcePublisherId === expected.sourcePublisherId;
+  return true;
+}
+
+function isPublisherDerivedOfficialBadge(
+  existingBadge: Pick<Doc<"skillBadges">, "sourcePublisherId"> | null | undefined,
+  previousBadge: NonNullable<Doc<"skills">["badges"]>["official"] | undefined,
+  publisherId: Id<"publishers">,
+) {
+  return (
+    existingBadge?.sourcePublisherId === publisherId ||
+    previousBadge?.sourcePublisherId === publisherId
+  );
 }
 
 function isPublisherOfficialSyncCurrent(
@@ -1750,7 +1788,11 @@ export const setOfficialPublisher = mutation({
     const nextOfficialBadge = args.official
       ? (publisher.official ?? { byUserId: userId, at: now })
       : undefined;
-    const syncOfficialBadge = nextOfficialBadge ?? publisher.official ?? null;
+    const syncOfficialBadge = nextOfficialBadge
+      ? { ...nextOfficialBadge, sourcePublisherId: publisher._id }
+      : publisher.official
+        ? { ...publisher.official, sourcePublisherId: publisher._id }
+        : null;
     await ctx.db.patch(publisher._id, {
       official: nextOfficialBadge,
       updatedAt: now,

@@ -161,7 +161,11 @@ describe("skills reclaim ownership transfer", () => {
 
   it("keeps official badges when in-place reclaim keeps the same official publisher", async () => {
     const now = Date.now();
-    const officialBadge = { byUserId: "users:admin", at: 111 };
+    const officialBadge = {
+      byUserId: "users:admin",
+      at: 111,
+      sourcePublisherId: "publishers:openclaw",
+    };
     const patch = vi.fn(async () => {});
     const insert = vi.fn(async () => {});
     const deleteRow = vi.fn(async () => {});

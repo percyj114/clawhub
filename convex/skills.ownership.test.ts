@@ -416,7 +416,13 @@ describe("skills ownership", () => {
       displayName: "Portable",
       ownerUserId: "users:actor",
       ownerPublisherId: "publishers:personal",
-      badges: { official: { byUserId: "users:admin", at: 111 } },
+      badges: {
+        official: {
+          byUserId: "users:admin",
+          at: 111,
+          sourcePublisherId: "publishers:personal",
+        },
+      },
       softDeletedAt: undefined,
     };
     const officialBadge = {
@@ -425,6 +431,7 @@ describe("skills ownership", () => {
       kind: "official",
       byUserId: "users:admin",
       at: 111,
+      sourcePublisherId: "publishers:personal",
     };
     const aliases = [
       {
@@ -595,7 +602,13 @@ describe("skills ownership", () => {
       displayName: "Legacy Portable",
       ownerUserId: "users:actor",
       ownerPublisherId: undefined,
-      badges: { official: { byUserId: "users:admin", at: 111 } },
+      badges: {
+        official: {
+          byUserId: "users:admin",
+          at: 111,
+          sourcePublisherId: "publishers:personal",
+        },
+      },
       softDeletedAt: undefined,
     };
     const officialBadge = {
@@ -604,6 +617,7 @@ describe("skills ownership", () => {
       kind: "official",
       byUserId: "users:admin",
       at: 111,
+      sourcePublisherId: "publishers:personal",
     };
 
     await expect(

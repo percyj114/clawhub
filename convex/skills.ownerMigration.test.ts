@@ -93,6 +93,14 @@ function createMigrationFixture(params: {
   const patchCalls: Array<{ id: string; value: Record<string, unknown> }> = [];
   const insertCalls: Array<{ table: string; value: Record<string, unknown> }> = [];
   const deleteCalls: string[] = [];
+  const sourceOfficialPublisherId = (() => {
+    const mode = params.skillSource ?? "other-personal";
+    if (mode === "caller-personal" || mode === "legacy-caller") {
+      return "publishers:personalCaller";
+    }
+    if (mode === "source-org") return "publishers:sourceOrg";
+    return "publishers:personalSource";
+  })();
 
   const db = {
     get: vi.fn(async (id: string) => {
@@ -288,7 +296,12 @@ function createMigrationFixture(params: {
                     versions: 1,
                   },
                   badges: params.sourceOfficialBadge
-                    ? { official: params.sourceOfficialBadge }
+                    ? {
+                        official: {
+                          ...params.sourceOfficialBadge,
+                          sourcePublisherId: sourceOfficialPublisherId,
+                        },
+                      }
                     : undefined,
                 }),
               };
@@ -355,6 +368,7 @@ function createMigrationFixture(params: {
                       skillId: "skills:1",
                       kind: "official",
                       ...params.sourceOfficialBadge,
+                      sourcePublisherId: sourceOfficialPublisherId,
                     }
                   : null,
             };
@@ -559,13 +573,23 @@ describe("skills.insertVersion owner migration", () => {
     ).rejects.toThrow(SENTINEL_BAIL_MESSAGE);
 
     const skillBadgePatch = fixture.patchCalls.find((p) => p.id === "skillBadges:official");
-    expect(skillBadgePatch?.value).toEqual({ byUserId: "users:destAdmin", at: 222 });
+    expect(skillBadgePatch?.value).toEqual({
+      byUserId: "users:destAdmin",
+      at: 222,
+      sourcePublisherId: "publishers:org",
+    });
 
     const skillPatch = fixture.patchCalls.find((p) => p.id === "skills:1");
     expect(skillPatch?.value).toMatchObject({
       ownerPublisherId: "publishers:org",
       ownerUserId: "users:caller",
-      badges: { official: { byUserId: "users:destAdmin", at: 222 } },
+      badges: {
+        official: {
+          byUserId: "users:destAdmin",
+          at: 222,
+          sourcePublisherId: "publishers:org",
+        },
+      },
     });
   });
 
