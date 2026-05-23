@@ -302,6 +302,51 @@ describe("skillCards queue", () => {
     );
   });
 
+  it("queues a follow-up job when evidence changes during a running generation", async () => {
+    const version = makeSettledVersion();
+    const insert = vi.fn(async () => "skillCardGenerationJobs:2");
+    const patch = vi.fn();
+    const ctx = {
+      db: completeDb({
+        get: vi.fn(async () => version),
+        query: vi.fn(() =>
+          makeQueryWithCollect([
+            {
+              _id: "skillCardGenerationJobs:1",
+              skillVersionId: "skillVersions:1",
+              status: "running",
+              source: "scan",
+              priority: 0,
+              nextRunAt: 1,
+            },
+          ]),
+        ),
+        insert,
+        patch,
+      }),
+    };
+
+    const result = await enqueueHandler(ctx, {
+      versionId: "skillVersions:1",
+      source: "scan",
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      jobId: "skillCardGenerationJobs:2",
+      alreadyQueued: false,
+    });
+    expect(patch).not.toHaveBeenCalled();
+    expect(insert).toHaveBeenCalledWith(
+      "skillCardGenerationJobs",
+      expect.objectContaining({
+        skillVersionId: "skillVersions:1",
+        status: "queued",
+        source: "scan",
+      }),
+    );
+  });
+
   it("enqueues when ClawScan stores a final verdict with a generic completed status", async () => {
     const version = makeSettledVersion({
       llmAnalysis: {

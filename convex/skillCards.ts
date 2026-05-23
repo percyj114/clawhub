@@ -113,15 +113,15 @@ async function enqueueSkillCardJob(
     .query("skillCardGenerationJobs")
     .withIndex("by_skill_version", (q) => q.eq("skillVersionId", args.versionId))
     .collect();
-  const active = existing.find((job) => job.status === "queued" || job.status === "running");
-  if (active) {
-    await ctx.db.patch(active._id, {
+  const queued = existing.find((job) => job.status === "queued");
+  if (queued) {
+    await ctx.db.patch(queued._id, {
       source: args.source,
-      priority: Math.max(active.priority, args.priority ?? 0),
-      nextRunAt: Math.min(active.nextRunAt, now),
+      priority: Math.max(queued.priority, args.priority ?? 0),
+      nextRunAt: Math.min(queued.nextRunAt, now),
       updatedAt: now,
     });
-    return { ok: true as const, jobId: active._id, alreadyQueued: true as const };
+    return { ok: true as const, jobId: queued._id, alreadyQueued: true as const };
   }
 
   const jobId = await ctx.db.insert("skillCardGenerationJobs", {

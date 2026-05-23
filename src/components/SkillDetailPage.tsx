@@ -11,7 +11,7 @@ import { getUserFacingAuthError } from "../lib/authErrorMessage";
 import { getSkillCategoryForSkill } from "../lib/categories";
 import { getUserFacingConvexError } from "../lib/convexError";
 import { canManageSkill, isModerator } from "../lib/roles";
-import { selectSkillCardFile } from "../lib/skillCards";
+import { selectSkillCardFile, skillCardLoadKey } from "../lib/skillCards";
 import type { SkillBySlugResult, SkillPageInitialData } from "../lib/skillPage";
 import { clearAuthError, setAuthError } from "../lib/useAuthError";
 import { useAuthStatus } from "../lib/useAuthStatus";
@@ -197,8 +197,7 @@ export function SkillDetailPage({
   );
   const [skillCard, setSkillCard] = useState<string | null>(null);
   const [skillCardError, setSkillCardError] = useState<string | null>(null);
-  const [loadedSkillCardVersionId, setLoadedSkillCardVersionId] =
-    useState<Id<"skillVersions"> | null>(null);
+  const [loadedSkillCardKey, setLoadedSkillCardKey] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<DetailTab>("readme");
   const [shouldPrefetchCompare, setShouldPrefetchCompare] = useState(false);
   const [isReportDialogOpen, setIsReportDialogOpen] = useState(false);
@@ -389,6 +388,10 @@ export function SkillDetailPage({
   const latestFiles: SkillFile[] = latestVersion?.files ?? [];
   const skillCardFile = useMemo(() => selectSkillCardFile(latestFiles), [latestFiles]);
   const hasSkillCard = Boolean(skillCardFile);
+  const currentSkillCardKey = useMemo(
+    () => skillCardLoadKey(latestVersionId, skillCardFile),
+    [latestVersionId, skillCardFile],
+  );
 
   useEffect(() => {
     if (!wantsCanonicalRedirect || !ownerParam || !redirectSlug) return;
@@ -466,16 +469,16 @@ export function SkillDetailPage({
 
   useEffect(() => {
     let cancelled = false;
-    if (!latestVersionId || !hasSkillCard) {
+    if (!latestVersionId || !hasSkillCard || !currentSkillCardKey) {
       setSkillCard(null);
       setSkillCardError(null);
-      setLoadedSkillCardVersionId(latestVersionId ?? null);
+      setLoadedSkillCardKey(currentSkillCardKey);
       return () => {
         cancelled = true;
       };
     }
     if (
-      loadedSkillCardVersionId === latestVersionId &&
+      loadedSkillCardKey === currentSkillCardKey &&
       (skillCard !== null || skillCardError !== null)
     ) {
       return () => {
@@ -485,18 +488,18 @@ export function SkillDetailPage({
 
     setSkillCard(null);
     setSkillCardError(null);
-    setLoadedSkillCardVersionId(latestVersionId);
+    setLoadedSkillCardKey(currentSkillCardKey);
     void getSkillCard({ versionId: latestVersionId })
       .then((data) => {
         if (cancelled) return;
         setSkillCard(data.text);
-        setLoadedSkillCardVersionId(latestVersionId);
+        setLoadedSkillCardKey(currentSkillCardKey);
       })
       .catch((error) => {
         if (cancelled) return;
         setSkillCardError(error instanceof Error ? error.message : "Failed to load Skill Card");
         setSkillCard(null);
-        setLoadedSkillCardVersionId(latestVersionId);
+        setLoadedSkillCardKey(currentSkillCardKey);
       });
 
     return () => {
@@ -504,9 +507,10 @@ export function SkillDetailPage({
     };
   }, [
     getSkillCard,
+    currentSkillCardKey,
     hasSkillCard,
     latestVersionId,
-    loadedSkillCardVersionId,
+    loadedSkillCardKey,
     skillCard,
     skillCardError,
   ]);
