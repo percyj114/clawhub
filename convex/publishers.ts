@@ -422,20 +422,26 @@ async function syncPublisherSkillOfficialStatePage(
         continue;
       }
 
-      if (
-        existingBadge &&
-        previousBadge &&
-        officialBadgeMatches(existingBadge, officialBadge) &&
-        officialBadgeMatches(previousBadge, officialBadge)
-      ) {
+      const existingBadgeOwnedByPublisher = officialBadge
+        ? officialBadgeMatches(existingBadge, officialBadge)
+        : existingBadge?.sourcePublisherId === publisher._id;
+      const previousBadgeOwnedByPublisher = officialBadge
+        ? officialBadgeMatches(previousBadge, officialBadge)
+        : previousBadge?.sourcePublisherId === publisher._id;
+
+      if (existingBadgeOwnedByPublisher || previousBadgeOwnedByPublisher) {
         const nextBadges = removeOfficialSkillBadge(skill.badges ?? {});
-        await ctx.db.delete(existingBadge._id);
-        await ctx.db.patch(skill._id, { badges: nextBadges });
-        const digest = await ctx.db
-          .query("skillSearchDigest")
-          .withIndex("by_skill", (q) => q.eq("skillId", skill._id))
-          .unique();
-        if (digest) await ctx.db.patch(digest._id, { badges: nextBadges });
+        if (existingBadge && existingBadgeOwnedByPublisher) {
+          await ctx.db.delete(existingBadge._id);
+        }
+        if (previousBadgeOwnedByPublisher) {
+          await ctx.db.patch(skill._id, { badges: nextBadges });
+          const digest = await ctx.db
+            .query("skillSearchDigest")
+            .withIndex("by_skill", (q) => q.eq("skillId", skill._id))
+            .unique();
+          if (digest) await ctx.db.patch(digest._id, { badges: nextBadges });
+        }
         updatedSkills += 1;
       }
     }

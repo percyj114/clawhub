@@ -1607,6 +1607,176 @@ describe("publishers membership controls", () => {
     now.mockRestore();
   });
 
+  it("removes publisher-derived skill badges when an official unset is retried", async () => {
+    const publisherBadge = {
+      byUserId: "users:admin",
+      at: 123,
+      sourcePublisherId: "publishers:steipete",
+    };
+    const manualBadge = { byUserId: "users:reviewer", at: 222 };
+    const skills = new Map<string, Record<string, unknown>>([
+      [
+        "skills:helper",
+        {
+          _id: "skills:helper",
+          ownerUserId: "users:steipete",
+          ownerPublisherId: "publishers:steipete",
+          badges: { official: publisherBadge },
+        },
+      ],
+      [
+        "skills:manual",
+        {
+          _id: "skills:manual",
+          ownerUserId: "users:steipete",
+          ownerPublisherId: "publishers:steipete",
+          badges: { official: manualBadge },
+        },
+      ],
+    ]);
+    const skillBadges = new Map<string, Record<string, unknown>>([
+      [
+        "skillBadges:helper",
+        {
+          _id: "skillBadges:helper",
+          skillId: "skills:helper",
+          kind: "official",
+          ...publisherBadge,
+        },
+      ],
+      [
+        "skillBadges:manual",
+        {
+          _id: "skillBadges:manual",
+          skillId: "skills:manual",
+          kind: "official",
+          ...manualBadge,
+        },
+      ],
+    ]);
+    const skillSearchDigests = new Map<string, Record<string, unknown>>([
+      [
+        "skillSearchDigest:helper",
+        {
+          _id: "skillSearchDigest:helper",
+          skillId: "skills:helper",
+          badges: { official: publisherBadge },
+        },
+      ],
+      [
+        "skillSearchDigest:manual",
+        {
+          _id: "skillSearchDigest:manual",
+          skillId: "skills:manual",
+          badges: { official: manualBadge },
+        },
+      ],
+    ]);
+    const patch = vi.fn(async (id: string, value: Record<string, unknown>) => {
+      if (skills.has(id)) skills.set(id, { ...skills.get(id), ...value });
+      if (skillSearchDigests.has(id)) {
+        skillSearchDigests.set(id, { ...skillSearchDigests.get(id), ...value });
+      }
+    });
+    const deleteRow = vi.fn(async (id: string) => {
+      skillBadges.delete(id);
+    });
+    const ctx = {
+      scheduler: { runAfter: vi.fn() },
+      db: {
+        get: vi.fn(async (id: string) =>
+          id === "publishers:steipete"
+            ? {
+                _id: "publishers:steipete",
+                kind: "user",
+                handle: "steipete",
+                linkedUserId: "users:steipete",
+                official: undefined,
+              }
+            : null,
+        ),
+        query: vi.fn((table: string) => {
+          if (table === "skills") {
+            return { withIndex: vi.fn(() => indexedRows([...skills.values()])) };
+          }
+          if (table === "skillBadges") {
+            return {
+              withIndex: vi.fn((indexName: string, buildQuery: (query: unknown) => unknown) => {
+                const fields: Record<string, unknown> = {};
+                const q = {
+                  eq(field: string, value: unknown) {
+                    fields[field] = value;
+                    return q;
+                  },
+                };
+                buildQuery(q);
+                if (indexName !== "by_skill_kind") {
+                  throw new Error(`unexpected index ${indexName}`);
+                }
+                return {
+                  unique: vi.fn(
+                    async () =>
+                      [...skillBadges.values()].find(
+                        (badge) => badge.skillId === fields.skillId && badge.kind === fields.kind,
+                      ) ?? null,
+                  ),
+                };
+              }),
+            };
+          }
+          if (table === "skillSearchDigest") {
+            return {
+              withIndex: vi.fn((indexName: string, buildQuery: (query: unknown) => unknown) => {
+                const fields: Record<string, unknown> = {};
+                const q = {
+                  eq(field: string, value: unknown) {
+                    fields[field] = value;
+                    return q;
+                  },
+                };
+                buildQuery(q);
+                if (indexName !== "by_skill") throw new Error(`unexpected index ${indexName}`);
+                return {
+                  unique: vi.fn(
+                    async () =>
+                      [...skillSearchDigests.values()].find(
+                        (digest) => digest.skillId === fields.skillId,
+                      ) ?? null,
+                  ),
+                };
+              }),
+            };
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
+        patch,
+        insert: vi.fn(),
+        delete: deleteRow,
+        replace: vi.fn(),
+        normalizeId: vi.fn(),
+      },
+    };
+
+    await expect(
+      syncPublisherSkillOfficialStateBatchInternalHandler(ctx as never, {
+        publisherId: "publishers:steipete",
+        official: false,
+        now: 456,
+        phase: "scoped",
+        cursor: null,
+      }),
+    ).resolves.toEqual({ updatedSkills: 1, skillSyncTruncated: false });
+
+    expect(deleteRow).toHaveBeenCalledWith("skillBadges:helper");
+    expect(deleteRow).not.toHaveBeenCalledWith("skillBadges:manual");
+    expect(patch).toHaveBeenCalledWith("skills:helper", { badges: {} });
+    expect(patch).toHaveBeenCalledWith("skillSearchDigest:helper", { badges: {} });
+    expect(skills.get("skills:manual")?.badges).toEqual({ official: manualBadge });
+    expect(skillSearchDigests.get("skillSearchDigest:manual")?.badges).toEqual({
+      official: manualBadge,
+    });
+  });
+
   it("updates stale publisher-derived skill badges when official is re-enabled", async () => {
     const oldBadge = {
       byUserId: "users:admin",
