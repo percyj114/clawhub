@@ -4,6 +4,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { ActionCtx } from "./_generated/server";
 import { action, internalAction, internalMutation, internalQuery } from "./functions";
 import { assertRole, requireUserFromAction } from "./lib/access";
+import { buildBadgeMap, type SkillBadgeMap } from "./lib/badges";
 import { extractPackageDigestFields, upsertPackageSearchDigest } from "./lib/packageSearchDigest";
 import { buildSkillSummaryBackfillPatch, type ParsedSkillData } from "./lib/skillBackfill";
 import { deriveSkillCapabilityTags } from "./lib/skillCapabilityTags";
@@ -1020,6 +1021,7 @@ export const applySkillBadgeBackfillPatchInternal = internalMutation({
           v.object({
             byUserId: v.id("users"),
             at: v.number(),
+            sourcePublisherId: v.optional(v.id("publishers")),
           }),
         ),
         deprecated: v.optional(
@@ -1048,15 +1050,26 @@ export const upsertSkillBadgeRecordInternal = internalMutation({
     ),
     byUserId: v.id("users"),
     at: v.number(),
+    sourcePublisherId: v.optional(v.id("publishers")),
   },
   handler: async (ctx, args) => {
-    const syncDenormalizedBadge = async () => {
+    const syncDenormalizedBadge = async (
+      existing?: Pick<Doc<"skillBadges">, "sourcePublisherId"> | null,
+    ) => {
       const skill = await ctx.db.get(args.skillId);
       if (!skill) return;
+      const sourcePublisherId =
+        args.kind === "official"
+          ? (args.sourcePublisherId ?? existing?.sourcePublisherId)
+          : undefined;
       await ctx.db.patch(args.skillId, {
         badges: {
           ...(skill.badges as Record<string, unknown> | undefined),
-          [args.kind]: { byUserId: args.byUserId, at: args.at },
+          [args.kind]: {
+            byUserId: args.byUserId,
+            at: args.at,
+            ...(sourcePublisherId ? { sourcePublisherId } : {}),
+          },
         },
       });
     };
@@ -1066,16 +1079,18 @@ export const upsertSkillBadgeRecordInternal = internalMutation({
       .withIndex("by_skill_kind", (q) => q.eq("skillId", args.skillId).eq("kind", args.kind))
       .unique();
     if (existing) {
-      await syncDenormalizedBadge();
+      await syncDenormalizedBadge(existing);
       return { inserted: false as const };
     }
+    const sourcePublisherId = args.kind === "official" ? args.sourcePublisherId : undefined;
     await ctx.db.insert("skillBadges", {
       skillId: args.skillId,
       kind: args.kind,
       byUserId: args.byUserId,
       at: args.at,
+      ...(sourcePublisherId ? { sourcePublisherId } : {}),
     });
-    await syncDenormalizedBadge();
+    await syncDenormalizedBadge({ sourcePublisherId });
     return { inserted: true as const };
   },
 });
@@ -1220,7 +1235,12 @@ export async function backfillSkillBadgeTableInternalHandler(
     for (const item of page.items) {
       totals.skillsScanned++;
       const badges = item.badges ?? {};
-      const entries: Array<{ kind: BadgeKind; byUserId: Id<"users">; at: number }> = [];
+      const entries: Array<{
+        kind: BadgeKind;
+        byUserId: Id<"users">;
+        at: number;
+        sourcePublisherId?: Id<"publishers">;
+      }> = [];
 
       if (badges.redactionApproved) {
         entries.push({
@@ -1235,6 +1255,7 @@ export async function backfillSkillBadgeTableInternalHandler(
           kind: "official",
           byUserId: badges.official.byUserId,
           at: badges.official.at,
+          sourcePublisherId: badges.official.sourcePublisherId,
         });
       }
 
@@ -1271,6 +1292,7 @@ export async function backfillSkillBadgeTableInternalHandler(
           kind: entry.kind,
           byUserId: entry.byUserId,
           at: entry.at,
+          sourcePublisherId: entry.sourcePublisherId,
         });
         if (result.inserted) {
           totals.recordsInserted++;
@@ -1895,25 +1917,26 @@ export const backfillDenormalizedBadgesInternal = internalMutation({
         .withIndex("by_skill", (q) => q.eq("skillId", skill._id))
         .take(10);
 
-      // Build canonical badge map from the table
-      const canonical: Record<string, { byUserId: Id<"users">; at: number }> = {};
-      for (const r of records) {
-        canonical[r.kind] = { byUserId: r.byUserId, at: r.at };
-      }
+      const canonical = buildBadgeMap(records);
 
       // Compare with existing denormalized badges (keys + values)
-      const existing = (skill.badges ?? {}) as Record<
-        string,
-        { byUserId?: Id<"users">; at?: number } | undefined
-      >;
-      const canonicalKeys = Object.keys(canonical);
-      const existingKeys = Object.keys(existing).filter((k) => existing[k] !== undefined);
+      const existing = (skill.badges ?? {}) as SkillBadgeMap;
+      const canonicalKeys = Object.keys(canonical) as BadgeKind[];
+      const existingKeys = (Object.keys(existing) as BadgeKind[]).filter(
+        (key) => existing[key] !== undefined,
+      );
       const needsPatch =
         canonicalKeys.length !== existingKeys.length ||
-        canonicalKeys.some((k) => {
-          const current = existing[k];
-          const next = canonical[k];
-          return !current || current.byUserId !== next.byUserId || current.at !== next.at;
+        canonicalKeys.some((key) => {
+          const current = existing[key];
+          const next = canonical[key];
+          return (
+            !current ||
+            !next ||
+            current.byUserId !== next.byUserId ||
+            current.at !== next.at ||
+            current.sourcePublisherId !== next.sourcePublisherId
+          );
         });
 
       if (needsPatch) {

@@ -3,7 +3,13 @@ import type { QueryCtx } from "../_generated/server";
 
 type BadgeKind = Doc<"skillBadges">["kind"];
 
-export type SkillBadgeMap = Partial<Record<BadgeKind, { byUserId: Id<"users">; at: number }>>;
+export type SkillBadgeEntry = {
+  byUserId: Id<"users">;
+  at: number;
+  sourcePublisherId?: Id<"publishers">;
+};
+
+export type SkillBadgeMap = Partial<Record<BadgeKind, SkillBadgeEntry>>;
 
 export type SkillBadgeSource = { badges?: SkillBadgeMap | null };
 
@@ -23,7 +29,13 @@ export function isSkillDeprecated(skill: SkillBadgeSource) {
 
 export function buildBadgeMap(records: Doc<"skillBadges">[]): SkillBadgeMap {
   return records.reduce<SkillBadgeMap>((acc, record) => {
-    acc[record.kind] = { byUserId: record.byUserId, at: record.at };
+    acc[record.kind] = {
+      byUserId: record.byUserId,
+      at: record.at,
+      ...(record.kind === "official" && record.sourcePublisherId
+        ? { sourcePublisherId: record.sourcePublisherId }
+        : {}),
+    };
     return acc;
   }, {});
 }

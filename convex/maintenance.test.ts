@@ -23,6 +23,7 @@ vi.mock("./_generated/api", () => ({
       nominateUserForEmptySkillSpamInternal: Symbol("nominateUserForEmptySkillSpamInternal"),
       cleanupEmptySkillsInternal: Symbol("cleanupEmptySkillsInternal"),
       nominateEmptySkillSpammersInternal: Symbol("nominateEmptySkillSpammersInternal"),
+      backfillDenormalizedBadgesInternal: Symbol("backfillDenormalizedBadgesInternal"),
     },
     skills: {
       backfillLatestSkillModerationInternal: Symbol("skills.backfillLatestSkillModerationInternal"),
@@ -44,6 +45,7 @@ const {
   backfillLatestVersionSummaryInternal,
   backfillSkillFingerprintsInternalHandler,
   backfillSkillSummariesInternalHandler,
+  backfillDenormalizedBadgesInternal,
   backfillUserStatsInternalHandler,
   cleanupEmptySkillsInternalHandler,
   nominateEmptySkillSpammersInternalHandler,
@@ -375,8 +377,11 @@ describe("maintenance badge denormalization", () => {
     });
   });
 
-  it("resyncs denormalized badge even when table record already exists", async () => {
-    const unique = vi.fn().mockResolvedValue({ _id: "skillBadges:existing" });
+  it("resyncs denormalized badge with source when table record already exists", async () => {
+    const unique = vi.fn().mockResolvedValue({
+      _id: "skillBadges:existing",
+      sourcePublisherId: "publishers:openclaw",
+    });
     const query = vi.fn().mockReturnValue({
       withIndex: () => ({ unique }),
     });
@@ -407,7 +412,80 @@ describe("maintenance badge denormalization", () => {
     expect(insert).not.toHaveBeenCalled();
     expect(patch).toHaveBeenCalledWith("skills:1", {
       badges: {
-        official: { byUserId: "users:2", at: 456 },
+        official: {
+          byUserId: "users:2",
+          at: 456,
+          sourcePublisherId: "publishers:openclaw",
+        },
+      },
+    });
+  });
+
+  it("backfills denormalized badges without dropping official source", async () => {
+    const patch = vi.fn().mockResolvedValue(undefined);
+    const query = vi.fn((table: string) => {
+      if (table === "skills") {
+        return {
+          paginate: vi.fn().mockResolvedValue({
+            page: [
+              {
+                _id: "skills:1",
+                badges: {
+                  official: { byUserId: "users:2", at: 456 },
+                },
+              },
+            ],
+            continueCursor: "",
+            isDone: true,
+          }),
+        };
+      }
+      if (table === "skillBadges") {
+        return {
+          withIndex: vi.fn(() => ({
+            take: vi.fn().mockResolvedValue([
+              {
+                _id: "skillBadges:existing",
+                _creationTime: 1,
+                skillId: "skills:1",
+                kind: "official",
+                byUserId: "users:2",
+                at: 456,
+                sourcePublisherId: "publishers:openclaw",
+              },
+            ]),
+          })),
+        };
+      }
+      throw new Error(`unexpected table ${table}`);
+    });
+
+    const result = await (
+      backfillDenormalizedBadgesInternal as unknown as { _handler: Function }
+    )._handler(
+      {
+        db: {
+          get: vi.fn(),
+          query,
+          patch,
+          insert: vi.fn(),
+          delete: vi.fn(),
+          replace: vi.fn(),
+          normalizeId: vi.fn(),
+        },
+        scheduler: { runAfter: vi.fn() },
+      } as never,
+      { batchSize: 10 },
+    );
+
+    expect(result).toEqual({ patched: 1, isDone: true, scanned: 1 });
+    expect(patch).toHaveBeenCalledWith("skills:1", {
+      badges: {
+        official: {
+          byUserId: "users:2",
+          at: 456,
+          sourcePublisherId: "publishers:openclaw",
+        },
       },
     });
   });
