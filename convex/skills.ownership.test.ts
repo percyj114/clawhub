@@ -754,6 +754,165 @@ describe("skills ownership", () => {
     );
   });
 
+  it("removes stale official badges when an unset race transfers to a community org", async () => {
+    const patch = vi.fn(async () => {});
+    const insert = vi.fn(async () => "auditLogs:1");
+    const deleteRow = vi.fn(async () => {});
+    const staleBadge = { byUserId: "users:admin", at: 111 };
+    const skill = {
+      _id: "skills:source",
+      slug: "queued-unset",
+      displayName: "Queued Unset",
+      ownerUserId: "users:actor",
+      ownerPublisherId: "publishers:personal",
+      badges: { official: staleBadge },
+      softDeletedAt: undefined,
+    };
+    const officialBadge = {
+      _id: "skillBadges:official",
+      skillId: "skills:source",
+      kind: "official",
+      ...staleBadge,
+    };
+
+    await expect(
+      transferSkillOwnerForUserInternalHandler(
+        {
+          db: {
+            normalizeId: vi.fn(() => null),
+            get: vi.fn(async (id: string) => {
+              if (id === "users:actor") return { _id: "users:actor", role: "user" };
+              if (id === "publishers:personal") {
+                return {
+                  _id: "publishers:personal",
+                  kind: "user",
+                  handle: "actor",
+                  linkedUserId: "users:actor",
+                };
+              }
+              if (id === "publishers:org") {
+                return {
+                  _id: "publishers:org",
+                  kind: "org",
+                  handle: "team",
+                  displayName: "Team",
+                };
+              }
+              return null;
+            }),
+            query: vi.fn((table: string) => {
+              if (table === "skills") {
+                return {
+                  withIndex: (name: string, build: (q: ReturnType<typeof chainEq>) => unknown) => {
+                    const constraints: Record<string, unknown> = {};
+                    build(chainEq(constraints));
+                    if (name !== "by_slug") throw new Error(`unexpected skills index ${name}`);
+                    return {
+                      unique: async () => (constraints.slug === "queued-unset" ? skill : null),
+                    };
+                  },
+                };
+              }
+              if (table === "publishers") {
+                return {
+                  withIndex: (name: string) => {
+                    if (name !== "by_handle")
+                      throw new Error(`unexpected publishers index ${name}`);
+                    return {
+                      unique: async () => ({
+                        _id: "publishers:org",
+                        kind: "org",
+                        handle: "team",
+                        deletedAt: undefined,
+                        deactivatedAt: undefined,
+                      }),
+                    };
+                  },
+                };
+              }
+              if (table === "publisherMembers") {
+                return {
+                  withIndex: (name: string) => {
+                    if (name !== "by_publisher_user") {
+                      throw new Error(`unexpected publisherMembers index ${name}`);
+                    }
+                    return {
+                      unique: async () => ({
+                        _id: "publisherMembers:1",
+                        publisherId: "publishers:org",
+                        userId: "users:actor",
+                        role: "admin",
+                      }),
+                    };
+                  },
+                };
+              }
+              if (table === "skillSlugAliases") {
+                return {
+                  withIndex: (name: string) => {
+                    if (name !== "by_skill") {
+                      throw new Error(`unexpected skillSlugAliases index ${name}`);
+                    }
+                    return { collect: async () => [] };
+                  },
+                };
+              }
+              if (table === "skillBadges") {
+                return {
+                  withIndex: (name: string) => {
+                    if (name !== "by_skill_kind") {
+                      throw new Error(`unexpected skillBadges index ${name}`);
+                    }
+                    return { unique: async () => officialBadge };
+                  },
+                };
+              }
+              if (table === "skillSearchDigest") {
+                return {
+                  withIndex: (name: string) => {
+                    if (name !== "by_skill") {
+                      throw new Error(`unexpected skillSearchDigest index ${name}`);
+                    }
+                    return { unique: async () => ({ _id: "skillSearchDigest:source" }) };
+                  },
+                };
+              }
+              throw new Error(`unexpected table ${table}`);
+            }),
+            patch,
+            insert,
+            delete: deleteRow,
+          },
+        } as never,
+        {
+          actorUserId: "users:actor",
+          slug: "queued-unset",
+          toOwner: "team",
+        },
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      transferred: true,
+      skillSlug: "queued-unset",
+    });
+
+    expect(deleteRow).toHaveBeenCalledWith("skillBadges:official");
+    expect(patch).toHaveBeenCalledWith(
+      "skills:source",
+      expect.objectContaining({
+        ownerPublisherId: "publishers:org",
+        badges: {},
+      }),
+    );
+    expect(patch).toHaveBeenCalledWith(
+      "skillSearchDigest:source",
+      expect.objectContaining({
+        ownerPublisherId: "publishers:org",
+        badges: {},
+      }),
+    );
+  });
+
   it("rejects merges that would reserve too many historical slugs for one skill", async () => {
     const patch = vi.fn(async () => {});
     const insert = vi.fn(async () => "auditLogs:1");
