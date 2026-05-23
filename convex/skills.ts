@@ -2160,7 +2160,7 @@ async function getOfficialBadgePatchForSkillOwnerTransfer(
   skill: Doc<"skills">,
   sourceOfficialBadge: SkillBadgeEntry | null,
   destinationOfficialBadge: SkillBadgeEntry | null,
-  options: { clearUnownedOfficialBadge?: boolean } = {},
+  options: { clearUnownedOfficialBadge?: boolean; sourcePublisherId?: Id<"publishers"> } = {},
 ) {
   const currentOfficialBadge = skill.badges?.official;
   const currentBadgeIsSourceDerived = skillBadgeEntryMatches(
@@ -2206,11 +2206,16 @@ async function getOfficialBadgePatchForSkillOwnerTransfer(
     return officialBadgeRemoval.badges;
   }
 
-  if (!sourceOfficialBadge && options.clearUnownedOfficialBadge && currentOfficialBadge) {
+  if (
+    !sourceOfficialBadge &&
+    options.clearUnownedOfficialBadge &&
+    currentOfficialBadge?.sourcePublisherId === options.sourcePublisherId
+  ) {
     const existing = await ctx.db
       .query("skillBadges")
       .withIndex("by_skill_kind", (q) => q.eq("skillId", skill._id).eq("kind", "official"))
       .unique();
+    if (existing && existing.sourcePublisherId !== options.sourcePublisherId) return undefined;
     if (existing) {
       await ctx.db.delete(existing._id);
     }
@@ -8865,7 +8870,10 @@ async function transferSkillOwnershipAndEmbeddings(
     params.skill,
     officialPublisherBadgeEntry(sourcePublisher),
     officialPublisherBadgeEntry(destinationPublisher),
-    { clearUnownedOfficialBadge: !destinationPublisher?.official },
+    {
+      clearUnownedOfficialBadge: !destinationPublisher?.official,
+      sourcePublisherId: sourcePublisher?._id,
+    },
   );
   if (nextBadges) {
     patch.badges = nextBadges;
@@ -9776,7 +9784,10 @@ export const insertVersion = internalMutation({
         skill,
         sourceOfficialBadge,
         ownerOfficialBadge,
-        { clearUnownedOfficialBadge: !ownerOfficialBadge },
+        {
+          clearUnownedOfficialBadge: !ownerOfficialBadge,
+          sourcePublisherId: sourcePublisher?._id,
+        },
       );
 
       const nextSkill: Doc<"skills"> = {
@@ -9880,7 +9891,7 @@ export const insertVersion = internalMutation({
           skill,
           sourceOfficialBadge,
           ownerOfficialBadge,
-          { clearUnownedOfficialBadge: !ownerOfficialBadge },
+          { clearUnownedOfficialBadge: !ownerOfficialBadge, sourcePublisherId: owner?._id },
         );
         const legacyOwnershipPatch: Partial<Doc<"skills">> = {
           ownerUserId: userId,
@@ -9903,7 +9914,7 @@ export const insertVersion = internalMutation({
         skill,
         officialPublisherBadgeEntry(sourceOwner),
         ownerOfficialBadge,
-        { clearUnownedOfficialBadge: !ownerOfficialBadge },
+        { clearUnownedOfficialBadge: !ownerOfficialBadge, sourcePublisherId: sourceOwner?._id },
       );
       const legacyPublisherPatch: Partial<Doc<"skills">> = {
         ownerPublisherId,
