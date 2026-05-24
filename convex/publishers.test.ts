@@ -1494,6 +1494,81 @@ describe("publishers membership controls", () => {
     now.mockRestore();
   });
 
+  it("repairs missing official skill badge rows when the skill badge is already denormalized", async () => {
+    const officialBadge = {
+      byUserId: "users:admin",
+      at: 123,
+      sourcePublisherId: "publishers:steipete",
+    };
+    const insert = vi.fn(async () => "skillBadges:official");
+    const patch = vi.fn();
+    const ctx = {
+      scheduler: { runAfter: vi.fn() },
+      db: {
+        get: vi.fn(async (id: string) =>
+          id === "publishers:steipete"
+            ? {
+                _id: "publishers:steipete",
+                kind: "user",
+                handle: "steipete",
+                linkedUserId: "users:steipete",
+                official: { byUserId: "users:admin", at: 123 },
+              }
+            : null,
+        ),
+        query: vi.fn((table: string) => {
+          if (table === "skills") {
+            return {
+              withIndex: vi.fn(() =>
+                indexedRows([
+                  {
+                    _id: "skills:helper",
+                    ownerUserId: "users:steipete",
+                    ownerPublisherId: "publishers:steipete",
+                    badges: { official: officialBadge },
+                  },
+                ]),
+              ),
+            };
+          }
+          if (table === "skillBadges") {
+            return {
+              withIndex: vi.fn(() => ({
+                unique: vi.fn(async () => null),
+              })),
+            };
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
+        patch,
+        insert,
+        delete: vi.fn(),
+        replace: vi.fn(),
+        normalizeId: vi.fn(),
+      },
+    };
+
+    await expect(
+      syncPublisherSkillOfficialStateBatchInternalHandler(ctx as never, {
+        publisherId: "publishers:steipete",
+        official: true,
+        officialBadge,
+        now: 456,
+        phase: "scoped",
+        cursor: null,
+      }),
+    ).resolves.toEqual({ updatedSkills: 1, skillSyncTruncated: false });
+
+    expect(insert).toHaveBeenCalledWith("skillBadges", {
+      skillId: "skills:helper",
+      kind: "official",
+      byUserId: "users:admin",
+      at: 123,
+      sourcePublisherId: "publishers:steipete",
+    });
+    expect(patch).not.toHaveBeenCalledWith("skills:helper", expect.anything());
+  });
+
   it("does not remove manual skill official badges when publisher official is unset", async () => {
     vi.mocked(getAuthUserId).mockResolvedValue("users:admin" as never);
     const now = vi.spyOn(Date, "now").mockReturnValue(456);

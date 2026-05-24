@@ -391,7 +391,27 @@ async function syncPublisherSkillOfficialStatePage(
           previousBadge &&
           !hasCurrentOfficialBadge &&
           isPublisherDerivedOfficialBadge(existingBadge, previousBadge, publisher._id);
-        if (previousBadge && !shouldUpdateStalePublisherBadge) continue;
+        if (previousBadge && !shouldUpdateStalePublisherBadge) {
+          if (hasCurrentOfficialBadge && !officialBadgeMatches(existingBadge, officialBadge)) {
+            if (existingBadge) {
+              await ctx.db.patch(existingBadge._id, {
+                byUserId: officialBadge.byUserId,
+                at: officialBadge.at,
+                sourcePublisherId: officialBadge.sourcePublisherId,
+              });
+            } else {
+              await ctx.db.insert("skillBadges", {
+                skillId: skill._id,
+                kind: "official",
+                byUserId: officialBadge.byUserId,
+                at: officialBadge.at,
+                sourcePublisherId: officialBadge.sourcePublisherId,
+              });
+            }
+            updatedSkills += 1;
+          }
+          continue;
+        }
 
         const nextBadges = {
           ...skill.badges,
