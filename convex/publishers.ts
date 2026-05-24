@@ -422,12 +422,16 @@ async function syncPublisherSkillOfficialStatePage(
         continue;
       }
 
-      const existingBadgeOwnedByPublisher = officialBadge
-        ? officialBadgeMatches(existingBadge, officialBadge)
-        : existingBadge?.sourcePublisherId === publisher._id;
-      const previousBadgeOwnedByPublisher = officialBadge
-        ? officialBadgeMatches(previousBadge, officialBadge)
-        : previousBadge?.sourcePublisherId === publisher._id;
+      const existingBadgeOwnedByPublisher = officialBadgeOwnedByPublisher(
+        existingBadge,
+        officialBadge,
+        publisher._id,
+      );
+      const previousBadgeOwnedByPublisher = officialBadgeOwnedByPublisher(
+        previousBadge,
+        officialBadge,
+        publisher._id,
+      );
 
       if (existingBadgeOwnedByPublisher || previousBadgeOwnedByPublisher) {
         const nextBadges = removeOfficialSkillBadge(skill.badges ?? {});
@@ -574,6 +578,18 @@ function isPublisherDerivedOfficialBadge(
     existingBadge?.sourcePublisherId === publisherId ||
     previousBadge?.sourcePublisherId === publisherId
   );
+}
+
+function officialBadgeOwnedByPublisher(
+  badge:
+    | Pick<Doc<"skillBadges">, "byUserId" | "at" | "sourcePublisherId">
+    | NonNullable<Doc<"skills">["badges"]>["official"]
+    | undefined
+    | null,
+  expected: OfficialSkillBadge | null,
+  publisherId: Id<"publishers">,
+) {
+  return officialBadgeMatches(badge, expected) || badge?.sourcePublisherId === publisherId;
 }
 
 function isPublisherOfficialSyncCurrent(

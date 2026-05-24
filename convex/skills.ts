@@ -2121,6 +2121,21 @@ function skillBadgeEntryMatches(
   return true;
 }
 
+function skillBadgeEntryOwnedBySource(
+  badge:
+    | Pick<Doc<"skillBadges">, "byUserId" | "at" | "sourcePublisherId">
+    | NonNullable<Doc<"skills">["badges"]>["official"]
+    | undefined
+    | null,
+  expected: SkillBadgeEntry | null,
+  sourcePublisherId?: Id<"publishers">,
+) {
+  return (
+    skillBadgeEntryMatches(badge, expected) ||
+    (sourcePublisherId !== undefined && badge?.sourcePublisherId === sourcePublisherId)
+  );
+}
+
 function removeOfficialBadgeFromSkillMap(badges: Doc<"skills">["badges"]) {
   const { official: _official, ...remainingBadges } = badges ?? {};
   return remainingBadges;
@@ -2131,12 +2146,18 @@ async function getPublisherDerivedOfficialBadgeRemoval(
   skill: Doc<"skills">,
   expected: SkillBadgeEntry | null,
 ) {
-  if (!skillBadgeEntryMatches(skill.badges?.official, expected)) return null;
+  if (
+    !skillBadgeEntryOwnedBySource(skill.badges?.official, expected, expected?.sourcePublisherId)
+  ) {
+    return null;
+  }
   const existing = await ctx.db
     .query("skillBadges")
     .withIndex("by_skill_kind", (q) => q.eq("skillId", skill._id).eq("kind", "official"))
     .unique();
-  if (existing && !skillBadgeEntryMatches(existing, expected)) return null;
+  if (existing && !skillBadgeEntryOwnedBySource(existing, expected, expected?.sourcePublisherId)) {
+    return null;
+  }
   return {
     badgeId: existing?._id,
     badges: removeOfficialBadgeFromSkillMap(skill.badges),
@@ -2163,15 +2184,14 @@ async function getOfficialBadgePatchForSkillOwnerTransfer(
   options: { clearUnownedOfficialBadge?: boolean; sourcePublisherId?: Id<"publishers"> } = {},
 ) {
   const currentOfficialBadge = skill.badges?.official;
-  const currentBadgeIsSourceDerived = skillBadgeEntryMatches(
+  const currentBadgeIsSourceDerived = skillBadgeEntryOwnedBySource(
     currentOfficialBadge,
     sourceOfficialBadge,
+    options.sourcePublisherId,
   );
-  const currentBadgeIsStaleSourceDerived =
-    !sourceOfficialBadge && currentOfficialBadge?.sourcePublisherId === options.sourcePublisherId;
 
   if (destinationOfficialBadge) {
-    if (currentOfficialBadge && !currentBadgeIsSourceDerived && !currentBadgeIsStaleSourceDerived) {
+    if (currentOfficialBadge && !currentBadgeIsSourceDerived) {
       return undefined;
     }
 
@@ -2182,8 +2202,7 @@ async function getOfficialBadgePatchForSkillOwnerTransfer(
     if (existing && !currentOfficialBadge) return undefined;
     if (
       existing &&
-      !skillBadgeEntryMatches(existing, sourceOfficialBadge) &&
-      !(!sourceOfficialBadge && existing.sourcePublisherId === options.sourcePublisherId)
+      !skillBadgeEntryOwnedBySource(existing, sourceOfficialBadge, options.sourcePublisherId)
     ) {
       return undefined;
     }
