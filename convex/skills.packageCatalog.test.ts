@@ -285,6 +285,41 @@ describe("skills package catalog queries", () => {
     expect(secondCtx.indexNames).toEqual(["by_active_updated"]);
   });
 
+  it("keeps legacy official skill catalog cursors on the pre-marker index", async () => {
+    const ctx = makeCtx(
+      [
+        {
+          page: [
+            makeDigest("legacy-official-skill", {
+              badges: { official: { byUserId: "users:admin", at: 1 } },
+            }),
+            makeDigest("official-skill", {
+              badges: { official: { byUserId: "users:admin", at: 1 } },
+              isOfficial: true,
+            }),
+          ],
+          isDone: true,
+          continueCursor: "",
+        },
+      ],
+      { hasUnbackfilledOfficialDigests: false },
+    );
+    const legacyCursor = `skillcat:${JSON.stringify({
+      cursor: null,
+      offset: 1,
+      pageSize: 3,
+      done: false,
+    })}`;
+
+    const result = await listPackageCatalogPageHandler(ctx, {
+      isOfficial: true,
+      paginationOpts: { cursor: legacyCursor, numItems: 1 },
+    });
+
+    expect(result.page.map((entry) => entry.name)).toEqual(["official-skill"]);
+    expect(ctx.indexNames).toEqual(["by_active_updated"]);
+  });
+
   it("searches skills with package-style lexical scoring", async () => {
     const result = await searchPackageCatalogPublicHandler(
       makeCtx([

@@ -5324,11 +5324,13 @@ export const listPackageCatalogPage = query({
     const targetCount = args.paginationOpts.numItems;
     const collected: PublicSkillCatalogItem[] = [];
     const decodedCursor = decodeSkillCatalogCursor(args.paginationOpts.cursor);
+    const decodedCursorIndex =
+      decodedCursor.index ?? (args.paginationOpts.cursor ? "active" : null);
     const indexedOfficialFilter = getSkillCatalogIndexedOfficialFilter(args);
     const useIndexedOfficialFilter = await shouldUseIndexedOfficialSkillCatalogFilter(
       ctx,
       indexedOfficialFilter,
-      decodedCursor.index,
+      decodedCursorIndex,
     );
     const cursorIndex: SkillCatalogCursorIndex = useIndexedOfficialFilter
       ? "activeOfficial"
