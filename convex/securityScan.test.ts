@@ -193,24 +193,31 @@ describe("securityScan", () => {
       if ("limit" in args) return [claimedJob];
       return { ok: true };
     });
-    const runQuery = vi.fn(async () => ({
-      version: {
-        files: [
-          {
-            path: "SKILL.md",
-            size: 12,
-            sha256: "a".repeat(64),
-            storageId: "storage:skill",
+    const runQuery = vi.fn(async (_ref: unknown, args: Record<string, unknown>) => {
+      if ("jobId" in args) {
+        return {
+          version: {
+            _id: "skillVersions:1",
+            files: [
+              {
+                path: "SKILL.md",
+                size: 12,
+                sha256: "a".repeat(64),
+                storageId: "storage:skill",
+              },
+              {
+                path: "payload.js",
+                size: 24,
+                sha256: "b".repeat(64),
+                storageId: "storage:missing",
+              },
+            ],
           },
-          {
-            path: "payload.js",
-            size: 24,
-            sha256: "b".repeat(64),
-            storageId: "storage:missing",
-          },
-        ],
-      },
-    }));
+        };
+      }
+      if ("skillVersionId" in args) return [];
+      throw new Error(`Unexpected query args: ${JSON.stringify(args)}`);
+    });
     const getUrl = vi.fn(async (storageId: string) =>
       storageId === "storage:skill" ? "https://storage.example/SKILL.md" : null,
     );
@@ -229,6 +236,110 @@ describe("securityScan", () => {
         error: "Artifact file unavailable: payload.js",
       }),
     );
+  });
+
+  it("omits generated Skill Card files from claimed skill scan files", async () => {
+    vi.stubEnv("SECURITY_SCAN_WORKER_TOKEN", "worker-secret");
+
+    const runMutation = vi.fn(async (_ref: unknown, args: Record<string, unknown>) => {
+      if ("limit" in args) return [claimedJob];
+      return { ok: true };
+    });
+    const runQuery = vi.fn(async (_ref: unknown, args: Record<string, unknown>) => {
+      if ("jobId" in args) {
+        return {
+          job: claimedJob,
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+          },
+          version: {
+            _id: "skillVersions:1",
+            files: [
+              {
+                path: "SKILL.md",
+                size: 12,
+                sha256: "a".repeat(64),
+                storageId: "storage:skill",
+                contentType: "text/markdown",
+              },
+              {
+                path: "skill-card.md",
+                size: 24,
+                sha256: "b".repeat(64),
+                storageId: "storage:card",
+                contentType: "text/markdown",
+              },
+            ],
+          },
+        };
+      }
+      if ("skillVersionId" in args) {
+        return [{ fingerprint: "bundle-fingerprint", kind: "generated-bundle" }];
+      }
+      throw new Error(`Unexpected query args: ${JSON.stringify(args)}`);
+    });
+    const getUrl = vi.fn(async (storageId: string) => `https://storage.example/${storageId}`);
+
+    const result = (await claimCodexScanJobsHandler(
+      { runMutation, runQuery, storage: { getUrl } },
+      { token: "worker-secret", workerId: "worker-1", limit: 10 },
+    )) as Array<{ target: { files: Array<{ path: string }> } }>;
+
+    expect(result[0]?.target.files.map((file) => file.path)).toEqual(["SKILL.md"]);
+    expect(getUrl).toHaveBeenCalledWith("storage:skill");
+    expect(getUrl).not.toHaveBeenCalledWith("storage:card");
+  });
+
+  it("keeps publisher-authored Skill Card files in claimed skill scans", async () => {
+    vi.stubEnv("SECURITY_SCAN_WORKER_TOKEN", "worker-secret");
+
+    const runMutation = vi.fn(async (_ref: unknown, args: Record<string, unknown>) => {
+      if ("limit" in args) return [claimedJob];
+      return { ok: true };
+    });
+    const runQuery = vi.fn(async (_ref: unknown, args: Record<string, unknown>) => {
+      if ("jobId" in args) {
+        return {
+          job: claimedJob,
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+          },
+          version: {
+            _id: "skillVersions:1",
+            files: [
+              {
+                path: "SKILL.md",
+                size: 12,
+                sha256: "a".repeat(64),
+                storageId: "storage:skill",
+                contentType: "text/markdown",
+              },
+              {
+                path: "skill-card.md",
+                size: 24,
+                sha256: "b".repeat(64),
+                storageId: "storage:card",
+                contentType: "text/markdown",
+              },
+            ],
+          },
+        };
+      }
+      if ("skillVersionId" in args) return [];
+      throw new Error(`Unexpected query args: ${JSON.stringify(args)}`);
+    });
+    const getUrl = vi.fn(async (storageId: string) => `https://storage.example/${storageId}`);
+
+    const result = (await claimCodexScanJobsHandler(
+      { runMutation, runQuery, storage: { getUrl } },
+      { token: "worker-secret", workerId: "worker-1", limit: 10 },
+    )) as Array<{ target: { files: Array<{ path: string }> } }>;
+
+    expect(result[0]?.target.files.map((file) => file.path)).toEqual(["SKILL.md", "skill-card.md"]);
+    expect(getUrl).toHaveBeenCalledWith("storage:skill");
+    expect(getUrl).toHaveBeenCalledWith("storage:card");
   });
 
   it("clears only queued backfill jobs in local dev", async () => {

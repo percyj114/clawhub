@@ -2446,6 +2446,8 @@ describe("httpApiV1 handlers", () => {
 
   it("returns stored Skill Card markdown", async () => {
     const internalVersion = {
+      _id: "skillVersions:1",
+      skillId: "skills:1",
       version: "1.0.0",
       createdAt: 1,
       changelog: "c",
@@ -2460,6 +2462,7 @@ describe("httpApiV1 handlers", () => {
       ],
       softDeletedAt: undefined,
     };
+    const generatedBundleFingerprint = await buildBundleFingerprint(internalVersion.files);
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
       if ("slug" in args) {
         return {
@@ -2477,6 +2480,11 @@ describe("httpApiV1 handlers", () => {
           latestVersion: { _id: "skillVersions:1", version: "1.0.0" },
           owner: null,
         };
+      }
+      if ("skillVersionId" in args) {
+        return [
+          { fingerprint: generatedBundleFingerprint, kind: "generated-bundle", createdAt: 2 },
+        ];
       }
       if ("versionId" in args) return internalVersion;
       return null;
@@ -2521,6 +2529,55 @@ describe("httpApiV1 handlers", () => {
           latestVersion: { _id: "skillVersions:1", version: "1.0.0" },
           owner: null,
         };
+      }
+      if ("skillVersionId" in args) return [];
+      if ("versionId" in args) return internalVersion;
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation, storage: { get: vi.fn() } }),
+      new Request("https://example.com/api/v1/skills/demo/card"),
+    );
+
+    expect(response.status).toBe(404);
+    expect(await response.text()).toBe("Skill Card not found");
+  });
+
+  it("does not return publisher-supplied skill-card.md from the Skill Card endpoint", async () => {
+    const internalVersion = {
+      _id: "skillVersions:1",
+      skillId: "skills:1",
+      version: "1.0.0",
+      createdAt: 1,
+      changelog: "c",
+      files: [
+        { path: "SKILL.md", size: 5, storageId: "storage:1", sha256: "source-sha" },
+        { path: "skill-card.md", size: 12, storageId: "storage:card", sha256: "card-sha" },
+      ],
+      softDeletedAt: undefined,
+    };
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+            displayName: "Demo",
+            summary: "s",
+            tags: {},
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+            latestVersionId: "skillVersions:1",
+          },
+          latestVersion: { _id: "skillVersions:1", version: "1.0.0" },
+          owner: null,
+        };
+      }
+      if ("skillVersionId" in args) {
+        return [{ fingerprint: "source-fingerprint", kind: "source", createdAt: 4 }];
       }
       if ("versionId" in args) return internalVersion;
       return null;

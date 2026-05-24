@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { hashSkillFiles } from "./lib/skills";
 import {
   attachCardAndSucceedJobInternal,
+  claimQueuedJobsInternal,
   claimSkillCardJobs,
   completeSkillCardJob,
   enqueueForVersionInternal,
@@ -64,6 +65,13 @@ const claimHandler = (
   >
 )._handler;
 
+const claimQueuedHandler = (
+  claimQueuedJobsInternal as unknown as WrappedHandler<
+    { workerId: string; limit: number; leaseMs?: number },
+    Array<{ _id: string; skillVersionId: string; status: "running"; leaseToken: string }>
+  >
+)._handler;
+
 function makeSettledVersion(overrides: Record<string, unknown> = {}) {
   return {
     _id: "skillVersions:1",
@@ -121,6 +129,7 @@ function makeQueryWithCollect(items: unknown[]) {
 function completeDb<T extends Record<string, unknown>>(db: T) {
   return {
     delete: vi.fn(),
+    get: vi.fn(),
     insert: vi.fn(),
     normalizeId: vi.fn(() => null),
     patch: vi.fn(),
@@ -206,28 +215,34 @@ describe("skillCards queue", () => {
     });
     const ctx = {
       runMutation: vi.fn(async () => [job]),
-      runQuery: vi.fn(async () => ({
-        job,
-        skill: {
-          _id: "skills:1",
-          slug: "demo",
-          displayName: "Demo",
-          summary: "Demo skill",
-          capabilityTags: [],
-          badges: null,
-          ownerUserId: "users:1",
-          ownerPublisherId: null,
-          moderationVerdict: "malicious",
-          moderationSummary: "Latest version should not leak into this card.",
-          moderationReasonCodes: ["clean.llm_clean"],
-          moderationEvidence: [],
-          moderationEngineVersion: "test-engine",
-          moderationEvaluatedAt: 5,
-        },
-        version,
-        owner: { _id: "users:1", handle: "alice", displayName: "Alice" },
-        publisher: null,
-      })),
+      runQuery: vi.fn(async (_ref: unknown, args: Record<string, unknown>) => {
+        if ("jobId" in args) {
+          return {
+            job,
+            skill: {
+              _id: "skills:1",
+              slug: "demo",
+              displayName: "Demo",
+              summary: "Demo skill",
+              capabilityTags: [],
+              badges: null,
+              ownerUserId: "users:1",
+              ownerPublisherId: null,
+              moderationVerdict: "malicious",
+              moderationSummary: "Latest version should not leak into this card.",
+              moderationReasonCodes: ["clean.llm_clean"],
+              moderationEvidence: [],
+              moderationEngineVersion: "test-engine",
+              moderationEvaluatedAt: 5,
+            },
+            version,
+            owner: { _id: "users:1", handle: "alice", displayName: "Alice" },
+            publisher: null,
+          };
+        }
+        if ("skillVersionId" in args) return [];
+        throw new Error(`Unexpected query args: ${JSON.stringify(args)}`);
+      }),
       storage: {
         getUrl: vi.fn(async () => "https://storage.example/SKILL.md"),
       },
@@ -316,6 +331,36 @@ describe("skillCards queue", () => {
     );
   });
 
+  it("bounds queued job lookup by version and status", async () => {
+    const version = makeSettledVersion();
+    const eq = vi.fn(function (this: unknown) {
+      return this;
+    });
+    const collect = vi.fn(async () => []);
+    const take = vi.fn(async () => []);
+    const withIndex = vi.fn((_name: string, build: (q: { eq: typeof eq }) => unknown) => {
+      build({ eq });
+      return { collect, take };
+    });
+    const ctx = {
+      db: completeDb({
+        get: vi.fn(async () => version),
+        query: vi.fn(() => ({ withIndex })),
+        insert: vi.fn(async () => "skillCardGenerationJobs:1"),
+      }),
+    };
+
+    await enqueueHandler(ctx, {
+      versionId: "skillVersions:1",
+      source: "scan",
+    });
+
+    expect(withIndex).toHaveBeenCalledWith("by_skill_version_status", expect.any(Function));
+    expect(eq).toHaveBeenCalledWith("skillVersionId", "skillVersions:1");
+    expect(eq).toHaveBeenCalledWith("status", "queued");
+    expect(take).toHaveBeenCalledWith(1);
+  });
+
   it("queues a follow-up job when evidence changes during a running generation", async () => {
     const version = makeSettledVersion();
     const insert = vi.fn(async () => "skillCardGenerationJobs:2");
@@ -323,18 +368,7 @@ describe("skillCards queue", () => {
     const ctx = {
       db: completeDb({
         get: vi.fn(async () => version),
-        query: vi.fn(() =>
-          makeQueryWithCollect([
-            {
-              _id: "skillCardGenerationJobs:1",
-              skillVersionId: "skillVersions:1",
-              status: "running",
-              source: "scan",
-              priority: 0,
-              nextRunAt: 1,
-            },
-          ]),
-        ),
+        query: vi.fn(() => makeQueryWithCollect([])),
         insert,
         patch,
       }),
@@ -390,6 +424,94 @@ describe("skillCards queue", () => {
       alreadyQueued: false,
     });
     expect(insert).toHaveBeenCalled();
+  });
+
+  it("does not claim a queued follow-up while the same version has an active job", async () => {
+    const now = Date.now();
+    const runningJob = {
+      _id: "skillCardGenerationJobs:running",
+      skillId: "skills:1",
+      skillVersionId: "skillVersions:1",
+      status: "running",
+      source: "scan",
+      priority: 0,
+      nextRunAt: now - 100,
+      attempts: 1,
+      leaseToken: "old-lease",
+      leaseExpiresAt: now + 60_000,
+      createdAt: now - 200,
+      updatedAt: now - 100,
+    };
+    const queuedSameVersion = {
+      _id: "skillCardGenerationJobs:queued-same",
+      skillId: "skills:1",
+      skillVersionId: "skillVersions:1",
+      status: "queued",
+      source: "scan",
+      priority: 10,
+      nextRunAt: now - 10,
+      attempts: 0,
+      createdAt: now - 10,
+      updatedAt: now - 10,
+    };
+    const queuedOtherVersion = {
+      ...queuedSameVersion,
+      _id: "skillCardGenerationJobs:queued-other",
+      skillVersionId: "skillVersions:2",
+      priority: 1,
+    };
+    const patch = vi.fn(async () => undefined);
+    const ctx = {
+      db: completeDb({
+        patch,
+        query: vi.fn(() => ({
+          withIndex: vi.fn(
+            (
+              name: string,
+              build: (q: {
+                eq: (...args: unknown[]) => unknown;
+                lte: (...args: unknown[]) => unknown;
+              }) => unknown,
+            ) => {
+              const q = {
+                eq: vi.fn(function (this: unknown) {
+                  return this;
+                }),
+                lte: vi.fn(function (this: unknown) {
+                  return this;
+                }),
+              };
+              build(q);
+              if (name === "by_status_and_lease_expires_at") {
+                return { take: vi.fn(async () => [runningJob]) };
+              }
+              return {
+                order: vi.fn(() => ({
+                  take: vi.fn(async () => [queuedSameVersion, queuedOtherVersion]),
+                })),
+              };
+            },
+          ),
+        })),
+      }),
+    };
+
+    const claimed = await claimQueuedHandler(ctx, {
+      workerId: "worker",
+      limit: 10,
+      leaseMs: 60_000,
+    });
+
+    expect(claimed.map((job) => job._id)).toEqual(["skillCardGenerationJobs:queued-other"]);
+    expect(patch).toHaveBeenCalledTimes(1);
+    expect(patch).toHaveBeenCalledWith(
+      "skillCardGenerationJobs:queued-other",
+      expect.objectContaining({ status: "running", workerId: "worker" }),
+    );
+    expect(patch).not.toHaveBeenCalledWith(
+      "skillCardGenerationJobs:queued-same",
+      expect.anything(),
+    );
   });
 
   it("generation failure is non-blocking and retryable", async () => {
@@ -451,7 +573,7 @@ describe("skillCards attach", () => {
     process.env.SECURITY_SCAN_WORKER_TOKEN = previousToken;
   });
 
-  it("replaces skill-card.md, preserves source fingerprint, and inserts bundle fingerprint", async () => {
+  it("replaces skill-card.md, preserves source and prior bundle fingerprints, and inserts current bundle fingerprint", async () => {
     const version = makeSettledVersion({
       files: [
         {
@@ -476,6 +598,7 @@ describe("skillCards attach", () => {
       leaseToken: "lease",
     };
     const patch = vi.fn(async () => undefined);
+    const delete_ = vi.fn(async () => undefined);
     const insert = vi.fn(async () => "skillVersionFingerprints:1");
     const get = vi.fn(async (id: string) => {
       if (id === "skillCardGenerationJobs:1") return job;
@@ -487,7 +610,17 @@ describe("skillCards attach", () => {
         get,
         patch,
         insert,
-        query: vi.fn(() => makeQueryWithCollect([])),
+        delete: delete_,
+        query: vi.fn(() =>
+          makeQueryWithCollect([
+            {
+              _id: "skillVersionFingerprints:old-bundle",
+              versionId: "skillVersions:1",
+              fingerprint: "d".repeat(64),
+              kind: "generated-bundle",
+            },
+          ]),
+        ),
       }),
     };
     const expectedBundleFingerprint = await hashSkillFiles([
@@ -521,6 +654,7 @@ describe("skillCards attach", () => {
       "skillVersions:1",
       expect.objectContaining({ fingerprint: expect.anything() }),
     );
+    expect(delete_).not.toHaveBeenCalled();
     expect(insert).toHaveBeenCalledWith(
       "skillVersionFingerprints",
       expect.objectContaining({

@@ -5,11 +5,11 @@ import type { ActionCtx, MutationCtx } from "./_generated/server";
 import { action, internalMutation, internalQuery } from "./functions";
 import {
   hasSettledSkillCardInputs,
-  isSkillCardPath,
   MAX_SKILL_CARD_FILE_BYTES,
   normalizeSkillCardSecurityStatus,
   replaceGeneratedSkillCardFile,
   SKILL_CARD_FILE_PATH,
+  sourceSkillVersionFiles,
 } from "./lib/skillCards";
 
 const DEFAULT_LEASE_MS = 30 * 60 * 1000;
@@ -66,8 +66,12 @@ function normalizeLimit(limit: number | undefined) {
   return Math.max(1, Math.min(Math.floor(limit ?? 5), 25));
 }
 
-function sourceFiles(files: SkillVersionFile[]) {
-  return files.filter((file) => !isSkillCardPath(file.path));
+function generatedBundleFingerprints(
+  entries: Array<{ fingerprint: string; kind?: "source" | "generated-bundle" }>,
+) {
+  return entries
+    .filter((entry) => entry.kind === "generated-bundle")
+    .map((entry) => entry.fingerprint);
 }
 
 function clawScanRiskFindings(version: Doc<"skillVersions">) {
@@ -110,11 +114,13 @@ async function enqueueSkillCardJob(
   }
 
   const now = Date.now();
-  const existing = await ctx.db
+  const queuedJobs = await ctx.db
     .query("skillCardGenerationJobs")
-    .withIndex("by_skill_version", (q) => q.eq("skillVersionId", args.versionId))
-    .collect();
-  const queued = existing.find((job) => job.status === "queued");
+    .withIndex("by_skill_version_status", (q) =>
+      q.eq("skillVersionId", args.versionId).eq("status", "queued"),
+    )
+    .take(1);
+  const queued = queuedJobs[0];
   if (queued) {
     await ctx.db.patch(queued._id, {
       source: args.source,
@@ -176,7 +182,9 @@ export const claimQueuedJobsInternal = internalMutation({
         });
       }
     }
-    const activeRunning = running.filter((job) => (job.leaseExpiresAt ?? 0) > now).length;
+    const activeRunningJobs = running.filter((job) => (job.leaseExpiresAt ?? 0) > now);
+    const activeRunning = activeRunningJobs.length;
+    const activeVersionIds = new Set(activeRunningJobs.map((job) => job.skillVersionId));
     const capacity = Math.max(0, Math.min(limit, MAX_PARALLEL_SKILL_CARD_JOBS - activeRunning));
     if (capacity === 0) return [];
 
@@ -186,12 +194,13 @@ export const claimQueuedJobsInternal = internalMutation({
       .order("asc")
       .take(capacity * 4);
     const ready = queued
-      .filter((job) => job.nextRunAt <= now)
+      .filter((job) => job.nextRunAt <= now && !activeVersionIds.has(job.skillVersionId))
       .sort((a, b) => b.priority - a.priority || a.createdAt - b.createdAt)
       .slice(0, capacity);
 
     const claimed = [];
     for (const job of ready) {
+      if (activeVersionIds.has(job.skillVersionId)) continue;
       const leaseToken = crypto.randomUUID();
       await ctx.db.patch(job._id, {
         status: "running",
@@ -210,6 +219,7 @@ export const claimQueuedJobsInternal = internalMutation({
         leaseExpiresAt: now + leaseMs,
         workerId: args.workerId,
       });
+      activeVersionIds.add(job.skillVersionId);
     }
     return claimed;
   },
@@ -234,7 +244,10 @@ export const getJobTargetInternal = internalQuery({
   },
 });
 
-function buildEvidencePacket(target: Required<Omit<SkillCardTarget, "missing">>) {
+function buildEvidencePacket(
+  target: Required<Omit<SkillCardTarget, "missing">>,
+  sourceFileInputs: SkillVersionFile[],
+) {
   const { skill, version, owner, publisher } = target;
   const publisherHandle = publisher?.handle ?? owner?.handle ?? null;
   const metadata =
@@ -289,7 +302,7 @@ function buildEvidencePacket(target: Required<Omit<SkillCardTarget, "missing">>)
       metadata,
     },
     capabilities: version.capabilityTags ?? skill.capabilityTags ?? [],
-    fileHashes: sourceFiles(version.files).map((file) => ({
+    fileHashes: sourceFileInputs.map((file) => ({
       path: file.path,
       size: file.size,
       sha256: file.sha256,
@@ -340,7 +353,14 @@ export const claimSkillCardJobs = action({
         continue;
       }
 
-      const files = sourceFiles(target.version.files);
+      const fingerprintEntries = (await runQueryRef<
+        Array<{ fingerprint: string; kind?: "source" | "generated-bundle" }>
+      >(ctx, internal.skills.listVersionFingerprintsInternal, {
+        skillVersionId: target.version._id,
+      })) as Array<{ fingerprint: string; kind?: "source" | "generated-bundle" }>;
+      const files = sourceSkillVersionFiles(target.version.files, {
+        generatedBundleFingerprints: generatedBundleFingerprints(fingerprintEntries),
+      });
       const fileUrls = [];
       let missingStoragePath: string | null = null;
       for (const file of files) {
@@ -371,13 +391,16 @@ export const claimSkillCardJobs = action({
         target: {
           skill: target.skill,
           version: target.version,
-          evidence: buildEvidencePacket({
-            job,
-            skill: target.skill,
-            version: target.version,
-            owner: target.owner ?? null,
-            publisher: target.publisher ?? null,
-          }),
+          evidence: buildEvidencePacket(
+            {
+              job,
+              skill: target.skill,
+              version: target.version,
+              owner: target.owner ?? null,
+              publisher: target.publisher ?? null,
+            },
+            files,
+          ),
           files: fileUrls,
         },
       });
@@ -437,11 +460,18 @@ export const attachCardAndSucceedJobInternal = internalMutation({
     });
     await ctx.db.patch(version._id, { files });
 
-    const existingBundleFingerprint = await ctx.db
+    const existingBundleFingerprints = await ctx.db
       .query("skillVersionFingerprints")
-      .withIndex("by_version", (q) => q.eq("versionId", version._id))
+      .withIndex("by_version_kind", (q) =>
+        q.eq("versionId", version._id).eq("kind", "generated-bundle"),
+      )
       .collect();
-    if (!existingBundleFingerprint.some((entry) => entry.fingerprint === bundleFingerprint)) {
+    const hasCurrentBundleFingerprint = existingBundleFingerprints.some(
+      (entry) => entry.fingerprint === bundleFingerprint,
+    );
+    // Preserve historical generated bundle fingerprints so installs that
+    // include an older generated skill-card.md still resolve as this version.
+    if (!hasCurrentBundleFingerprint) {
       await ctx.db.insert("skillVersionFingerprints", {
         skillId: version.skillId,
         versionId: version._id,

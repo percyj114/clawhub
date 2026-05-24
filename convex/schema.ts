@@ -1077,6 +1077,7 @@ const skillCardGenerationJobs = defineTable({
   .index("by_status_and_next_run_at", ["status", "nextRunAt"])
   .index("by_status_and_lease_expires_at", ["status", "leaseExpiresAt"])
   .index("by_skill", ["skillId"])
+  .index("by_skill_version_status", ["skillVersionId", "status"])
   .index("by_skill_version", ["skillVersionId"]);
 
 const packageStatEvents = defineTable({

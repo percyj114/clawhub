@@ -73,8 +73,11 @@ export function buildDevWorkersArgs(envFile: string) {
   return ["scripts/dev-workers.ts", "--env-file", envFile];
 }
 
-export function shouldStartDevWorkers(options: Pick<Options, "workers">) {
+export function shouldStartDevWorkers(options: Pick<Options, "workers">, convexUrl: string) {
   if (!options.workers) return { start: false, reason: "--no-workers was passed" };
+  if (!isLocalConvexUrl(convexUrl)) {
+    return { start: false, reason: "VITE_CONVEX_URL is not local" };
+  }
   return { start: true, reason: null };
 }
 
@@ -121,12 +124,21 @@ function applyLocalConvexEnvToProcess(env: NodeJS.ProcessEnv) {
   }
 }
 
+export function applyLocalConvexEnvForUrl(env: NodeJS.ProcessEnv, convexUrl: string) {
+  if (!isLocalConvexUrl(convexUrl)) return false;
+  applyLocalConvexEnvToProcess(env);
+  return true;
+}
+
 export function isLocalConvexUrl(value: string) {
   try {
     const url = new URL(value);
     return (
       (url.protocol === "http:" || url.protocol === "https:") &&
-      (url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "::1")
+      (url.hostname === "127.0.0.1" ||
+        url.hostname === "localhost" ||
+        url.hostname === "::1" ||
+        url.hostname === "[::1]")
     );
   } catch {
     return false;
@@ -321,19 +333,19 @@ function exitAfterStoppingManagedChildren(status: number): never {
 }
 
 function waitForExit(child: ChildProcess) {
-  return new Promise<number>((resolve) => {
+  return new Promise<number>((done) => {
     child.once("exit", (code, signal) => {
       if (typeof code === "number") {
-        resolve(code);
+        done(code);
       } else {
-        resolve(signal === "SIGINT" ? 130 : 1);
+        done(signal === "SIGINT" ? 130 : 1);
       }
     });
   });
 }
 
 function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((done) => setTimeout(done, ms));
 }
 
 function startDetached(argv: string[]) {
@@ -392,7 +404,9 @@ function readLocalDeploymentConfig() {
   try {
     const raw = readFileSync(".convex/local/default/config.json", "utf8");
     const parsed = JSON.parse(raw) as { adminKey?: unknown };
-    return typeof parsed.adminKey === "string" && parsed.adminKey ? parsed : null;
+    return typeof parsed.adminKey === "string" && parsed.adminKey
+      ? { adminKey: parsed.adminKey }
+      : null;
   } catch {
     return null;
   }
@@ -426,8 +440,7 @@ async function setLocalConvexEnv(
 }
 
 async function configureLocalConvexEnv(convexUrl: string) {
-  applyLocalConvexEnvToProcess(process.env);
-  if (!isLocalConvexUrl(convexUrl)) return;
+  if (!applyLocalConvexEnvForUrl(process.env, convexUrl)) return;
   await setLocalConvexEnv(convexUrl, buildLocalConvexEnvChanges(process.env));
 }
 
@@ -462,7 +475,7 @@ async function main() {
     process.exit(1);
   }
 
-  applyLocalConvexEnvToProcess(process.env);
+  applyLocalConvexEnvForUrl(process.env, convexUrl);
   await ensureConvex(convexUrl);
   await configureLocalConvexEnv(convexUrl);
 
@@ -493,7 +506,7 @@ async function main() {
     return;
   }
 
-  const workers = shouldStartDevWorkers(options);
+  const workers = shouldStartDevWorkers(options, convexUrl);
   if (workers.start) {
     console.log("Starting local background workers...");
     spawnManaged("bun", buildDevWorkersArgs(envFile));

@@ -99,7 +99,11 @@ import {
 } from "./lib/reservedSlugs";
 import { matchesAllTokens, matchesExploratoryTokenPrefixes, tokenize } from "./lib/searchText";
 import { SKILL_CAPABILITY_TAGS } from "./lib/skillCapabilityTags";
-import { selectSkillCardFile } from "./lib/skillCards";
+import {
+  selectGeneratedSkillCardFile,
+  selectSkillCardFile,
+  sourceSkillVersionFiles,
+} from "./lib/skillCards";
 import { normalizeSkillIconValue } from "./lib/skillIcon";
 import {
   fetchText,
@@ -1680,6 +1684,12 @@ type PublicSkillVersion = {
     checkedAt: NonNullable<Doc<"skillVersions">["staticScan"]>["checkedAt"];
   };
   clawScanNote?: string;
+  generatedSkillCard?: {
+    path: string;
+    size: number;
+    sha256: string;
+    contentType?: string;
+  } | null;
 };
 
 type ManagementSkillEntry = {
@@ -1901,6 +1911,35 @@ function toPublicSkillVersion(
   };
 }
 
+function toPublicSkillCardFile(file: Doc<"skillVersions">["files"][number]) {
+  return {
+    path: file.path,
+    size: file.size,
+    sha256: file.sha256,
+    contentType: normalizeTextContentType(file.path, file.contentType),
+  };
+}
+
+async function getGeneratedSkillCardPublicFile(
+  ctx: Pick<QueryCtx, "db">,
+  version: Doc<"skillVersions"> | null,
+) {
+  if (!version) return null;
+  const files = Array.isArray(version.files) ? version.files : [];
+  if (!selectSkillCardFile(files)) return null;
+  const entries = await ctx.db
+    .query("skillVersionFingerprints")
+    .withIndex("by_version_kind", (q) =>
+      q.eq("versionId", version._id).eq("kind", "generated-bundle"),
+    )
+    .collect();
+  const file = await selectGeneratedSkillCardFile(
+    files,
+    entries.map((entry) => entry.fingerprint),
+  );
+  return file ? toPublicSkillCardFile(file) : null;
+}
+
 function toPublicSkillListVersionFromSummary(
   summary: NonNullable<Doc<"skills">["latestVersionSummary"]>,
   latestVersionId: Id<"skillVersions"> | undefined,
@@ -2100,9 +2139,10 @@ export const getBySlug = query({
         : null;
     const isOwner = Boolean(userId && (userId === skill.ownerUserId || membership));
 
-    const latestVersion = toPublicSkillVersion(
-      skill.latestVersionId ? await ctx.db.get(skill.latestVersionId) : null,
-    );
+    const latestVersionDoc = skill.latestVersionId ? await ctx.db.get(skill.latestVersionId) : null;
+    const latestVersion = toPublicSkillVersion(latestVersionDoc);
+    const generatedSkillCard = await getGeneratedSkillCardPublicFile(ctx, latestVersionDoc);
+    if (latestVersion) latestVersion.generatedSkillCard = generatedSkillCard;
     const owner = toPublicPublisher(ownerPublisher);
     if (!owner) return null;
     const badges = await getSkillBadgeMap(ctx, skill._id);
@@ -2427,6 +2467,7 @@ export const getBySlugForStaff = query({
     if (!skill) return null;
 
     const latestVersion = skill.latestVersionId ? await ctx.db.get(skill.latestVersionId) : null;
+    const generatedSkillCard = await getGeneratedSkillCardPublicFile(ctx, latestVersion);
     const ownerPublisher = await getOwnerPublisher(ctx, {
       ownerPublisherId: skill.ownerPublisherId,
       ownerUserId: skill.ownerUserId,
@@ -2477,7 +2518,7 @@ export const getBySlugForStaff = query({
       requestedSlug: resolved.requestedSlug,
       resolvedSlug: resolved.resolvedSlug,
       skill: { ...skill, badges },
-      latestVersion,
+      latestVersion: latestVersion ? { ...latestVersion, generatedSkillCard } : null,
       owner,
       overrideReviewer,
       auditLogs,
@@ -6363,13 +6404,22 @@ export const scanSkillVersionStaticallyInternal: ReturnType<typeof internalActio
         return { ok: true as const, skipped: "missing" as const };
       }
 
+      const fingerprintEntries = await ctx.runQuery(
+        internal.skills.listVersionFingerprintsInternal,
+        {
+          skillVersionId: version._id,
+        },
+      );
+      const generatedBundleFingerprints = fingerprintEntries
+        .filter((entry) => entry.kind === "generated-bundle")
+        .map((entry) => entry.fingerprint);
       const staticScan = await runStaticPublishScan(ctx, {
         slug: skill.slug,
         displayName: skill.displayName,
         summary: skill.summary ?? undefined,
         frontmatter: version.parsed?.frontmatter ?? {},
         metadata: version.parsed?.metadata,
-        files: version.files,
+        files: sourceSkillVersionFiles(version.files, { generatedBundleFingerprints }),
       });
 
       return await ctx.runMutation(internal.skills.updateSkillVersionStaticScanInternal, {
@@ -7822,7 +7872,18 @@ export const getSkillCard: ReturnType<typeof action> = action({
       throw new ConvexError("Version not available");
     }
 
-    const file = selectSkillCardFile(version.files);
+    const fingerprintEntries = (await ctx.runQuery(
+      internal.skills.listVersionFingerprintsInternal,
+      {
+        skillVersionId: version._id,
+      },
+    )) as Array<{ fingerprint: string; kind?: "source" | "generated-bundle" }>;
+    const file = await selectGeneratedSkillCardFile(
+      version.files,
+      fingerprintEntries
+        .filter((entry) => entry.kind === "generated-bundle")
+        .map((entry) => entry.fingerprint),
+    );
     if (!file) throw new ConvexError("Skill Card not found");
     if (file.size > MAX_DIFF_FILE_BYTES) {
       throw new ConvexError("File exceeds 200KB limit");

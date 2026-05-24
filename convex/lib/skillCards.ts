@@ -11,8 +11,26 @@ export type SkillCardFile = {
   contentType?: string;
 };
 
+function normalizeSkillCardPathForComparison(path: string) {
+  return path
+    .trim()
+    .replace(/^\/+/, "")
+    .split("/")
+    .filter((segment) => segment && segment !== ".")
+    .join("/")
+    .toLowerCase();
+}
+
 export function isSkillCardPath(path: string) {
-  return path.trim().toLowerCase() === SKILL_CARD_FILE_PATH;
+  return normalizeSkillCardPathForComparison(path) === SKILL_CARD_FILE_PATH;
+}
+
+export function sourceSkillVersionFiles<T extends { path: string }>(
+  files: T[],
+  options: { generatedBundleFingerprints?: readonly string[] } = {},
+) {
+  if (!options.generatedBundleFingerprints?.length) return files;
+  return files.filter((file) => !isSkillCardPath(file.path));
 }
 
 export function selectSkillCardFile<T extends { path: string }>(files: T[]) {
@@ -21,6 +39,16 @@ export function selectSkillCardFile<T extends { path: string }>(files: T[]) {
 
 export async function buildBundleFingerprint(files: Array<{ path: string; sha256: string }>) {
   return await hashSkillFiles(files.map((file) => ({ path: file.path, sha256: file.sha256 })));
+}
+
+export async function selectGeneratedSkillCardFile<T extends { path: string; sha256: string }>(
+  files: T[],
+  generatedBundleFingerprints: readonly string[],
+) {
+  const cardFile = selectSkillCardFile(files);
+  if (!cardFile || generatedBundleFingerprints.length === 0) return null;
+  const currentBundleFingerprint = await buildBundleFingerprint(files);
+  return generatedBundleFingerprints.includes(currentBundleFingerprint) ? cardFile : null;
 }
 
 export async function replaceGeneratedSkillCardFile<T extends SkillCardFile>(

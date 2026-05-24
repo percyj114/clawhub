@@ -18,7 +18,7 @@ import type {
   LlmEvalDimension,
   LlmRiskSummary,
 } from "../lib/securityPrompt";
-import { buildBundleFingerprint, isSkillCardPath, selectSkillCardFile } from "../lib/skillCards";
+import { selectGeneratedSkillCardFile, sourceSkillVersionFiles } from "../lib/skillCards";
 import { publishVersionForUser } from "../skills";
 import {
   MAX_RAW_FILE_BYTES,
@@ -500,15 +500,16 @@ function buildVerifySecurity(version: Doc<"skillVersions">) {
   };
 }
 
-function sourceFilesForVerify(files: Doc<"skillVersions">["files"]) {
-  return files
-    .filter((file) => !isSkillCardPath(file.path))
-    .map((file) => ({
-      path: file.path,
-      size: file.size,
-      sha256: file.sha256,
-      contentType: normalizeTextContentType(file.path, file.contentType) ?? null,
-    }));
+function sourceFilesForVerify(
+  files: Doc<"skillVersions">["files"],
+  generatedBundleFingerprints: readonly string[],
+) {
+  return sourceSkillVersionFiles(files, { generatedBundleFingerprints }).map((file) => ({
+    path: file.path,
+    size: file.size,
+    sha256: file.sha256,
+    contentType: normalizeTextContentType(file.path, file.contentType) ?? null,
+  }));
 }
 
 function buildCardUrl(request: Request, slug: string, version: string) {
@@ -1141,19 +1142,14 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
     if (!version) return text("Version not found", 404, rate.headers);
     if (version.softDeletedAt) return text("Version not available", 410, rate.headers);
 
-    const cardFile = selectSkillCardFile(version.files);
-    const fingerprintEntries = (await ctx.runQuery(
+    const fingerprintEntries = ((await ctx.runQuery(
       internal.skills.listVersionFingerprintsInternal,
       { skillVersionId: version._id },
-    )) as SkillVersionFingerprintSummary[];
+    )) ?? []) as SkillVersionFingerprintSummary[];
     const bundleFingerprints = fingerprintEntries
       .filter((entry) => entry.kind === "generated-bundle")
       .map((entry) => entry.fingerprint);
-    const currentBundleFingerprint = cardFile ? await buildBundleFingerprint(version.files) : null;
-    const generatedCardFile =
-      cardFile && currentBundleFingerprint && bundleFingerprints.includes(currentBundleFingerprint)
-        ? cardFile
-        : null;
+    const generatedCardFile = await selectGeneratedSkillCardFile(version.files, bundleFingerprints);
     const security = buildVerifySecurity(version);
     const reasons = buildVerifyReasons({
       cardAvailable: Boolean(generatedCardFile),
@@ -1211,7 +1207,7 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
         artifact: {
           sourceFingerprint: version.fingerprint ?? null,
           bundleFingerprints,
-          files: sourceFilesForVerify(version.files),
+          files: sourceFilesForVerify(version.files, bundleFingerprints),
         },
         provenance: version.sourceProvenance
           ? {
@@ -1264,7 +1260,14 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
     if (!version) return text("Version not found", 404, rate.headers);
     if (version.softDeletedAt) return text("Version not available", 410, rate.headers);
 
-    const file = selectSkillCardFile(version.files);
+    const fingerprintEntries = ((await ctx.runQuery(
+      internal.skills.listVersionFingerprintsInternal,
+      { skillVersionId: version._id },
+    )) ?? []) as SkillVersionFingerprintSummary[];
+    const bundleFingerprints = fingerprintEntries
+      .filter((entry) => entry.kind === "generated-bundle")
+      .map((entry) => entry.fingerprint);
+    const file = await selectGeneratedSkillCardFile(version.files, bundleFingerprints);
     if (!file) return text("Skill Card not found", 404, rate.headers);
     if (file.size > MAX_RAW_FILE_BYTES) return text("File exceeds 200KB limit", 413, rate.headers);
 

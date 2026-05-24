@@ -11,7 +11,7 @@ import { getUserFacingAuthError } from "../lib/authErrorMessage";
 import { getSkillCategoryForSkill } from "../lib/categories";
 import { getUserFacingConvexError } from "../lib/convexError";
 import { canManageSkill, isModerator } from "../lib/roles";
-import { selectSkillCardFile, skillCardLoadKey } from "../lib/skillCards";
+import { skillCardLoadKey } from "../lib/skillCards";
 import type { SkillBySlugResult, SkillPageInitialData } from "../lib/skillPage";
 import { clearAuthError, setAuthError } from "../lib/useAuthError";
 import { useAuthStatus } from "../lib/useAuthStatus";
@@ -45,6 +45,9 @@ type SkillDetailPageProps = {
 };
 
 type SkillFile = Doc<"skillVersions">["files"][number];
+type SkillDetailVersion = NonNullable<NonNullable<SkillBySlugResult>["latestVersion"]> & {
+  generatedSkillCard?: SkillFile | null;
+};
 
 const SHOW_SKILL_COMMENTS = false;
 
@@ -215,7 +218,7 @@ export function SkillDetailPage({
   const isLoadingSkill = isStaff ? staffResult === undefined : result === undefined;
   const skill = result?.skill;
   const owner = result?.owner ?? null;
-  const latestVersion = result?.latestVersion ?? null;
+  const latestVersion = (result?.latestVersion ?? null) as SkillDetailVersion | null;
   const relatedCategory = useMemo(() => (skill ? getSkillCategoryForSkill(skill) : null), [skill]);
   const shouldLoadRelatedSkills = Boolean(
     skill && relatedCategory && relatedCategory.keywords.length > 0,
@@ -386,7 +389,10 @@ export function SkillDetailPage({
     return stripFrontmatter(readme);
   }, [readme]);
   const latestFiles: SkillFile[] = latestVersion?.files ?? [];
-  const skillCardFile = useMemo(() => selectSkillCardFile(latestFiles), [latestFiles]);
+  const skillCardFile = useMemo(
+    () => latestVersion?.generatedSkillCard ?? null,
+    [latestVersion?.generatedSkillCard],
+  );
   const hasSkillCard = Boolean(skillCardFile);
   const currentSkillCardKey = useMemo(
     () => skillCardLoadKey(latestVersionId, skillCardFile),

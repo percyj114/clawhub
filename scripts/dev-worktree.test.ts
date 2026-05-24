@@ -6,6 +6,7 @@ import {
   buildForegroundArgs,
   buildEnvFileCandidates,
   buildViteArgs,
+  applyLocalConvexEnvForUrl,
   isConvexFunctionUnavailableOutput,
   isLocalConvexUrl,
   isRunningPid,
@@ -132,19 +133,42 @@ describe("dev-worktree helpers", () => {
     expect(byName.CONVEX_SITE_URL).toBeUndefined();
   });
 
+  it("does not apply local dev auth overrides for cloud Convex URLs", () => {
+    const env: NodeJS.ProcessEnv = {
+      SECURITY_SCAN_WORKER_TOKEN: "remote-worker-token",
+      JWT_PRIVATE_KEY: "remote-private-key",
+    };
+
+    expect(applyLocalConvexEnvForUrl(env, "https://example.convex.cloud")).toBe(false);
+    expect(env.SECURITY_SCAN_WORKER_TOKEN).toBe("remote-worker-token");
+    expect(env.JWT_PRIVATE_KEY).toBe("remote-private-key");
+    expect(env.DEV_AUTH_ENABLED).toBeUndefined();
+  });
+
   it("recognizes local Convex URLs", () => {
     expect(isLocalConvexUrl("http://127.0.0.1:3210")).toBe(true);
     expect(isLocalConvexUrl("http://localhost:3210")).toBe(true);
+    expect(isLocalConvexUrl("http://[::1]:3210")).toBe(true);
     expect(isLocalConvexUrl("https://example.convex.cloud")).toBe(false);
     expect(isLocalConvexUrl("not-a-url")).toBe(false);
   });
 
   it("starts dev workers by default unless disabled", () => {
-    expect(shouldStartDevWorkers({ workers: true })).toEqual({ start: true, reason: null });
+    expect(shouldStartDevWorkers({ workers: true }, "http://127.0.0.1:3210")).toEqual({
+      start: true,
+      reason: null,
+    });
 
-    expect(shouldStartDevWorkers({ workers: false })).toEqual({
+    expect(shouldStartDevWorkers({ workers: false }, "http://127.0.0.1:3210")).toEqual({
       start: false,
       reason: "--no-workers was passed",
+    });
+  });
+
+  it("does not start dev workers by default for non-local Convex URLs", () => {
+    expect(shouldStartDevWorkers({ workers: true }, "https://example.convex.cloud")).toEqual({
+      start: false,
+      reason: "VITE_CONVEX_URL is not local",
     });
   });
 

@@ -4,6 +4,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { action, internalMutation, internalQuery } from "./functions";
 import { assertModerator } from "./lib/access";
+import { sourceSkillVersionFiles } from "./lib/skillCards";
 
 const MAX_PARALLEL_CODEX_SCANS = 20;
 const DEFAULT_VT_WAIT_MS = 10 * 60 * 1000;
@@ -129,6 +130,7 @@ const internalRefs = internal as unknown as {
   skills: {
     getSkillByIdInternal: unknown;
     getVersionByIdInternal: unknown;
+    listVersionFingerprintsInternal: unknown;
     updateVersionLlmAnalysisInternal: unknown;
   };
   skillCards: {
@@ -736,15 +738,29 @@ export const claimCodexScanJobs = action({
         continue;
       }
 
-      const files = ((target.version as Doc<"skillVersions"> | undefined)?.files ??
-        (target.release as Doc<"packageReleases"> | undefined)?.files ??
-        []) as Array<{
+      const version = target.version as Doc<"skillVersions"> | undefined;
+      const release = target.release as Doc<"packageReleases"> | undefined;
+      let files: Array<{
         path: string;
         size: number;
         sha256: string;
         storageId: Id<"_storage">;
         contentType?: string;
-      }>;
+      }> = [];
+      if (version) {
+        const fingerprintEntries = await runQueryRef<
+          Array<{ fingerprint: string; kind?: "source" | "generated-bundle" }>
+        >(ctx, internalRefs.skills.listVersionFingerprintsInternal, {
+          skillVersionId: version._id,
+        });
+        files = sourceSkillVersionFiles(version.files, {
+          generatedBundleFingerprints: fingerprintEntries
+            .filter((entry) => entry.kind === "generated-bundle")
+            .map((entry) => entry.fingerprint),
+        });
+      } else if (release) {
+        files = release.files;
+      }
       const fileUrls = [];
       let missingStoragePath: string | null = null;
       for (const file of files) {
@@ -770,7 +786,6 @@ export const claimCodexScanJobs = action({
         continue;
       }
 
-      const release = target.release as Doc<"packageReleases"> | undefined;
       const clawpackUrl = release?.clawpackStorageId
         ? await ctx.storage.getUrl(release.clawpackStorageId)
         : null;

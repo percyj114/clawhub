@@ -756,6 +756,7 @@ describe("maintenance fingerprint backfill", () => {
             { path: "SKILL.md", sha256: "abc" },
             { path: "skill-card.md", sha256: "def" },
           ],
+          hasGeneratedBundleFingerprint: true,
           existingEntries: [
             {
               id: "skillVersionFingerprints:source",

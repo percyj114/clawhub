@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { basename, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 type DevWorkerId = "security-scan" | "skill-card";
@@ -53,6 +53,8 @@ const DEFAULT_BATCH_LIMIT = 1;
 const DEFAULT_MAX_JOBS = 1;
 const DEFAULT_MAX_RUNTIME_MINUTES = 20;
 const DEFAULT_LEASE_MINUTES = 30;
+const DEFAULT_NVIDIA_TOOL_DIR = ".artifacts/nvidia-trustworthy-ai";
+const NVIDIA_AUTOMATION_DIR = "AI Transparency Card Automation";
 
 function numberFrom(value: string | undefined, fallback: number) {
   const parsed = Number(value);
@@ -176,6 +178,47 @@ export function resolveEnabledWorkers(options: { workers: string[]; skip: string
     .filter((worker) => !skipped.has(worker.id));
 }
 
+function resolveNvidiaToolDir(
+  options: Pick<DevWorkerOptions, "nvidiaToolDir">,
+  context: { cwd: string; env: NodeJS.ProcessEnv },
+) {
+  return resolve(
+    context.cwd,
+    options.nvidiaToolDir ?? context.env.NVIDIA_TRUSTWORTHY_AI_DIR ?? DEFAULT_NVIDIA_TOOL_DIR,
+  );
+}
+
+function hasNvidiaSkillCardTooling(
+  options: Pick<DevWorkerOptions, "nvidiaToolDir">,
+  context: { cwd: string; env: NodeJS.ProcessEnv },
+) {
+  const toolDir = resolveNvidiaToolDir(options, context);
+  return existsSync(join(toolDir, NVIDIA_AUTOMATION_DIR, "scripts", "render_card.py"));
+}
+
+export function resolveRunnableWorkers(
+  workers: WorkerDefinition[],
+  options: Pick<DevWorkerOptions, "nvidiaToolDir">,
+  context: { cwd: string; env: NodeJS.ProcessEnv },
+) {
+  const runnable: WorkerDefinition[] = [];
+  const skipped: Array<{ workerId: DevWorkerId; reason: string }> = [];
+  for (const worker of workers) {
+    if (worker.id !== "skill-card" || hasNvidiaSkillCardTooling(options, context)) {
+      runnable.push(worker);
+      continue;
+    }
+    skipped.push({
+      workerId: worker.id,
+      reason: `NVIDIA Skill Card automation checkout not found at ${resolveNvidiaToolDir(
+        options,
+        context,
+      )}`,
+    });
+  }
+  return { workers: runnable, skipped };
+}
+
 export function validateWorkerEnv(worker: WorkerDefinition, env: NodeJS.ProcessEnv) {
   const missing = worker.requiredEnv.filter((key) => !env[key]?.trim());
   if (worker.requiredAnyEnv && !worker.requiredAnyEnv.some((key) => Boolean(env[key]?.trim()))) {
@@ -209,7 +252,7 @@ export function buildWorkerRun(
 }
 
 function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((done) => setTimeout(done, ms));
 }
 
 function timestamp() {
@@ -268,6 +311,19 @@ async function main() {
     console.log("No .env.local found; using shell environment only.");
   }
 
+  const runnable = resolveRunnableWorkers(workers, options, {
+    cwd: process.cwd(),
+    env: process.env,
+  });
+  workers = runnable.workers;
+  for (const skipped of runnable.skipped) {
+    console.log(`Skipping ${skipped.workerId}: ${skipped.reason}.`);
+  }
+  if (workers.length === 0) {
+    console.log("No runnable local background workers.");
+    return;
+  }
+
   const missingByWorker = workers
     .map((worker) => ({ worker, missing: validateWorkerEnv(worker, process.env) }))
     .filter((entry) => entry.missing.length > 0);
@@ -295,7 +351,7 @@ async function main() {
     });
   }
 
-  do {
+  while (true) {
     for (const worker of workers) {
       if (stopping) break;
       const status = await runWorker(worker, options);
@@ -305,7 +361,7 @@ async function main() {
     }
     if (options.once || stopping) break;
     await sleep(options.intervalMs);
-  } while (!stopping);
+  }
 
   console.log("Stopped local background workers.");
 }

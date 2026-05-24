@@ -1,6 +1,6 @@
 /* @vitest-environment node */
 
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -9,6 +9,7 @@ import {
   loadDevWorkerEnv,
   parseArgs,
   resolveEnabledWorkers,
+  resolveRunnableWorkers,
   validateWorkerEnv,
   WORKERS,
 } from "./dev-workers";
@@ -95,6 +96,51 @@ describe("dev-workers", () => {
     });
 
     expect(selected.map((worker) => worker.id)).toEqual(["security-scan"]);
+  });
+
+  it("skips the default Skill Card worker when NVIDIA tooling is absent", async () => {
+    const root = await tempDir();
+    const selected = resolveEnabledWorkers({
+      workers: [],
+      skip: [],
+    });
+
+    const resolved = resolveRunnableWorkers(selected, parseArgs([]), {
+      cwd: root,
+      env: {},
+    });
+
+    expect(resolved.workers.map((worker) => worker.id)).toEqual(["security-scan"]);
+    expect(resolved.skipped).toEqual([
+      expect.objectContaining({
+        workerId: "skill-card",
+        reason: expect.stringContaining("NVIDIA Skill Card automation checkout"),
+      }),
+    ]);
+  });
+
+  it("keeps the Skill Card worker when an explicit NVIDIA tool checkout exists", async () => {
+    const root = await tempDir();
+    const toolDir = join(root, "nvidia-tooling");
+    await mkdir(join(toolDir, "AI Transparency Card Automation", "scripts"), { recursive: true });
+    await writeFile(
+      join(toolDir, "AI Transparency Card Automation", "scripts", "render_card.py"),
+      "print('render')\n",
+      "utf8",
+    );
+    const selected = resolveEnabledWorkers({
+      workers: ["skill-card"],
+      skip: [],
+    });
+
+    const resolved = resolveRunnableWorkers(
+      selected,
+      parseArgs(["--workers", "skill-card", "--nvidia-tool-dir", toolDir]),
+      { cwd: root, env: {} },
+    );
+
+    expect(resolved.workers.map((worker) => worker.id)).toEqual(["skill-card"]);
+    expect(resolved.skipped).toEqual([]);
   });
 
   it("rejects unknown worker ids", () => {

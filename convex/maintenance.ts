@@ -736,6 +736,7 @@ type FingerprintBackfillPageItem = {
   versionId: Id<"skillVersions">;
   versionFingerprint?: string;
   files: Array<{ path: string; sha256: string }>;
+  hasGeneratedBundleFingerprint?: boolean;
   existingEntries: Array<{
     id: Id<"skillVersionFingerprints">;
     fingerprint: string;
@@ -796,8 +797,11 @@ export const getSkillFingerprintBackfillPageInternal = internalQuery({
         .withIndex("by_version", (q) => q.eq("versionId", version._id))
         .take(20);
 
+      const hasGeneratedBundleFingerprint = existingEntries.some(
+        (entry) => entry.kind === "generated-bundle",
+      );
       const normalizedFiles = version.files
-        .filter((file) => !isSkillCardPath(file.path))
+        .filter((file) => !hasGeneratedBundleFingerprint || !isSkillCardPath(file.path))
         .map((file) => ({
           path: file.path,
           sha256: file.sha256,
@@ -822,6 +826,7 @@ export const getSkillFingerprintBackfillPageInternal = internalQuery({
         versionId: version._id,
         versionFingerprint: version.fingerprint ?? undefined,
         files: normalizedFiles,
+        hasGeneratedBundleFingerprint,
         existingEntries: sourceFingerprintEntries.map((entry) => ({
           id: entry._id,
           fingerprint: entry.fingerprint,
@@ -910,7 +915,9 @@ export async function backfillSkillFingerprintsInternalHandler(
       totals.versionsScanned++;
 
       const fingerprint = await hashSkillFiles(
-        item.files.filter((file) => !isSkillCardPath(file.path)),
+        item.files.filter(
+          (file) => !item.hasGeneratedBundleFingerprint || !isSkillCardPath(file.path),
+        ),
       );
 
       const sourceEntries = item.existingEntries.filter(
