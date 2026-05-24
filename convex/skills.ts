@@ -2167,16 +2167,26 @@ async function getOfficialBadgePatchForSkillOwnerTransfer(
     currentOfficialBadge,
     sourceOfficialBadge,
   );
+  const currentBadgeIsStaleSourceDerived =
+    !sourceOfficialBadge && currentOfficialBadge?.sourcePublisherId === options.sourcePublisherId;
 
   if (destinationOfficialBadge) {
-    if (currentOfficialBadge && !currentBadgeIsSourceDerived) return undefined;
+    if (currentOfficialBadge && !currentBadgeIsSourceDerived && !currentBadgeIsStaleSourceDerived) {
+      return undefined;
+    }
 
     const existing = await ctx.db
       .query("skillBadges")
       .withIndex("by_skill_kind", (q) => q.eq("skillId", skill._id).eq("kind", "official"))
       .unique();
     if (existing && !currentOfficialBadge) return undefined;
-    if (existing && !skillBadgeEntryMatches(existing, sourceOfficialBadge)) return undefined;
+    if (
+      existing &&
+      !skillBadgeEntryMatches(existing, sourceOfficialBadge) &&
+      !(!sourceOfficialBadge && existing.sourcePublisherId === options.sourcePublisherId)
+    ) {
+      return undefined;
+    }
 
     if (existing) {
       await ctx.db.patch(existing._id, destinationOfficialBadge);
