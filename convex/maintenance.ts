@@ -1079,12 +1079,14 @@ export const upsertSkillBadgeRecordInternal = internalMutation({
       .withIndex("by_skill_kind", (q) => q.eq("skillId", args.skillId).eq("kind", args.kind))
       .unique();
     if (existing) {
+      const sourcePublisherId =
+        args.kind === "official"
+          ? (args.sourcePublisherId ?? existing.sourcePublisherId)
+          : undefined;
       const badgePatch = {
         byUserId: args.byUserId,
         at: args.at,
-        ...(args.kind === "official"
-          ? { sourcePublisherId: args.sourcePublisherId ?? undefined }
-          : {}),
+        ...(args.kind === "official" ? { sourcePublisherId } : {}),
       };
       await ctx.db.patch(existing._id, badgePatch);
       await syncDenormalizedBadge(badgePatch);

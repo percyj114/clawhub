@@ -427,6 +427,55 @@ describe("maintenance badge denormalization", () => {
     });
   });
 
+  it("preserves existing official badge source when omitted from upsert", async () => {
+    const unique = vi.fn().mockResolvedValue({
+      _id: "skillBadges:existing",
+      sourcePublisherId: "publishers:openclaw",
+    });
+    const query = vi.fn().mockReturnValue({
+      withIndex: () => ({ unique }),
+    });
+    const insert = vi.fn();
+    const get = vi.fn().mockResolvedValue({ _id: "skills:1", badges: {} });
+    const patch = vi.fn().mockResolvedValue(undefined);
+
+    const ctx = {
+      db: {
+        query,
+        insert,
+        get,
+        patch,
+        normalizeId: vi.fn(),
+      },
+    } as never;
+
+    const result = await (
+      upsertSkillBadgeRecordInternal as unknown as { _handler: Function }
+    )._handler(ctx, {
+      skillId: "skills:1",
+      kind: "official",
+      byUserId: "users:2",
+      at: 456,
+    });
+
+    expect(result).toEqual({ inserted: false });
+    expect(insert).not.toHaveBeenCalled();
+    expect(patch).toHaveBeenCalledWith("skillBadges:existing", {
+      byUserId: "users:2",
+      at: 456,
+      sourcePublisherId: "publishers:openclaw",
+    });
+    expect(patch).toHaveBeenCalledWith("skills:1", {
+      badges: {
+        official: {
+          byUserId: "users:2",
+          at: 456,
+          sourcePublisherId: "publishers:openclaw",
+        },
+      },
+    });
+  });
+
   it("backfills denormalized badges without dropping official source", async () => {
     const patch = vi.fn().mockResolvedValue(undefined);
     const query = vi.fn((table: string) => {

@@ -211,6 +211,7 @@ describe("plugin detail route", () => {
     render(<Component />);
 
     expect(screen.getAllByText("Official").length).toBeGreaterThan(0);
+    expect(screen.getByLabelText("Official")).toBeTruthy();
     expect(screen.queryByText("Verified")).toBeNull();
   });
 
