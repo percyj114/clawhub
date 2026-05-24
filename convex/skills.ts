@@ -2238,6 +2238,7 @@ async function getOfficialBadgePatchForSkillOwnerTransfer(
   if (
     !sourceOfficialBadge &&
     options.clearUnownedOfficialBadge &&
+    options.sourcePublisherId !== undefined &&
     currentOfficialBadge?.sourcePublisherId === options.sourcePublisherId
   ) {
     const existing = await ctx.db
