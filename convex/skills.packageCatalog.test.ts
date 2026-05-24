@@ -248,6 +248,43 @@ describe("skills package catalog queries", () => {
     expect(ctx.indexNames).toEqual(["by_active_official_updated", "by_active_updated"]);
   });
 
+  it("keeps official skill catalog cursors on the same index while backfill state changes", async () => {
+    const pages = [
+      {
+        page: [
+          makeDigest("legacy-official-skill", {
+            badges: { official: { byUserId: "users:admin", at: 1 } },
+          }),
+          makeDigest("official-skill", {
+            badges: { official: { byUserId: "users:admin", at: 1 } },
+            isOfficial: true,
+          }),
+        ],
+        isDone: true,
+        continueCursor: "",
+      },
+    ];
+    const firstCtx = makeCtx(pages, { hasUnbackfilledOfficialDigests: true });
+
+    const first = await listPackageCatalogPageHandler(firstCtx, {
+      isOfficial: true,
+      paginationOpts: { cursor: null, numItems: 1 },
+    });
+
+    expect(first.page.map((entry) => entry.name)).toEqual(["legacy-official-skill"]);
+    expect(first.continueCursor).toContain('"index":"active"');
+    expect(firstCtx.indexNames).toEqual(["by_active_official_updated", "by_active_updated"]);
+
+    const secondCtx = makeCtx(pages, { hasUnbackfilledOfficialDigests: false });
+    const second = await listPackageCatalogPageHandler(secondCtx, {
+      isOfficial: true,
+      paginationOpts: { cursor: first.continueCursor, numItems: 1 },
+    });
+
+    expect(second.page.map((entry) => entry.name)).toEqual(["official-skill"]);
+    expect(secondCtx.indexNames).toEqual(["by_active_updated"]);
+  });
+
   it("searches skills with package-style lexical scoring", async () => {
     const result = await searchPackageCatalogPublicHandler(
       makeCtx([

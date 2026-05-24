@@ -5086,7 +5086,10 @@ type SkillCatalogCursorState = {
   offset: number;
   pageSize: number | null;
   done: boolean;
+  index: SkillCatalogCursorIndex | null;
 };
+
+type SkillCatalogCursorIndex = "active" | "activeOfficial";
 
 function encodeSkillCatalogCursor(state: SkillCatalogCursorState) {
   if (state.done && state.offset === 0) return "";
@@ -5094,22 +5097,25 @@ function encodeSkillCatalogCursor(state: SkillCatalogCursorState) {
 }
 
 function decodeSkillCatalogCursor(raw: string | null | undefined): SkillCatalogCursorState {
-  if (!raw) return { cursor: null, offset: 0, pageSize: null, done: false };
+  if (!raw) return { cursor: null, offset: 0, pageSize: null, done: false, index: null };
   if (!raw.startsWith(SKILL_CATALOG_CURSOR_PREFIX)) {
-    return { cursor: raw, offset: 0, pageSize: null, done: false };
+    return { cursor: raw, offset: 0, pageSize: null, done: false, index: null };
   }
   try {
     const parsed = JSON.parse(
       raw.slice(SKILL_CATALOG_CURSOR_PREFIX.length),
     ) as Partial<SkillCatalogCursorState>;
+    const index =
+      parsed.index === "active" || parsed.index === "activeOfficial" ? parsed.index : null;
     return {
       cursor: typeof parsed.cursor === "string" ? parsed.cursor : null,
       offset: typeof parsed.offset === "number" && parsed.offset > 0 ? parsed.offset : 0,
       pageSize: typeof parsed.pageSize === "number" && parsed.pageSize > 0 ? parsed.pageSize : null,
       done: parsed.done === true,
+      index,
     };
   } catch {
-    return { cursor: null, offset: 0, pageSize: null, done: false };
+    return { cursor: null, offset: 0, pageSize: null, done: false, index: null };
   }
 }
 
@@ -5149,6 +5155,17 @@ async function hasUnbackfilledSkillCatalogOfficialDigests(ctx: Pick<QueryCtx, "d
     )
     .take(1);
   return rows.length > 0;
+}
+
+async function shouldUseIndexedOfficialSkillCatalogFilter(
+  ctx: Pick<QueryCtx, "db">,
+  indexedOfficialFilter: true | null,
+  cursorIndex: SkillCatalogCursorIndex | null,
+) {
+  if (indexedOfficialFilter !== true) return false;
+  if (cursorIndex === "activeOfficial") return true;
+  if (cursorIndex === "active") return false;
+  return !(await hasUnbackfilledSkillCatalogOfficialDigests(ctx));
 }
 
 function isVisibleSkillCatalogDigest(digest: Doc<"skillSearchDigest">) {
@@ -5304,15 +5321,18 @@ export const listPackageCatalogPage = query({
     ) {
       return { page: [], isDone: true, continueCursor: "" };
     }
-    const indexedOfficialFilter = getSkillCatalogIndexedOfficialFilter(args);
-    const useIndexedOfficialFilter =
-      indexedOfficialFilter === true
-        ? !(await hasUnbackfilledSkillCatalogOfficialDigests(ctx))
-        : false;
-
     const targetCount = args.paginationOpts.numItems;
     const collected: PublicSkillCatalogItem[] = [];
     const decodedCursor = decodeSkillCatalogCursor(args.paginationOpts.cursor);
+    const indexedOfficialFilter = getSkillCatalogIndexedOfficialFilter(args);
+    const useIndexedOfficialFilter = await shouldUseIndexedOfficialSkillCatalogFilter(
+      ctx,
+      indexedOfficialFilter,
+      decodedCursor.index,
+    );
+    const cursorIndex: SkillCatalogCursorIndex = useIndexedOfficialFilter
+      ? "activeOfficial"
+      : "active";
     let cursor = decodedCursor.cursor;
     let offset = decodedCursor.offset;
     let pageSize = decodedCursor.pageSize;
@@ -5367,7 +5387,13 @@ export const listPackageCatalogPage = query({
           return {
             page: collected,
             isDone: done && offset === 0,
-            continueCursor: encodeSkillCatalogCursor({ cursor, offset, pageSize, done }),
+            continueCursor: encodeSkillCatalogCursor({
+              cursor,
+              offset,
+              pageSize,
+              done,
+              index: cursorIndex,
+            }),
           };
         }
       }
@@ -5381,7 +5407,13 @@ export const listPackageCatalogPage = query({
     return {
       page: collected,
       isDone: done,
-      continueCursor: encodeSkillCatalogCursor({ cursor, offset, pageSize, done }),
+      continueCursor: encodeSkillCatalogCursor({
+        cursor,
+        offset,
+        pageSize,
+        done,
+        index: cursorIndex,
+      }),
     };
   },
 });
@@ -5407,10 +5439,11 @@ async function searchPackageCatalogImpl(ctx: QueryCtx, args: SkillPackageCatalog
   )
     return [];
   const indexedOfficialFilter = getSkillCatalogIndexedOfficialFilter(args);
-  const useIndexedOfficialFilter =
-    indexedOfficialFilter === true
-      ? !(await hasUnbackfilledSkillCatalogOfficialDigests(ctx))
-      : false;
+  const useIndexedOfficialFilter = await shouldUseIndexedOfficialSkillCatalogFilter(
+    ctx,
+    indexedOfficialFilter,
+    null,
+  );
 
   const targetCount = Math.max(1, Math.min(args.limit ?? 20, 100));
   const matches: Array<SkillCatalogSearchMatch & { package: PublicSkillCatalogItem }> = [];
