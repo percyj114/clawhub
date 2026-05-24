@@ -45,8 +45,11 @@ read_when:
 - `latestVersionId`
 - `latestTagVersionId` (for `latest` tag)
 - `tags` map: `{ tag -> versionId }`
-- `badges`: `{ redactionApproved?: { byUserId, at }, highlighted?: { byUserId, at }, official?: { byUserId, at }, deprecated?: { byUserId, at } }`
-  - `official` marks admin-verified/official skills.
+- `badges`: `{ redactionApproved?: { byUserId, at }, highlighted?: { byUserId, at }, official?: { byUserId, at, sourcePublisherId? }, deprecated?: { byUserId, at } }`
+  - `official` marks admin-verified/official skills. `sourcePublisherId`
+    is present when the badge came from an Official publisher and lets owner
+    transfer/unset flows distinguish publisher-derived badges from manual
+    skill badges.
   - `deprecated` marks skills that should not be used for new integrations.
 - Publisher `official?: { byUserId, at }` marks OpenClaw/Foundation-affiliated
   publishers and drives the public `Official` badge.
