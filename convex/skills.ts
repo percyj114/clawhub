@@ -9490,13 +9490,41 @@ export const setOfficialBadge = mutation({
     if (!skill) throw new Error("Skill not found");
 
     const now = Date.now();
+    const ownerPublisher = await getOwnerPublisher(ctx, {
+      ownerPublisherId: skill.ownerPublisherId,
+      ownerUserId: skill.ownerUserId,
+    });
+    const ownerOfficialBadge = officialPublisherBadgeEntry(ownerPublisher);
+    const nextManualOfficialBadge = { byUserId: user._id, at: now };
+    const nextOfficialBadge = args.official ? nextManualOfficialBadge : ownerOfficialBadge;
+    const nextBadges: Doc<"skills">["badges"] = nextOfficialBadge
+      ? {
+          ...skill.badges,
+          official: nextOfficialBadge,
+        }
+      : removeOfficialBadgeFromSkillMap(skill.badges);
     if (args.official) {
       await upsertSkillBadge(ctx, skill._id, "official", user._id, now);
+    } else if (ownerOfficialBadge) {
+      await upsertSkillBadge(
+        ctx,
+        skill._id,
+        "official",
+        ownerOfficialBadge.byUserId,
+        ownerOfficialBadge.at,
+        ownerOfficialBadge.sourcePublisherId,
+      );
     } else {
       await removeSkillBadge(ctx, skill._id, "official");
     }
 
     await ctx.db.patch(skill._id, {
+      lastReviewedAt: now,
+      updatedAt: now,
+    });
+    await syncSkillSearchDigestForSkillDoc(ctx, {
+      ...skill,
+      badges: nextBadges,
       lastReviewedAt: now,
       updatedAt: now,
     });

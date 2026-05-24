@@ -5124,12 +5124,14 @@ async function patchPackageOwnerWithAudit(
     pkg: Doc<"packages">;
     owner: Doc<"users">;
     ownerPublisher?: Doc<"publishers"> | null;
+    publisherOfficial?: boolean;
     channel?: "official" | "community" | "private";
     reason?: string;
   },
 ) {
   const now = Date.now();
-  const publisherOfficial = isOfficialPackagePublisher(args.ownerPublisher);
+  const publisherOfficial =
+    args.publisherOfficial ?? isOfficialPackagePublisher(args.ownerPublisher);
   const nextChannel = derivePackagePublisherChannel({
     requestedChannel: args.channel,
     currentChannel: args.pkg.channel,
@@ -5329,12 +5331,11 @@ export const transferPackageOwnerInternal = internalMutation({
       throw new ConvexError("Owner user not found");
     }
 
-    const ownerPublisher = args.ownerPublisherId
-      ? await getRequestedPackageOwnerPublisher(ctx, {
-          ownerPublisherId: args.ownerPublisherId,
-          ownerUserId: args.ownerUserId,
-        })
-      : null;
+    const requestedOwnerPublisher = await getRequestedPackageOwnerPublisher(ctx, {
+      ownerPublisherId: args.ownerPublisherId,
+      ownerUserId: args.ownerUserId,
+    });
+    const ownerPublisher = args.ownerPublisherId ? requestedOwnerPublisher : null;
     if (args.ownerPublisherId && (!ownerPublisher || isInactivePublisher(ownerPublisher))) {
       throw new ConvexError("Owner publisher not found");
     }
@@ -5348,6 +5349,7 @@ export const transferPackageOwnerInternal = internalMutation({
       pkg,
       owner,
       ownerPublisher,
+      publisherOfficial: isOfficialPackagePublisher(requestedOwnerPublisher),
       channel: args.channel,
       reason: args.reason,
     });

@@ -22,6 +22,7 @@ import {
   normalizePublisherHandle,
 } from "./lib/publishers";
 import { isHandleReservedForAnotherUser } from "./lib/reservedHandles";
+import { extractDigestFields, upsertSkillSearchDigest } from "./lib/skillSearchDigest";
 import { readCanonicalStat } from "./lib/skillStats";
 
 const PUBLISHER_HANDLE_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
@@ -29,6 +30,7 @@ const MAX_PUBLIC_PUBLISHER_LIST_LIMIT = 500;
 const PUBLISHER_LIST_PREVIEW_LIMIT = 3;
 const PUBLISHER_OFFICIAL_PACKAGE_SYNC_LIMIT = 100;
 const PUBLISHER_OFFICIAL_SKILL_SYNC_LIMIT = 100;
+const LEGACY_PUBLISHER_MIGRATION_BATCH_SIZE = 100;
 
 type OfficialSyncPhase = "scoped" | "legacy";
 type OfficialPublisherSyncTarget = Pick<
@@ -386,6 +388,32 @@ async function syncPublisherSkillOfficialStatePage(
 
       if (official) {
         if (!officialBadge) continue;
+        if (existingBadge && existingBadge.sourcePublisherId !== publisher._id) {
+          const canonicalBadge = officialSkillBadgeFromRecord(existingBadge);
+          const nextBadges = {
+            ...skill.badges,
+            official: canonicalBadge,
+          };
+          let updatedCurrentSkill = false;
+          if (!officialBadgeEntriesMatch(previousBadge, canonicalBadge)) {
+            await ctx.db.patch(skill._id, { badges: nextBadges });
+            updatedCurrentSkill = true;
+          }
+          const digest = await ctx.db
+            .query("skillSearchDigest")
+            .withIndex("by_skill", (q) => q.eq("skillId", skill._id))
+            .unique();
+          if (
+            digest &&
+            (digest.isOfficial !== true ||
+              !officialBadgeEntriesMatch(digest.badges?.official, canonicalBadge))
+          ) {
+            await ctx.db.patch(digest._id, { badges: nextBadges, isOfficial: true });
+            updatedCurrentSkill = true;
+          }
+          if (updatedCurrentSkill) updatedSkills += 1;
+          continue;
+        }
         const hasCurrentOfficialBadge = officialBadgeMatches(previousBadge, officialBadge);
         const shouldUpdateStalePublisherBadge =
           previousBadge &&
@@ -473,14 +501,12 @@ async function syncPublisherSkillOfficialStatePage(
         if (existingBadge && existingBadgeOwnedByPublisher) {
           await ctx.db.delete(existingBadge._id);
         }
-        if (previousBadgeOwnedByPublisher) {
-          await ctx.db.patch(skill._id, { badges: nextBadges });
-          const digest = await ctx.db
-            .query("skillSearchDigest")
-            .withIndex("by_skill", (q) => q.eq("skillId", skill._id))
-            .unique();
-          if (digest) await ctx.db.patch(digest._id, { badges: nextBadges, isOfficial: false });
-        }
+        await ctx.db.patch(skill._id, { badges: nextBadges });
+        const digest = await ctx.db
+          .query("skillSearchDigest")
+          .withIndex("by_skill", (q) => q.eq("skillId", skill._id))
+          .unique();
+        if (digest) await ctx.db.patch(digest._id, { badges: nextBadges, isOfficial: false });
         updatedSkills += 1;
       }
     }
@@ -604,6 +630,27 @@ function officialBadgeMatches(
   return true;
 }
 
+function officialSkillBadgeFromRecord(
+  badge: Pick<Doc<"skillBadges">, "byUserId" | "at" | "sourcePublisherId">,
+): OfficialSkillBadge {
+  return {
+    byUserId: badge.byUserId,
+    at: badge.at,
+    ...(badge.sourcePublisherId ? { sourcePublisherId: badge.sourcePublisherId } : {}),
+  };
+}
+
+function officialBadgeEntriesMatch(
+  current: NonNullable<Doc<"skills">["badges"]>["official"] | undefined | null,
+  expected: OfficialSkillBadge,
+) {
+  return (
+    current?.byUserId === expected.byUserId &&
+    current.at === expected.at &&
+    current.sourcePublisherId === expected.sourcePublisherId
+  );
+}
+
 function isPublisherDerivedOfficialBadge(
   existingBadge: Pick<Doc<"skillBadges">, "sourcePublisherId"> | null | undefined,
   previousBadge: NonNullable<Doc<"skills">["badges"]>["official"] | undefined,
@@ -625,6 +672,13 @@ function officialBadgeOwnedByPublisher(
   publisherId: Id<"publishers">,
 ) {
   return officialBadgeMatches(badge, expected) || badge?.sourcePublisherId === publisherId;
+}
+
+function officialSkillBadgeForPublisher(
+  publisher: Pick<Doc<"publishers">, "_id" | "official">,
+): OfficialSkillBadge | null {
+  if (!publisher.official) return null;
+  return { ...publisher.official, sourcePublisherId: publisher._id };
 }
 
 function isPublisherOfficialSyncCurrent(
@@ -934,7 +988,7 @@ async function resolveAvailableUserHandle(
 }
 
 async function migrateLegacyPublisherHandleToOrgWithActor(
-  ctx: Pick<MutationCtx, "db">,
+  ctx: Pick<MutationCtx, "db" | "scheduler">,
   args: {
     actorUserId: Id<"users">;
     handle: string;
@@ -1047,19 +1101,20 @@ async function migrateLegacyPublisherHandleToOrgWithActor(
     source: "publisher.legacy_handle.migrate",
   });
 
-  const packages = await ctx.db
-    .query("packages")
-    .withIndex("by_owner", (q) => q.eq("ownerUserId", legacyUser._id))
-    .collect();
-  let packagesMigrated = 0;
-  for (const pkg of packages) {
-    if (pkg.ownerPublisherId === orgPublisherId) continue;
-    await ctx.db.patch(pkg._id, {
-      ownerPublisherId: orgPublisherId,
-      updatedAt: now,
-    });
-    packagesMigrated += 1;
-  }
+  const orgPublisher = await ctx.db.get(orgPublisherId);
+  if (!orgPublisher) throw new ConvexError("Org publisher not found");
+  const packageMigration = await migrateLegacyPackagesToOrgPublisherPage(ctx, {
+    legacyUserId: legacyUser._id,
+    orgPublisher,
+    now,
+    cursor: null,
+  });
+  const skillMigration = await migrateLegacySkillsToOrgPublisherPage(ctx, {
+    legacyUserId: legacyUser._id,
+    orgPublisher,
+    now,
+    cursor: null,
+  });
 
   await ctx.db.insert("auditLogs", {
     actorUserId: args.actorUserId,
@@ -1071,7 +1126,10 @@ async function migrateLegacyPublisherHandleToOrgWithActor(
       legacyUserId: legacyUser._id,
       fallbackUserHandle: nextLegacyUser.handle ?? fallbackHandle,
       convertedExistingPublisher,
-      packagesMigrated,
+      packagesMigrated: packageMigration.packagesMigrated,
+      skillsMigrated: skillMigration.skillsMigrated,
+      packageMigrationTruncated: packageMigration.packageMigrationTruncated,
+      skillMigrationTruncated: skillMigration.skillMigrationTruncated,
       personalPublisherId: ensuredPersonalPublisher?._id ?? null,
     },
     createdAt: now,
@@ -1085,12 +1143,245 @@ async function migrateLegacyPublisherHandleToOrgWithActor(
     fallbackUserHandle: nextLegacyUser.handle ?? fallbackHandle,
     personalPublisherId: ensuredPersonalPublisher?._id ?? null,
     convertedExistingPublisher,
-    packagesMigrated,
+    packagesMigrated: packageMigration.packagesMigrated,
+    skillsMigrated: skillMigration.skillsMigrated,
+    packageMigrationTruncated: packageMigration.packageMigrationTruncated,
+    skillMigrationTruncated: skillMigration.skillMigrationTruncated,
   };
 }
 
-async function ensureOrgPublisherHandleWithActor(
+async function migrateLegacyPackagesToOrgPublisherPage(
+  ctx: Pick<MutationCtx, "db" | "scheduler">,
+  args: {
+    legacyUserId: Id<"users">;
+    orgPublisher: Doc<"publishers">;
+    now: number;
+    cursor: string | null;
+  },
+) {
+  const page = await ctx.db
+    .query("packages")
+    .withIndex("by_owner", (q) => q.eq("ownerUserId", args.legacyUserId))
+    .paginate({ cursor: args.cursor, numItems: LEGACY_PUBLISHER_MIGRATION_BATCH_SIZE });
+
+  let packagesMigrated = 0;
+  for (const pkg of page.page) {
+    const ownerChanged = pkg.ownerPublisherId !== args.orgPublisher._id;
+    const nextChannel: Doc<"packages">["channel"] =
+      pkg.channel === "private" ? "private" : args.orgPublisher.official ? "official" : pkg.channel;
+    const nextIsOfficial = nextChannel === "official";
+    const officialStateChanged = pkg.channel !== nextChannel || pkg.isOfficial !== nextIsOfficial;
+    if (!ownerChanged && !officialStateChanged) continue;
+
+    const nextPackage = {
+      ...pkg,
+      ownerPublisherId: args.orgPublisher._id,
+      channel: nextChannel,
+      isOfficial: nextIsOfficial,
+      updatedAt: args.now,
+    };
+    await ctx.db.patch(pkg._id, {
+      ownerPublisherId: args.orgPublisher._id,
+      channel: nextChannel,
+      isOfficial: nextIsOfficial,
+      updatedAt: args.now,
+    });
+    await upsertPackageSearchDigest(ctx, {
+      ...extractPackageDigestFields(nextPackage),
+      ownerHandle: args.orgPublisher.handle,
+      ownerKind: "org",
+    });
+    if (ownerChanged) packagesMigrated += 1;
+  }
+
+  if (!page.isDone && page.continueCursor) {
+    await ctx.scheduler.runAfter(
+      0,
+      internal.publishers.migrateLegacyPackagesToOrgPublisherBatchInternal,
+      {
+        legacyUserId: args.legacyUserId,
+        orgPublisherId: args.orgPublisher._id,
+        now: args.now,
+        cursor: page.continueCursor,
+      },
+    );
+  }
+
+  return {
+    packagesMigrated,
+    packageMigrationTruncated: !page.isDone,
+  };
+}
+
+async function migrateLegacySkillsToOrgPublisherPage(
+  ctx: Pick<MutationCtx, "db" | "scheduler">,
+  args: {
+    legacyUserId: Id<"users">;
+    orgPublisher: Doc<"publishers">;
+    now: number;
+    cursor: string | null;
+  },
+) {
+  const page = await ctx.db
+    .query("skills")
+    .withIndex("by_owner", (q) => q.eq("ownerUserId", args.legacyUserId))
+    .paginate({ cursor: args.cursor, numItems: LEGACY_PUBLISHER_MIGRATION_BATCH_SIZE });
+
+  let skillsMigrated = 0;
+  for (const skill of page.page) {
+    if (skill.ownerPublisherId === args.orgPublisher._id) continue;
+    if (skill.ownerPublisherId) continue;
+
+    const nextBadges = await getMigratedSkillBadges(ctx, skill, args.orgPublisher);
+    const nextSkill = {
+      ...skill,
+      ownerPublisherId: args.orgPublisher._id,
+      ...(nextBadges ? { badges: nextBadges } : {}),
+      updatedAt: args.now,
+    };
+    await ctx.db.patch(skill._id, {
+      ownerPublisherId: args.orgPublisher._id,
+      ...(nextBadges ? { badges: nextBadges } : {}),
+      updatedAt: args.now,
+    });
+
+    const aliases = await ctx.db
+      .query("skillSlugAliases")
+      .withIndex("by_skill", (q) => q.eq("skillId", skill._id))
+      .collect();
+    for (const alias of aliases) {
+      await ctx.db.patch(alias._id, {
+        ownerPublisherId: args.orgPublisher._id,
+        updatedAt: args.now,
+      });
+    }
+
+    await upsertSkillSearchDigest(ctx, {
+      ...extractDigestFields(nextSkill),
+      ownerHandle: args.orgPublisher.handle,
+      ownerKind: "org",
+      ownerName: undefined,
+      ownerDisplayName: args.orgPublisher.displayName,
+      ownerImage: args.orgPublisher.image,
+    });
+    skillsMigrated += 1;
+  }
+
+  if (!page.isDone && page.continueCursor) {
+    await ctx.scheduler.runAfter(
+      0,
+      internal.publishers.migrateLegacySkillsToOrgPublisherBatchInternal,
+      {
+        legacyUserId: args.legacyUserId,
+        orgPublisherId: args.orgPublisher._id,
+        now: args.now,
+        cursor: page.continueCursor,
+      },
+    );
+  }
+
+  return {
+    skillsMigrated,
+    skillMigrationTruncated: !page.isDone,
+  };
+}
+
+async function getMigratedSkillBadges(
   ctx: Pick<MutationCtx, "db">,
+  skill: Doc<"skills">,
+  orgPublisher: Doc<"publishers">,
+) {
+  const officialBadge = officialSkillBadgeForPublisher(orgPublisher);
+  if (!officialBadge) return skill.badges;
+
+  const existingBadge = await ctx.db
+    .query("skillBadges")
+    .withIndex("by_skill_kind", (q) => q.eq("skillId", skill._id).eq("kind", "official"))
+    .unique();
+  if (existingBadge && existingBadge.sourcePublisherId !== orgPublisher._id) {
+    return {
+      ...skill.badges,
+      official: officialSkillBadgeFromRecord(existingBadge),
+    };
+  }
+
+  const previousBadge = skill.badges?.official;
+  if (
+    previousBadge &&
+    !isPublisherDerivedOfficialBadge(existingBadge, previousBadge, orgPublisher._id)
+  ) {
+    return {
+      ...skill.badges,
+      official: previousBadge,
+    };
+  }
+
+  if (existingBadge) {
+    await ctx.db.patch(existingBadge._id, {
+      byUserId: officialBadge.byUserId,
+      at: officialBadge.at,
+      sourcePublisherId: officialBadge.sourcePublisherId,
+    });
+  } else {
+    await ctx.db.insert("skillBadges", {
+      skillId: skill._id,
+      kind: "official",
+      byUserId: officialBadge.byUserId,
+      at: officialBadge.at,
+      sourcePublisherId: officialBadge.sourcePublisherId,
+    });
+  }
+
+  return {
+    ...skill.badges,
+    official: officialBadge,
+  };
+}
+
+export const migrateLegacyPackagesToOrgPublisherBatchInternal = internalMutation({
+  args: {
+    legacyUserId: v.id("users"),
+    orgPublisherId: v.id("publishers"),
+    now: v.number(),
+    cursor: v.optional(v.union(v.string(), v.null())),
+  },
+  handler: async (ctx, args) => {
+    const orgPublisher = await ctx.db.get(args.orgPublisherId);
+    if (!orgPublisher || orgPublisher.deletedAt || orgPublisher.deactivatedAt) {
+      return { packagesMigrated: 0, packageMigrationTruncated: false };
+    }
+    return await migrateLegacyPackagesToOrgPublisherPage(ctx, {
+      legacyUserId: args.legacyUserId,
+      orgPublisher,
+      now: args.now,
+      cursor: args.cursor ?? null,
+    });
+  },
+});
+
+export const migrateLegacySkillsToOrgPublisherBatchInternal = internalMutation({
+  args: {
+    legacyUserId: v.id("users"),
+    orgPublisherId: v.id("publishers"),
+    now: v.number(),
+    cursor: v.optional(v.union(v.string(), v.null())),
+  },
+  handler: async (ctx, args) => {
+    const orgPublisher = await ctx.db.get(args.orgPublisherId);
+    if (!orgPublisher || orgPublisher.deletedAt || orgPublisher.deactivatedAt) {
+      return { skillsMigrated: 0, skillMigrationTruncated: false };
+    }
+    return await migrateLegacySkillsToOrgPublisherPage(ctx, {
+      legacyUserId: args.legacyUserId,
+      orgPublisher,
+      now: args.now,
+      cursor: args.cursor ?? null,
+    });
+  },
+});
+
+async function ensureOrgPublisherHandleWithActor(
+  ctx: Pick<MutationCtx, "db" | "scheduler">,
   args: {
     actorUserId: Id<"users">;
     handle: string;

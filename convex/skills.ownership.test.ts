@@ -76,6 +76,12 @@ describe("skills ownership", () => {
       _id: "skills:source",
       slug: "portable",
       displayName: "Portable",
+      ownerUserId: "users:owner",
+      ownerPublisherId: "publishers:openclaw",
+      tags: {},
+      stats: {},
+      createdAt: 100,
+      updatedAt: 100,
       badges: {
         official: {
           byUserId: "users:publisher-admin",
@@ -91,9 +97,34 @@ describe("skills ownership", () => {
           get: vi.fn(async (id: string) => {
             if (id === "users:admin") return { _id: "users:admin", role: "admin" };
             if (id === "skills:source") return skill;
+            if (id === "publishers:openclaw") {
+              return {
+                _id: "publishers:openclaw",
+                kind: "org",
+                handle: "openclaw",
+                displayName: "OpenClaw",
+                createdAt: 1,
+                updatedAt: 1,
+              };
+            }
             return null;
           }),
           query: vi.fn((table: string) => {
+            if (table === "skillSearchDigest") {
+              return {
+                withIndex: (name: string) => {
+                  if (name !== "by_skill") {
+                    throw new Error(`unexpected skillSearchDigest index ${name}`);
+                  }
+                  return {
+                    unique: async () => ({
+                      _id: "skillSearchDigest:source",
+                      skillId: "skills:source",
+                    }),
+                  };
+                },
+              };
+            }
             if (table !== "skillBadges") throw new Error(`unexpected table ${table}`);
             return {
               withIndex: (name: string) => {
@@ -136,6 +167,239 @@ describe("skills ownership", () => {
             at: expect.any(Number),
           },
         },
+      }),
+    );
+    expect(patch).toHaveBeenCalledWith(
+      "skillSearchDigest:source",
+      expect.objectContaining({
+        badges: {
+          official: {
+            byUserId: "users:admin",
+            at: expect.any(Number),
+          },
+        },
+        isOfficial: true,
+        ownerHandle: "openclaw",
+        ownerKind: "org",
+      }),
+    );
+  });
+
+  it("syncs manual official badge removals into the skill search digest", async () => {
+    vi.mocked(getAuthUserId).mockResolvedValue("users:admin" as never);
+    const patch = vi.fn(async (_id: string, _value: Record<string, unknown>) => {});
+    const deleteRow = vi.fn(async (_id: string) => {});
+    const insert = vi.fn(async () => "auditLogs:1");
+    const officialBadge = {
+      byUserId: "users:admin",
+      at: 123,
+    };
+    const skill = {
+      _id: "skills:manual",
+      slug: "manual-official",
+      displayName: "Manual Official",
+      ownerUserId: "users:owner",
+      ownerPublisherId: "publishers:openclaw",
+      tags: {},
+      stats: {},
+      createdAt: 100,
+      updatedAt: 100,
+      badges: { official: officialBadge },
+    };
+
+    await setOfficialBadgeHandler(
+      {
+        db: {
+          get: vi.fn(async (id: string) => {
+            if (id === "users:admin") return { _id: "users:admin", role: "admin" };
+            if (id === "skills:manual") return skill;
+            if (id === "publishers:openclaw") {
+              return {
+                _id: "publishers:openclaw",
+                kind: "org",
+                handle: "openclaw",
+                displayName: "OpenClaw",
+                createdAt: 1,
+                updatedAt: 1,
+              };
+            }
+            return null;
+          }),
+          query: vi.fn((table: string) => {
+            if (table === "skillSearchDigest") {
+              return {
+                withIndex: (name: string) => {
+                  if (name !== "by_skill") {
+                    throw new Error(`unexpected skillSearchDigest index ${name}`);
+                  }
+                  return {
+                    unique: async () => ({
+                      _id: "skillSearchDigest:manual",
+                      skillId: "skills:manual",
+                      badges: { official: officialBadge },
+                      isOfficial: true,
+                    }),
+                  };
+                },
+              };
+            }
+            if (table !== "skillBadges") throw new Error(`unexpected table ${table}`);
+            return {
+              withIndex: (name: string) => {
+                if (name !== "by_skill_kind") {
+                  throw new Error(`unexpected skillBadges index ${name}`);
+                }
+                return {
+                  unique: async () => ({
+                    _id: "skillBadges:manual",
+                    skillId: "skills:manual",
+                    kind: "official",
+                    ...officialBadge,
+                  }),
+                };
+              },
+            };
+          }),
+          patch,
+          insert,
+          delete: deleteRow,
+          replace: vi.fn(async () => {}),
+          normalizeId: vi.fn(() => null),
+          system: {},
+        },
+      } as never,
+      {
+        skillId: "skills:manual",
+        official: false,
+      },
+    );
+
+    expect(deleteRow).toHaveBeenCalledWith("skillBadges:manual");
+    expect(patch).toHaveBeenCalledWith("skills:manual", { badges: {} });
+    expect(patch).toHaveBeenCalledWith(
+      "skillSearchDigest:manual",
+      expect.objectContaining({
+        badges: {},
+        isOfficial: false,
+        ownerHandle: "openclaw",
+        ownerKind: "org",
+      }),
+    );
+  });
+
+  it("keeps publisher-derived official badges when removing a manual skill badge", async () => {
+    vi.mocked(getAuthUserId).mockResolvedValue("users:admin" as never);
+    const patch = vi.fn(async (_id: string, _value: Record<string, unknown>) => {});
+    const deleteRow = vi.fn(async (_id: string) => {});
+    const insert = vi.fn(async () => "auditLogs:1");
+    const manualBadge = {
+      byUserId: "users:admin",
+      at: 123,
+    };
+    const publisherBadge = {
+      byUserId: "users:publisher-admin",
+      at: 111,
+      sourcePublisherId: "publishers:openclaw",
+    };
+    const skill = {
+      _id: "skills:manual",
+      slug: "manual-official",
+      displayName: "Manual Official",
+      ownerUserId: "users:owner",
+      ownerPublisherId: "publishers:openclaw",
+      tags: {},
+      stats: {},
+      createdAt: 100,
+      updatedAt: 100,
+      badges: { official: manualBadge },
+    };
+
+    await setOfficialBadgeHandler(
+      {
+        db: {
+          get: vi.fn(async (id: string) => {
+            if (id === "users:admin") return { _id: "users:admin", role: "admin" };
+            if (id === "skills:manual") return skill;
+            if (id === "publishers:openclaw") {
+              return {
+                _id: "publishers:openclaw",
+                kind: "org",
+                handle: "openclaw",
+                displayName: "OpenClaw",
+                official: {
+                  byUserId: publisherBadge.byUserId,
+                  at: publisherBadge.at,
+                },
+                createdAt: 1,
+                updatedAt: 1,
+              };
+            }
+            return null;
+          }),
+          query: vi.fn((table: string) => {
+            if (table === "skillSearchDigest") {
+              return {
+                withIndex: (name: string) => {
+                  if (name !== "by_skill") {
+                    throw new Error(`unexpected skillSearchDigest index ${name}`);
+                  }
+                  return {
+                    unique: async () => ({
+                      _id: "skillSearchDigest:manual",
+                      skillId: "skills:manual",
+                      badges: { official: manualBadge },
+                      isOfficial: true,
+                    }),
+                  };
+                },
+              };
+            }
+            if (table !== "skillBadges") throw new Error(`unexpected table ${table}`);
+            return {
+              withIndex: (name: string) => {
+                if (name !== "by_skill_kind") {
+                  throw new Error(`unexpected skillBadges index ${name}`);
+                }
+                return {
+                  unique: async () => ({
+                    _id: "skillBadges:manual",
+                    skillId: "skills:manual",
+                    kind: "official",
+                    ...manualBadge,
+                  }),
+                };
+              },
+            };
+          }),
+          patch,
+          insert,
+          delete: deleteRow,
+          replace: vi.fn(async () => {}),
+          normalizeId: vi.fn(() => null),
+          system: {},
+        },
+      } as never,
+      {
+        skillId: "skills:manual",
+        official: false,
+      },
+    );
+
+    expect(deleteRow).not.toHaveBeenCalled();
+    expect(patch).toHaveBeenCalledWith("skillBadges:manual", publisherBadge);
+    expect(patch).toHaveBeenCalledWith(
+      "skills:manual",
+      expect.objectContaining({
+        badges: { official: publisherBadge },
+      }),
+    );
+    expect(patch).toHaveBeenCalledWith(
+      "skillSearchDigest:manual",
+      expect.objectContaining({
+        badges: { official: publisherBadge },
+        isOfficial: true,
+        ownerHandle: "openclaw",
+        ownerKind: "org",
       }),
     );
   });

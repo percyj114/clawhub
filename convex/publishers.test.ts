@@ -1958,6 +1958,88 @@ describe("publishers membership controls", () => {
     });
   });
 
+  it("clears stale digest official state when only the canonical publisher badge remains", async () => {
+    const publisherBadge = {
+      byUserId: "users:admin",
+      at: 123,
+      sourcePublisherId: "publishers:steipete",
+    };
+    const skill = {
+      _id: "skills:helper",
+      ownerUserId: "users:steipete",
+      ownerPublisherId: "publishers:steipete",
+      badges: {},
+    };
+    const skillBadge = {
+      _id: "skillBadges:helper",
+      skillId: "skills:helper",
+      kind: "official",
+      ...publisherBadge,
+    };
+    const digest = {
+      _id: "skillSearchDigest:helper",
+      skillId: "skills:helper",
+      badges: { official: publisherBadge },
+      isOfficial: true,
+    };
+    const patch = vi.fn();
+    const deleteRow = vi.fn();
+    const ctx = {
+      scheduler: { runAfter: vi.fn() },
+      db: {
+        get: vi.fn(async (id: string) =>
+          id === "publishers:steipete"
+            ? {
+                _id: "publishers:steipete",
+                kind: "user",
+                handle: "steipete",
+                linkedUserId: "users:steipete",
+                official: undefined,
+              }
+            : null,
+        ),
+        query: vi.fn((table: string) => {
+          if (table === "skills") {
+            return { withIndex: vi.fn(() => indexedRows([skill])) };
+          }
+          if (table === "skillBadges") {
+            return {
+              withIndex: vi.fn(() => ({ unique: vi.fn(async () => skillBadge) })),
+            };
+          }
+          if (table === "skillSearchDigest") {
+            return {
+              withIndex: vi.fn(() => ({ unique: vi.fn(async () => digest) })),
+            };
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
+        patch,
+        insert: vi.fn(),
+        delete: deleteRow,
+        replace: vi.fn(),
+        normalizeId: vi.fn(),
+      },
+    };
+
+    await expect(
+      syncPublisherSkillOfficialStateBatchInternalHandler(ctx as never, {
+        publisherId: "publishers:steipete",
+        official: false,
+        now: 456,
+        phase: "scoped",
+        cursor: null,
+      }),
+    ).resolves.toEqual({ updatedSkills: 1, skillSyncTruncated: false });
+
+    expect(deleteRow).toHaveBeenCalledWith("skillBadges:helper");
+    expect(patch).toHaveBeenCalledWith("skills:helper", { badges: {} });
+    expect(patch).toHaveBeenCalledWith("skillSearchDigest:helper", {
+      badges: {},
+      isOfficial: false,
+    });
+  });
+
   it("removes stale publisher-derived skill badges when official unset uses the old marker", async () => {
     const oldPublisherBadge = {
       byUserId: "users:admin",
@@ -2188,6 +2270,92 @@ describe("publishers membership controls", () => {
     expect(patch).toHaveBeenCalledWith("skills:helper", { badges: { official: nextBadge } });
     expect(patch).toHaveBeenCalledWith("skillSearchDigest:helper", {
       badges: { official: nextBadge },
+      isOfficial: true,
+    });
+  });
+
+  it("preserves canonical manual skill badges when official sync repairs stale denormalized fields", async () => {
+    const publisherBadge = {
+      byUserId: "users:admin",
+      at: 456,
+      sourcePublisherId: "publishers:steipete",
+    };
+    const manualBadge = { byUserId: "users:reviewer", at: 222 };
+    const skill = {
+      _id: "skills:helper",
+      ownerUserId: "users:steipete",
+      ownerPublisherId: "publishers:steipete",
+      badges: {},
+    };
+    const skillBadge = {
+      _id: "skillBadges:official",
+      skillId: "skills:helper",
+      kind: "official",
+      ...manualBadge,
+    };
+    const digest = {
+      _id: "skillSearchDigest:helper",
+      skillId: "skills:helper",
+      badges: {},
+      isOfficial: false,
+    };
+    const patch = vi.fn();
+    const insert = vi.fn();
+
+    const ctx = {
+      scheduler: { runAfter: vi.fn() },
+      db: {
+        get: vi.fn(async (id: string) =>
+          id === "publishers:steipete"
+            ? {
+                _id: "publishers:steipete",
+                kind: "user",
+                handle: "steipete",
+                linkedUserId: "users:steipete",
+                official: { byUserId: "users:admin", at: 456 },
+              }
+            : null,
+        ),
+        query: vi.fn((table: string) => {
+          if (table === "skills") {
+            return { withIndex: vi.fn(() => indexedRows([skill])) };
+          }
+          if (table === "skillBadges") {
+            return {
+              withIndex: vi.fn(() => ({ unique: vi.fn(async () => skillBadge) })),
+            };
+          }
+          if (table === "skillSearchDigest") {
+            return {
+              withIndex: vi.fn(() => ({ unique: vi.fn(async () => digest) })),
+            };
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
+        patch,
+        insert,
+        delete: vi.fn(),
+        replace: vi.fn(),
+        normalizeId: vi.fn(),
+      },
+    };
+
+    await expect(
+      syncPublisherSkillOfficialStateBatchInternalHandler(ctx as never, {
+        publisherId: "publishers:steipete",
+        official: true,
+        officialBadge: publisherBadge,
+        now: 456,
+        phase: "scoped",
+        cursor: null,
+      }),
+    ).resolves.toEqual({ updatedSkills: 1, skillSyncTruncated: false });
+
+    expect(patch).not.toHaveBeenCalledWith("skillBadges:official", publisherBadge);
+    expect(insert).not.toHaveBeenCalledWith("skillBadges", expect.anything());
+    expect(patch).toHaveBeenCalledWith("skills:helper", { badges: { official: manualBadge } });
+    expect(patch).toHaveBeenCalledWith("skillSearchDigest:helper", {
+      badges: { official: manualBadge },
       isOfficial: true,
     });
   });
@@ -3694,6 +3862,7 @@ describe("legacy publisher migration", () => {
           displayName: "OpenClaw",
           linkedUserId: "users:openclaw",
           trustedPublisher: true,
+          official: { byUserId: "users:admin", at: 1_700_000_000_000 },
           createdAt: 1,
           updatedAt: 1,
         },
@@ -3716,11 +3885,101 @@ describe("legacy publisher migration", () => {
     const packages = [
       {
         _id: "packages:demo",
+        _creationTime: 1,
+        name: "@openclaw/demo",
+        normalizedName: "@openclaw/demo",
+        displayName: "Demo",
+        family: "code-plugin",
+        channel: "community",
+        isOfficial: false,
         ownerUserId: "users:openclaw",
         ownerPublisherId: undefined,
+        tags: {},
+        stats: { downloads: 0, installs: 0, stars: 0, versions: 1 },
+        createdAt: 1,
         updatedAt: 1,
       },
     ];
+    const skills = [
+      {
+        _id: "skills:legacy",
+        _creationTime: 1,
+        slug: "legacy-skill",
+        displayName: "Legacy Skill",
+        summary: "Legacy skill",
+        ownerUserId: "users:openclaw",
+        ownerPublisherId: undefined,
+        tags: {},
+        badges: {},
+        stats: {
+          downloads: 0,
+          stars: 0,
+          versions: 1,
+          comments: 0,
+          installsCurrent: 0,
+          installsAllTime: 0,
+        },
+        moderationStatus: "approved",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      {
+        _id: "skills:personal",
+        _creationTime: 1,
+        slug: "personal-skill",
+        displayName: "Personal Skill",
+        ownerUserId: "users:openclaw",
+        ownerPublisherId: "publishers:openclaw-user",
+        tags: {},
+        badges: {},
+        stats: {
+          downloads: 0,
+          stars: 0,
+          versions: 1,
+          comments: 0,
+          installsCurrent: 0,
+          installsAllTime: 0,
+        },
+        moderationStatus: "approved",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ];
+    const skillSlugAliases = [
+      {
+        _id: "skillSlugAliases:legacy",
+        slug: "old-legacy-skill",
+        skillId: "skills:legacy",
+        ownerUserId: "users:openclaw",
+        ownerPublisherId: undefined,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ];
+    const skillSearchDigests: Array<Record<string, unknown>> = [
+      {
+        _id: "skillSearchDigest:legacy",
+        skillId: "skills:legacy",
+        ownerUserId: "users:openclaw",
+        ownerPublisherId: undefined,
+        ownerHandle: "openclaw",
+        ownerKind: "user",
+        badges: {},
+      },
+    ];
+    const packageSearchDigests: Array<Record<string, unknown>> = [
+      {
+        _id: "packageSearchDigest:demo",
+        packageId: "packages:demo",
+        ownerUserId: "users:openclaw",
+        ownerPublisherId: undefined,
+        ownerHandle: "openclaw",
+        ownerKind: "user",
+        channel: "community",
+        isOfficial: false,
+      },
+    ];
+    const skillBadges: Array<Record<string, unknown>> = [];
     const publisherMembers = [
       {
         _id: "publisherMembers:openclaw-owner",
@@ -3744,6 +4003,26 @@ describe("legacy publisher migration", () => {
       const pkg = packages.find((entry) => entry._id === id);
       if (pkg) {
         Object.assign(pkg, value);
+        return;
+      }
+      const skill = skills.find((entry) => entry._id === id);
+      if (skill) {
+        Object.assign(skill, value);
+        return;
+      }
+      const alias = skillSlugAliases.find((entry) => entry._id === id);
+      if (alias) {
+        Object.assign(alias, value);
+        return;
+      }
+      const digest = skillSearchDigests.find((entry) => entry._id === id);
+      if (digest) {
+        Object.assign(digest, value);
+        return;
+      }
+      const packageDigest = packageSearchDigests.find((entry) => entry._id === id);
+      if (packageDigest) {
+        Object.assign(packageDigest, value);
         return;
       }
       const member = publisherMembers.find((entry) => entry._id === id);
@@ -3770,6 +4049,16 @@ describe("legacy publisher migration", () => {
           createdAt: Number(value.createdAt),
           updatedAt: Number(value.updatedAt),
         });
+        return id;
+      }
+      if (table === "skillSearchDigest") {
+        const id = `skillSearchDigest:${skillSearchDigests.length + 1}`;
+        skillSearchDigests.push({ _id: id, ...value });
+        return id;
+      }
+      if (table === "skillBadges") {
+        const id = `skillBadges:${skillBadges.length + 1}`;
+        skillBadges.push({ _id: id, ...value });
         return id;
       }
       if (table === "auditLogs") return "auditLogs:1";
@@ -3886,26 +4175,149 @@ describe("legacy publisher migration", () => {
                 },
               };
               builder?.(q);
-              return {
-                collect: vi.fn(async () => {
-                  if (ownerUserId) {
-                    return packages.filter((pkg) => pkg.ownerUserId === ownerUserId);
-                  }
-                  if (ownerPublisherId) {
-                    return packages.filter((pkg) => pkg.ownerPublisherId === ownerPublisherId);
-                  }
-                  return [];
-                }),
-              };
+              if (ownerUserId) {
+                return indexedRows(packages.filter((pkg) => pkg.ownerUserId === ownerUserId));
+              }
+              if (ownerPublisherId) {
+                return indexedRows(
+                  packages.filter((pkg) => pkg.ownerPublisherId === ownerPublisherId),
+                );
+              }
+              return indexedRows([]);
             },
           ),
         };
       }
       if (table === "skills") {
         return {
-          withIndex: vi.fn(() => ({
-            collect: vi.fn(async () => []),
-          })),
+          withIndex: vi.fn(
+            (
+              _indexName: string,
+              builder?: (q: { eq: (field: string, value: string) => unknown }) => unknown,
+            ) => {
+              let ownerUserId = "";
+              const q = {
+                eq: (field: string, value: string) => {
+                  if (field === "ownerUserId") ownerUserId = value;
+                  return q;
+                },
+              };
+              builder?.(q);
+              return indexedRows(
+                ownerUserId ? skills.filter((skill) => skill.ownerUserId === ownerUserId) : [],
+              );
+            },
+          ),
+        };
+      }
+      if (table === "skillBadges") {
+        return {
+          withIndex: vi.fn(
+            (
+              _indexName: string,
+              builder?: (q: { eq: (field: string, value: string) => unknown }) => unknown,
+            ) => {
+              let skillId = "";
+              let kind = "";
+              const q = {
+                eq: (field: string, value: string) => {
+                  if (field === "skillId") skillId = value;
+                  if (field === "kind") kind = value;
+                  return q;
+                },
+              };
+              builder?.(q);
+              return {
+                unique: vi.fn(
+                  async () =>
+                    skillBadges.find((badge) => badge.skillId === skillId && badge.kind === kind) ??
+                    null,
+                ),
+              };
+            },
+          ),
+        };
+      }
+      if (table === "skillSlugAliases") {
+        return {
+          withIndex: vi.fn(
+            (
+              _indexName: string,
+              builder?: (q: { eq: (field: string, value: string) => unknown }) => unknown,
+            ) => {
+              let skillId = "";
+              const q = {
+                eq: (field: string, value: string) => {
+                  if (field === "skillId") skillId = value;
+                  return q;
+                },
+              };
+              builder?.(q);
+              return {
+                collect: vi.fn(async () =>
+                  skillId ? skillSlugAliases.filter((alias) => alias.skillId === skillId) : [],
+                ),
+              };
+            },
+          ),
+        };
+      }
+      if (table === "skillSearchDigest") {
+        return {
+          withIndex: vi.fn(
+            (
+              _indexName: string,
+              builder?: (q: { eq: (field: string, value: string) => unknown }) => unknown,
+            ) => {
+              let skillId = "";
+              const q = {
+                eq: (field: string, value: string) => {
+                  if (field === "skillId") skillId = value;
+                  return q;
+                },
+              };
+              builder?.(q);
+              return {
+                unique: vi.fn(
+                  async () =>
+                    skillSearchDigests.find((digest) => digest.skillId === skillId) ?? null,
+                ),
+              };
+            },
+          ),
+        };
+      }
+      if (table === "packageSearchDigest") {
+        return {
+          withIndex: vi.fn(
+            (
+              _indexName: string,
+              builder?: (q: { eq: (field: string, value: string) => unknown }) => unknown,
+            ) => {
+              let packageId = "";
+              const q = {
+                eq: (field: string, value: string) => {
+                  if (field === "packageId") packageId = value;
+                  return q;
+                },
+              };
+              builder?.(q);
+              return {
+                unique: vi.fn(
+                  async () =>
+                    packageSearchDigests.find((digest) => digest.packageId === packageId) ?? null,
+                ),
+              };
+            },
+          ),
+        };
+      }
+      if (
+        table === "packageCapabilitySearchDigest" ||
+        table === "packagePluginCategorySearchDigest"
+      ) {
+        return {
+          withIndex: vi.fn(() => indexedRows([])),
         };
       }
       throw new Error(`unexpected table ${table}`);
@@ -3913,6 +4325,7 @@ describe("legacy publisher migration", () => {
 
     const result = await migrateLegacyPublisherHandleToOrgInternalHandler(
       {
+        scheduler: { runAfter: vi.fn() },
         db: {
           get: vi.fn(async (id: string) => users.get(id) ?? publishers.get(id) ?? null),
           query,
@@ -3940,6 +4353,7 @@ describe("legacy publisher migration", () => {
       personalPublisherId: "publishers:openclaw-user",
       convertedExistingPublisher: true,
       packagesMigrated: 1,
+      skillsMigrated: 1,
     });
     expect(users.get("users:openclaw")).toEqual(
       expect.objectContaining({
@@ -3964,6 +4378,55 @@ describe("legacy publisher migration", () => {
     expect(packages[0]).toEqual(
       expect.objectContaining({
         ownerPublisherId: "publishers:openclaw",
+        channel: "official",
+        isOfficial: true,
+      }),
+    );
+    expect(skills[0]).toEqual(
+      expect.objectContaining({
+        ownerPublisherId: "publishers:openclaw",
+        badges: {
+          official: {
+            byUserId: "users:admin",
+            at: 1_700_000_000_000,
+            sourcePublisherId: "publishers:openclaw",
+          },
+        },
+      }),
+    );
+    expect(skills[1]).toEqual(
+      expect.objectContaining({
+        ownerPublisherId: "publishers:openclaw-user",
+      }),
+    );
+    expect(skillSlugAliases[0]).toEqual(
+      expect.objectContaining({
+        ownerPublisherId: "publishers:openclaw",
+      }),
+    );
+    expect(skillSearchDigests[0]).toEqual(
+      expect.objectContaining({
+        ownerPublisherId: "publishers:openclaw",
+        ownerHandle: "openclaw",
+        ownerKind: "org",
+        ownerDisplayName: "OpenClaw",
+        badges: {
+          official: {
+            byUserId: "users:admin",
+            at: 1_700_000_000_000,
+            sourcePublisherId: "publishers:openclaw",
+          },
+        },
+        isOfficial: true,
+      }),
+    );
+    expect(packageSearchDigests[0]).toEqual(
+      expect.objectContaining({
+        ownerPublisherId: "publishers:openclaw",
+        ownerHandle: "openclaw",
+        ownerKind: "org",
+        channel: "official",
+        isOfficial: true,
       }),
     );
   });

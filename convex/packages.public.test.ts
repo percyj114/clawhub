@@ -3187,7 +3187,7 @@ describe("packages public queries", () => {
     );
   });
 
-  it("keeps admin transfers user-owned when ownerPublisherId is omitted", async () => {
+  it("keeps omitted-publisher admin transfers user-owned while honoring personal official status", async () => {
     const { ctx, patch } = makeTransferPackageOwnerCtx({
       owner: {
         _id: "users:openclaw",
@@ -3214,8 +3214,8 @@ describe("packages public queries", () => {
       packageId: "packages:demo",
       ownerUserId: "users:openclaw",
       ownerPublisherId: undefined,
-      channel: "community",
-      isOfficial: false,
+      channel: "official",
+      isOfficial: true,
     });
 
     expect(patch).toHaveBeenCalledWith(
@@ -3223,8 +3223,8 @@ describe("packages public queries", () => {
       expect.objectContaining({
         ownerUserId: "users:openclaw",
         ownerPublisherId: undefined,
-        channel: "community",
-        isOfficial: false,
+        channel: "official",
+        isOfficial: true,
       }),
     );
   });
