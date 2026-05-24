@@ -107,6 +107,7 @@ function makeDigest(
 
 function makeCtx(
   pages: Array<{ page: Array<Record<string, unknown>>; isDone: boolean; continueCursor: string }>,
+  options: { hasUnbackfilledOfficialDigests?: boolean } = {},
 ) {
   const indexNames: string[] = [];
   const pageByCursor = new Map<
@@ -119,6 +120,15 @@ function makeCtx(
     pageByCursor.set(cursor, page);
     cursor = page.continueCursor;
   }
+  type IndexBuilder = {
+    eq: (field: string, value: unknown) => IndexBuilder;
+  };
+  const makeIndexBuilder = (): IndexBuilder => {
+    const builder: IndexBuilder = {
+      eq: () => builder,
+    };
+    return builder;
+  };
   return {
     db: {
       query: (table: string) => {
@@ -127,8 +137,8 @@ function makeCtx(
             withIndex: (
               _index: string,
               builder: (q: {
-                eq: (field: string, value: string) => { field: string; value: string };
-              }) => { field: string; value: string },
+                eq: (field: string, value: unknown) => { field: string; value: unknown };
+              }) => { field: string; value: unknown },
             ) => {
               const constraint = builder({ eq: (field, value) => ({ field, value }) });
               return {
@@ -148,9 +158,18 @@ function makeCtx(
         }
 
         return {
-          withIndex: (indexName: string) => {
+          withIndex: (indexName: string, builder?: (q: IndexBuilder) => unknown) => {
             indexNames.push(indexName);
+            builder?.(makeIndexBuilder());
             return {
+              take: async () =>
+                indexName === "by_active_official_updated" && options.hasUnbackfilledOfficialDigests
+                  ? [
+                      makeDigest("legacy-official", {
+                        badges: { official: { byUserId: "users:admin", at: 1 } },
+                      }),
+                    ]
+                  : [],
               order: () => ({
                 paginate: async ({ cursor: pageCursor }: { cursor: string | null }) =>
                   pageByCursor.get(pageCursor) ?? { page: [], isDone: true, continueCursor: "" },
@@ -194,7 +213,39 @@ describe("skills package catalog queries", () => {
         isOfficial: true,
       }),
     ]);
-    expect(ctx.indexNames).toEqual(["by_active_official_updated"]);
+    expect(ctx.indexNames).toEqual(["by_active_official_updated", "by_active_official_updated"]);
+  });
+
+  it("keeps legacy official skills visible until the official digest backfill completes", async () => {
+    const ctx = makeCtx(
+      [
+        {
+          page: [
+            makeDigest("legacy-official-skill", {
+              badges: { official: { byUserId: "users:admin", at: 1 } },
+            }),
+            makeDigest("community-skill"),
+          ],
+          isDone: true,
+          continueCursor: "",
+        },
+      ],
+      { hasUnbackfilledOfficialDigests: true },
+    );
+
+    const result = await listPackageCatalogPageHandler(ctx, {
+      isOfficial: true,
+      paginationOpts: { cursor: null, numItems: 10 },
+    });
+
+    expect(result.page).toEqual([
+      expect.objectContaining({
+        name: "legacy-official-skill",
+        channel: "official",
+        isOfficial: true,
+      }),
+    ]);
+    expect(ctx.indexNames).toEqual(["by_active_official_updated", "by_active_updated"]);
   });
 
   it("searches skills with package-style lexical scoring", async () => {
@@ -246,6 +297,33 @@ describe("skills package catalog queries", () => {
 
     expect(result.map((entry) => entry.package.name)).toEqual(["official-skill"]);
     expect(ctx.indexNames).toContain("by_active_official_updated");
+  });
+
+  it("searches legacy official skills while the official digest backfill is incomplete", async () => {
+    const ctx = makeCtx(
+      [
+        {
+          page: [
+            makeDigest("official-helper", {
+              badges: { official: { byUserId: "users:admin", at: 1 } },
+              displayName: "Official Helper",
+            }),
+          ],
+          isDone: true,
+          continueCursor: "",
+        },
+      ],
+      { hasUnbackfilledOfficialDigests: true },
+    );
+
+    const result = await searchPackageCatalogPublicHandler(ctx, {
+      query: "official",
+      isOfficial: true,
+      limit: 5,
+    });
+
+    expect(result.map((entry) => entry.package.name)).toEqual(["official-helper"]);
+    expect(ctx.indexNames).toContain("by_active_updated");
   });
 
   it("does not let official status make unrelated skills eligible for package search", async () => {

@@ -5141,6 +5141,16 @@ function getSkillCatalogIndexedOfficialFilter(args: {
   return null;
 }
 
+async function hasUnbackfilledSkillCatalogOfficialDigests(ctx: Pick<QueryCtx, "db">) {
+  const rows = await ctx.db
+    .query("skillSearchDigest")
+    .withIndex("by_active_official_updated", (q) =>
+      q.eq("softDeletedAt", undefined).eq("isOfficial", undefined),
+    )
+    .take(1);
+  return rows.length > 0;
+}
+
 function isVisibleSkillCatalogDigest(digest: Doc<"skillSearchDigest">) {
   const publicSkill = toPublicSkill(digestToHydratableSkill(digest));
   if (!publicSkill) return false;
@@ -5295,6 +5305,10 @@ export const listPackageCatalogPage = query({
       return { page: [], isDone: true, continueCursor: "" };
     }
     const indexedOfficialFilter = getSkillCatalogIndexedOfficialFilter(args);
+    const useIndexedOfficialFilter =
+      indexedOfficialFilter === true
+        ? !(await hasUnbackfilledSkillCatalogOfficialDigests(ctx))
+        : false;
 
     const targetCount = args.paginationOpts.numItems;
     const collected: PublicSkillCatalogItem[] = [];
@@ -5324,12 +5338,11 @@ export const listPackageCatalogPage = query({
       remainingScanBudget -= effectivePageSize;
       const pageCursor = cursor;
       const digestsQuery = paginator(ctx.db, schema).query("skillSearchDigest");
-      const indexedQuery =
-        indexedOfficialFilter === true
-          ? digestsQuery.withIndex("by_active_official_updated", (q) =>
-              q.eq("softDeletedAt", undefined).eq("isOfficial", true),
-            )
-          : digestsQuery.withIndex("by_active_updated", (q) => q.eq("softDeletedAt", undefined));
+      const indexedQuery = useIndexedOfficialFilter
+        ? digestsQuery.withIndex("by_active_official_updated", (q) =>
+            q.eq("softDeletedAt", undefined).eq("isOfficial", true),
+          )
+        : digestsQuery.withIndex("by_active_updated", (q) => q.eq("softDeletedAt", undefined));
       const page = await indexedQuery
         .order("desc")
         .paginate({ cursor: pageCursor, numItems: effectivePageSize });
@@ -5394,6 +5407,10 @@ async function searchPackageCatalogImpl(ctx: QueryCtx, args: SkillPackageCatalog
   )
     return [];
   const indexedOfficialFilter = getSkillCatalogIndexedOfficialFilter(args);
+  const useIndexedOfficialFilter =
+    indexedOfficialFilter === true
+      ? !(await hasUnbackfilledSkillCatalogOfficialDigests(ctx))
+      : false;
 
   const targetCount = Math.max(1, Math.min(args.limit ?? 20, 100));
   const matches: Array<SkillCatalogSearchMatch & { package: PublicSkillCatalogItem }> = [];
@@ -5420,12 +5437,11 @@ async function searchPackageCatalogImpl(ctx: QueryCtx, args: SkillPackageCatalog
   if (matches.length < targetCount) {
     const pageSize = Math.min(MAX_SKILL_CATALOG_SEARCH_PAGE_SIZE, Math.max(targetCount * 5, 50));
     const digestsQuery = ctx.db.query("skillSearchDigest");
-    const indexedQuery =
-      indexedOfficialFilter === true
-        ? digestsQuery.withIndex("by_active_official_updated", (q) =>
-            q.eq("softDeletedAt", undefined).eq("isOfficial", true),
-          )
-        : digestsQuery.withIndex("by_active_updated", (q) => q.eq("softDeletedAt", undefined));
+    const indexedQuery = useIndexedOfficialFilter
+      ? digestsQuery.withIndex("by_active_official_updated", (q) =>
+          q.eq("softDeletedAt", undefined).eq("isOfficial", true),
+        )
+      : digestsQuery.withIndex("by_active_updated", (q) => q.eq("softDeletedAt", undefined));
     const page = await indexedQuery.order("desc").paginate({ cursor: null, numItems: pageSize });
 
     for (const digest of page.page) {
