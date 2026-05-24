@@ -5114,11 +5114,31 @@ function decodeSkillCatalogCursor(raw: string | null | undefined): SkillCatalogC
 }
 
 function isSkillCatalogOfficial(digest: Doc<"skillSearchDigest">) {
-  return Boolean(digest.badges?.official);
+  return digest.isOfficial ?? Boolean(digest.badges?.official);
 }
 
 function getSkillCatalogChannel(digest: Doc<"skillSearchDigest">): "official" | "community" {
   return isSkillCatalogOfficial(digest) ? "official" : "community";
+}
+
+function hasConflictingSkillCatalogOfficialFilters(args: {
+  channel?: "official" | "community" | "private";
+  isOfficial?: boolean;
+}) {
+  return (
+    args.channel !== undefined &&
+    args.channel !== "private" &&
+    typeof args.isOfficial === "boolean" &&
+    (args.channel === "official") !== args.isOfficial
+  );
+}
+
+function getSkillCatalogIndexedOfficialFilter(args: {
+  channel?: "official" | "community" | "private";
+  isOfficial?: boolean;
+}) {
+  if (args.channel === "official" || args.isOfficial === true) return true;
+  return null;
 }
 
 function isVisibleSkillCatalogDigest(digest: Doc<"skillSearchDigest">) {
@@ -5267,9 +5287,14 @@ export const listPackageCatalogPage = query({
     if (args.capabilityTag && !isKnownSkillCapabilityTag(args.capabilityTag)) {
       return { page: [], isDone: true, continueCursor: "" };
     }
-    if (args.channel === "private" || args.executesCode === true) {
+    if (
+      args.channel === "private" ||
+      args.executesCode === true ||
+      hasConflictingSkillCatalogOfficialFilters(args)
+    ) {
       return { page: [], isDone: true, continueCursor: "" };
     }
+    const indexedOfficialFilter = getSkillCatalogIndexedOfficialFilter(args);
 
     const targetCount = args.paginationOpts.numItems;
     const collected: PublicSkillCatalogItem[] = [];
@@ -5298,9 +5323,14 @@ export const listPackageCatalogPage = query({
       if (effectivePageSize <= 0) break;
       remainingScanBudget -= effectivePageSize;
       const pageCursor = cursor;
-      const page = await paginator(ctx.db, schema)
-        .query("skillSearchDigest")
-        .withIndex("by_active_updated", (q) => q.eq("softDeletedAt", undefined))
+      const digestsQuery = paginator(ctx.db, schema).query("skillSearchDigest");
+      const indexedQuery =
+        indexedOfficialFilter === true
+          ? digestsQuery.withIndex("by_active_official_updated", (q) =>
+              q.eq("softDeletedAt", undefined).eq("isOfficial", true),
+            )
+          : digestsQuery.withIndex("by_active_updated", (q) => q.eq("softDeletedAt", undefined));
+      const page = await indexedQuery
         .order("desc")
         .paginate({ cursor: pageCursor, numItems: effectivePageSize });
 
@@ -5357,7 +5387,13 @@ async function searchPackageCatalogImpl(ctx: QueryCtx, args: SkillPackageCatalog
   const queryText = args.query.trim().toLowerCase();
   if (!queryText) return [];
   if (args.capabilityTag && !isKnownSkillCapabilityTag(args.capabilityTag)) return [];
-  if (args.channel === "private" || args.executesCode === true) return [];
+  if (
+    args.channel === "private" ||
+    args.executesCode === true ||
+    hasConflictingSkillCatalogOfficialFilters(args)
+  )
+    return [];
+  const indexedOfficialFilter = getSkillCatalogIndexedOfficialFilter(args);
 
   const targetCount = Math.max(1, Math.min(args.limit ?? 20, 100));
   const matches: Array<SkillCatalogSearchMatch & { package: PublicSkillCatalogItem }> = [];
@@ -5383,11 +5419,14 @@ async function searchPackageCatalogImpl(ctx: QueryCtx, args: SkillPackageCatalog
 
   if (matches.length < targetCount) {
     const pageSize = Math.min(MAX_SKILL_CATALOG_SEARCH_PAGE_SIZE, Math.max(targetCount * 5, 50));
-    const page = await ctx.db
-      .query("skillSearchDigest")
-      .withIndex("by_active_updated", (q) => q.eq("softDeletedAt", undefined))
-      .order("desc")
-      .paginate({ cursor: null, numItems: pageSize });
+    const digestsQuery = ctx.db.query("skillSearchDigest");
+    const indexedQuery =
+      indexedOfficialFilter === true
+        ? digestsQuery.withIndex("by_active_official_updated", (q) =>
+            q.eq("softDeletedAt", undefined).eq("isOfficial", true),
+          )
+        : digestsQuery.withIndex("by_active_updated", (q) => q.eq("softDeletedAt", undefined));
+    const page = await indexedQuery.order("desc").paginate({ cursor: null, numItems: pageSize });
 
     for (const digest of page.page) {
       if (!skillCatalogMatchesFilters(digest, args)) continue;

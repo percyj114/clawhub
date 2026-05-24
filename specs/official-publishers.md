@@ -19,7 +19,8 @@ The same policy signal appears in two places:
 
 - Publisher/profile UI: official publishers show an `Official` badge.
 - Owned package/skill UI: packages and skills owned by Official publishers show
-  `Official` to users. Packages use the `official` channel.
+  `Official` to users when they are public. Public packages use the `official`
+  channel; private packages stay private.
 
 `trustedPublisher` is an internal automated-publish permission. It does not make
 a publisher or package Official.

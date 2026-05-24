@@ -108,6 +108,7 @@ function makeDigest(
 function makeCtx(
   pages: Array<{ page: Array<Record<string, unknown>>; isDone: boolean; continueCursor: string }>,
 ) {
+  const indexNames: string[] = [];
   const pageByCursor = new Map<
     string | null,
     { page: Array<Record<string, unknown>>; isDone: boolean; continueCursor: string }
@@ -147,39 +148,43 @@ function makeCtx(
         }
 
         return {
-          withIndex: () => ({
-            order: () => ({
-              paginate: async ({ cursor: pageCursor }: { cursor: string | null }) =>
-                pageByCursor.get(pageCursor) ?? { page: [], isDone: true, continueCursor: "" },
-            }),
-            unique: async () => null,
-          }),
+          withIndex: (indexName: string) => {
+            indexNames.push(indexName);
+            return {
+              order: () => ({
+                paginate: async ({ cursor: pageCursor }: { cursor: string | null }) =>
+                  pageByCursor.get(pageCursor) ?? { page: [], isDone: true, continueCursor: "" },
+              }),
+              unique: async () => null,
+            };
+          },
         };
       },
     },
+    indexNames,
   };
 }
 
 describe("skills package catalog queries", () => {
   it("lists official skills as package catalog rows", async () => {
-    const result = await listPackageCatalogPageHandler(
-      makeCtx([
-        {
-          page: [
-            makeDigest("official-skill", {
-              badges: { official: { byUserId: "users:admin", at: 1 } },
-            }),
-            makeDigest("community-skill"),
-          ],
-          isDone: true,
-          continueCursor: "",
-        },
-      ]),
+    const ctx = makeCtx([
       {
-        isOfficial: true,
-        paginationOpts: { cursor: null, numItems: 10 },
+        page: [
+          makeDigest("official-skill", {
+            badges: { official: { byUserId: "users:admin", at: 1 } },
+            isOfficial: true,
+          }),
+          makeDigest("community-skill"),
+        ],
+        isDone: true,
+        continueCursor: "",
       },
-    );
+    ]);
+
+    const result = await listPackageCatalogPageHandler(ctx, {
+      isOfficial: true,
+      paginationOpts: { cursor: null, numItems: 10 },
+    });
 
     expect(result.page).toEqual([
       expect.objectContaining({
@@ -189,6 +194,7 @@ describe("skills package catalog queries", () => {
         isOfficial: true,
       }),
     ]);
+    expect(ctx.indexNames).toEqual(["by_active_official_updated"]);
   });
 
   it("searches skills with package-style lexical scoring", async () => {
@@ -216,6 +222,30 @@ describe("skills package catalog queries", () => {
       },
     });
     expect(result[0]?.score).toBeGreaterThan(0);
+  });
+
+  it("uses the official index for official-only skill package searches", async () => {
+    const ctx = makeCtx([
+      {
+        page: [
+          makeDigest("official-skill", {
+            badges: { official: { byUserId: "users:admin", at: 1 } },
+            isOfficial: true,
+          }),
+        ],
+        isDone: true,
+        continueCursor: "",
+      },
+    ]);
+
+    const result = await searchPackageCatalogPublicHandler(ctx, {
+      query: "official",
+      isOfficial: true,
+      limit: 5,
+    });
+
+    expect(result.map((entry) => entry.package.name)).toEqual(["official-skill"]);
+    expect(ctx.indexNames).toContain("by_active_official_updated");
   });
 
   it("does not let official status make unrelated skills eligible for package search", async () => {

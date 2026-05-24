@@ -45,6 +45,7 @@ const SHARED_KEYS = [
 /** Fields stored in the skillSearchDigest table. */
 export type SkillSearchDigestFields = Pick<Doc<"skills">, (typeof SHARED_KEYS)[number]> & {
   skillId: Id<"skills">;
+  isOfficial: boolean;
   normalizedSlug?: string;
   normalizedSlugFirstToken?: string;
   normalizedDisplayName?: string;
@@ -61,6 +62,7 @@ export function extractDigestFields(skill: Doc<"skills">): SkillSearchDigestFiel
   return {
     ...pick(skill, [...SHARED_KEYS]),
     skillId: skill._id,
+    isOfficial: Boolean(skill.badges?.official),
     normalizedSlug: normalizeSkillSearchText(skill.slug),
     normalizedSlugFirstToken: getFirstSearchToken(skill.slug),
     normalizedDisplayName: normalizeSkillSearchText(skill.displayName),

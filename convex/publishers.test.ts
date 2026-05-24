@@ -1362,6 +1362,7 @@ describe("publishers membership controls", () => {
           sourcePublisherId: "publishers:steipete",
         },
       },
+      isOfficial: true,
     });
     expect(patch).toHaveBeenCalledWith("skillSearchDigest:legacy-helper", {
       badges: {
@@ -1371,6 +1372,7 @@ describe("publishers membership controls", () => {
           sourcePublisherId: "publishers:steipete",
         },
       },
+      isOfficial: true,
     });
     expect(patch).toHaveBeenCalledWith(
       "packageSearchDigest:plugin",
@@ -1454,8 +1456,14 @@ describe("publishers membership controls", () => {
     expect(patch).toHaveBeenCalledWith("skills:helper", { badges: {} });
     expect(patch).toHaveBeenCalledWith("skills:legacy-helper", { badges: {} });
     expect(patch).toHaveBeenCalledWith("skills:paged-helper-98", { badges: {} });
-    expect(patch).toHaveBeenCalledWith("skillSearchDigest:helper", { badges: {} });
-    expect(patch).toHaveBeenCalledWith("skillSearchDigest:legacy-helper", { badges: {} });
+    expect(patch).toHaveBeenCalledWith("skillSearchDigest:helper", {
+      badges: {},
+      isOfficial: false,
+    });
+    expect(patch).toHaveBeenCalledWith("skillSearchDigest:legacy-helper", {
+      badges: {},
+      isOfficial: false,
+    });
     expect(patch).toHaveBeenCalledWith(
       "packages:plugin",
       expect.objectContaining({
@@ -1532,6 +1540,13 @@ describe("publishers membership controls", () => {
             };
           }
           if (table === "skillBadges") {
+            return {
+              withIndex: vi.fn(() => ({
+                unique: vi.fn(async () => null),
+              })),
+            };
+          }
+          if (table === "skillSearchDigest") {
             return {
               withIndex: vi.fn(() => ({
                 unique: vi.fn(async () => null),
@@ -1845,7 +1860,10 @@ describe("publishers membership controls", () => {
     expect(deleteRow).toHaveBeenCalledWith("skillBadges:helper");
     expect(deleteRow).not.toHaveBeenCalledWith("skillBadges:manual");
     expect(patch).toHaveBeenCalledWith("skills:helper", { badges: {} });
-    expect(patch).toHaveBeenCalledWith("skillSearchDigest:helper", { badges: {} });
+    expect(patch).toHaveBeenCalledWith("skillSearchDigest:helper", {
+      badges: {},
+      isOfficial: false,
+    });
     expect(skills.get("skills:manual")?.badges).toEqual({ official: manualBadge });
     expect(skillSearchDigests.get("skillSearchDigest:manual")?.badges).toEqual({
       official: manualBadge,
@@ -1993,7 +2011,10 @@ describe("publishers membership controls", () => {
 
     expect(deleteRow).toHaveBeenCalledWith("skillBadges:helper");
     expect(patch).toHaveBeenCalledWith("skills:helper", { badges: {} });
-    expect(patch).toHaveBeenCalledWith("skillSearchDigest:helper", { badges: {} });
+    expect(patch).toHaveBeenCalledWith("skillSearchDigest:helper", {
+      badges: {},
+      isOfficial: false,
+    });
   });
 
   it("updates stale publisher-derived skill badges when official is re-enabled", async () => {
@@ -2079,6 +2100,7 @@ describe("publishers membership controls", () => {
     expect(patch).toHaveBeenCalledWith("skills:helper", { badges: { official: nextBadge } });
     expect(patch).toHaveBeenCalledWith("skillSearchDigest:helper", {
       badges: { official: nextBadge },
+      isOfficial: true,
     });
   });
 

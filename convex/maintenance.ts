@@ -2351,6 +2351,42 @@ export const backfillDigestIsSuspicious = internalMutation({
   },
 });
 
+// Backfill isOfficial on skillSearchDigest rows where it's undefined.
+// Computes from digest badges so existing manual and publisher-derived official
+// badges become visible to indexed skill-package catalog filters.
+// Run: npx convex run maintenance:backfillDigestIsOfficial --prod
+export const backfillDigestIsOfficial = internalMutation({
+  args: {
+    cursor: v.optional(v.string()),
+    batchSize: v.optional(v.number()),
+    delayMs: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const batchSize = clampInt(args.batchSize ?? 100, 10, 200);
+    const delayMs = args.delayMs ?? 500;
+    const { page, continueCursor, isDone } = await ctx.db
+      .query("skillSearchDigest")
+      .paginate({ cursor: args.cursor ?? null, numItems: batchSize });
+
+    let patched = 0;
+    for (const digest of page) {
+      if (digest.isOfficial !== undefined) continue;
+      await ctx.db.patch(digest._id, { isOfficial: Boolean(digest.badges?.official) });
+      patched++;
+    }
+
+    if (!isDone) {
+      await ctx.scheduler.runAfter(delayMs, internal.maintenance.backfillDigestIsOfficial, {
+        cursor: continueCursor,
+        batchSize: args.batchSize,
+        delayMs: args.delayMs,
+      });
+    }
+
+    return { patched, isDone, scanned: page.length };
+  },
+});
+
 // Backfill normalized search fields on skillSearchDigest for indexed prefix search.
 // Run: npx convex run maintenance:backfillDigestNormalizedSearchFields --prod
 export const backfillDigestNormalizedSearchFields = internalMutation({

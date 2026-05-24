@@ -392,6 +392,7 @@ async function syncPublisherSkillOfficialStatePage(
           !hasCurrentOfficialBadge &&
           isPublisherDerivedOfficialBadge(existingBadge, previousBadge, publisher._id);
         if (previousBadge && !shouldUpdateStalePublisherBadge) {
+          let updatedCurrentSkill = false;
           if (hasCurrentOfficialBadge && !officialBadgeMatches(existingBadge, officialBadge)) {
             if (existingBadge) {
               await ctx.db.patch(existingBadge._id, {
@@ -408,8 +409,17 @@ async function syncPublisherSkillOfficialStatePage(
                 sourcePublisherId: officialBadge.sourcePublisherId,
               });
             }
-            updatedSkills += 1;
+            updatedCurrentSkill = true;
           }
+          const digest = await ctx.db
+            .query("skillSearchDigest")
+            .withIndex("by_skill", (q) => q.eq("skillId", skill._id))
+            .unique();
+          if (digest && digest.isOfficial !== true) {
+            await ctx.db.patch(digest._id, { isOfficial: true });
+            updatedCurrentSkill = true;
+          }
+          if (updatedCurrentSkill) updatedSkills += 1;
           continue;
         }
 
@@ -437,7 +447,7 @@ async function syncPublisherSkillOfficialStatePage(
           .query("skillSearchDigest")
           .withIndex("by_skill", (q) => q.eq("skillId", skill._id))
           .unique();
-        if (digest) await ctx.db.patch(digest._id, { badges: nextBadges });
+        if (digest) await ctx.db.patch(digest._id, { badges: nextBadges, isOfficial: true });
         updatedSkills += 1;
         continue;
       }
@@ -464,7 +474,7 @@ async function syncPublisherSkillOfficialStatePage(
             .query("skillSearchDigest")
             .withIndex("by_skill", (q) => q.eq("skillId", skill._id))
             .unique();
-          if (digest) await ctx.db.patch(digest._id, { badges: nextBadges });
+          if (digest) await ctx.db.patch(digest._id, { badges: nextBadges, isOfficial: false });
         }
         updatedSkills += 1;
       }

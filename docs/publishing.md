@@ -32,7 +32,8 @@ ClawHub admins explicitly mark that member's publisher Official too.
 
 The same policy shows as an `Official` badge on publisher/profile UI. Skills and
 packages owned by an Official publisher also show `Official` in UI/API/install
-metadata. Packages use the `official` channel.
+metadata when they are public. Public packages use the `official` channel;
+private packages stay private.
 
 `trustedPublisher` is an internal automated-publish permission. It does not make
 a publisher or package Official.

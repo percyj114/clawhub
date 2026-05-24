@@ -24,6 +24,7 @@ vi.mock("./_generated/api", () => ({
       cleanupEmptySkillsInternal: Symbol("cleanupEmptySkillsInternal"),
       nominateEmptySkillSpammersInternal: Symbol("nominateEmptySkillSpammersInternal"),
       backfillDenormalizedBadgesInternal: Symbol("backfillDenormalizedBadgesInternal"),
+      backfillDigestIsOfficial: Symbol("backfillDigestIsOfficial"),
     },
     skills: {
       backfillLatestSkillModerationInternal: Symbol("skills.backfillLatestSkillModerationInternal"),
@@ -46,6 +47,7 @@ const {
   backfillSkillFingerprintsInternalHandler,
   backfillSkillSummariesInternalHandler,
   backfillDenormalizedBadgesInternal,
+  backfillDigestIsOfficial,
   backfillUserStatsInternalHandler,
   cleanupEmptySkillsInternalHandler,
   nominateEmptySkillSpammersInternalHandler,
@@ -725,6 +727,59 @@ describe("maintenance capability tag backfill", () => {
       capabilityTags: ["financial-authority", "can-make-purchases"],
       updatedAt: 987,
     });
+  });
+});
+
+describe("maintenance skill digest official backfill", () => {
+  it("denormalizes existing official badges for indexed package catalog filters", async () => {
+    const paginate = vi.fn().mockResolvedValue({
+      page: [
+        {
+          _id: "skillSearchDigest:official",
+          badges: { official: { byUserId: "users:admin", at: 1 } },
+        },
+        {
+          _id: "skillSearchDigest:community",
+          badges: {},
+        },
+        {
+          _id: "skillSearchDigest:already",
+          badges: { official: { byUserId: "users:admin", at: 1 } },
+          isOfficial: true,
+        },
+      ],
+      continueCursor: null,
+      isDone: true,
+    });
+    const query = vi.fn().mockReturnValue({ paginate });
+    const patch = vi.fn().mockResolvedValue(undefined);
+    const runAfter = vi.fn().mockResolvedValue(undefined);
+
+    const result = await (backfillDigestIsOfficial as unknown as { _handler: Function })._handler(
+      {
+        db: {
+          query,
+          patch,
+          get: vi.fn(),
+          insert: vi.fn(),
+          delete: vi.fn(),
+          replace: vi.fn(),
+          normalizeId: vi.fn(),
+        },
+        scheduler: { runAfter },
+      } as never,
+      { batchSize: 10 },
+    );
+
+    expect(result).toEqual({ patched: 2, isDone: true, scanned: 3 });
+    expect(query).toHaveBeenCalledWith("skillSearchDigest");
+    expect(patch).toHaveBeenNthCalledWith(1, "skillSearchDigest:official", {
+      isOfficial: true,
+    });
+    expect(patch).toHaveBeenNthCalledWith(2, "skillSearchDigest:community", {
+      isOfficial: false,
+    });
+    expect(runAfter).not.toHaveBeenCalled();
   });
 });
 
