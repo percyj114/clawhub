@@ -128,6 +128,9 @@
   --status-warning-fg: #fbbf24;
   --status-error-bg: rgba(239, 68, 68, 0.12);
   --status-error-fg: #ef4444;
+  --official-bg: rgba(59, 130, 246, 0.14);
+  --official-fg: #60a5fa;
+  --official-border: rgba(96, 165, 250, 0.3);
 
   /* Form controls — crisp, modern */
   --input-border: rgba(255, 255, 255, 0.1);
@@ -214,6 +217,9 @@
   --status-warning-fg: #d97706;
   --status-error-bg: rgba(239, 68, 68, 0.1);
   --status-error-fg: #dc2626;
+  --official-bg: rgba(37, 99, 235, 0.1);
+  --official-fg: #2563eb;
+  --official-border: rgba(37, 99, 235, 0.26);
 
   /* Form controls — light */
   --input-border: rgba(0, 0, 0, 0.12);
@@ -4730,8 +4736,9 @@ code {
   justify-content: center;
   border: 1px solid var(--line);
   border-radius: var(--r-pill);
-  background: var(--status-warning-bg);
-  color: var(--status-warning-fg);
+  background: var(--official-bg);
+  color: var(--official-fg);
+  border-color: var(--official-border);
   line-height: 1;
   vertical-align: middle;
 }
