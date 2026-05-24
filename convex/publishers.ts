@@ -415,8 +415,13 @@ async function syncPublisherSkillOfficialStatePage(
             .query("skillSearchDigest")
             .withIndex("by_skill", (q) => q.eq("skillId", skill._id))
             .unique();
-          if (digest && digest.isOfficial !== true) {
-            await ctx.db.patch(digest._id, { isOfficial: true });
+          const currentBadges = skill.badges ?? { official: previousBadge };
+          if (
+            digest &&
+            (digest.isOfficial !== true ||
+              !officialBadgeMatches(digest.badges?.official, previousBadge))
+          ) {
+            await ctx.db.patch(digest._id, { badges: currentBadges, isOfficial: true });
             updatedCurrentSkill = true;
           }
           if (updatedCurrentSkill) updatedSkills += 1;
