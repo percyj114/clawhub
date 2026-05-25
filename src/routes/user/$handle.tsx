@@ -294,7 +294,12 @@ function PublisherProfile() {
                           size="sm"
                         />
                         <span className="publisher-profile-org-copy">
-                          <strong>{entry.publisher.displayName}</strong>
+                          <strong className="publisher-profile-org-name">
+                            <span className="publisher-profile-org-name-text">
+                              {entry.publisher.displayName}
+                            </span>
+                            {entry.publisher.official ? <OfficialBadge /> : null}
+                          </strong>
                           <small>@{entry.publisher.handle}</small>
                         </span>
                         <span className="publisher-profile-org-role">{entry.role}</span>
