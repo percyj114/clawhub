@@ -678,7 +678,7 @@ async function enqueueSkillVersionScan(ctx: MutationCtx, args: EnqueueSkillVersi
   const now = Date.now();
   const waitForVtUntil = now + Math.max(0, args.waitForVtMs ?? defaultVtWaitMs());
   const nextRunAt = args.waitForVtMs === 0 || version.vtAnalysis ? now : waitForVtUntil;
-  const hasMaliciousSignal = version.staticScan?.status === "malicious";
+  const hasMaliciousSignal = false;
 
   const existing = await ctx.db
     .query("securityScanJobs")
@@ -689,7 +689,7 @@ async function enqueueSkillVersionScan(ctx: MutationCtx, args: EnqueueSkillVersi
     await ctx.db.patch(active._id, {
       source: args.source,
       priority: Math.max(active.priority, args.priority ?? 0),
-      hasMaliciousSignal: active.hasMaliciousSignal || hasMaliciousSignal,
+      hasMaliciousSignal,
       waitForVtUntil: Math.min(active.waitForVtUntil, waitForVtUntil),
       nextRunAt: Math.min(active.nextRunAt, nextRunAt),
       updatedAt: now,
@@ -702,7 +702,7 @@ async function enqueueSkillVersionScan(ctx: MutationCtx, args: EnqueueSkillVersi
     skillVersionId: args.versionId,
     status: "queued",
     source: args.source,
-    priority: args.priority ?? (hasMaliciousSignal ? 100 : 0),
+    priority: args.priority ?? 0,
     hasMaliciousSignal,
     waitForVtUntil,
     nextRunAt,
@@ -731,7 +731,7 @@ async function enqueuePackageReleaseScan(ctx: MutationCtx, args: EnqueuePackageR
   const now = Date.now();
   const waitForVtUntil = now + Math.max(0, args.waitForVtMs ?? DEFAULT_VT_WAIT_MS);
   const nextRunAt = args.waitForVtMs === 0 || release.vtAnalysis ? now : waitForVtUntil;
-  const hasMaliciousSignal = release.staticScan?.status === "malicious";
+  const hasMaliciousSignal = false;
 
   const existing = await ctx.db
     .query("securityScanJobs")
@@ -742,7 +742,7 @@ async function enqueuePackageReleaseScan(ctx: MutationCtx, args: EnqueuePackageR
     await ctx.db.patch(active._id, {
       source: args.source,
       priority: Math.max(active.priority, args.priority ?? 0),
-      hasMaliciousSignal: active.hasMaliciousSignal || hasMaliciousSignal,
+      hasMaliciousSignal,
       waitForVtUntil: Math.min(active.waitForVtUntil, waitForVtUntil),
       nextRunAt: Math.min(active.nextRunAt, nextRunAt),
       updatedAt: now,
@@ -755,7 +755,7 @@ async function enqueuePackageReleaseScan(ctx: MutationCtx, args: EnqueuePackageR
     packageReleaseId: args.releaseId,
     status: "queued",
     source: args.source,
-    priority: args.priority ?? (hasMaliciousSignal ? 100 : 0),
+    priority: args.priority ?? 0,
     hasMaliciousSignal,
     waitForVtUntil,
     nextRunAt,

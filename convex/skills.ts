@@ -373,6 +373,10 @@ function scannerStatusFromReasonCodes(params: {
   return status === "malicious" || status === "suspicious" ? undefined : status;
 }
 
+function isClawScanMaliciousAnalysis(analysis: Doc<"skillVersions">["llmAnalysis"] | undefined) {
+  return normalizeAnalysisStatus(analysis?.verdict ?? analysis?.status) === "malicious";
+}
+
 function buildScannerModerationPatchFromVersion(params: {
   owner: Doc<"users"> | null | undefined;
   version: Pick<Doc<"skillVersions">, "_id" | "staticScan" | "vtAnalysis" | "llmAnalysis">;
@@ -475,10 +479,11 @@ function applySkillManualOverrideToSkillPatch(params: {
 async function patchStructuredModerationFromVersion(
   ctx: MutationCtx,
   skill: Doc<"skills">,
-  version: Pick<Doc<"skillVersions">, "_id" | "staticScan" | "vtAnalysis" | "llmAnalysis">,
+  version: Pick<
+    Doc<"skillVersions">,
+    "_id" | "staticScan" | "vtAnalysis" | "llmAnalysis" | "sha256hash"
+  >,
 ) {
-  if (shouldPreserveExistingModerationLock(skill)) return;
-
   const now = Date.now();
   const owner = skill.ownerUserId ? await ctx.db.get(skill.ownerUserId) : null;
   const basePatch = buildScannerModerationPatchFromVersion({
@@ -493,9 +498,44 @@ async function patchStructuredModerationFromVersion(
     stripUpdatedAt: true,
   });
 
+  const shouldPersistClawScanMalwareBlock =
+    patch.moderationVerdict === "malicious" && isClawScanMaliciousAnalysis(version.llmAnalysis);
+
+  // A ClawScan-malicious result is itself a security lock. Persist it even
+  // when the skill was already hidden by a user or quality hold so a later
+  // hold lift cannot restore a latest-version malware verdict.
+  if (shouldPreserveExistingModerationLock(skill) && !shouldPersistClawScanMalwareBlock) {
+    await scheduleClawScanAutobanForMalware(ctx, skill, version, patch);
+    return;
+  }
+
   const nextSkill = { ...skill, ...patch };
   await ctx.db.patch(skill._id, patch);
   await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill);
+
+  await scheduleClawScanAutobanForMalware(ctx, skill, version, patch);
+}
+
+async function scheduleClawScanAutobanForMalware(
+  ctx: MutationCtx,
+  skill: Doc<"skills">,
+  version: Pick<Doc<"skillVersions">, "llmAnalysis" | "sha256hash">,
+  patch: SkillModerationPatch,
+) {
+  if (
+    patch.moderationVerdict === "malicious" &&
+    skill.ownerUserId &&
+    isClawScanMaliciousAnalysis(version.llmAnalysis)
+  ) {
+    await ctx.scheduler.runAfter(0, internal.users.autobanMalwareAuthorInternal, {
+      ownerUserId: skill.ownerUserId,
+      slug: skill.slug,
+      ...(version.sha256hash ? { sha256hash: version.sha256hash } : {}),
+      trigger:
+        patch.moderationReasonCodes?.find((code) => code.startsWith("malicious.llm_")) ??
+        "malicious.llm_malicious",
+    });
+  }
 }
 
 export const recomputeLatestSkillModerationInternal = internalMutation({
@@ -638,6 +678,10 @@ function isScannerManagedReason(reason: string | undefined) {
   );
 }
 
+function isLegacyStaticScannerReason(reason: string | undefined) {
+  return reason === "scanner.static.malicious" || reason === "scanner.static.suspicious";
+}
+
 function shouldPreserveExistingModerationLock(
   skill: Pick<Doc<"skills">, "moderationStatus" | "moderationReason">,
 ) {
@@ -710,6 +754,7 @@ function shouldBackfillLatestSkillModeration(
   if (skill.manualOverride) return false;
   if (!shouldSyncModerationFromLatestVersion(skill)) return false;
   if (!skill.latestVersionId) return false;
+  if (isLegacyStaticScannerReason(skill.moderationReason as string | undefined)) return true;
   if (skill.moderationSourceVersionId === skill.latestVersionId) return false;
   return isScannerManagedReason(skill.moderationReason as string | undefined);
 }
@@ -6345,42 +6390,6 @@ export const updateSkillVersionStaticScanInternal = internalMutation({
       versionId: version._id,
       source: "scan",
     });
-    const updatedVersion = { ...version, staticScan: args.staticScan };
-
-    const skill = await ctx.db.get(args.skillId);
-    if (!skill) return { ok: true as const, skipped: "missing" as const };
-    if (skill.latestVersionId !== version._id) {
-      return { ok: true as const, skipped: "not_latest" as const };
-    }
-
-    const owner = skill.ownerUserId ? await ctx.db.get(skill.ownerUserId) : null;
-    const now = Date.now();
-    const basePatch = buildScannerModerationPatchFromVersion({
-      owner,
-      version: updatedVersion,
-      now,
-    });
-    const patch = applySkillManualOverrideToSkillPatch({
-      skill,
-      basePatch,
-      now,
-      stripUpdatedAt: true,
-    });
-    const nextSkill = { ...skill, ...patch };
-    await ctx.db.patch(skill._id, patch);
-    await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill);
-
-    if (patch.moderationVerdict === "malicious" && skill.ownerUserId) {
-      const trigger =
-        patch.moderationReasonCodes?.find((code) => code.startsWith("malicious.")) ??
-        "static.malicious";
-      await ctx.scheduler.runAfter(0, internal.users.autobanMalwareAuthorInternal, {
-        ownerUserId: skill.ownerUserId,
-        slug: skill.slug,
-        ...(updatedVersion.sha256hash ? { sha256hash: updatedVersion.sha256hash } : {}),
-        trigger,
-      });
-    }
 
     return { ok: true as const, status: args.staticScan.status };
   },
@@ -6412,15 +6421,6 @@ export const updateVersionDepRegistryAnalysisInternal = internalMutation({
       versionId: version._id,
       source: "scan",
     });
-    const updatedVersion = { ...version, ...versionPatch };
-
-    const skill = await ctx.db.get(version.skillId);
-    if (!skill) return { ok: true as const, skipped: "missing_skill" as const };
-    if (skill.latestVersionId !== version._id) {
-      return { ok: true as const, skipped: "not_latest" as const };
-    }
-
-    await patchStructuredModerationFromVersion(ctx, skill, updatedVersion);
     return { ok: true as const, status: args.depRegistryAnalysis.status };
   },
 });
@@ -7169,12 +7169,7 @@ export const restoreOwnedSkillsForModerationLiftBatchInternal = internalMutation
       if (skill.moderationReason !== USER_MODERATION_REASON) continue;
       if (skill.moderationStatus !== "hidden") continue;
 
-      // Re-evaluate based on the skill's own scan data rather than blindly
-      // setting to active. If the skill's own static scan was malicious,
-      // keep it hidden -- only the user-level hold should be lifted.
       const latestVersion = skill.latestVersionId ? await ctx.db.get(skill.latestVersionId) : null;
-      const ownStaticVerdict = latestVersion?.staticScan?.status;
-      if (ownStaticVerdict === "malicious") continue;
 
       // If the skill was never scanned (or was pending scan when the hold
       // was placed), re-queue it into the VT pipeline instead of marking it
@@ -7609,16 +7604,6 @@ export const approveSkillByHashInternal = internalMutation({
       const nextSkill = { ...skill, ...patch };
       await ctx.db.patch(skill._id, patch);
       await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill);
-
-      // Auto-ban authors of malicious skills (skips moderators/admins)
-      if (nextVerdict === "malicious" && skill.ownerUserId) {
-        await ctx.scheduler.runAfter(0, internal.users.autobanMalwareAuthorInternal, {
-          ownerUserId: skill.ownerUserId,
-          sha256hash: args.sha256hash,
-          slug: skill.slug,
-          trigger: "vt.malicious",
-        });
-      }
     }
 
     return { ok: true, skillId: version.skillId, versionId: version._id };
@@ -7752,16 +7737,6 @@ export const escalateByVtInternal = internalMutation({
     const nextSkill = { ...skill, ...patch };
     await ctx.db.patch(skill._id, patch);
     await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill);
-
-    // Auto-ban authors of malicious skills
-    if (nextVerdict === "malicious" && skill.ownerUserId) {
-      await ctx.scheduler.runAfter(0, internal.users.autobanMalwareAuthorInternal, {
-        ownerUserId: skill.ownerUserId,
-        sha256hash: args.sha256hash,
-        slug: skill.slug,
-        trigger: "vt.malicious",
-      });
-    }
   },
 });
 
@@ -9866,29 +9841,22 @@ export const insertVersion = internalMutation({
     const qualityAssessment = args.qualityAssessment;
     const isQualityQuarantine = qualityAssessment?.decision === "quarantine";
 
-    const staticSnapshot = buildModerationSnapshot({
-      staticScan: args.staticScan,
-    });
+    const initialScannerSnapshot = buildModerationSnapshot({});
     const isPublisherUnderModeration = Boolean(user.requiresModerationAt);
-    const isStaticMalicious = staticSnapshot.verdict === "malicious";
     const initialModerationStatus =
-      isStaticMalicious || isQualityQuarantine || isPublisherUnderModeration ? "hidden" : "active";
+      isQualityQuarantine || isPublisherUnderModeration ? "hidden" : "active";
 
-    const moderationReason = isStaticMalicious
-      ? "scanner.static.malicious"
-      : isQualityQuarantine
-        ? "quality.low"
-        : isPublisherUnderModeration
-          ? USER_MODERATION_REASON
-          : "pending.scan";
-    const moderationNotes = isStaticMalicious
-      ? "Auto-hidden by static malware detection. Manual moderation review required."
-      : isQualityQuarantine
-        ? `Auto-quarantined by quality gate (score=${qualityAssessment.score}, tier=${qualityAssessment.trustTier}, similar=${qualityAssessment.similarRecentCount}).`
-        : isPublisherUnderModeration
-          ? (user.requiresModerationReason ??
-            "Publisher is currently under manual moderation review.")
-          : undefined;
+    const moderationReason = isQualityQuarantine
+      ? "quality.low"
+      : isPublisherUnderModeration
+        ? USER_MODERATION_REASON
+        : "pending.scan";
+    const moderationNotes = isQualityQuarantine
+      ? `Auto-quarantined by quality gate (score=${qualityAssessment.score}, tier=${qualityAssessment.trustTier}, similar=${qualityAssessment.similarRecentCount}).`
+      : isPublisherUnderModeration
+        ? (user.requiresModerationReason ??
+          "Publisher is currently under manual moderation review.")
+        : undefined;
 
     const qualityRecord = qualityAssessment
       ? {
@@ -9965,7 +9933,7 @@ export const insertVersion = internalMutation({
         files: args.files,
       });
       const newSkillFlags = Array.from(
-        new Set([...(derivedFlags ?? []), ...(staticSnapshot.legacyFlags ?? [])]),
+        new Set([...(derivedFlags ?? []), ...(initialScannerSnapshot.legacyFlags ?? [])]),
       );
       const skillId = await ctx.db.insert("skills", {
         slug,
@@ -9989,14 +9957,16 @@ export const insertVersion = internalMutation({
         moderationStatus: initialModerationStatus,
         moderationReason,
         moderationNotes,
-        moderationVerdict: staticSnapshot.verdict,
-        moderationReasonCodes: staticSnapshot.reasonCodes.length
-          ? staticSnapshot.reasonCodes
+        moderationVerdict: initialScannerSnapshot.verdict,
+        moderationReasonCodes: initialScannerSnapshot.reasonCodes.length
+          ? initialScannerSnapshot.reasonCodes
           : undefined,
-        moderationEvidence: staticSnapshot.evidence.length ? staticSnapshot.evidence : undefined,
-        moderationSummary: staticSnapshot.summary,
-        moderationEngineVersion: staticSnapshot.engineVersion,
-        moderationEvaluatedAt: staticSnapshot.evaluatedAt,
+        moderationEvidence: initialScannerSnapshot.evidence.length
+          ? initialScannerSnapshot.evidence
+          : undefined,
+        moderationSummary: initialScannerSnapshot.summary,
+        moderationEngineVersion: initialScannerSnapshot.engineVersion,
+        moderationEvaluatedAt: initialScannerSnapshot.evaluatedAt,
         moderationSourceVersionId: undefined,
         quality: qualityRecord,
         moderationFlags: newSkillFlags.length ? newSkillFlags : undefined,
@@ -10119,10 +10089,7 @@ export const insertVersion = internalMutation({
       parsed: args.parsed,
       files: args.files,
     });
-    const moderationSnapshot = buildModerationSnapshot({
-      staticScan: args.staticScan,
-      sourceVersionId: versionId,
-    });
+    const moderationSnapshot = buildModerationSnapshot({ sourceVersionId: versionId });
     const nextFlags = Array.from(
       new Set([...(derivedFlags ?? []), ...(moderationSnapshot.legacyFlags ?? [])]),
     );
@@ -10181,17 +10148,6 @@ export const insertVersion = internalMutation({
     const nextSkill = { ...skill, ...patch };
     await ctx.db.patch(skill._id, patch);
     await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill);
-
-    if (moderationSnapshot.verdict === "malicious" && skill.ownerUserId) {
-      const trigger =
-        moderationSnapshot.reasonCodes.find((code) => code.startsWith("malicious.")) ??
-        "static.malicious";
-      await ctx.scheduler.runAfter(0, internal.users.autobanMalwareAuthorInternal, {
-        ownerUserId: skill.ownerUserId,
-        slug: skill.slug,
-        trigger,
-      });
-    }
 
     const badgeMap = await getSkillBadgeMap(ctx, skill._id);
     const isApproved = Boolean(badgeMap.redactionApproved);
