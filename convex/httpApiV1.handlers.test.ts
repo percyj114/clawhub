@@ -2883,6 +2883,331 @@ describe("httpApiV1 handlers", () => {
     expect(await response.text()).toBe("Skill Card not found");
   });
 
+  it("returns bulk skill security verdicts without card data", async () => {
+    const version = {
+      _id: "skillVersions:1",
+      skillId: "skills:1",
+      version: "1.0.0",
+      createdAt: 1,
+      changelog: "c",
+      files: [{ path: "SKILL.md", size: 5, storageId: "storage:1", sha256: "source-sha" }],
+      staticScan: {
+        status: "clean",
+        reasonCodes: [],
+        findings: [],
+        summary: "Static scan clean.",
+        engineVersion: "static-v1",
+        checkedAt: 2,
+      },
+      llmAnalysis: {
+        status: "clean",
+        verdict: "clean",
+        confidence: "high",
+        summary: "ClawScan clean.",
+        checkedAt: 3,
+        model: "gpt-test",
+      },
+      depRegistryAnalysis: {
+        status: "clean",
+        results: [],
+        notFoundPackages: [],
+        unresolvedPackages: [],
+        summary: "No dependency issues.",
+        checkedAt: 4,
+      },
+      capabilityTags: ["dev-tools"],
+      softDeletedAt: undefined,
+    };
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+            displayName: "Demo",
+            summary: "s",
+            tags: {},
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+            latestVersionId: "skillVersions:1",
+          },
+          latestVersion: { _id: "skillVersions:1", version: "1.0.0" },
+          owner: { _id: "users:1", handle: "acme", displayName: "Acme" },
+          moderationInfo: {
+            isPendingScan: false,
+            isMalwareBlocked: false,
+            isSuspicious: false,
+            isHiddenByMod: false,
+            isRemoved: false,
+          },
+        };
+      }
+      if ("skillId" in args && "version" in args) return version;
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillSecurityVerdictsV1Handler(
+      makeCtx({ runQuery, runMutation, storage: { get: vi.fn() } }),
+      new Request("https://example.com/api/v1/skills/-/security-verdicts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ items: [{ slug: "demo", version: "1.0.0" }] }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json).toMatchObject({
+      schema: "clawhub.skill.security-verdicts.v1",
+      items: [
+        {
+          ok: true,
+          decision: "pass",
+          reasons: [],
+          slug: "demo",
+          requestedSlug: "demo",
+          displayName: "Demo",
+          publisherHandle: "acme",
+          publisherDisplayName: "Acme",
+          requestedVersion: "1.0.0",
+          version: "1.0.0",
+          createdAt: 1,
+          checkedAt: 4,
+          skillUrl: "https://example.com/acme/demo",
+          securityAuditUrl: "https://example.com/acme/demo/security-audit?version=1.0.0",
+          security: {
+            status: "clean",
+            passed: true,
+            rawStatus: "clean",
+            verdict: "clean",
+            signals: {
+              staticScan: { status: "clean", rawStatus: "clean" },
+              dependencyRegistry: { status: "clean", rawStatus: "clean" },
+            },
+          },
+        },
+      ],
+    });
+    expect(json.items[0].card).toBeUndefined();
+    expect(json.items[0].artifact).toBeUndefined();
+    expect(json.items[0].security.signals.staticScan.findings).toBeUndefined();
+    expect(json.items[0].security.signals.dependencyRegistry.notFoundPackages).toBeUndefined();
+  });
+
+  it("keeps bulk verdict item failures local to each requested skill", async () => {
+    const softDeletedVersion = {
+      _id: "skillVersions:deleted",
+      skillId: "skills:soft",
+      version: "2.0.0",
+      createdAt: 2,
+      changelog: "c",
+      files: [],
+      llmAnalysis: { status: "clean", verdict: "clean", checkedAt: 3 },
+      softDeletedAt: 5,
+    };
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if (args.slug === "missing") return null;
+      if (args.slug === "no-version") {
+        return {
+          skill: {
+            _id: "skills:no-version",
+            slug: "no-version",
+            displayName: "No Version",
+            tags: {},
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+          },
+          latestVersion: null,
+          owner: null,
+        };
+      }
+      if (args.slug === "soft") {
+        return {
+          skill: {
+            _id: "skills:soft",
+            slug: "soft",
+            displayName: "Soft",
+            tags: {},
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+          },
+          latestVersion: softDeletedVersion,
+          owner: null,
+        };
+      }
+      if (args.skillId === "skills:soft") return softDeletedVersion;
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillSecurityVerdictsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/skills/-/security-verdicts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          items: [
+            { slug: "missing", version: "1.0.0" },
+            { slug: "no-version", version: "1.0.0" },
+            { slug: "soft", version: "2.0.0" },
+          ],
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.items).toHaveLength(3);
+    expect(json.items.map((item: { ok: boolean }) => item.ok)).toEqual([false, false, false]);
+    expect(json.items[0]).toMatchObject({
+      requestedSlug: "missing",
+      requestedVersion: "1.0.0",
+      decision: "fail",
+      reasons: ["skill.not_found"],
+      error: { code: "skill_not_found", message: "Skill not found" },
+    });
+    expect(json.items[1]).toMatchObject({
+      requestedSlug: "no-version",
+      requestedVersion: "1.0.0",
+      decision: "fail",
+      reasons: ["version.not_found"],
+      error: { code: "version_not_found", message: "Version not found" },
+    });
+    expect(json.items[2]).toMatchObject({
+      requestedSlug: "soft",
+      requestedVersion: "2.0.0",
+      decision: "fail",
+      reasons: ["version.unavailable"],
+      error: { code: "version_unavailable", message: "Version not available" },
+    });
+  });
+
+  it.each([
+    {
+      label: "suspicious",
+      analysis: { status: "completed", verdict: "suspicious", checkedAt: 10 },
+      reasons: ["security.status_not_clean"],
+      security: { status: "suspicious", passed: false },
+    },
+    {
+      label: "malicious",
+      analysis: { status: "completed", verdict: "malicious", checkedAt: 10 },
+      reasons: ["security.status_not_clean"],
+      security: { status: "malicious", passed: false },
+    },
+    {
+      label: "pending",
+      analysis: { status: "completed", checkedAt: 11 },
+      reasons: ["security.status_not_clean", "security.pending"],
+      security: { status: "pending", passed: false },
+    },
+    {
+      label: "error",
+      analysis: { status: "failed", checkedAt: 12 },
+      reasons: ["security.status_not_clean", "security.error"],
+      security: { status: "error", passed: false },
+    },
+  ])("reports $label bulk security verdicts", async ({ analysis, reasons, security }) => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+            displayName: "Demo",
+            tags: {},
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+          },
+          latestVersion: { _id: "skillVersions:1", version: "1.0.0" },
+          owner: null,
+        };
+      }
+      if ("skillId" in args && "version" in args) {
+        return {
+          _id: "skillVersions:1",
+          skillId: "skills:1",
+          version: "1.0.0",
+          createdAt: 1,
+          changelog: "c",
+          files: [],
+          llmAnalysis: analysis,
+          softDeletedAt: undefined,
+        };
+      }
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillSecurityVerdictsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/skills/-/security-verdicts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ items: [{ slug: "demo", version: "1.0.0" }] }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.items[0]).toMatchObject({
+      ok: false,
+      decision: "fail",
+      reasons,
+      security,
+    });
+  });
+
+  it("rejects malformed bulk security verdict request bodies", async () => {
+    const runQuery = vi.fn();
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const missingItems = await __handlers.skillSecurityVerdictsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/skills/-/security-verdicts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ items: [] }),
+      }),
+    );
+    expect(missingItems.status).toBe(400);
+    expect(await missingItems.text()).toBe("items must contain 1 to 100 entries");
+
+    const duplicate = await __handlers.skillSecurityVerdictsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/skills/-/security-verdicts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          items: [
+            { slug: "demo", version: "1.0.0" },
+            { slug: "demo", version: "1.0.0" },
+          ],
+        }),
+      }),
+    );
+    expect(duplicate.status).toBe(400);
+    expect(await duplicate.text()).toBe("Duplicate item: demo@1.0.0");
+
+    const ambiguous = await __handlers.skillSecurityVerdictsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/skills/-/security-verdicts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ items: [{ slug: "demo", version: "1.0.0", tag: "latest" }] }),
+      }),
+    );
+    expect(ambiguous.status).toBe(400);
+    expect(await ambiguous.text()).toBe("items[0] uses version only; tag is not supported");
+
+    expect(runQuery).not.toHaveBeenCalled();
+  });
+
   it("returns a skill verification envelope with card and security metadata", async () => {
     const internalVersion = {
       _id: "skillVersions:1",

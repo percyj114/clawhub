@@ -47,6 +47,7 @@ const MAX_EXPORT_FILE_COUNT = 10_000;
 const MAX_EXPORT_PAGE_LIMIT = 250;
 const DEFAULT_EXPORT_PAGE_LIMIT = 250;
 const MAX_EXPORT_TOTAL_BYTES = 256 * 1024 * 1024;
+const MAX_SECURITY_VERDICT_ITEMS = 100;
 
 type SearchSkillEntry = {
   score: number;
@@ -175,6 +176,7 @@ type GetBySlugResult = {
     reason?: string;
   } | null;
 } | null;
+type GetBySlugOwner = NonNullable<GetBySlugResult>["owner"];
 
 type ListVersionsResult = {
   items: PublicSkillVersionResponse[];
@@ -437,6 +439,11 @@ type SkillVersionFingerprintSummary = {
   createdAt: number;
 };
 
+type SecurityVerdictRequestItem = {
+  slug: string;
+  version: string;
+};
+
 function normalizeVerificationStatus(value: string | null | undefined): NormalizedSecurityStatus {
   const normalized = value?.trim().toLowerCase();
   if (!normalized) return "pending";
@@ -559,11 +566,269 @@ function buildVerifyReasons(args: {
 }) {
   const reasons: string[] = [];
   if (!args.cardAvailable) reasons.push("card.missing");
+  reasons.push(
+    ...buildSecurityVerdictReasons({
+      isMalwareBlocked: args.isMalwareBlocked,
+      securityPassed: args.securityPassed,
+      securityStatus: args.securityStatus,
+    }),
+  );
+  return [...new Set(reasons)];
+}
+
+function buildSecurityVerdictReasons(args: {
+  isMalwareBlocked: boolean;
+  securityPassed: boolean;
+  securityStatus: NormalizedSecurityStatus;
+}) {
+  const reasons: string[] = [];
   if (args.isMalwareBlocked) reasons.push("moderation.malware_blocked");
   if (!args.securityPassed) reasons.push("security.status_not_clean");
   if (args.securityStatus === "pending") reasons.push("security.pending");
   if (args.securityStatus === "error") reasons.push("security.error");
   return [...new Set(reasons)];
+}
+
+function getVerifySecurityCheckedAt(security: ReturnType<typeof buildVerifySecurity>) {
+  const candidates = [
+    security.checkedAt,
+    security.signals.staticScan?.checkedAt,
+    security.signals.virusTotal?.checkedAt,
+    security.signals.skillSpector?.checkedAt,
+    security.signals.dependencyRegistry?.checkedAt,
+  ].filter((value): value is number => typeof value === "number");
+  return candidates.length > 0 ? Math.max(...candidates) : null;
+}
+
+function buildSecurityVerdictSummary(security: ReturnType<typeof buildVerifySecurity>) {
+  return {
+    status: security.status,
+    passed: security.passed,
+    rawStatus: security.rawStatus,
+    verdict: security.verdict,
+    confidence: security.confidence,
+    summary: security.summary,
+    model: security.model,
+    checkedAt: security.checkedAt,
+    signals: {
+      staticScan: security.signals.staticScan
+        ? {
+            status: security.signals.staticScan.status,
+            rawStatus: security.signals.staticScan.rawStatus,
+            reasonCodes: security.signals.staticScan.reasonCodes,
+            summary: security.signals.staticScan.summary,
+            engineVersion: security.signals.staticScan.engineVersion,
+            checkedAt: security.signals.staticScan.checkedAt,
+          }
+        : null,
+      virusTotal: security.signals.virusTotal
+        ? {
+            status: security.signals.virusTotal.status,
+            rawStatus: security.signals.virusTotal.rawStatus,
+            verdict: security.signals.virusTotal.verdict,
+            source: security.signals.virusTotal.source,
+            checkedAt: security.signals.virusTotal.checkedAt,
+          }
+        : null,
+      skillSpector: security.signals.skillSpector
+        ? {
+            status: security.signals.skillSpector.status,
+            rawStatus: security.signals.skillSpector.rawStatus,
+            score: security.signals.skillSpector.score,
+            severity: security.signals.skillSpector.severity,
+            recommendation: security.signals.skillSpector.recommendation,
+            issueCount: security.signals.skillSpector.issueCount,
+            scannerVersion: security.signals.skillSpector.scannerVersion,
+            checkedAt: security.signals.skillSpector.checkedAt,
+          }
+        : null,
+      dependencyRegistry: security.signals.dependencyRegistry
+        ? {
+            status: security.signals.dependencyRegistry.status,
+            rawStatus: security.signals.dependencyRegistry.rawStatus,
+            summary: security.signals.dependencyRegistry.summary,
+            checkedAt: security.signals.dependencyRegistry.checkedAt,
+          }
+        : null,
+    },
+  };
+}
+
+function isValidRequestedVersion(version: string) {
+  return version.length > 0 && version.length <= 128 && !/[\s/\\]/.test(version);
+}
+
+function parseSecurityVerdictItems(
+  payload: Record<string, unknown>,
+): { ok: true; items: SecurityVerdictRequestItem[] } | { ok: false; message: string } {
+  const items = payload.items;
+  if (!Array.isArray(items) || items.length < 1 || items.length > MAX_SECURITY_VERDICT_ITEMS) {
+    return { ok: false, message: `items must contain 1 to ${MAX_SECURITY_VERDICT_ITEMS} entries` };
+  }
+
+  const parsed: SecurityVerdictRequestItem[] = [];
+  const seen = new Set<string>();
+  for (const [index, item] of items.entries()) {
+    if (!item || typeof item !== "object") {
+      return { ok: false, message: `Invalid item at items[${index}]` };
+    }
+    const raw = item as Record<string, unknown>;
+    if (typeof raw.slug !== "string" || typeof raw.version !== "string") {
+      return { ok: false, message: `items[${index}] requires slug and version strings` };
+    }
+    if ("tag" in raw) {
+      return { ok: false, message: `items[${index}] uses version only; tag is not supported` };
+    }
+    const slug = raw.slug.trim().toLowerCase();
+    const version = raw.version.trim();
+    if (!validateSlug(slug)) {
+      return { ok: false, message: `Invalid slug at items[${index}]` };
+    }
+    if (!isValidRequestedVersion(version)) {
+      return { ok: false, message: `Invalid version at items[${index}]` };
+    }
+    const key = `${slug}@${version}`;
+    if (seen.has(key)) return { ok: false, message: `Duplicate item: ${key}` };
+    seen.add(key);
+    parsed.push({ slug, version });
+  }
+
+  return { ok: true, items: parsed };
+}
+
+function buildSkillPageUrl(request: Request, owner: GetBySlugOwner, slug: string) {
+  const origin = new URL(request.url).origin;
+  const ownerSegment = owner?.handle ?? owner?._id ?? null;
+  if (!ownerSegment) {
+    return new URL(`/api/v1/skills/${encodeURIComponent(slug)}`, origin).toString();
+  }
+  return new URL(
+    `/${encodeURIComponent(ownerSegment)}/${encodeURIComponent(slug)}`,
+    origin,
+  ).toString();
+}
+
+function buildSecurityAuditUrl(
+  request: Request,
+  owner: GetBySlugOwner,
+  slug: string,
+  version: string,
+) {
+  const ownerSegment = owner?.handle ?? owner?._id ?? null;
+  if (!ownerSegment) return null;
+
+  const url = new URL(
+    `/${encodeURIComponent(ownerSegment)}/${encodeURIComponent(slug)}/security-audit`,
+    new URL(request.url).origin,
+  );
+  url.searchParams.set("version", version);
+  return url.toString();
+}
+
+function buildSecurityVerdictError(
+  item: SecurityVerdictRequestItem,
+  code: string,
+  message: string,
+  reason: string,
+) {
+  return {
+    ok: false,
+    decision: "fail",
+    reasons: [reason],
+    requestedSlug: item.slug,
+    slug: item.slug,
+    requestedVersion: item.version,
+    version: null,
+    displayName: null,
+    publisherHandle: null,
+    publisherDisplayName: null,
+    createdAt: null,
+    checkedAt: null,
+    skillUrl: null,
+    securityAuditUrl: null,
+    security: null,
+    error: { code, message },
+  };
+}
+
+async function buildSecurityVerdictItem(
+  ctx: ActionCtx,
+  request: Request,
+  item: SecurityVerdictRequestItem,
+) {
+  const skillResult = (await ctx.runQuery(api.skills.getBySlug, {
+    slug: item.slug,
+  })) as GetBySlugResult;
+  if (!skillResult?.skill) {
+    return buildSecurityVerdictError(item, "skill_not_found", "Skill not found", "skill.not_found");
+  }
+
+  const version = (await ctx.runQuery(internal.skills.getVersionBySkillAndVersionInternal, {
+    skillId: skillResult.skill._id,
+    version: item.version,
+  })) as Doc<"skillVersions"> | null;
+  if (!version) {
+    return buildSecurityVerdictError(
+      item,
+      "version_not_found",
+      "Version not found",
+      "version.not_found",
+    );
+  }
+  if (version.softDeletedAt) {
+    return buildSecurityVerdictError(
+      item,
+      "version_unavailable",
+      "Version not available",
+      "version.unavailable",
+    );
+  }
+
+  const security = buildVerifySecurity(version);
+  const reasons = buildSecurityVerdictReasons({
+    isMalwareBlocked: skillResult.moderationInfo?.isMalwareBlocked ?? false,
+    securityPassed: security.passed,
+    securityStatus: security.status,
+  });
+
+  return {
+    ok: reasons.length === 0,
+    decision: reasons.length === 0 ? "pass" : "fail",
+    reasons,
+    requestedSlug: item.slug,
+    slug: skillResult.skill.slug,
+    displayName: skillResult.skill.displayName,
+    publisherHandle: skillResult.owner?.handle ?? null,
+    publisherDisplayName: skillResult.owner?.displayName ?? null,
+    requestedVersion: item.version,
+    version: version.version,
+    createdAt: version.createdAt,
+    checkedAt: getVerifySecurityCheckedAt(security),
+    skillUrl: buildSkillPageUrl(request, skillResult.owner, skillResult.skill.slug),
+    securityAuditUrl: buildSecurityAuditUrl(
+      request,
+      skillResult.owner,
+      skillResult.skill.slug,
+      version.version,
+    ),
+    security: buildSecurityVerdictSummary(security),
+  };
+}
+
+export async function skillSecurityVerdictsV1Handler(ctx: ActionCtx, request: Request) {
+  const rate = await applyRateLimit(ctx, request, "read");
+  if (!rate.ok) return rate.response;
+
+  const parsed = await parseJsonPayload(request, rate.headers);
+  if (!parsed.ok) return parsed.response;
+
+  const requestItems = parseSecurityVerdictItems(parsed.payload);
+  if (!requestItems.ok) return text(requestItems.message, 400, rate.headers);
+
+  const items = await chunkedParallel(requestItems.items, 20, (item) =>
+    buildSecurityVerdictItem(ctx, request, item),
+  );
+  return json({ schema: "clawhub.skill.security-verdicts.v1", items }, 200, rate.headers);
 }
 
 export async function searchSkillsV1Handler(ctx: ActionCtx, request: Request) {
