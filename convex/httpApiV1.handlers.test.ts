@@ -2994,6 +2994,99 @@ describe("httpApiV1 handlers", () => {
     expect(runQuery.mock.calls.some(([, args]) => "skillId" in args)).toBe(false);
   });
 
+  it("uses the public site origin for production bulk verdict links", async () => {
+    vi.stubEnv("CONVEX_DEPLOYMENT", "prod:wry-manatee-359");
+    const runQuery = vi.fn(async () => ({
+      skill: { _id: "skills:1", slug: "demo", displayName: "Demo" },
+      owner: { _id: "users:1", handle: "acme", displayName: "Acme" },
+      moderationInfo: {
+        isPendingScan: false,
+        isMalwareBlocked: false,
+        isSuspicious: false,
+        isHiddenByMod: false,
+        isRemoved: false,
+      },
+      version: {
+        _id: "skillVersions:1",
+        version: "1.0.0",
+        createdAt: 1,
+        llmAnalysis: { status: "clean", verdict: "clean", checkedAt: 2 },
+      },
+    }));
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillSecurityVerdictsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://wry-manatee-359.convex.site/api/v1/skills/-/security-verdicts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ items: [{ slug: "demo", version: "1.0.0" }] }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.items[0]).toMatchObject({
+      skillUrl: "https://clawhub.ai/acme/demo",
+      securityAuditUrl: "https://clawhub.ai/acme/demo/security-audit?version=1.0.0",
+    });
+  });
+
+  it("honors staff-cleared bulk security verdicts", async () => {
+    const runQuery = vi.fn(async () => ({
+      skill: { _id: "skills:1", slug: "demo", displayName: "Demo" },
+      owner: { _id: "users:1", handle: "acme", displayName: "Acme" },
+      moderationInfo: {
+        isPendingScan: false,
+        isMalwareBlocked: false,
+        isSuspicious: false,
+        isHiddenByMod: false,
+        isRemoved: false,
+        overrideActive: true,
+        verdict: "clean",
+        summary: "Security findings were reviewed by moderators and cleared for public use.",
+        updatedAt: 20,
+      },
+      version: {
+        _id: "skillVersions:1",
+        version: "1.0.0",
+        createdAt: 1,
+        llmAnalysis: {
+          status: "completed",
+          verdict: "suspicious",
+          summary: "Scanner found review-worthy behavior.",
+          checkedAt: 10,
+        },
+      },
+    }));
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillSecurityVerdictsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/skills/-/security-verdicts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ items: [{ slug: "demo", version: "1.0.0" }] }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.items[0]).toMatchObject({
+      ok: true,
+      decision: "pass",
+      reasons: [],
+      checkedAt: 20,
+      security: {
+        status: "clean",
+        passed: true,
+        verdict: "clean",
+        summary: "Security findings were reviewed by moderators and cleared for public use.",
+        checkedAt: 20,
+      },
+    });
+  });
+
   it("keeps bulk verdict item failures local to each requested skill", async () => {
     const softDeletedVersion = {
       _id: "skillVersions:deleted",

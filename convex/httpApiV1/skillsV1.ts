@@ -35,6 +35,7 @@ import {
   parseJsonPayload,
   parseMultipartPublish,
   parsePublishBody,
+  publicApiOrigin,
   requireApiTokenUserOrResponse,
   resolveTagsBatch,
   safeTextFileResponse,
@@ -445,10 +446,44 @@ type SecurityVerdictRequestItem = {
   version: string;
 };
 
-type VerifySecurityVersion = Pick<
-  Doc<"skillVersions">,
-  "staticScan" | "llmAnalysis" | "vtAnalysis" | "skillSpectorAnalysis" | "depRegistryAnalysis"
->;
+type VerifySecurityVersion = {
+  staticScan?: Pick<
+    NonNullable<Doc<"skillVersions">["staticScan"]>,
+    "status" | "reasonCodes" | "summary" | "engineVersion" | "checkedAt"
+  >;
+  llmAnalysis?: Pick<
+    NonNullable<Doc<"skillVersions">["llmAnalysis"]>,
+    "status" | "verdict" | "confidence" | "summary" | "model" | "checkedAt"
+  >;
+  vtAnalysis?: Pick<
+    NonNullable<Doc<"skillVersions">["vtAnalysis"]>,
+    "status" | "verdict" | "source" | "checkedAt"
+  > &
+    Partial<
+      Pick<NonNullable<Doc<"skillVersions">["vtAnalysis"]>, "analysis" | "scanner" | "engineStats">
+    >;
+  skillSpectorAnalysis?: Pick<
+    NonNullable<Doc<"skillVersions">["skillSpectorAnalysis"]>,
+    | "status"
+    | "score"
+    | "severity"
+    | "recommendation"
+    | "issueCount"
+    | "scannerVersion"
+    | "checkedAt"
+  > &
+    Partial<Pick<NonNullable<Doc<"skillVersions">["skillSpectorAnalysis"]>, "summary" | "error">>;
+  depRegistryAnalysis?: Pick<
+    NonNullable<Doc<"skillVersions">["depRegistryAnalysis"]>,
+    "status" | "summary" | "checkedAt"
+  > &
+    Partial<
+      Pick<
+        NonNullable<Doc<"skillVersions">["depRegistryAnalysis"]>,
+        "notFoundPackages" | "unresolvedPackages"
+      >
+    >;
+};
 
 type SecurityVerdictTargetResult = {
   skill: {
@@ -468,6 +503,7 @@ type SecurityVerdictTargetResult = {
     summary?: string;
     engineVersion?: string;
     updatedAt?: number;
+    overrideActive?: boolean;
   } | null;
   version:
     | (VerifySecurityVersion &
@@ -602,6 +638,7 @@ function buildVerifyReasons(args: {
       isMalwareBlocked: args.isMalwareBlocked,
       securityPassed: args.securityPassed,
       securityStatus: args.securityStatus,
+      staffCleared: false,
     }),
   );
   return [...new Set(reasons)];
@@ -611,12 +648,15 @@ function buildSecurityVerdictReasons(args: {
   isMalwareBlocked: boolean;
   securityPassed: boolean;
   securityStatus: NormalizedSecurityStatus;
+  staffCleared: boolean;
 }) {
   const reasons: string[] = [];
   if (args.isMalwareBlocked) reasons.push("moderation.malware_blocked");
-  if (!args.securityPassed) reasons.push("security.status_not_clean");
-  if (args.securityStatus === "pending") reasons.push("security.pending");
-  if (args.securityStatus === "error") reasons.push("security.error");
+  if (!args.staffCleared) {
+    if (!args.securityPassed) reasons.push("security.status_not_clean");
+    if (args.securityStatus === "pending") reasons.push("security.pending");
+    if (args.securityStatus === "error") reasons.push("security.error");
+  }
   return [...new Set(reasons)];
 }
 
@@ -685,6 +725,45 @@ function buildSecurityVerdictSummary(security: ReturnType<typeof buildVerifySecu
   };
 }
 
+type SecurityVerdictModerationInfo = NonNullable<SecurityVerdictTargetResult>["moderationInfo"];
+
+function isStaffClearedSecurityVerdict(moderationInfo: SecurityVerdictModerationInfo) {
+  return Boolean(
+    moderationInfo?.overrideActive &&
+    moderationInfo.verdict === "clean" &&
+    !moderationInfo.isMalwareBlocked,
+  );
+}
+
+function buildEffectiveSecurityVerdictSummary(
+  security: ReturnType<typeof buildVerifySecurity>,
+  moderationInfo: SecurityVerdictModerationInfo,
+) {
+  const summary = buildSecurityVerdictSummary(security);
+  if (!isStaffClearedSecurityVerdict(moderationInfo)) return summary;
+
+  return {
+    ...summary,
+    status: "clean" as const,
+    passed: true,
+    verdict: "clean",
+    summary: moderationInfo?.summary ?? summary.summary,
+    checkedAt: getEffectiveSecurityVerdictCheckedAt(security, moderationInfo),
+  };
+}
+
+function getEffectiveSecurityVerdictCheckedAt(
+  security: ReturnType<typeof buildVerifySecurity>,
+  moderationInfo: SecurityVerdictModerationInfo,
+) {
+  const candidates = [getVerifySecurityCheckedAt(security)];
+  if (isStaffClearedSecurityVerdict(moderationInfo)) {
+    candidates.push(moderationInfo?.updatedAt ?? null);
+  }
+  const checkedAt = candidates.filter((value): value is number => typeof value === "number");
+  return checkedAt.length > 0 ? Math.max(...checkedAt) : null;
+}
+
 function isValidRequestedVersion(version: string) {
   return version.length > 0 && version.length <= 128 && !/[\s/\\]/.test(version);
 }
@@ -732,7 +811,7 @@ function parseSecurityVerdictItems(
 }
 
 function buildSkillPageUrl(request: Request, owner: SkillUrlOwner, slug: string) {
-  const origin = new URL(request.url).origin;
+  const origin = publicApiOrigin(request);
   const ownerSegment = owner?.handle ?? owner?._id ?? null;
   if (!ownerSegment) {
     return new URL(`/api/v1/skills/${encodeURIComponent(slug)}`, origin).toString();
@@ -754,7 +833,7 @@ function buildSecurityAuditUrl(
 
   const url = new URL(
     `/${encodeURIComponent(ownerSegment)}/${encodeURIComponent(slug)}/security-audit`,
-    new URL(request.url).origin,
+    publicApiOrigin(request),
   );
   url.searchParams.set("version", version);
   return url.toString();
@@ -822,10 +901,12 @@ async function buildSecurityVerdictItem(
   }
 
   const security = buildVerifySecurity(version);
+  const staffCleared = isStaffClearedSecurityVerdict(result.moderationInfo);
   const reasons = buildSecurityVerdictReasons({
     isMalwareBlocked: result.moderationInfo?.isMalwareBlocked ?? false,
     securityPassed: security.passed,
     securityStatus: security.status,
+    staffCleared,
   });
 
   return {
@@ -840,7 +921,7 @@ async function buildSecurityVerdictItem(
     requestedVersion: item.version,
     version: version.version,
     createdAt: version.createdAt,
-    checkedAt: getVerifySecurityCheckedAt(security),
+    checkedAt: getEffectiveSecurityVerdictCheckedAt(security, result.moderationInfo),
     skillUrl: buildSkillPageUrl(request, result.owner, result.skill.slug),
     securityAuditUrl: buildSecurityAuditUrl(
       request,
@@ -848,7 +929,7 @@ async function buildSecurityVerdictItem(
       result.skill.slug,
       version.version,
     ),
-    security: buildSecurityVerdictSummary(security),
+    security: buildEffectiveSecurityVerdictSummary(security, result.moderationInfo),
   };
 }
 

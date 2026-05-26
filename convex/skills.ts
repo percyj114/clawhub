@@ -2665,6 +2665,90 @@ export const getSkillBySlugInternal = internalQuery({
   },
 });
 
+function compactSecurityVerdictVersion(version: Doc<"skillVersions">) {
+  return {
+    _id: version._id,
+    version: version.version,
+    createdAt: version.createdAt,
+    softDeletedAt: version.softDeletedAt,
+    ...(version.staticScan
+      ? {
+          staticScan: {
+            status: version.staticScan.status,
+            reasonCodes: version.staticScan.reasonCodes,
+            summary: version.staticScan.summary,
+            engineVersion: version.staticScan.engineVersion,
+            checkedAt: version.staticScan.checkedAt,
+          },
+        }
+      : {}),
+    ...(version.llmAnalysis
+      ? {
+          llmAnalysis: {
+            status: version.llmAnalysis.status,
+            ...(version.llmAnalysis.verdict !== undefined
+              ? { verdict: version.llmAnalysis.verdict }
+              : {}),
+            ...(version.llmAnalysis.confidence !== undefined
+              ? { confidence: version.llmAnalysis.confidence }
+              : {}),
+            ...(version.llmAnalysis.summary !== undefined
+              ? { summary: version.llmAnalysis.summary }
+              : {}),
+            ...(version.llmAnalysis.model !== undefined
+              ? { model: version.llmAnalysis.model }
+              : {}),
+            checkedAt: version.llmAnalysis.checkedAt,
+          },
+        }
+      : {}),
+    ...(version.vtAnalysis
+      ? {
+          vtAnalysis: {
+            status: version.vtAnalysis.status,
+            ...(version.vtAnalysis.verdict !== undefined
+              ? { verdict: version.vtAnalysis.verdict }
+              : {}),
+            ...(version.vtAnalysis.source !== undefined
+              ? { source: version.vtAnalysis.source }
+              : {}),
+            checkedAt: version.vtAnalysis.checkedAt,
+          },
+        }
+      : {}),
+    ...(version.skillSpectorAnalysis
+      ? {
+          skillSpectorAnalysis: {
+            status: version.skillSpectorAnalysis.status,
+            ...(version.skillSpectorAnalysis.score !== undefined
+              ? { score: version.skillSpectorAnalysis.score }
+              : {}),
+            ...(version.skillSpectorAnalysis.severity !== undefined
+              ? { severity: version.skillSpectorAnalysis.severity }
+              : {}),
+            ...(version.skillSpectorAnalysis.recommendation !== undefined
+              ? { recommendation: version.skillSpectorAnalysis.recommendation }
+              : {}),
+            issueCount: version.skillSpectorAnalysis.issueCount,
+            ...(version.skillSpectorAnalysis.scannerVersion !== undefined
+              ? { scannerVersion: version.skillSpectorAnalysis.scannerVersion }
+              : {}),
+            checkedAt: version.skillSpectorAnalysis.checkedAt,
+          },
+        }
+      : {}),
+    ...(version.depRegistryAnalysis
+      ? {
+          depRegistryAnalysis: {
+            status: version.depRegistryAnalysis.status,
+            summary: version.depRegistryAnalysis.summary,
+            checkedAt: version.depRegistryAnalysis.checkedAt,
+          },
+        }
+      : {}),
+  };
+}
+
 export const getSecurityVerdictTargetInternal = internalQuery({
   args: { slug: v.string(), version: v.string() },
   handler: async (ctx, args) => {
@@ -2729,19 +2813,7 @@ export const getSecurityVerdictTargetInternal = internalQuery({
             updatedAt: skill.moderationEvaluatedAt,
           }
         : null,
-      version: version
-        ? {
-            _id: version._id,
-            version: version.version,
-            createdAt: version.createdAt,
-            softDeletedAt: version.softDeletedAt,
-            staticScan: version.staticScan,
-            llmAnalysis: version.llmAnalysis,
-            vtAnalysis: version.vtAnalysis,
-            skillSpectorAnalysis: version.skillSpectorAnalysis,
-            depRegistryAnalysis: version.depRegistryAnalysis,
-          }
-        : null,
+      version: version ? compactSecurityVerdictVersion(version) : null,
     };
   },
 });
