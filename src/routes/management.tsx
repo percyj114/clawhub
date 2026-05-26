@@ -3,6 +3,7 @@ import { useMutation, useQuery } from "convex/react";
 import { useEffect, useState } from "react";
 import { api } from "../../convex/_generated/api";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
+import { SecurityScanOverview } from "../components/management/SecurityScanOverview";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
@@ -300,6 +301,11 @@ function Management() {
     <main className="section">
       <h1 className="section-title">Management console</h1>
       <p className="section-subtitle">Moderation, curation, and ownership tools.</p>
+
+      <SecurityScanOverview
+        selectedSkillSlug={selectedSlug}
+        selectedPluginName={selectedPluginName}
+      />
 
       <Card>
         <h2 className="section-title text-[1.2rem] m-0">Reported skills</h2>
