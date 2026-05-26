@@ -1,12 +1,17 @@
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import type { MutationCtx } from "./_generated/server";
-import { internalMutation } from "./functions";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
+import { internalMutation, query } from "./functions";
+import { assertModerator, requireUser } from "./lib/access";
+import { normalizePackageName } from "./lib/packageRegistry";
 import {
   buildPluginSecurityScanArtifactState,
   buildSkillSecurityScanArtifactState,
+  CLAW_SCAN_DIGEST_VERDICTS,
   clampSecurityScanDigestBackfillBatchSize,
   getCurrentRollupDeltas,
+  SECURITY_SCAN_FAILURE_STATUSES,
+  SECURITY_SCAN_PIPELINE_STATUSES,
   toSecurityScanHourBucket,
   type SecurityScanArtifactStateFields,
   type SecurityScanCurrentRollupDimensions,
@@ -42,6 +47,15 @@ const securityScanJobSourceValidator = v.union(
   v.literal("manual"),
 );
 const pluginPackageFamilyValidator = v.union(v.literal("code-plugin"), v.literal("bundle-plugin"));
+const SECURITY_SCAN_OVERVIEW_DEFAULT_WINDOW_HOURS = 24;
+const SECURITY_SCAN_OVERVIEW_MAX_WINDOW_HOURS = 168;
+const SECURITY_SCAN_OVERVIEW_FAILED_LIMIT = 10;
+const SECURITY_SCAN_OVERVIEW_MAX_FAILED_LIMIT = 50;
+const SECURITY_SCAN_LIST_DEFAULT_LIMIT = 25;
+const SECURITY_SCAN_LIST_MAX_LIMIT = 100;
+const SECURITY_SCAN_ROLLUP_TAKE_LIMIT = 500;
+const SECURITY_SCAN_HOURLY_TAKE_LIMIT = 2_000;
+const SECURITY_SCAN_EVIDENCE_ISSUE_LIMIT = 10;
 
 const securityScanArtifactStateFieldsValidator = v.object({
   artifactKind: securityScanArtifactKindValidator,
@@ -108,6 +122,511 @@ const hourlyRollupDimensionsValidator = v.object({
 });
 
 type DigestMutationCtx = Pick<MutationCtx, "db">;
+type DigestReadCtx = Pick<QueryCtx, "db">;
+type SecurityScanArtifactKind = "skill" | "plugin";
+
+async function requireStaff(ctx: QueryCtx) {
+  const { user } = await requireUser(ctx);
+  assertModerator(user);
+  return user;
+}
+
+function clampInt(value: number | undefined, fallback: number, min: number, max: number) {
+  if (!Number.isFinite(value ?? NaN)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(value!)));
+}
+
+function artifactKindsForArg(
+  kind: SecurityScanArtifactKind | undefined,
+): SecurityScanArtifactKind[] {
+  return kind ? [kind] : ["skill", "plugin"];
+}
+
+function emptyCounts() {
+  return {
+    total: 0,
+    byVerdict: Object.fromEntries(CLAW_SCAN_DIGEST_VERDICTS.map((verdict) => [verdict, 0])),
+    byScanJobStatus: Object.fromEntries(
+      SECURITY_SCAN_PIPELINE_STATUSES.map((status) => [status, 0]),
+    ),
+    byFailureStatus: Object.fromEntries(
+      SECURITY_SCAN_FAILURE_STATUSES.map((status) => [status, 0]),
+    ),
+  } as {
+    total: number;
+    byVerdict: Record<(typeof CLAW_SCAN_DIGEST_VERDICTS)[number], number>;
+    byScanJobStatus: Record<(typeof SECURITY_SCAN_PIPELINE_STATUSES)[number], number>;
+    byFailureStatus: Record<(typeof SECURITY_SCAN_FAILURE_STATUSES)[number], number>;
+  };
+}
+
+function addRollupToCounts(
+  counts: ReturnType<typeof emptyCounts>,
+  row: Pick<
+    Doc<"securityScanCurrentRollups">,
+    "clawScanVerdict" | "scanJobStatus" | "failureStatus" | "count"
+  >,
+) {
+  counts.total += row.count;
+  counts.byVerdict[row.clawScanVerdict] += row.count;
+  counts.byScanJobStatus[row.scanJobStatus] += row.count;
+  counts.byFailureStatus[row.failureStatus] += row.count;
+}
+
+function toRollupResponse(row: Doc<"securityScanCurrentRollups">, totalForKind: number) {
+  return {
+    artifactKind: row.artifactKind,
+    rollupKind: row.rollupKind,
+    categoryKey: row.categoryKey,
+    categoryLabel: row.categoryLabel,
+    clawScanVerdict: row.clawScanVerdict,
+    scanJobStatus: row.scanJobStatus,
+    failureStatus: row.failureStatus,
+    count: row.count,
+    totalForKind,
+    percentageBasis: totalForKind,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function toArtifactStateSummary(state: Doc<"securityScanArtifactStates">) {
+  return {
+    artifactKind: state.artifactKind,
+    targetKind: state.targetKind,
+    artifactKey: state.artifactKey,
+    targetKey: state.targetKey,
+    skillId: state.skillId,
+    skillVersionId: state.skillVersionId,
+    packageId: state.packageId,
+    packageReleaseId: state.packageReleaseId,
+    ownerUserId: state.ownerUserId,
+    ownerPublisherId: state.ownerPublisherId,
+    slug: state.slug,
+    name: state.name,
+    displayName: state.displayName,
+    version: state.version,
+    clawScanVerdict: state.clawScanVerdict,
+    clawScanStatus: state.clawScanStatus,
+    clawScanCheckedAt: state.clawScanCheckedAt,
+    clawScanSummary: state.clawScanSummary,
+    clawScanModel: state.clawScanModel,
+    clawScanPrimaryRiskBucket: state.clawScanPrimaryRiskBucket,
+    clawScanPrimaryCategoryKey: state.clawScanPrimaryCategoryKey,
+    clawScanPrimaryCategoryLabel: state.clawScanPrimaryCategoryLabel,
+    clawScanVisibleFindingCount: state.clawScanVisibleFindingCount,
+    clawScanHighestSeverity: state.clawScanHighestSeverity,
+    scanJobStatus: state.scanJobStatus,
+    failureStatus: state.failureStatus,
+    lastScanJobId: state.lastScanJobId,
+    lastScanJobSource: state.lastScanJobSource,
+    lastScanWorkerId: state.lastScanWorkerId,
+    lastScanAttempts: state.lastScanAttempts,
+    lastScanQueuedAt: state.lastScanQueuedAt,
+    lastScanStartedAt: state.lastScanStartedAt,
+    lastScanCompletedAt: state.lastScanCompletedAt,
+    lastScanFailedAt: state.lastScanFailedAt,
+    lastScanUpdatedAt: state.lastScanUpdatedAt,
+    lastError: state.lastError,
+    skillSpectorStatus: state.skillSpectorStatus,
+    skillSpectorScore: state.skillSpectorScore,
+    skillSpectorSeverity: state.skillSpectorSeverity,
+    skillSpectorRecommendation: state.skillSpectorRecommendation,
+    skillSpectorIssueCount: state.skillSpectorIssueCount,
+    skillSpectorTopCategory: state.skillSpectorTopCategory,
+    skillSpectorCheckedAt: state.skillSpectorCheckedAt,
+    staticStatus: state.staticStatus,
+    staticReasonCount: state.staticReasonCount,
+    staticCheckedAt: state.staticCheckedAt,
+    vtStatus: state.vtStatus,
+    vtVerdict: state.vtVerdict,
+    vtMalicious: state.vtMalicious,
+    vtSuspicious: state.vtSuspicious,
+    vtCheckedAt: state.vtCheckedAt,
+    evidenceUpdatedAt: state.evidenceUpdatedAt,
+    createdAt: state.createdAt,
+    updatedAt: state.updatedAt,
+  };
+}
+
+function toHourlySummary(row: Doc<"securityScanHourlyRollups">) {
+  return {
+    bucketStartMs: row.bucketStartMs,
+    artifactKind: row.artifactKind,
+    clawScanVerdict: row.clawScanVerdict,
+    scanJobStatus: row.scanJobStatus,
+    failureStatus: row.failureStatus,
+    count: row.count,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function toScanJobSummary(job: Doc<"securityScanJobs"> | null) {
+  if (!job) return null;
+  return {
+    _id: job._id,
+    targetKind: job.targetKind,
+    skillVersionId: job.skillVersionId,
+    packageReleaseId: job.packageReleaseId,
+    status: job.status,
+    source: job.source,
+    priority: job.priority,
+    hasMaliciousSignal: job.hasMaliciousSignal,
+    waitForVtUntil: job.waitForVtUntil,
+    nextRunAt: job.nextRunAt,
+    attempts: job.attempts,
+    leaseExpiresAt: job.leaseExpiresAt,
+    workerId: job.workerId,
+    lastError: job.lastError,
+    runId: job.runId,
+    completedAt: job.completedAt,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+  };
+}
+
+function toEvidenceSummary(
+  artifact:
+    | Pick<
+        Doc<"skillVersions">,
+        "llmAnalysis" | "skillSpectorAnalysis" | "staticScan" | "vtAnalysis"
+      >
+    | Pick<
+        Doc<"packageReleases">,
+        "llmAnalysis" | "skillSpectorAnalysis" | "staticScan" | "vtAnalysis"
+      >
+    | null,
+) {
+  return {
+    clawScan: {
+      status: artifact?.llmAnalysis?.status,
+      verdict: artifact?.llmAnalysis?.verdict,
+      confidence: artifact?.llmAnalysis?.confidence,
+      summary: artifact?.llmAnalysis?.summary,
+      guidance: artifact?.llmAnalysis?.guidance,
+      findings: artifact?.llmAnalysis?.findings,
+      model: artifact?.llmAnalysis?.model,
+      checkedAt: artifact?.llmAnalysis?.checkedAt,
+      riskSummary: artifact?.llmAnalysis?.riskSummary,
+      agenticRiskFindings: artifact?.llmAnalysis?.agenticRiskFindings,
+    },
+    skillSpector: {
+      status: artifact?.skillSpectorAnalysis?.status,
+      score: artifact?.skillSpectorAnalysis?.score,
+      severity: artifact?.skillSpectorAnalysis?.severity,
+      recommendation: artifact?.skillSpectorAnalysis?.recommendation,
+      issueCount: artifact?.skillSpectorAnalysis?.issueCount,
+      checkedAt: artifact?.skillSpectorAnalysis?.checkedAt,
+      issues: (artifact?.skillSpectorAnalysis?.issues ?? []).slice(
+        0,
+        SECURITY_SCAN_EVIDENCE_ISSUE_LIMIT,
+      ),
+    },
+    staticScan: artifact?.staticScan,
+    virusTotal: artifact?.vtAnalysis,
+  };
+}
+
+async function getArtifactStateByKey(
+  ctx: DigestReadCtx,
+  artifactKind: SecurityScanArtifactKind,
+  artifactKey: string,
+) {
+  return await ctx.db
+    .query("securityScanArtifactStates")
+    .withIndex("by_artifact_kind_and_artifact_key", (q) =>
+      q.eq("artifactKind", artifactKind).eq("artifactKey", artifactKey),
+    )
+    .unique();
+}
+
+async function getCurrentAllRollups(ctx: DigestReadCtx, kind: SecurityScanArtifactKind) {
+  return await ctx.db
+    .query("securityScanCurrentRollups")
+    .withIndex("by_artifact_kind_and_rollup_kind_and_category_key", (q) =>
+      q.eq("artifactKind", kind).eq("rollupKind", "all").eq("categoryKey", "all"),
+    )
+    .take(SECURITY_SCAN_ROLLUP_TAKE_LIMIT);
+}
+
+export const getStaffSecurityScanOverview = query({
+  args: {
+    artifactKind: v.optional(securityScanArtifactKindValidator),
+    windowHours: v.optional(v.number()),
+    failedLimit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    await requireStaff(ctx);
+
+    const now = Date.now();
+    const windowHours = clampInt(
+      args.windowHours,
+      SECURITY_SCAN_OVERVIEW_DEFAULT_WINDOW_HOURS,
+      1,
+      SECURITY_SCAN_OVERVIEW_MAX_WINDOW_HOURS,
+    );
+    const failedLimit = clampInt(
+      args.failedLimit,
+      SECURITY_SCAN_OVERVIEW_FAILED_LIMIT,
+      0,
+      SECURITY_SCAN_OVERVIEW_MAX_FAILED_LIMIT,
+    );
+    const windowStartMs = toSecurityScanHourBucket(now - windowHours * 60 * 60 * 1000);
+    const kinds = artifactKindsForArg(args.artifactKind);
+
+    const currentByKind: Record<
+      SecurityScanArtifactKind,
+      {
+        totals: ReturnType<typeof emptyCounts>;
+        rollups: ReturnType<typeof toRollupResponse>[];
+        truncated: boolean;
+      }
+    > = {
+      skill: { totals: emptyCounts(), rollups: [], truncated: false },
+      plugin: { totals: emptyCounts(), rollups: [], truncated: false },
+    };
+    const hourlyRows: ReturnType<typeof toHourlySummary>[] = [];
+    const hourlyTotals: Record<SecurityScanArtifactKind, ReturnType<typeof emptyCounts>> = {
+      skill: emptyCounts(),
+      plugin: emptyCounts(),
+    };
+    const failedRows: ReturnType<typeof toArtifactStateSummary>[] = [];
+
+    for (const kind of kinds) {
+      const allRollups = await getCurrentAllRollups(ctx, kind);
+      for (const row of allRollups) addRollupToCounts(currentByKind[kind].totals, row);
+
+      const rollupRows = await ctx.db
+        .query("securityScanCurrentRollups")
+        .withIndex("by_artifact_kind_and_rollup_kind_and_category_key", (q) =>
+          q.eq("artifactKind", kind),
+        )
+        .take(SECURITY_SCAN_ROLLUP_TAKE_LIMIT);
+      currentByKind[kind].truncated = rollupRows.length >= SECURITY_SCAN_ROLLUP_TAKE_LIMIT;
+      currentByKind[kind].rollups = rollupRows.map((row) =>
+        toRollupResponse(row, currentByKind[kind].totals.total),
+      );
+
+      const hourly = await ctx.db
+        .query("securityScanHourlyRollups")
+        .withIndex("by_artifact_kind_and_bucket_start_ms", (q) =>
+          q.eq("artifactKind", kind).gte("bucketStartMs", windowStartMs),
+        )
+        .order("desc")
+        .take(SECURITY_SCAN_HOURLY_TAKE_LIMIT);
+      for (const row of hourly) {
+        const summary = toHourlySummary(row);
+        hourlyRows.push(summary);
+        addRollupToCounts(hourlyTotals[kind], row);
+      }
+
+      if (failedLimit > 0) {
+        const failed = await ctx.db
+          .query("securityScanArtifactStates")
+          .withIndex("by_artifact_kind_and_failure_status_and_updated_at", (q) =>
+            q.eq("artifactKind", kind).eq("failureStatus", "failed"),
+          )
+          .order("desc")
+          .take(failedLimit);
+        failedRows.push(...failed.map(toArtifactStateSummary));
+      }
+    }
+
+    return {
+      generatedAt: now,
+      window: {
+        hours: windowHours,
+        startMs: windowStartMs,
+        endMs: now,
+        totalsByKind: Object.fromEntries(kinds.map((kind) => [kind, hourlyTotals[kind]])),
+        rows: hourlyRows.sort((a, b) => b.bucketStartMs - a.bucketStartMs),
+        truncated: hourlyRows.length >= SECURITY_SCAN_HOURLY_TAKE_LIMIT * kinds.length,
+      },
+      current: Object.fromEntries(kinds.map((kind) => [kind, currentByKind[kind]])),
+      failed: {
+        items: failedRows.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, failedLimit),
+        limit: failedLimit,
+      },
+    };
+  },
+});
+
+export const listStaffSecurityScanArtifacts = query({
+  args: {
+    artifactKind: securityScanArtifactKindValidator,
+    cursor: v.optional(v.union(v.string(), v.null())),
+    limit: v.optional(v.number()),
+    clawScanVerdict: v.optional(clawScanDigestVerdictValidator),
+    scanJobStatus: v.optional(securityScanPipelineStatusValidator),
+    failureStatus: v.optional(securityScanFailureStatusValidator),
+    clawScanPrimaryCategoryKey: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    await requireStaff(ctx);
+    const limit = clampInt(
+      args.limit,
+      SECURITY_SCAN_LIST_DEFAULT_LIMIT,
+      1,
+      SECURITY_SCAN_LIST_MAX_LIMIT,
+    );
+    const cursor = args.cursor ?? null;
+    const filterCount = [
+      args.failureStatus,
+      args.scanJobStatus,
+      args.clawScanVerdict,
+      args.clawScanPrimaryCategoryKey,
+    ].filter((value) => value !== undefined).length;
+    if (filterCount > 1) {
+      throw new Error("Provide at most one security scan artifact filter");
+    }
+
+    const page = args.failureStatus
+      ? await ctx.db
+          .query("securityScanArtifactStates")
+          .withIndex("by_artifact_kind_and_failure_status_and_updated_at", (q) =>
+            q.eq("artifactKind", args.artifactKind).eq("failureStatus", args.failureStatus!),
+          )
+          .order("desc")
+          .paginate({ cursor, numItems: limit })
+      : args.scanJobStatus
+        ? await ctx.db
+            .query("securityScanArtifactStates")
+            .withIndex("by_artifact_kind_and_scan_job_status_and_updated_at", (q) =>
+              q.eq("artifactKind", args.artifactKind).eq("scanJobStatus", args.scanJobStatus!),
+            )
+            .order("desc")
+            .paginate({ cursor, numItems: limit })
+        : args.clawScanVerdict
+          ? await ctx.db
+              .query("securityScanArtifactStates")
+              .withIndex("by_artifact_kind_and_claw_scan_verdict_and_updated_at", (q) =>
+                q
+                  .eq("artifactKind", args.artifactKind)
+                  .eq("clawScanVerdict", args.clawScanVerdict!),
+              )
+              .order("desc")
+              .paginate({ cursor, numItems: limit })
+          : args.clawScanPrimaryCategoryKey
+            ? await ctx.db
+                .query("securityScanArtifactStates")
+                .withIndex("by_kind_claw_category_updated_at", (q) =>
+                  q
+                    .eq("artifactKind", args.artifactKind)
+                    .eq("clawScanPrimaryCategoryKey", args.clawScanPrimaryCategoryKey!),
+                )
+                .order("desc")
+                .paginate({ cursor, numItems: limit })
+            : await ctx.db
+                .query("securityScanArtifactStates")
+                .withIndex("by_artifact_kind_and_updated_at", (q) =>
+                  q.eq("artifactKind", args.artifactKind),
+                )
+                .order("desc")
+                .paginate({ cursor, numItems: limit });
+
+    return {
+      items: page.page.map(toArtifactStateSummary),
+      nextCursor: page.isDone ? null : page.continueCursor,
+      done: page.isDone,
+      limit,
+    };
+  },
+});
+
+export const getStaffSecurityScanArtifact = query({
+  args: {
+    skillSlug: v.optional(v.string()),
+    packageName: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    await requireStaff(ctx);
+    const skillSlug = args.skillSlug?.trim();
+    const packageName = args.packageName?.trim();
+    if (Boolean(skillSlug) === Boolean(packageName)) {
+      throw new Error("Provide exactly one of skillSlug or packageName");
+    }
+
+    if (skillSlug) {
+      const skill = await ctx.db
+        .query("skills")
+        .withIndex("by_slug", (q) => q.eq("slug", skillSlug))
+        .unique();
+      if (!skill || skill.softDeletedAt) {
+        return {
+          found: false as const,
+          artifactKind: "skill" as const,
+          reason: "missing" as const,
+        };
+      }
+      const state = await getArtifactStateByKey(ctx, "skill", `skill:${skill._id}`);
+      const version = skill.latestVersionId ? await ctx.db.get(skill.latestVersionId) : null;
+      const scanJob = state?.lastScanJobId ? await ctx.db.get(state.lastScanJobId) : null;
+      return {
+        found: true as const,
+        artifactKind: "skill" as const,
+        state: state ? toArtifactStateSummary(state) : null,
+        artifact: {
+          skill: {
+            _id: skill._id,
+            slug: skill.slug,
+            displayName: skill.displayName,
+            ownerUserId: skill.ownerUserId,
+            ownerPublisherId: skill.ownerPublisherId,
+            latestVersionId: skill.latestVersionId,
+          },
+          version: version
+            ? {
+                _id: version._id,
+                version: version.version,
+                createdAt: version.createdAt,
+              }
+            : null,
+        },
+        scanJob: toScanJobSummary(scanJob),
+        evidence: toEvidenceSummary(version),
+      };
+    }
+
+    const normalizedName = normalizePackageName(packageName ?? "");
+    if (!normalizedName) {
+      return { found: false as const, artifactKind: "plugin" as const, reason: "missing" as const };
+    }
+    const pkg = await ctx.db
+      .query("packages")
+      .withIndex("by_name", (q) => q.eq("normalizedName", normalizedName))
+      .unique();
+    if (!pkg || pkg.softDeletedAt || pkg.family === "skill") {
+      return { found: false as const, artifactKind: "plugin" as const, reason: "missing" as const };
+    }
+    const state = await getArtifactStateByKey(ctx, "plugin", `plugin:${pkg._id}`);
+    const release = pkg.latestReleaseId ? await ctx.db.get(pkg.latestReleaseId) : null;
+    const scanJob = state?.lastScanJobId ? await ctx.db.get(state.lastScanJobId) : null;
+    return {
+      found: true as const,
+      artifactKind: "plugin" as const,
+      state: state ? toArtifactStateSummary(state) : null,
+      artifact: {
+        package: {
+          _id: pkg._id,
+          name: pkg.name,
+          displayName: pkg.displayName,
+          ownerUserId: pkg.ownerUserId,
+          ownerPublisherId: pkg.ownerPublisherId,
+          family: pkg.family,
+          latestReleaseId: pkg.latestReleaseId,
+        },
+        release: release
+          ? {
+              _id: release._id,
+              version: release.version,
+              createdAt: release.createdAt,
+            }
+          : null,
+      },
+      scanJob: toScanJobSummary(scanJob),
+      evidence: toEvidenceSummary(release),
+    };
+  },
+});
 
 async function applyCurrentRollupDelta(
   ctx: DigestMutationCtx,

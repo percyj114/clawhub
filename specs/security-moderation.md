@@ -177,6 +177,13 @@ See also: [acceptable-usage.md](./acceptable-usage.md) for the marketplace polic
   current count; final failures set `failureStatus: failed`. If the action
   writes a synthetic ClawScan error after retries are exhausted, it refreshes
   the same digest row without replaying the hourly failure event.
+- Staff overview APIs are read-only and role-gated to admins/moderators. They
+  must read current and hourly digest tables through indexes, return percentage
+  bases with each rollup, and paginate drilldown artifact rows instead of
+  scanning source artifact tables. Skill/plugin lookup resolves the public
+  artifact identifier, returns the current digest state, compact evidence
+  summaries from the latest version/release, and a sanitized scan-job summary
+  that excludes worker lease tokens.
 - Digest repair is cursor-based and replayable. Backfill page mutations rebuild
   active skill/plugin artifact states from indexed active listings and latest
   version/release rows, then adjust current rollups from previous state to next
