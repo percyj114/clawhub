@@ -387,7 +387,6 @@ registerCommand(skill, ["skill", "verify"])
   .argument("<slug>", "Skill slug")
   .option("--version <version>", "Version to verify")
   .option("--tag <tag>", "Tag to verify")
-  .option("--json", "Output JSON (default)")
   .option("--card", "Output generated skill-card.md Markdown")
   .action(async (slug, options) => {
     const opts = await resolveGlobalOpts();
