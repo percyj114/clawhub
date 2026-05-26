@@ -161,6 +161,22 @@ See also: [acceptable-usage.md](./acceptable-usage.md) for the marketplace polic
   ClawScan/Codex `llmAnalysis` is the verdict source of truth; SkillSpector,
   static analysis, and VirusTotal fields are evidence for drilldown, not the
   primary verdict.
+- Staff visibility state names are operator summaries, not independent
+  moderation states:
+  - `pass`: ClawScan/Codex resolved the latest artifact without visible review
+    concerns.
+  - `suspicious`: ClawScan/Codex found review-worthy or high-impact concerns,
+    but the result is not a malicious block.
+  - `malicious`: ClawScan/Codex determined the artifact should not be installed
+    and normal malicious-artifact moderation applies.
+  - `pending`: the latest artifact is queued or running, or ClawScan has not
+    produced a final result yet.
+  - `failed`: the scan pipeline exhausted the current job unsuccessfully.
+  - `unknown`: no usable ClawScan result or current scan job exists for the
+    latest artifact.
+- Pipeline status (`queued`, `running`, `succeeded`, `failed`, `none`) explains
+  worker state; failure status only distinguishes final failed rows from normal
+  non-failed rows.
 - `securityScanCurrentRollups` stores current counts by artifact kind,
   ClawScan verdict, pipeline status, failure status, and optional ClawScan risk
   category. `securityScanHourlyRollups` stores bounded hourly scan-event counts

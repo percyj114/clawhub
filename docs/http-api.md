@@ -945,6 +945,103 @@ Response:
 }
 ```
 
+### `GET /api/v1/security-scans/overview`
+
+Moderator/admin endpoint for current ClawScan-first scan rollups and recent
+time-window health.
+
+Auth:
+
+- Requires an API token for a moderator or admin user.
+
+Query params:
+
+- `artifactKind` (optional): `skill` or `plugin`; omit for both.
+- `windowHours` (optional): recent window size in hours.
+- `failedLimit` (optional): number of failed samples to include.
+
+Response shape:
+
+```json
+{
+  "generatedAt": 1730000000000,
+  "window": {
+    "hours": 24,
+    "totalsByKind": {},
+    "rows": [],
+    "truncated": false
+  },
+  "current": {},
+  "failed": {
+    "items": [],
+    "limit": 10
+  }
+}
+```
+
+### `GET /api/v1/security-scans/artifacts`
+
+Moderator/admin endpoint for paginated security scan digest rows.
+
+Auth:
+
+- Requires an API token for a moderator or admin user.
+
+Query params:
+
+- `artifactKind` (required): `skill` or `plugin`.
+- `limit` (optional): integer (1-100).
+- `cursor` (optional): pagination cursor.
+- At most one filter may be supplied:
+  - `clawScanVerdict`: `pass`, `suspicious`, `malicious`, `pending`, `failed`,
+    or `unknown`.
+  - `scanJobStatus`: `none`, `queued`, `running`, `succeeded`, or `failed`.
+  - `failureStatus`: `none` or `failed`.
+  - `clawScanPrimaryCategoryKey`: ClawScan category key.
+
+Response:
+
+```json
+{
+  "items": [],
+  "nextCursor": null,
+  "done": true,
+  "limit": 25
+}
+```
+
+### `GET /api/v1/security-scans/artifact`
+
+Moderator/admin endpoint for one skill or plugin drilldown.
+
+Auth:
+
+- Requires an API token for a moderator or admin user.
+
+Query params:
+
+- Exactly one of `skillSlug` or `packageName`.
+
+Response shape:
+
+```json
+{
+  "found": true,
+  "artifactKind": "skill",
+  "state": {},
+  "artifact": {},
+  "scanJob": {},
+  "evidence": {}
+}
+```
+
+Notes:
+
+- ClawScan/Codex is the final verdict source.
+- SkillSpector, static analysis, VirusTotal, and worker details are supporting
+  evidence for drilldown.
+- Scan-job lease tokens and other worker-only internals are not returned.
+
 ### `POST /api/v1/packages/reports/{reportId}/triage`
 
 Moderator/admin endpoint for resolving or reopening package reports.

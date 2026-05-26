@@ -54,14 +54,14 @@ type SecurityScanArtifactSummary = Record<string, unknown> & {
   updatedAt?: number;
 };
 
-export type SecurityScanOverviewOptions = {
+type SecurityScanOverviewOptions = {
   artifactKind?: string;
   windowHours?: string | number;
   failedLimit?: string | number;
   json?: boolean;
 };
 
-export type SecurityScanListOptions = {
+type SecurityScanListOptions = {
   artifactKind?: string;
   verdict?: string;
   clawScanVerdict?: string;
@@ -74,7 +74,7 @@ export type SecurityScanListOptions = {
   json?: boolean;
 };
 
-export type SecurityScanInspectOptions = {
+type SecurityScanInspectOptions = {
   skill?: string;
   plugin?: string;
   json?: boolean;

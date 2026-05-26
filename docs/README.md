@@ -39,6 +39,7 @@ Policy, API, and trust docs:
 - `docs/api.md`: public REST API overview.
 - `docs/http-api.md`: detailed HTTP API reference.
 - `docs/security-audits.md`: user-facing security audit status, risk levels, findings, and interpretation.
+- `docs/security-scan-visibility.md`: staff dashboard and `clawhub-mod` security scan overview usage.
 - `docs/moderation.md`: reports, moderation holds, hidden listings, bans, and account standing.
 
 Maintainer records:
