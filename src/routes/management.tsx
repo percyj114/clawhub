@@ -121,7 +121,7 @@ export const Route = createFileRoute("/management")({
   component: Management,
 });
 
-function Management() {
+export function Management() {
   const { me } = useAuthStatus();
   const search = Route.useSearch();
   const navigate = useNavigate();

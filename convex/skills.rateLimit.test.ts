@@ -474,6 +474,9 @@ describe("skills anti-spam guards", () => {
             totalInstalls: 0,
             totalDownloads: 0,
             totalStars: 0,
+            skillTotalInstalls: 0,
+            skillTotalDownloads: 0,
+            skillTotalStars: 0,
           };
         }
         return null;
@@ -697,6 +700,9 @@ describe("skills anti-spam guards", () => {
             totalInstalls: 0,
             totalDownloads: 0,
             totalStars: 0,
+            skillTotalInstalls: 0,
+            skillTotalDownloads: 0,
+            skillTotalStars: 0,
           };
         }
         if (id === "publishers:previous") {
