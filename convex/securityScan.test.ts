@@ -6,9 +6,12 @@ import {
   clearQueuedBackfillJobsForLocalDev,
   claimQueuedJobsInternal,
   completeCodexScanJob,
+  failJobInternal,
   failCodexScanJob,
+  refreshJobDigestInternal,
   requestPackageRescanForUserInternal,
   requestPackageRescan,
+  succeedJobInternal,
   requestSkillRescanForUserInternal,
   requestSkillRescan,
 } from "./securityScan";
@@ -32,6 +35,27 @@ const claimQueuedJobsInternalHandler = (
   claimQueuedJobsInternal as unknown as WrappedHandler<
     { workerId: string; limit: number; leaseMs?: number },
     Array<ScanJob & { leaseToken: string; workerId: string }>
+  >
+)._handler;
+
+const succeedJobInternalHandler = (
+  succeedJobInternal as unknown as WrappedHandler<
+    { jobId: string; leaseToken: string; runId?: string },
+    { ok: true }
+  >
+)._handler;
+
+const failJobInternalHandler = (
+  failJobInternal as unknown as WrappedHandler<
+    { jobId: string; leaseToken: string; error: string },
+    { ok: true; retry: boolean }
+  >
+)._handler;
+
+const refreshJobDigestInternalHandler = (
+  refreshJobDigestInternal as unknown as WrappedHandler<
+    { jobId: string },
+    { synced: boolean; artifactKind?: string }
   >
 )._handler;
 
@@ -272,6 +296,16 @@ function makeRescanCtx(options: {
               ) ?? null
             );
           }
+          if (table === "securityScanArtifactStates") {
+            return (
+              Array.from(docs.values()).find(
+                (doc) =>
+                  doc._id?.toString().startsWith("securityScanArtifactStates:") &&
+                  doc.artifactKind === equals.get("artifactKind") &&
+                  doc.artifactKey === equals.get("artifactKey"),
+              ) ?? null
+            );
+          }
           return null;
         }),
       };
@@ -349,13 +383,40 @@ function makeCancelCtx(jobs: ScanJob[], targets: Map<string, unknown> = new Map(
   };
 }
 
-function makeClaimCtx(jobs: ScanJob[]) {
+function makeClaimCtx(
+  jobs: ScanJob[],
+  targetDocs: Map<string, Record<string, unknown>> = new Map(),
+) {
   const patches: Array<{ id: string; patch: Record<string, unknown> }> = [];
+  const inserts: Array<{ table: string; doc: Record<string, unknown> }> = [];
   const patch = vi.fn(async (id: string, doc: Record<string, unknown>) => {
     patches.push({ id, patch: doc });
   });
+  const insert = vi.fn(async (table: string, doc: Record<string, unknown>) => {
+    const id = `${table}:${inserts.length + 1}`;
+    inserts.push({ table, doc });
+    return id;
+  });
+  const get = vi.fn(async (id: string) => targetDocs.get(id) ?? null);
   const query = vi.fn((tableName: string) => {
-    expect(tableName).toBe("securityScanJobs");
+    if (tableName !== "securityScanJobs") {
+      return {
+        withIndex: vi.fn(
+          (
+            _indexName: string,
+            buildRange: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
+          ) => {
+            function eq() {
+              return { eq };
+            }
+            buildRange({ eq });
+            return {
+              unique: vi.fn(async () => null),
+            };
+          },
+        ),
+      };
+    }
     return {
       withIndex: vi.fn(
         (
@@ -415,8 +476,8 @@ function makeClaimCtx(jobs: ScanJob[]) {
       db: {
         query,
         patch,
-        get: vi.fn(),
-        insert: vi.fn(),
+        get,
+        insert,
         replace: vi.fn(),
         delete: vi.fn(),
         normalizeId: vi.fn(() => null),
@@ -424,7 +485,10 @@ function makeClaimCtx(jobs: ScanJob[]) {
       },
     },
     patches,
+    inserts,
     patch,
+    insert,
+    get,
     query,
   };
 }
@@ -443,6 +507,7 @@ describe("securityScan", () => {
         "skills:1": {
           _id: "skills:1",
           slug: "demo-skill",
+          displayName: "Demo Skill",
           ownerUserId: "users:owner",
           latestVersionId: "skillVersions:1",
         },
@@ -481,6 +546,31 @@ describe("securityScan", () => {
             action: "skill.clawscan.rescan",
             targetType: "skillVersion",
             targetId: "skillVersions:1",
+          }),
+        }),
+      ]),
+    );
+    expect(inserts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          table: "securityScanArtifactStates",
+          doc: expect.objectContaining({
+            artifactKind: "skill",
+            artifactKey: "skill:skills:1",
+            targetKey: "skillVersion:skillVersions:1",
+            scanJobStatus: "queued",
+            clawScanVerdict: "pending",
+            lastScanJobId: "securityScanJobs:1",
+            lastScanJobSource: "manual",
+            lastScanAttempts: 0,
+          }),
+        }),
+        expect.objectContaining({
+          table: "securityScanHourlyRollupEvents",
+          doc: expect.objectContaining({
+            eventKey: "securityScanJobs:1:queued:created",
+            artifactKind: "skill",
+            scanJobStatus: "queued",
           }),
         }),
       ]),
@@ -529,6 +619,66 @@ describe("securityScan", () => {
     );
   });
 
+  it("refreshes current digest state without replaying an hourly event for duplicate active rescans", async () => {
+    const activeJob = makeScanJob({
+      _id: "securityScanJobs:active",
+      source: "publish",
+      skillVersionId: "skillVersions:1",
+      createdAt: 50,
+      updatedAt: 75,
+    });
+    const { ctx, inserts, patches } = makeRescanCtx({
+      actorId: "users:moderator",
+      actorRole: "moderator",
+      activeJobs: [activeJob],
+      docs: {
+        "skills:1": {
+          _id: "skills:1",
+          slug: "demo-skill",
+          displayName: "Demo Skill",
+          ownerUserId: "users:owner",
+          latestVersionId: "skillVersions:1",
+        },
+        "skillVersions:1": {
+          _id: "skillVersions:1",
+          skillId: "skills:1",
+          version: "1.0.0",
+        },
+      },
+    });
+
+    const result = await requestSkillRescanHandler(ctx, {
+      skillId: "skills:1",
+      version: "1.0.0",
+    });
+
+    expect(result).toMatchObject({
+      jobId: "securityScanJobs:active",
+      alreadyQueued: true,
+    });
+    expect(patches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "securityScanJobs:active",
+          patch: expect.objectContaining({ source: "manual", priority: 100 }),
+        }),
+      ]),
+    );
+    expect(inserts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          table: "securityScanArtifactStates",
+          doc: expect.objectContaining({
+            scanJobStatus: "queued",
+            lastScanJobId: "securityScanJobs:active",
+            lastScanJobSource: "manual",
+          }),
+        }),
+      ]),
+    );
+    expect(inserts.some((entry) => entry.table === "securityScanHourlyRollupEvents")).toBe(false);
+  });
+
   it("lets platform moderators request package rescans", async () => {
     const { ctx, inserts } = makeRescanCtx({
       actorId: "users:moderator",
@@ -537,6 +687,7 @@ describe("securityScan", () => {
         "packages:1": {
           _id: "packages:1",
           name: "@acme/demo-plugin",
+          displayName: "Demo Plugin",
           normalizedName: "@acme/demo-plugin",
           family: "plugin",
           ownerUserId: "users:owner",
@@ -578,6 +729,31 @@ describe("securityScan", () => {
             action: "package.clawscan.rescan",
             targetType: "packageRelease",
             targetId: "packageReleases:1",
+          }),
+        }),
+      ]),
+    );
+    expect(inserts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          table: "securityScanArtifactStates",
+          doc: expect.objectContaining({
+            artifactKind: "plugin",
+            artifactKey: "plugin:packages:1",
+            targetKey: "packageRelease:packageReleases:1",
+            scanJobStatus: "queued",
+            clawScanVerdict: "pending",
+            lastScanJobId: "securityScanJobs:1",
+            lastScanJobSource: "manual",
+            lastScanAttempts: 0,
+          }),
+        }),
+        expect.objectContaining({
+          table: "securityScanHourlyRollupEvents",
+          doc: expect.objectContaining({
+            eventKey: "securityScanJobs:1:queued:created",
+            artifactKind: "plugin",
+            scanJobStatus: "queued",
           }),
         }),
       ]),
@@ -951,6 +1127,71 @@ describe("securityScan", () => {
     expect(patches.map((entry) => entry.id)).toEqual(claimed.map((job) => job._id));
   });
 
+  it("updates digest state and hourly rollups when a queued skill scan is claimed", async () => {
+    const { ctx, inserts } = makeClaimCtx(
+      [
+        makeScanJob({
+          _id: "securityScanJobs:manual",
+          source: "manual",
+          skillVersionId: "skillVersions:manual",
+          priority: 100,
+          createdAt: 100,
+          nextRunAt: 100,
+        }),
+      ],
+      new Map<string, Record<string, unknown>>([
+        [
+          "skillVersions:manual",
+          {
+            _id: "skillVersions:manual",
+            skillId: "skills:manual",
+            version: "1.0.0",
+            createdAt: 100,
+          },
+        ],
+        [
+          "skills:manual",
+          {
+            _id: "skills:manual",
+            slug: "manual-skill",
+            displayName: "Manual Skill",
+            ownerUserId: "users:owner",
+            latestVersionId: "skillVersions:manual",
+          },
+        ],
+      ]),
+    );
+
+    const claimed = await claimQueuedJobsInternalHandler(ctx, {
+      workerId: "worker-1",
+      limit: 1,
+      leaseMs: 60_000,
+    });
+
+    expect(claimed).toHaveLength(1);
+    expect(inserts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          table: "securityScanArtifactStates",
+          doc: expect.objectContaining({
+            artifactKind: "skill",
+            scanJobStatus: "running",
+            lastScanJobId: "securityScanJobs:manual",
+            lastScanWorkerId: "worker-1",
+            lastScanAttempts: 1,
+          }),
+        }),
+        expect.objectContaining({
+          table: "securityScanHourlyRollupEvents",
+          doc: expect.objectContaining({
+            eventKey: "securityScanJobs:manual:running:1",
+            scanJobStatus: "running",
+          }),
+        }),
+      ]),
+    );
+  });
+
   it("allows up to 64 active Codex scan claims", async () => {
     const { ctx } = makeClaimCtx(
       Array.from({ length: 70 }, (_, index) =>
@@ -971,6 +1212,327 @@ describe("securityScan", () => {
     });
 
     expect(claimed).toHaveLength(64);
+  });
+
+  it("updates digest verdict and hourly rollups when a skill scan succeeds", async () => {
+    const { ctx, inserts, patches } = makeRescanCtx({
+      actorId: "users:owner",
+      docs: {
+        "securityScanJobs:success": {
+          ...makeScanJob({
+            _id: "securityScanJobs:success",
+            status: "running",
+            source: "publish",
+            skillVersionId: "skillVersions:success",
+            attempts: 1,
+            createdAt: 100,
+            updatedAt: 200,
+          }),
+          leaseToken: "lease-token",
+          workerId: "worker-1",
+        },
+        "skills:success": {
+          _id: "skills:success",
+          slug: "success-skill",
+          displayName: "Success Skill",
+          ownerUserId: "users:owner",
+          latestVersionId: "skillVersions:success",
+        },
+        "skillVersions:success": {
+          _id: "skillVersions:success",
+          skillId: "skills:success",
+          version: "1.0.0",
+          createdAt: 100,
+          llmAnalysis: {
+            status: "malicious",
+            verdict: "malicious",
+            checkedAt: 300,
+          },
+        },
+      },
+    });
+
+    await expect(
+      succeedJobInternalHandler(ctx, {
+        jobId: "securityScanJobs:success",
+        leaseToken: "lease-token",
+        runId: "run-1",
+      }),
+    ).resolves.toEqual({ ok: true });
+
+    expect(patches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "securityScanJobs:success",
+          patch: expect.objectContaining({ status: "succeeded", runId: "run-1" }),
+        }),
+      ]),
+    );
+    expect(inserts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          table: "securityScanArtifactStates",
+          doc: expect.objectContaining({
+            artifactKind: "skill",
+            scanJobStatus: "succeeded",
+            failureStatus: "none",
+            clawScanVerdict: "malicious",
+            lastScanJobId: "securityScanJobs:success",
+            lastScanWorkerId: "worker-1",
+            lastScanAttempts: 1,
+          }),
+        }),
+        expect.objectContaining({
+          table: "securityScanHourlyRollupEvents",
+          doc: expect.objectContaining({
+            eventKey: "securityScanJobs:success:succeeded:run-1",
+            scanJobStatus: "succeeded",
+            clawScanVerdict: "malicious",
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it("keeps retried worker failures queued in digest state without failed rollup status", async () => {
+    const { ctx, inserts, patches } = makeRescanCtx({
+      actorId: "users:owner",
+      docs: {
+        "securityScanJobs:retry": {
+          ...makeScanJob({
+            _id: "securityScanJobs:retry",
+            status: "running",
+            source: "publish",
+            skillVersionId: "skillVersions:retry",
+            attempts: 1,
+            createdAt: 100,
+            updatedAt: 200,
+          }),
+          leaseToken: "lease-token",
+          workerId: "worker-1",
+        },
+        "skills:retry": {
+          _id: "skills:retry",
+          slug: "retry-skill",
+          displayName: "Retry Skill",
+          ownerUserId: "users:owner",
+          latestVersionId: "skillVersions:retry",
+        },
+        "skillVersions:retry": {
+          _id: "skillVersions:retry",
+          skillId: "skills:retry",
+          version: "1.0.0",
+          createdAt: 100,
+        },
+      },
+    });
+
+    const result = await failJobInternalHandler(ctx, {
+      jobId: "securityScanJobs:retry",
+      leaseToken: "lease-token",
+      error: "Download failed https://signed.example.invalid/file?token=secret Bearer sk-secret",
+    });
+
+    expect(result).toEqual({ ok: true, retry: true });
+    expect(patches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "securityScanJobs:retry",
+          patch: expect.objectContaining({ status: "queued" }),
+        }),
+      ]),
+    );
+    const failurePatch = patches.find((entry) => entry.id === "securityScanJobs:retry")?.patch;
+    expect(failurePatch?.lastError).not.toContain("token=secret");
+    expect(failurePatch?.lastError).not.toContain("sk-secret");
+    expect(inserts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          table: "securityScanArtifactStates",
+          doc: expect.objectContaining({
+            scanJobStatus: "queued",
+            failureStatus: "none",
+            clawScanVerdict: "pending",
+            lastScanWorkerId: "worker-1",
+            lastScanAttempts: 1,
+          }),
+        }),
+        expect.objectContaining({
+          table: "securityScanHourlyRollupEvents",
+          doc: expect.objectContaining({
+            eventKey: "securityScanJobs:retry:retry:1",
+            scanJobStatus: "queued",
+            failureStatus: "none",
+          }),
+        }),
+      ]),
+    );
+    const state = inserts.find((entry) => entry.table === "securityScanArtifactStates")?.doc;
+    expect(state?.lastError).not.toContain("token=secret");
+    expect(state?.lastError).not.toContain("sk-secret");
+  });
+
+  it("records final package scan failures with plugin digest failure metadata", async () => {
+    const { ctx, inserts, patches } = makeRescanCtx({
+      actorId: "users:owner",
+      docs: {
+        "securityScanJobs:failed": {
+          ...makeScanJob({
+            _id: "securityScanJobs:failed",
+            status: "running",
+            targetKind: "packageRelease",
+            skillVersionId: undefined,
+            packageReleaseId: "packageReleases:failed",
+            source: "manual",
+            attempts: 3,
+            createdAt: 100,
+            updatedAt: 200,
+          }),
+          leaseToken: "lease-token",
+          workerId: "worker-2",
+        },
+        "packages:failed": {
+          _id: "packages:failed",
+          name: "@acme/failed-plugin",
+          displayName: "Failed Plugin",
+          normalizedName: "@acme/failed-plugin",
+          family: "code-plugin",
+          ownerUserId: "users:owner",
+          latestReleaseId: "packageReleases:failed",
+        },
+        "packageReleases:failed": {
+          _id: "packageReleases:failed",
+          packageId: "packages:failed",
+          version: "1.0.0",
+          createdAt: 100,
+        },
+      },
+    });
+
+    const result = await failJobInternalHandler(ctx, {
+      jobId: "securityScanJobs:failed",
+      leaseToken: "lease-token",
+      error: "Codex worker failed Authorization: Bearer sk-secret",
+    });
+
+    expect(result).toEqual({ ok: true, retry: false });
+    expect(patches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "securityScanJobs:failed",
+          patch: expect.objectContaining({ status: "failed" }),
+        }),
+      ]),
+    );
+    expect(inserts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          table: "securityScanArtifactStates",
+          doc: expect.objectContaining({
+            artifactKind: "plugin",
+            packageId: "packages:failed",
+            packageReleaseId: "packageReleases:failed",
+            scanJobStatus: "failed",
+            failureStatus: "failed",
+            clawScanVerdict: "failed",
+            lastScanWorkerId: "worker-2",
+            lastScanAttempts: 3,
+          }),
+        }),
+        expect.objectContaining({
+          table: "securityScanHourlyRollupEvents",
+          doc: expect.objectContaining({
+            eventKey: "securityScanJobs:failed:failed:3",
+            artifactKind: "plugin",
+            scanJobStatus: "failed",
+            failureStatus: "failed",
+          }),
+        }),
+      ]),
+    );
+    const state = inserts.find((entry) => entry.table === "securityScanArtifactStates")?.doc;
+    expect(state?.lastError).not.toContain("sk-secret");
+  });
+
+  it("refreshes failed digest evidence without erasing same-job worker metadata", async () => {
+    const { ctx, patches } = makeRescanCtx({
+      actorId: "users:owner",
+      docs: {
+        "securityScanJobs:failed": {
+          ...makeScanJob({
+            _id: "securityScanJobs:failed",
+            status: "failed",
+            targetKind: "packageRelease",
+            skillVersionId: undefined,
+            packageReleaseId: "packageReleases:failed",
+            source: "manual",
+            attempts: 3,
+            createdAt: 100,
+            updatedAt: 200,
+          }),
+          lastError: "Codex worker failed",
+        },
+        "packages:failed": {
+          _id: "packages:failed",
+          name: "@acme/failed-plugin",
+          displayName: "Failed Plugin",
+          normalizedName: "@acme/failed-plugin",
+          family: "code-plugin",
+          ownerUserId: "users:owner",
+          latestReleaseId: "packageReleases:failed",
+        },
+        "packageReleases:failed": {
+          _id: "packageReleases:failed",
+          packageId: "packages:failed",
+          version: "1.0.0",
+          createdAt: 100,
+          llmAnalysis: {
+            status: "error",
+            summary: "ClawScan could not complete.",
+            checkedAt: 300,
+          },
+        },
+        "securityScanArtifactStates:existing": {
+          _id: "securityScanArtifactStates:existing",
+          _creationTime: 1,
+          artifactKind: "plugin",
+          artifactKey: "plugin:packages:failed",
+          targetKind: "packageRelease",
+          targetKey: "packageRelease:packageReleases:failed",
+          packageId: "packages:failed",
+          packageReleaseId: "packageReleases:failed",
+          ownerUserId: "users:owner",
+          name: "@acme/failed-plugin",
+          displayName: "Failed Plugin",
+          version: "1.0.0",
+          clawScanVerdict: "failed",
+          scanJobStatus: "failed",
+          failureStatus: "failed",
+          lastScanJobId: "securityScanJobs:failed",
+          lastScanWorkerId: "worker-2",
+          lastScanAttempts: 3,
+          createdAt: 200,
+          updatedAt: 200,
+        },
+      },
+    });
+
+    await expect(
+      refreshJobDigestInternalHandler(ctx, { jobId: "securityScanJobs:failed" }),
+    ).resolves.toMatchObject({ synced: true, artifactKind: "plugin" });
+
+    expect(patches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "securityScanArtifactStates:existing",
+          patch: expect.objectContaining({
+            clawScanStatus: "error",
+            clawScanSummary: "ClawScan could not complete.",
+            lastScanWorkerId: "worker-2",
+          }),
+        }),
+      ]),
+    );
   });
 
   it("caps SkillSpector findings before storing completed scan results", async () => {
@@ -1078,6 +1640,13 @@ describe("securityScan", () => {
           status: "error",
           summary: expect.stringContaining("could not complete"),
         }),
+      }),
+    );
+    expect(runMutation).toHaveBeenNthCalledWith(
+      3,
+      expect.anything(),
+      expect.objectContaining({
+        jobId: "securityScanJobs:1",
       }),
     );
     const llmAnalysis = runMutation.mock.calls[1]?.[1]?.llmAnalysis as

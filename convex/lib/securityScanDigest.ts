@@ -65,7 +65,15 @@ type StaticScanLike = NonNullable<Doc<"skillVersions">["staticScan"]>;
 type VirusTotalAnalysisLike = NonNullable<Doc<"skillVersions">["vtAnalysis"]>;
 type SecurityScanJobLike = Pick<
   Doc<"securityScanJobs">,
-  "_id" | "status" | "source" | "createdAt" | "updatedAt" | "completedAt" | "lastError"
+  | "_id"
+  | "status"
+  | "source"
+  | "workerId"
+  | "attempts"
+  | "createdAt"
+  | "updatedAt"
+  | "completedAt"
+  | "lastError"
 >;
 
 type SkillDigestInput = Pick<
@@ -319,6 +327,8 @@ function getJobTiming(job: SecurityScanJobLike | null | undefined) {
   return {
     lastScanJobId: job?._id,
     lastScanJobSource: job?.source,
+    lastScanWorkerId: job?.workerId,
+    lastScanAttempts: job?.attempts,
     lastScanQueuedAt: job?.createdAt,
     lastScanStartedAt: job?.status === "running" ? job.updatedAt : undefined,
     lastScanCompletedAt:

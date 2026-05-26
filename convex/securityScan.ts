@@ -6,7 +6,16 @@ import { action, internalMutation, internalQuery, mutation } from "./functions";
 import { assertModerator, requireUser } from "./lib/access";
 import { normalizePackageName } from "./lib/packageRegistry";
 import { assertCanManageOwnedResource } from "./lib/publishers";
+import {
+  buildPluginSecurityScanArtifactState,
+  buildSkillSecurityScanArtifactState,
+  type SecurityScanArtifactStateFields,
+} from "./lib/securityScanDigest";
 import { sourceSkillVersionFiles } from "./lib/skillCards";
+import {
+  recordSecurityScanHourlyRollupEvent,
+  upsertSecurityScanArtifactState,
+} from "./securityScanDigests";
 
 const MAX_PARALLEL_CODEX_SCANS = 64;
 const DEFAULT_VT_WAIT_MS = 10 * 60 * 1000;
@@ -103,6 +112,27 @@ type EnqueuePackageReleaseScanArgs = {
   source: SecurityScanJobSource;
   priority?: number;
   waitForVtMs?: number;
+};
+
+type DigestSecurityScanJob = Pick<
+  Doc<"securityScanJobs">,
+  | "_id"
+  | "targetKind"
+  | "skillVersionId"
+  | "packageReleaseId"
+  | "status"
+  | "source"
+  | "workerId"
+  | "attempts"
+  | "createdAt"
+  | "updatedAt"
+  | "completedAt"
+  | "lastError"
+>;
+
+type SecurityScanDigestEvent = {
+  eventKey: string;
+  occurredAt: number;
 };
 
 const llmAgenticRiskEvidenceValidator = v.object({
@@ -204,6 +234,7 @@ const internalRefs = internal as unknown as {
     enqueueSkillVersionScanInternal: unknown;
     failJobInternal: unknown;
     getJobTargetInternal: unknown;
+    refreshJobDigestInternal: unknown;
     succeedJobInternal: unknown;
   };
   skills: {
@@ -251,7 +282,12 @@ function publicWorkerErrorDetail(error: string) {
   return error
     .replace(/https?:\/\/[^\s"')<>]+/g, "[redacted-url]")
     .replace(
-      /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{12,}/gi,
+      /\b(authorization)(["']?\s*[:=]\s*["']?)(Bearer|Basic)\s+[^\s"',}]+/gi,
+      (_match, key: string, separator: string, scheme: string) =>
+        `${key}${separator}${scheme} [redacted-secret]`,
+    )
+    .replace(
+      /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{6,}/gi,
       (_match, scheme: string) => `${scheme} [redacted-secret]`,
     )
     .replace(
@@ -357,6 +393,85 @@ function hasArtifactBackedLlmAnalysis(analysis: ExistingLlmAnalysis | undefined)
     artifactBackedLlmAnalysisStatuses.has(status ?? "") ||
     artifactBackedLlmAnalysisStatuses.has(verdict ?? "")
   );
+}
+
+function securityScanDigestEventKey(
+  jobId: Id<"securityScanJobs">,
+  event: string,
+  discriminator: string | number,
+) {
+  return `${jobId}:${event}:${discriminator}`;
+}
+
+function hourlyDimensionsFromState(state: SecurityScanArtifactStateFields) {
+  return {
+    artifactKind: state.artifactKind,
+    clawScanVerdict: state.clawScanVerdict,
+    scanJobStatus: state.scanJobStatus,
+    failureStatus: state.failureStatus,
+  };
+}
+
+async function buildCurrentSecurityScanArtifactStateForJob(
+  ctx: MutationCtx,
+  job: DigestSecurityScanJob,
+  now: number,
+): Promise<SecurityScanArtifactStateFields | null> {
+  if (job.targetKind === "skillVersion" && job.skillVersionId) {
+    const version = await ctx.db.get(job.skillVersionId);
+    if (!version || version.softDeletedAt) return null;
+
+    const skill = await ctx.db.get(version.skillId);
+    if (!skill || skill.softDeletedAt || skill.latestVersionId !== version._id) return null;
+
+    return buildSkillSecurityScanArtifactState({ skill, version, scanJob: job, now });
+  }
+
+  if (job.targetKind === "packageRelease" && job.packageReleaseId) {
+    const release = await ctx.db.get(job.packageReleaseId);
+    if (!release || release.softDeletedAt) return null;
+
+    const pkg = await ctx.db.get(release.packageId);
+    if (!pkg || pkg.softDeletedAt || pkg.family === "skill" || pkg.latestReleaseId !== release._id)
+      return null;
+
+    return buildPluginSecurityScanArtifactState({ pkg, release, scanJob: job, now });
+  }
+
+  return null;
+}
+
+async function syncSecurityScanDigestForJob(
+  ctx: MutationCtx,
+  job: DigestSecurityScanJob,
+  event?: SecurityScanDigestEvent,
+) {
+  const now = Date.now();
+  const builtState = await buildCurrentSecurityScanArtifactStateForJob(ctx, job, now);
+  if (!builtState) return { synced: false as const };
+
+  let state = builtState;
+  if (!state.lastScanWorkerId) {
+    const existing = await ctx.db
+      .query("securityScanArtifactStates")
+      .withIndex("by_artifact_kind_and_artifact_key", (q) =>
+        q.eq("artifactKind", state.artifactKind).eq("artifactKey", state.artifactKey),
+      )
+      .unique();
+    if (existing && existing.lastScanJobId === state.lastScanJobId && existing.lastScanWorkerId) {
+      state = { ...state, lastScanWorkerId: existing.lastScanWorkerId };
+    }
+  }
+
+  await upsertSecurityScanArtifactState(ctx, state);
+  if (event) {
+    await recordSecurityScanHourlyRollupEvent(ctx, {
+      eventKey: event.eventKey,
+      occurredAt: event.occurredAt,
+      dimensions: hourlyDimensionsFromState(state),
+    });
+  }
+  return { synced: true as const, artifactKind: state.artifactKind };
 }
 
 function normalizeLimit(limit: number | undefined) {
@@ -686,18 +801,28 @@ async function enqueueSkillVersionScan(ctx: MutationCtx, args: EnqueueSkillVersi
     .collect();
   const active = existing.find((job) => job.status === "queued" || job.status === "running");
   if (active) {
-    await ctx.db.patch(active._id, {
+    const updatedJob = {
+      ...active,
       source: args.source,
       priority: Math.max(active.priority, args.priority ?? 0),
       hasMaliciousSignal,
       waitForVtUntil: Math.min(active.waitForVtUntil, waitForVtUntil),
       nextRunAt: Math.min(active.nextRunAt, nextRunAt),
       updatedAt: now,
+    };
+    await ctx.db.patch(active._id, {
+      source: updatedJob.source,
+      priority: updatedJob.priority,
+      hasMaliciousSignal: updatedJob.hasMaliciousSignal,
+      waitForVtUntil: updatedJob.waitForVtUntil,
+      nextRunAt: updatedJob.nextRunAt,
+      updatedAt: now,
     });
+    await syncSecurityScanDigestForJob(ctx, updatedJob);
     return { ok: true as const, jobId: active._id, alreadyQueued: true as const };
   }
 
-  const jobId = await ctx.db.insert("securityScanJobs", {
+  const job = {
     targetKind: "skillVersion",
     skillVersionId: args.versionId,
     status: "queued",
@@ -709,7 +834,18 @@ async function enqueueSkillVersionScan(ctx: MutationCtx, args: EnqueueSkillVersi
     attempts: 0,
     createdAt: now,
     updatedAt: now,
-  });
+  } satisfies Omit<DigestSecurityScanJob, "_id"> & {
+    priority: number;
+    hasMaliciousSignal: boolean;
+    waitForVtUntil: number;
+    nextRunAt: number;
+  };
+  const jobId = await ctx.db.insert("securityScanJobs", job);
+  await syncSecurityScanDigestForJob(
+    ctx,
+    { ...job, _id: jobId },
+    { eventKey: securityScanDigestEventKey(jobId, "queued", "created"), occurredAt: now },
+  );
   return { ok: true as const, jobId, alreadyQueued: false as const };
 }
 
@@ -739,18 +875,28 @@ async function enqueuePackageReleaseScan(ctx: MutationCtx, args: EnqueuePackageR
     .collect();
   const active = existing.find((job) => job.status === "queued" || job.status === "running");
   if (active) {
-    await ctx.db.patch(active._id, {
+    const updatedJob = {
+      ...active,
       source: args.source,
       priority: Math.max(active.priority, args.priority ?? 0),
       hasMaliciousSignal,
       waitForVtUntil: Math.min(active.waitForVtUntil, waitForVtUntil),
       nextRunAt: Math.min(active.nextRunAt, nextRunAt),
       updatedAt: now,
+    };
+    await ctx.db.patch(active._id, {
+      source: updatedJob.source,
+      priority: updatedJob.priority,
+      hasMaliciousSignal: updatedJob.hasMaliciousSignal,
+      waitForVtUntil: updatedJob.waitForVtUntil,
+      nextRunAt: updatedJob.nextRunAt,
+      updatedAt: now,
     });
+    await syncSecurityScanDigestForJob(ctx, updatedJob);
     return { ok: true as const, jobId: active._id, alreadyQueued: true as const };
   }
 
-  const jobId = await ctx.db.insert("securityScanJobs", {
+  const job = {
     targetKind: "packageRelease",
     packageReleaseId: args.releaseId,
     status: "queued",
@@ -762,7 +908,18 @@ async function enqueuePackageReleaseScan(ctx: MutationCtx, args: EnqueuePackageR
     attempts: 0,
     createdAt: now,
     updatedAt: now,
-  });
+  } satisfies Omit<DigestSecurityScanJob, "_id"> & {
+    priority: number;
+    hasMaliciousSignal: boolean;
+    waitForVtUntil: number;
+    nextRunAt: number;
+  };
+  const jobId = await ctx.db.insert("securityScanJobs", job);
+  await syncSecurityScanDigestForJob(
+    ctx,
+    { ...job, _id: jobId },
+    { eventKey: securityScanDigestEventKey(jobId, "queued", "created"), occurredAt: now },
+  );
   return { ok: true as const, jobId, alreadyQueued: false as const };
 }
 
@@ -918,13 +1075,30 @@ export const claimQueuedJobsInternal = internalMutation({
       .take(MAX_PARALLEL_CODEX_SCANS * 4);
     for (const job of running) {
       if ((job.leaseExpiresAt ?? 0) <= now) {
-        await ctx.db.patch(job._id, {
-          status: "queued",
+        const requeuedJob = {
+          ...job,
+          status: "queued" as const,
           leaseToken: undefined,
           leaseExpiresAt: undefined,
           workerId: undefined,
           nextRunAt: now,
           updatedAt: now,
+        };
+        await ctx.db.patch(job._id, {
+          status: requeuedJob.status,
+          leaseToken: requeuedJob.leaseToken,
+          leaseExpiresAt: requeuedJob.leaseExpiresAt,
+          workerId: requeuedJob.workerId,
+          nextRunAt: requeuedJob.nextRunAt,
+          updatedAt: now,
+        });
+        await syncSecurityScanDigestForJob(ctx, requeuedJob, {
+          eventKey: securityScanDigestEventKey(
+            job._id,
+            "queued",
+            `lease-expired:${job.leaseToken ?? job.updatedAt}`,
+          ),
+          occurredAt: now,
         });
       }
     }
@@ -976,23 +1150,29 @@ export const claimQueuedJobsInternal = internalMutation({
     const claimed = [];
     for (const job of ready) {
       const leaseToken = crypto.randomUUID();
-      await ctx.db.patch(job._id, {
-        status: "running",
-        attempts: job.attempts + 1,
-        leaseToken,
-        leaseExpiresAt: now + leaseMs,
-        workerId: args.workerId,
-        lastError: undefined,
-        updatedAt: now,
-      });
-      claimed.push({
+      const claimedJob = {
         ...job,
         status: "running" as const,
         attempts: job.attempts + 1,
         leaseToken,
         leaseExpiresAt: now + leaseMs,
         workerId: args.workerId,
+        updatedAt: now,
+      };
+      await ctx.db.patch(job._id, {
+        status: claimedJob.status,
+        attempts: claimedJob.attempts,
+        leaseToken: claimedJob.leaseToken,
+        leaseExpiresAt: claimedJob.leaseExpiresAt,
+        workerId: claimedJob.workerId,
+        lastError: undefined,
+        updatedAt: now,
       });
+      await syncSecurityScanDigestForJob(ctx, claimedJob, {
+        eventKey: securityScanDigestEventKey(job._id, "running", claimedJob.attempts),
+        occurredAt: now,
+      });
+      claimed.push(claimedJob);
     }
     return claimed;
   },
@@ -1027,6 +1207,17 @@ export const getJobTargetInternal = internalQuery({
   },
 });
 
+export const refreshJobDigestInternal = internalMutation({
+  args: {
+    jobId: v.id("securityScanJobs"),
+  },
+  handler: async (ctx, args) => {
+    const job = await ctx.db.get(args.jobId);
+    if (!job) return { synced: false as const };
+    return await syncSecurityScanDigestForJob(ctx, job);
+  },
+});
+
 export const succeedJobInternal = internalMutation({
   args: {
     jobId: v.id("securityScanJobs"),
@@ -1037,13 +1228,26 @@ export const succeedJobInternal = internalMutation({
     const job = await ctx.db.get(args.jobId);
     if (!job || job.leaseToken !== args.leaseToken) throw new ConvexError("Lease mismatch");
     const now = Date.now();
-    await ctx.db.patch(args.jobId, {
-      status: "succeeded",
+    const updatedJob = {
+      ...job,
+      status: "succeeded" as const,
       runId: args.runId,
       completedAt: now,
       leaseToken: undefined,
       leaseExpiresAt: undefined,
       updatedAt: now,
+    };
+    await ctx.db.patch(args.jobId, {
+      status: updatedJob.status,
+      runId: updatedJob.runId,
+      completedAt: updatedJob.completedAt,
+      leaseToken: updatedJob.leaseToken,
+      leaseExpiresAt: updatedJob.leaseExpiresAt,
+      updatedAt: now,
+    });
+    await syncSecurityScanDigestForJob(ctx, updatedJob, {
+      eventKey: securityScanDigestEventKey(args.jobId, "succeeded", args.runId ?? job.attempts),
+      occurredAt: now,
     });
     return { ok: true as const };
   },
@@ -1060,14 +1264,31 @@ export const failJobInternal = internalMutation({
     if (!job || job.leaseToken !== args.leaseToken) throw new ConvexError("Lease mismatch");
     const now = Date.now();
     const retry = job.attempts < MAX_ATTEMPTS;
-    await ctx.db.patch(args.jobId, {
-      status: retry ? "queued" : "failed",
-      lastError: args.error.slice(0, 2000),
-      nextRunAt: retry ? now + Math.min(30 * 60 * 1000, 2 ** job.attempts * 60_000) : job.nextRunAt,
+    const lastError = publicWorkerErrorDetail(args.error).slice(0, 2000);
+    const nextRunAt = retry
+      ? now + Math.min(30 * 60 * 1000, 2 ** job.attempts * 60_000)
+      : job.nextRunAt;
+    const updatedJob = {
+      ...job,
+      status: retry ? ("queued" as const) : ("failed" as const),
+      lastError,
+      nextRunAt,
       leaseToken: undefined,
       leaseExpiresAt: undefined,
+      updatedAt: now,
+    };
+    await ctx.db.patch(args.jobId, {
+      status: updatedJob.status,
+      lastError,
+      nextRunAt,
+      leaseToken: updatedJob.leaseToken,
+      leaseExpiresAt: updatedJob.leaseExpiresAt,
       workerId: undefined,
       updatedAt: now,
+    });
+    await syncSecurityScanDigestForJob(ctx, updatedJob, {
+      eventKey: securityScanDigestEventKey(args.jobId, retry ? "retry" : "failed", job.attempts),
+      occurredAt: now,
     });
     return { ok: true as const, retry };
   },
@@ -1255,6 +1476,7 @@ export const failCodexScanJob = action({
     );
 
     if (!result.retry) {
+      let wroteFailureAnalysis = false;
       const target = await runQueryRef<JobTarget | null>(
         ctx,
         internalRefs.securityScan.getJobTargetInternal,
@@ -1271,6 +1493,7 @@ export const failCodexScanJob = action({
               moderationMode: "preserve",
               llmAnalysis,
             });
+            wroteFailureAnalysis = true;
           }
         } else if (target.job.targetKind === "packageRelease" && target.release) {
           if (!hasArtifactBackedLlmAnalysis(target.release.llmAnalysis)) {
@@ -1278,8 +1501,14 @@ export const failCodexScanJob = action({
               releaseId: target.release._id,
               llmAnalysis,
             });
+            wroteFailureAnalysis = true;
           }
         }
+      }
+      if (wroteFailureAnalysis) {
+        await runMutationRef(ctx, internalRefs.securityScan.refreshJobDigestInternal, {
+          jobId: args.jobId,
+        });
       }
     }
 

@@ -72,6 +72,8 @@ const securityScanArtifactStateFieldsValidator = v.object({
   failureStatus: securityScanFailureStatusValidator,
   lastScanJobId: v.optional(v.id("securityScanJobs")),
   lastScanJobSource: v.optional(securityScanJobSourceValidator),
+  lastScanWorkerId: v.optional(v.string()),
+  lastScanAttempts: v.optional(v.number()),
   lastScanQueuedAt: v.optional(v.number()),
   lastScanStartedAt: v.optional(v.number()),
   lastScanCompletedAt: v.optional(v.number()),

@@ -169,6 +169,14 @@ See also: [acceptable-usage.md](./acceptable-usage.md) for the marketplace polic
   replayed lifecycle write does not double-count. These rollups are
   intentionally narrow counters, not an audit ledger; detailed truth remains on
   the version/release, scan job, moderation timeline, and `auditLogs` rows.
+- Scan lifecycle mutations keep digest rows warm for current latest artifacts:
+  enqueue writes queued state, claim writes running state, success writes the
+  final ClawScan verdict after artifact evidence is persisted, and failure
+  writes sanitized reason plus worker/attempt metadata. Retry transitions move
+  the current row back to queued instead of incrementing a separate failed
+  current count; final failures set `failureStatus: failed`. If the action
+  writes a synthetic ClawScan error after retries are exhausted, it refreshes
+  the same digest row without replaying the hourly failure event.
 - Digest repair is cursor-based and replayable. Backfill page mutations rebuild
   active skill/plugin artifact states from indexed active listings and latest
   version/release rows, then adjust current rollups from previous state to next
