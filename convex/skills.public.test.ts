@@ -45,6 +45,7 @@ const getBySlugHandler = (
         displayName: string | null;
         image: string | null;
         bio?: string | null;
+        official?: boolean;
       } | null;
       latestVersion?: {
         files?: Array<{
@@ -171,19 +172,34 @@ function makeCtx(args: {
   latestVersion?: Record<string, unknown> | null;
   skillsById?: Record<string, Record<string, unknown>>;
   ownersById?: Record<string, Record<string, unknown>>;
+  officialOrgPublisher?: Record<string, unknown> | null;
+  officialMembership?: Record<string, unknown> | null;
 }) {
   const unique = vi.fn().mockResolvedValue(args.skill);
   const withIndex = vi.fn(() => ({ unique }));
   const query = vi.fn((table: string) => {
-    if (table === "publisherMembers") {
+    if (table === "skills") return { withIndex };
+    if (table === "publishers") {
       return {
         withIndex: vi.fn(() => ({
-          unique: vi.fn().mockResolvedValue(args.membership ?? null),
+          unique: vi.fn().mockResolvedValue(args.officialOrgPublisher ?? null),
         })),
       };
     }
-    if (table !== "skills") throw new Error(`Unexpected query table: ${table}`);
-    return { withIndex };
+    if (table === "publisherMembers") {
+      return {
+        withIndex: vi.fn((indexName: string) => ({
+          unique: vi
+            .fn()
+            .mockResolvedValue(
+              indexName === "by_publisher_user"
+                ? (args.officialMembership ?? args.membership ?? null)
+                : (args.membership ?? null),
+            ),
+        })),
+      };
+    }
+    throw new Error(`Unexpected query table: ${table}`);
   });
   const get = vi.fn(async (id: string) => {
     if (!args.skill) return null;
@@ -340,6 +356,55 @@ describe("skills.getBySlug", () => {
     expect(result?.owner).not.toHaveProperty("githubCreatedAt");
     expect(result?.owner).not.toHaveProperty("githubFetchedAt");
     expect(result?.owner).not.toHaveProperty("githubProfileSyncedAt");
+  });
+
+  it("marks personal OpenClaw member publishers as official in the public response", async () => {
+    const ctx = makeCtx({
+      skill: makeSkill({
+        ownerUserId: "users:steipete",
+        ownerPublisherId: "publishers:steipete",
+      }),
+      owner: null,
+      ownersById: {
+        "publishers:steipete": {
+          _id: "publishers:steipete",
+          _creationTime: 1,
+          kind: "user",
+          handle: "steipete",
+          displayName: "Peter Steinberger",
+          image: null,
+          linkedUserId: "users:steipete",
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      },
+      officialOrgPublisher: {
+        _id: "publishers:openclaw",
+        _creationTime: 1,
+        kind: "org",
+        handle: "openclaw",
+        displayName: "OpenClaw",
+        image: null,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      officialMembership: {
+        _id: "publisherMembers:steipete-openclaw",
+        publisherId: "publishers:openclaw",
+        userId: "users:steipete",
+        role: "publisher",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    });
+
+    const result = await getBySlugHandler(ctx, { slug: "demo" } as never);
+
+    expect(result?.owner).toMatchObject({
+      handle: "steipete",
+      displayName: "Peter Steinberger",
+      official: true,
+    });
   });
 
   it("hides skills whose owner is deleted or banned", async () => {

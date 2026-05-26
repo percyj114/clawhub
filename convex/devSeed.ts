@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import type { ActionCtx, MutationCtx } from "./_generated/server";
 import { internalMutation as rawInternalMutation } from "./_generated/server";
 import { internalAction, internalMutation } from "./functions";
@@ -118,6 +118,7 @@ const publicCorpusPreparedRowValidator = v.union(
 
 const LOCAL_SEED_HANDLE = "local";
 const LEGACY_LOCAL_OWNER_HANDLE = "local-owner";
+const OFFICIAL_ORG_HANDLE = "openclaw";
 const LOCAL_SEED_GITHUB_CREATED_AT = Date.parse("2020-01-01T00:00:00.000Z");
 const CURRENT_USER_SEED_PREFIX = "dev";
 const PUBLIC_CORPUS_BATCH = "public-corpus-v1";
@@ -1126,9 +1127,26 @@ async function ensureLocalSeedOwner(ctx: MutationCtx) {
   }
   const user = await ctx.db.get(ensuredUserId);
   if (!user) throw new Error("Local seed user was not created");
+  await removeLocalSeedOfficialMembership(ctx, ensuredUserId);
   const publisher = await ensurePersonalPublisherForUser(ctx, user);
   if (!publisher) throw new Error("Local seed publisher was not created");
   return { userId: ensuredUserId, publisherId: publisher._id };
+}
+
+async function removeLocalSeedOfficialMembership(ctx: MutationCtx, userId: Id<"users">) {
+  const officialPublishers = await ctx.db
+    .query("publishers")
+    .withIndex("by_handle", (q) => q.eq("handle", OFFICIAL_ORG_HANDLE))
+    .collect();
+  for (const publisher of officialPublishers) {
+    const membership = await ctx.db
+      .query("publisherMembers")
+      .withIndex("by_publisher_user", (q) =>
+        q.eq("publisherId", publisher._id).eq("userId", userId),
+      )
+      .unique();
+    if (membership) await ctx.db.delete(membership._id);
+  }
 }
 
 async function ensureSeedOwner(ctx: MutationCtx, ownerUserId?: Id<"users">) {
@@ -1242,6 +1260,40 @@ async function deleteSkillBadgesForSkill(ctx: MutationCtx, skillId: Id<"skills">
     .withIndex("by_skill", (q) => q.eq("skillId", skillId))
     .collect();
   for (const badge of badges) await ctx.db.delete(badge._id);
+}
+
+async function deleteSkillBadge(
+  ctx: MutationCtx,
+  skillId: Id<"skills">,
+  kind: Doc<"skillBadges">["kind"],
+) {
+  const existing = await ctx.db
+    .query("skillBadges")
+    .withIndex("by_skill_kind", (q) => q.eq("skillId", skillId).eq("kind", kind))
+    .unique();
+  if (existing) await ctx.db.delete(existing._id);
+  const skill = await ctx.db.get(skillId);
+  if (skill?.badges?.[kind]) {
+    await ctx.db.patch(skillId, {
+      badges: {
+        ...(skill.badges as Record<string, unknown> | undefined),
+        [kind]: undefined,
+      },
+    });
+  }
+  const digests = await ctx.db
+    .query("skillSearchDigest")
+    .withIndex("by_skill", (q) => q.eq("skillId", skillId))
+    .collect();
+  for (const digest of digests) {
+    if (!digest.badges?.[kind]) continue;
+    await ctx.db.patch(digest._id, {
+      badges: {
+        ...(digest.badges as Record<string, unknown> | undefined),
+        [kind]: undefined,
+      },
+    });
+  }
 }
 
 async function deletePackageBadgesForPackage(ctx: MutationCtx, packageId: Id<"packages">) {
@@ -1848,16 +1900,16 @@ export async function seedLocalModerationFixturesHandler(
       if (skill.ownerUserId !== userId || skill.ownerPublisherId !== publisherId) {
         await ctx.db.patch(skill._id, ownerPatch);
       }
+      await deleteSkillBadge(ctx, skill._id, "official");
     }
     await ctx.db.patch(existingScannedSkill._id, {
       badges: {
         ...(existingScannedSkill.badges as Record<string, unknown> | undefined),
-        official: { byUserId: userId, at: now },
+        official: undefined,
         highlighted: undefined,
       },
       updatedAt: now,
     });
-    await ensureSkillBadge(ctx, existingScannedSkill._id, userId, now, "official");
     for (const pkg of [existingPlugin, existingScannedPlugin]) {
       if (pkg.ownerUserId !== userId || pkg.ownerPublisherId !== publisherId) {
         await ctx.db.patch(pkg._id, ownerPatch);
@@ -1985,7 +2037,6 @@ export async function seedLocalModerationFixturesHandler(
     softDeletedAt: undefined,
     badges: {
       redactionApproved: undefined,
-      official: { byUserId: userId, at: now },
     },
     moderationStatus: "hidden",
     moderationReason: "scanner.llm.malicious",
@@ -2096,7 +2147,6 @@ export async function seedLocalModerationFixturesHandler(
     createdAt: now,
     updatedAt: now,
   });
-  await ensureSkillBadge(ctx, scannedSkillId, userId, now, "official");
   const scannedSkillVersionId = await ctx.db.insert("skillVersions", {
     skillId: scannedSkillId,
     version: "0.1.0",

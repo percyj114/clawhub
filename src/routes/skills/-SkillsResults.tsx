@@ -64,7 +64,7 @@ export function SkillsResults({
                 skill={skill}
                 href={skillHref}
                 className="skill-card-spaced-footer"
-                badge={getSkillBadges(skill)}
+                badge={getSkillBadges(skill, entry.owner)}
                 chip={isPlugin ? "Plugin bundle (nix)" : undefined}
                 platformLabels={platforms.length ? platforms : undefined}
                 summaryFallback="Agent-ready skill pack."

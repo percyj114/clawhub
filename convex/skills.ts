@@ -63,6 +63,7 @@ import {
   summarizeReasonCodes,
   verdictFromCodes,
 } from "./lib/moderationReasonCodes";
+import { isOfficialPublisher, toPublicPublisherWithOfficial } from "./lib/officialPublishers";
 import {
   type HydratableSkill,
   type PublicPublisher,
@@ -2297,7 +2298,7 @@ export const getBySlug = query({
     const latestVersion = toPublicSkillVersion(publicLatestVersionDoc);
     const generatedSkillCard = await getGeneratedSkillCardPublicFile(ctx, publicLatestVersionDoc);
     if (latestVersion) latestVersion.generatedSkillCard = generatedSkillCard;
-    const owner = toPublicPublisher(ownerPublisher);
+    const owner = await toPublicPublisherWithOfficial(ctx, ownerPublisher);
     if (!owner) return null;
     const badges = await getSkillBadgeMap(ctx, skill._id);
 
@@ -4807,7 +4808,6 @@ export const listPublicPageV4 = query({
       Boolean(categorySlug) ||
       categoryKeywords.length > 0 ||
       excludeCategoryKeywords.length > 0;
-
     if (!hasDigestFilters) {
       const result = await getPage(ctx, {
         table: "skillSearchDigest",
@@ -5188,11 +5188,16 @@ async function buildPublicSkillEntryFromDigest(
   const ownerInfo = digestToOwnerInfo(digest);
   if (!ownerInfo?.owner) return null;
   const latestVersion = await resolveDigestLatestVersionForSkill(ctx, digest);
+  const ownerOfficial = await isOfficialPublisher(ctx, {
+    ...ownerInfo.owner,
+    deletedAt: undefined,
+    deactivatedAt: undefined,
+  });
   return {
     skill: publicSkill,
     latestVersion,
     ownerHandle: ownerInfo.ownerHandle,
-    owner: ownerInfo.owner,
+    owner: ownerOfficial ? { ...ownerInfo.owner, official: true } : ownerInfo.owner,
   };
 }
 

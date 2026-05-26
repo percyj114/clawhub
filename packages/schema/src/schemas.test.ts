@@ -3,7 +3,11 @@
 import { describe, expect, it } from "vitest";
 import { parseArk } from "./ark";
 import { DocsLinks, openClawDocsUrl } from "./docsLinks";
-import { getPackageScopeOwnerMismatch, inferPackageNameScope } from "./packages";
+import {
+  ApiV1PackageResponseSchema,
+  getPackageScopeOwnerMismatch,
+  inferPackageNameScope,
+} from "./packages";
 import {
   ApiSearchResponseSchema,
   ApiV1SearchResponseSchema,
@@ -206,6 +210,36 @@ describe("clawhub-schema", () => {
 
     expect(parsed.results[0]?.ownerHandle).toBe("openclaw");
     expect(parsed.results[0]?.owner?.displayName).toBe("OpenClaw");
+  });
+
+  it("parses v1 package owner official metadata", () => {
+    const parsed = parseArk(
+      ApiV1PackageResponseSchema,
+      {
+        package: {
+          name: "@openclaw/whatsapp",
+          displayName: "WhatsApp",
+          family: "code-plugin",
+          channel: "official",
+          isOfficial: true,
+          summary: null,
+          ownerHandle: "openclaw",
+          createdAt: 1,
+          updatedAt: 2,
+          latestVersion: "1.0.0",
+          tags: {},
+        },
+        owner: {
+          handle: "openclaw",
+          displayName: "OpenClaw",
+          image: null,
+          official: true,
+        },
+      },
+      "Package detail",
+    );
+
+    expect(parsed.owner?.official).toBe(true);
   });
 
   it("parses flattened skill verification envelopes", () => {

@@ -4,7 +4,7 @@ import { render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
-import type { PublicSkill } from "../lib/publicUser";
+import type { PublicPublisher, PublicSkill } from "../lib/publicUser";
 import { SkillListItem } from "./SkillListItem";
 
 vi.mock("@tanstack/react-router", () => ({
@@ -25,6 +25,16 @@ describe("SkillListItem", () => {
         })}
         ownerHandle="local"
       />,
+    );
+
+    expect(screen.getByLabelText("Official")).toBeTruthy();
+    expect(screen.queryByText("Official")).toBeNull();
+    expect(container.querySelector(".official-badge")).toBeTruthy();
+  });
+
+  it("renders owner-official skills with the compact official mark", () => {
+    const { container } = render(
+      <SkillListItem skill={makeSkill()} ownerHandle="steipete" owner={makePublisher()} />,
     );
 
     expect(screen.getByLabelText("Official")).toBeTruthy();
@@ -61,5 +71,19 @@ function makeSkill(overrides: Partial<PublicSkill> = {}): PublicSkill {
     createdAt: 1,
     updatedAt: 1,
     ...overrides,
+  };
+}
+
+function makePublisher(): PublicPublisher {
+  return {
+    _id: "publishers:steipete" as Id<"publishers">,
+    _creationTime: 1,
+    kind: "user",
+    handle: "steipete",
+    displayName: "Peter Steinberger",
+    image: undefined,
+    bio: undefined,
+    linkedUserId: "users:owner" as Id<"users">,
+    official: true,
   };
 }

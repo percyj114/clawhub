@@ -212,6 +212,39 @@ describe("public skill list deterministic cursors", () => {
     });
   });
 
+  it("marks public list owners official when they belong to the openclaw publisher", async () => {
+    getPageMock.mockResolvedValueOnce({
+      page: [
+        makeDigest({
+          slug: "codex-owner-move-debug",
+          displayName: "Codex Owner Move Debug",
+          ownerUserId: "users:steipete",
+          ownerPublisherId: "publishers:steipete",
+          ownerHandle: "steipete",
+          ownerDisplayName: "Peter Steinberger",
+          statsDownloads: 270,
+        }),
+      ],
+      hasMore: false,
+      indexKeys: [[undefined, 270, 1]],
+    });
+    const result = await listPublicPageV4Handler(
+      makeOfficialLookupCtx(["users:steipete"]) as never,
+      {
+        sort: "downloads",
+        nonSuspiciousOnly: false,
+        numItems: 10,
+      },
+    );
+
+    expect(result.page).toMatchObject([
+      {
+        skill: { slug: "codex-owner-move-debug", badges: {} },
+        owner: { handle: "steipete", official: true },
+      },
+    ]);
+  });
+
   it("guards the public API list against stale index cursors too", async () => {
     const staleCursor = legacyCursor([{ __undef: 1 }, false, 100, 200]);
 
@@ -295,7 +328,7 @@ describe("public skill list deterministic cursors", () => {
     });
 
     const result = await listPublicPageV4Handler(
-      {} as never,
+      makeOfficialLookupCtx() as never,
       {
         categoryKeywords: ["dev", "debug", "lint", "test", "build"],
         categorySlug: "dev-tools",
@@ -585,6 +618,56 @@ function makeDigest(overrides: Record<string, unknown>) {
     createdAt: 0,
     updatedAt: 0,
     ...overrides,
+  };
+}
+
+function makeOfficialLookupCtx(officialUserIds: string[] = []) {
+  const officialUserIdSet = new Set(officialUserIds);
+  const officialOrg = {
+    _id: "publishers:openclaw",
+    _creationTime: 0,
+    kind: "org",
+    handle: "openclaw",
+    displayName: "OpenClaw",
+  };
+
+  return {
+    db: {
+      query: vi.fn((table: string) => ({
+        withIndex: vi.fn((indexName: string, buildQuery: (q: unknown) => unknown) => {
+          const fields: Record<string, unknown> = {};
+          const q = {
+            eq: (field: string, value: unknown) => {
+              fields[field] = value;
+              return q;
+            },
+          };
+          buildQuery(q);
+          if (table === "publishers" && indexName === "by_handle") {
+            return {
+              unique: vi.fn(async () => (fields.handle === "openclaw" ? officialOrg : null)),
+            };
+          }
+          if (table === "publisherMembers" && indexName === "by_publisher_user") {
+            return {
+              unique: vi.fn(async () =>
+                fields.publisherId === "publishers:openclaw" &&
+                typeof fields.userId === "string" &&
+                officialUserIdSet.has(fields.userId)
+                  ? {
+                      _id: `publisherMembers:${fields.userId}`,
+                      publisherId: "publishers:openclaw",
+                      userId: fields.userId,
+                      role: "owner",
+                    }
+                  : null,
+              ),
+            };
+          }
+          throw new Error(`unexpected ${table} index ${indexName}`);
+        }),
+      })),
+    },
   };
 }
 

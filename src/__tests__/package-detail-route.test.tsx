@@ -215,6 +215,35 @@ describe("plugin detail route", () => {
     expect(screen.queryByText("Verified")).toBeNull();
   });
 
+  it("shows the compact Official badge in owner metadata for official publishers", async () => {
+    loaderDataMock = {
+      ...loaderDataMock,
+      detail: {
+        package: {
+          ...loaderDataMock.detail.package!,
+          channel: "official",
+          isOfficial: true,
+        },
+        owner: {
+          handle: "openclaw",
+          displayName: "OpenClaw",
+          image: null,
+          official: true,
+        },
+      },
+    };
+    const route = await loadRoute();
+    const Component = route.__config.component as ComponentType;
+
+    const { container } = render(<Component />);
+
+    const ownerLink = screen.getByRole("link", { name: "OpenClaw" });
+    const ownerBadge = ownerLink.closest(".user-badge");
+    expect(ownerBadge?.querySelector(".official-badge")).toBeTruthy();
+    expect(container.querySelector(".official-tag")).toBeTruthy();
+    expect(screen.queryByText("Verified")).toBeNull();
+  });
+
   it("shows plugin settings when the viewer can manage the plugin", async () => {
     useAuthStatusMock.mockReturnValue({
       isAuthenticated: true,

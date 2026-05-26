@@ -6566,7 +6566,7 @@ describe("httpApiV1 handlers", () => {
             changelog: "init",
             files: [],
           },
-          owner: { handle: "steipete", displayName: "Peter" },
+          owner: { handle: "steipete", displayName: "Peter", official: true },
         };
       }
       if ("versionIds" in args) {
@@ -6591,6 +6591,7 @@ describe("httpApiV1 handlers", () => {
       },
       owner: {
         handle: "steipete",
+        official: true,
       },
     });
   });
@@ -6631,7 +6632,12 @@ describe("httpApiV1 handlers", () => {
             updatedAt: 2,
           },
           latestRelease: null,
-          owner: { _id: "users:owner", handle: "owner", displayName: "Owner" },
+          owner: {
+            _id: "publishers:openclaw",
+            handle: "openclaw",
+            displayName: "OpenClaw",
+            official: true,
+          },
         };
       }
       return null;
@@ -6651,7 +6657,8 @@ describe("httpApiV1 handlers", () => {
         stats: { downloads: 7, installs: 3, stars: 2, versions: 4 },
       },
       owner: {
-        handle: "owner",
+        handle: "openclaw",
+        official: true,
       },
     });
   });
