@@ -674,16 +674,6 @@ async function ensureOrgPublisherHandleWithActor(
       trustedPublisher: args.trusted ?? existingPublisher.trustedPublisher,
       updatedAt: now,
     });
-    const membership = await getPublisherMembership(ctx, existingPublisher._id, args.actorUserId);
-    if (!membership) {
-      await ctx.db.insert("publisherMembers", {
-        publisherId: existingPublisher._id,
-        userId: args.actorUserId,
-        role: "owner",
-        createdAt: now,
-        updatedAt: now,
-      });
-    }
     const member = await ensureMember(existingPublisher._id);
     return {
       ok: true as const,
@@ -721,6 +711,10 @@ async function ensureOrgPublisherHandleWithActor(
     };
   }
 
+  if (!normalizePublisherHandle(args.memberHandle)) {
+    throw new ConvexError("memberHandle required when creating org publisher");
+  }
+
   const publisherId = await ctx.db.insert("publishers", {
     kind: "org",
     handle,
@@ -729,13 +723,6 @@ async function ensureOrgPublisherHandleWithActor(
     image: undefined,
     linkedUserId: undefined,
     trustedPublisher: args.trusted || undefined,
-    createdAt: now,
-    updatedAt: now,
-  });
-  await ctx.db.insert("publisherMembers", {
-    publisherId,
-    userId: args.actorUserId,
-    role: "owner",
     createdAt: now,
     updatedAt: now,
   });
@@ -774,7 +761,7 @@ async function ensureOrgPublisherMemberWithActor(
 ) {
   const memberHandle = normalizePublisherHandle(args.memberHandle);
   if (!memberHandle) return null;
-  const requestedRole = args.memberRole ?? "admin";
+  const requestedRole = args.memberRole ?? "owner";
   const targetUser = await getActiveUserByHandleOrPersonalPublisher(ctx, memberHandle);
   if (!targetUser) throw new ConvexError(`User "@${memberHandle}" not found`);
   await ensurePersonalPublisherForUser(ctx, targetUser, {
