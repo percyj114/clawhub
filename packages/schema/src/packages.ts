@@ -253,7 +253,43 @@ export const PackageTrustedPublisherSchema = type({
 });
 export type PackageTrustedPublisher = (typeof PackageTrustedPublisherSchema)[inferred];
 
+export const PackagePublishMetadataSchema = type({
+  "+": "reject",
+  name: "string",
+  displayName: "string?",
+  ownerHandle: "string?",
+  family: PackageFamilySchema,
+  version: "string",
+  changelog: "string",
+  clawScanNote: "string?",
+  manualOverrideReason: "string?",
+  channel: PackageChannelSchema.optional(),
+  tags: "string[]?",
+  source: PublishSourceSchema.optional(),
+  bundle: BundlePublishMetadataSchema.optional(),
+});
+export type PackagePublishMetadata = (typeof PackagePublishMetadataSchema)[inferred];
+
 export const PackagePublishRequestSchema = type({
+  "+": "reject",
+  name: "string",
+  displayName: "string?",
+  ownerHandle: "string?",
+  family: PackageFamilySchema,
+  version: "string",
+  changelog: "string",
+  clawScanNote: "string?",
+  manualOverrideReason: "string?",
+  channel: PackageChannelSchema.optional(),
+  tags: "string[]?",
+  source: PublishSourceSchema.optional(),
+  bundle: BundlePublishMetadataSchema.optional(),
+  files: CliPublishFileSchema.array(),
+});
+export type PackagePublishRequest = (typeof PackagePublishRequestSchema)[inferred];
+
+export const ServerPackagePublishRequestSchema = type({
+  "+": "reject",
   name: "string",
   displayName: "string?",
   ownerHandle: "string?",
@@ -269,7 +305,7 @@ export const PackagePublishRequestSchema = type({
   artifact: PackagePublishArtifactSchema.optional(),
   files: CliPublishFileSchema.array(),
 });
-export type PackagePublishRequest = (typeof PackagePublishRequestSchema)[inferred];
+export type ServerPackagePublishRequest = (typeof ServerPackagePublishRequestSchema)[inferred];
 
 export const PackageListItemSchema = type({
   name: "string",

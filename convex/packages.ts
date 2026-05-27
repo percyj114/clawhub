@@ -1,5 +1,6 @@
 import {
   PackagePublishRequestSchema,
+  ServerPackagePublishRequestSchema,
   getPackageScopeOwnerMismatch,
   isPluginCategorySlug,
   parseArk,
@@ -12,6 +13,7 @@ import {
   type PackageOfficialMigrationListPhase,
   type PackageOfficialMigrationPhase,
   type PackagePublishRequest,
+  type ServerPackagePublishRequest,
   type PackageVerificationTier,
 } from "clawhub-schema";
 import { paginationOptsValidator } from "convex/server";
@@ -5002,9 +5004,9 @@ function buildGitHubActionsPublishActor(
 }
 
 function resolveTrustedPublishSource(
-  payload: PackagePublishRequest,
+  payload: ServerPackagePublishRequest,
   publishToken: Doc<"packagePublishTokens">,
-): PackagePublishRequest["source"] {
+): ServerPackagePublishRequest["source"] {
   const source = payload.source;
   if (source && source.kind !== "github") {
     throw new ConvexError("Trusted publishes only support GitHub source metadata");
@@ -5057,10 +5059,10 @@ async function publishPackageImpl(
   rawPayload: unknown,
 ) {
   const payload = parseArk(
-    PackagePublishRequestSchema,
+    ServerPackagePublishRequestSchema,
     rawPayload,
     "Package publish payload",
-  ) as PackagePublishRequest;
+  ) as ServerPackagePublishRequest;
   if (payload.family === "skill") {
     throw new ConvexError("Skill packages must use the skills publish flow");
   }
@@ -5434,14 +5436,6 @@ async function publishPackageImpl(
   return publishResult;
 }
 
-export const publishPackage = action({
-  args: { payload: v.any() },
-  handler: async (ctx, args) => {
-    const { userId } = await requireUserFromAction(ctx);
-    return await publishPackageImpl(ctx, { kind: "user", actorUserId: userId }, args.payload);
-  },
-});
-
 export const publishPackageForUserInternal = internalAction({
   args: {
     actorUserId: v.id("users"),
@@ -5488,7 +5482,12 @@ export const publishRelease = action({
   args: { payload: v.any() },
   handler: async (ctx, args) => {
     const { userId } = await requireUserFromAction(ctx);
-    return await publishPackageImpl(ctx, { kind: "user", actorUserId: userId }, args.payload);
+    const payload = parseArk(
+      PackagePublishRequestSchema,
+      args.payload,
+      "Package publish payload",
+    ) as PackagePublishRequest;
+    return await publishPackageImpl(ctx, { kind: "user", actorUserId: userId }, payload);
   },
 });
 

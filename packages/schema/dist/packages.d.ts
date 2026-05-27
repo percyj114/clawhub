@@ -228,7 +228,68 @@ export declare const PackageTrustedPublisherSchema: import("arktype/internal/var
     environment?: string | undefined;
 }, {}>;
 export type PackageTrustedPublisher = (typeof PackageTrustedPublisherSchema)[inferred];
+export declare const PackagePublishMetadataSchema: import("arktype/internal/variants/object.ts").ObjectType<{
+    name: string;
+    family: "skill" | "code-plugin" | "bundle-plugin";
+    version: string;
+    changelog: string;
+    displayName?: string | undefined;
+    ownerHandle?: string | undefined;
+    clawScanNote?: string | undefined;
+    manualOverrideReason?: string | undefined;
+    channel?: "official" | "community" | "private" | undefined;
+    tags?: string[] | undefined;
+    source?: {
+        kind: "github";
+        url: string;
+        repo: string;
+        ref: string;
+        commit: string;
+        path: string;
+        importedAt: number;
+    } | undefined;
+    bundle?: {
+        id?: string | undefined;
+        format?: string | undefined;
+        hostTargets?: string[] | undefined;
+    } | undefined;
+}, {}>;
+export type PackagePublishMetadata = (typeof PackagePublishMetadataSchema)[inferred];
 export declare const PackagePublishRequestSchema: import("arktype/internal/variants/object.ts").ObjectType<{
+    name: string;
+    family: "skill" | "code-plugin" | "bundle-plugin";
+    version: string;
+    changelog: string;
+    files: {
+        path: string;
+        size: number;
+        storageId: string;
+        sha256: string;
+        contentType?: string | undefined;
+    }[];
+    displayName?: string | undefined;
+    ownerHandle?: string | undefined;
+    clawScanNote?: string | undefined;
+    manualOverrideReason?: string | undefined;
+    channel?: "official" | "community" | "private" | undefined;
+    tags?: string[] | undefined;
+    source?: {
+        kind: "github";
+        url: string;
+        repo: string;
+        ref: string;
+        commit: string;
+        path: string;
+        importedAt: number;
+    } | undefined;
+    bundle?: {
+        id?: string | undefined;
+        format?: string | undefined;
+        hostTargets?: string[] | undefined;
+    } | undefined;
+}, {}>;
+export type PackagePublishRequest = (typeof PackagePublishRequestSchema)[inferred];
+export declare const ServerPackagePublishRequestSchema: import("arktype/internal/variants/object.ts").ObjectType<{
     name: string;
     family: "skill" | "code-plugin" | "bundle-plugin";
     version: string;
@@ -273,7 +334,7 @@ export declare const PackagePublishRequestSchema: import("arktype/internal/varia
         npmFileCount: number;
     } | undefined;
 }, {}>;
-export type PackagePublishRequest = (typeof PackagePublishRequestSchema)[inferred];
+export type ServerPackagePublishRequest = (typeof ServerPackagePublishRequestSchema)[inferred];
 export declare const PackageListItemSchema: import("arktype/internal/variants/object.ts").ObjectType<{
     name: string;
     displayName: string;

@@ -9,7 +9,7 @@ import {
   getPackageReleaseScanBackfillBatchInternal,
   getByName,
   list,
-  publishPackage,
+  publishRelease,
   publishPackageForTrustedPublisherInternal,
   publishPackageForUserInternal,
   listPackageReportsInternal,
@@ -237,8 +237,8 @@ const searchForViewerInternalHandler = (
     Array<{ package: { name: string } }>
   >
 )._handler;
-const publishPackageHandler = (
-  publishPackage as unknown as WrappedHandler<
+const publishReleaseHandler = (
+  publishRelease as unknown as WrappedHandler<
     {
       payload: unknown;
     },
@@ -5265,6 +5265,7 @@ describe("packages public queries", () => {
               "storage:package",
               JSON.stringify({
                 name: "demo-plugin",
+                version: "1.0.0",
                 openclaw: {
                   extensions: ["./dist/index.js"],
                   hostTargets: ["darwin-arm64", "linux-x64"],
@@ -5333,10 +5334,38 @@ describe("packages public queries", () => {
             contentType: "application/javascript",
           },
         ],
+        artifact: {
+          kind: "npm-pack",
+          storageId: "storage:clawpack",
+          sha256: "clawpack-sha",
+          size: 1234,
+          format: "tgz",
+          npmIntegrity: "sha512-clawpack",
+          npmShasum: "clawpack-shasum",
+          npmTarballName: "demo-plugin-1.0.0.tgz",
+          npmUnpackedSize: 2345,
+          npmFileCount: 3,
+        },
       },
     })) as Record<string, unknown>;
 
     expect(runMutation).toHaveBeenCalled();
+    expect(runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        name: "demo-plugin",
+        artifactKind: "npm-pack",
+        clawpackStorageId: "storage:clawpack",
+        clawpackSha256: "clawpack-sha",
+        clawpackSize: 1234,
+        clawpackFormat: "tgz",
+        npmIntegrity: "sha512-clawpack",
+        npmShasum: "clawpack-shasum",
+        npmTarballName: "demo-plugin-1.0.0.tgz",
+        npmUnpackedSize: 2345,
+        npmFileCount: 3,
+      }),
+    );
     expect(result.verification).toEqual(expect.objectContaining({ scanStatus: "pending" }));
     expect(result.staticScan).toEqual(
       expect.objectContaining({
@@ -6156,9 +6185,9 @@ describe("packages public queries", () => {
     expect(result).toEqual([expect.objectContaining({ name: "demo-plugin" })]);
   });
 
-  it("requires auth inside the public publish action", async () => {
+  it("requires auth inside the public publish release action", async () => {
     await expect(
-      publishPackageHandler({ runQuery: vi.fn(), runMutation: vi.fn() } as never, {
+      publishReleaseHandler({ runQuery: vi.fn(), runMutation: vi.fn() } as never, {
         payload: {
           name: "demo-plugin",
           family: "bundle-plugin",

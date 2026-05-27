@@ -122,6 +122,19 @@ See also: [acceptable-usage.md](./acceptable-usage.md) for the marketplace polic
 - Skills directory supports an optional "Hide suspicious" filter to exclude
   active-but-flagged (`flagged.suspicious`) entries from browse/search results.
 
+## Package publish upload boundary
+
+- Package publish is multipart-only. `POST /api/v1/packages` must reject JSON
+  request bodies, including bodies that reference pre-existing storage IDs.
+- ClawHub must create package artifact metadata from the uploaded multipart
+  bytes. Caller-supplied `artifact` metadata is untrusted and must be rejected
+  before publish actions run.
+- Package publish accepts either multipart `files[]` uploads or one multipart
+  `tarball` `.tgz` file part, never both in the same request.
+- For tarball uploads, ClawHub stores the uploaded tarball, derives its artifact
+  hashes and npm metadata, and derives package `files[]` from the tarball
+  contents.
+
 ## Skill moderation pipeline
 
 - New skill publishes now persist a deterministic static scan result on the version.

@@ -11,7 +11,7 @@ import {
   PackageReportRequestSchema,
   PackageReportTriageRequestSchema,
   PackageReleaseModerationRequestSchema,
-  PackagePublishRequestSchema,
+  PackagePublishMetadataSchema,
   PackageTransferRequestSchema,
   PackageTrustedPublisherUpsertRequestSchema,
   PublishTokenMintRequestSchema,
@@ -20,6 +20,7 @@ import {
   type PackageAppealListStatus,
   type PackageModerationQueueStatus,
   type PackageOfficialMigrationListPhase,
+  type PackagePublishMetadata,
   type PackageReportListStatus,
 } from "clawhub-schema";
 import { api, internal } from "../_generated/api";
@@ -1020,65 +1021,20 @@ function skillVersionTags(tags: Record<string, string>, version: string) {
     .map(([tag]) => tag);
 }
 
-function parsePackagePublishBody(body: unknown) {
-  const parsed = parseArk(PackagePublishRequestSchema, body, "Package publish payload") as {
-    name: string;
-    displayName?: string;
-    ownerHandle?: string;
-    family: "skill" | "code-plugin" | "bundle-plugin";
-    version: string;
-    changelog: string;
-    clawScanNote?: string;
-    manualOverrideReason?: string;
-    channel?: "official" | "community" | "private";
-    tags?: string[];
-    source?: Record<string, unknown>;
-    bundle?: Record<string, unknown>;
-    files: Array<{
-      path: string;
-      size: number;
-      storageId: string;
-      sha256: string;
-      contentType?: string;
-    }>;
-    artifact?: {
-      kind: "npm-pack";
-      storageId: string;
-      sha256: string;
-      size: number;
-      format: "tgz";
-      npmIntegrity: string;
-      npmShasum: string;
-      npmTarballName: string;
-      npmUnpackedSize: number;
-      npmFileCount: number;
-    };
-  };
-  if (parsed.files.length === 0) throw new Error("files required");
-  return {
-    name: parsed.name,
-    displayName: parsed.displayName ?? undefined,
-    ownerHandle: parsed.ownerHandle?.trim().replace(/^@+/, "") || undefined,
-    family: parsed.family,
-    version: parsed.version,
-    changelog: parsed.changelog,
-    clawScanNote: parsed.clawScanNote?.trim() || undefined,
-    manualOverrideReason: parsed.manualOverrideReason?.trim() || undefined,
-    channel: parsed.channel ?? undefined,
-    tags: parsed.tags?.filter(Boolean) ?? undefined,
-    source: parsed.source ?? undefined,
-    bundle: parsed.bundle ?? undefined,
-    files: parsed.files.map((file) => ({
-      ...file,
-      storageId: file.storageId as Id<"_storage">,
-    })),
-    artifact: parsed.artifact
-      ? {
-          ...parsed.artifact,
-          storageId: parsed.artifact.storageId as Id<"_storage">,
-        }
-      : undefined,
-  };
+type StoredPackagePublishFile = {
+  path: string;
+  size: number;
+  storageId: Id<"_storage">;
+  sha256: string;
+  contentType?: string;
+};
+
+function buildPackagePublishBody(
+  metadata: PackagePublishMetadata,
+  files: StoredPackagePublishFile[],
+) {
+  if (files.length === 0) throw new Error("files required");
+  return { ...metadata, files };
 }
 
 function inferStoredPackageContentType(path: string) {
@@ -1128,47 +1084,47 @@ async function parseMultipartPackagePublish(ctx: ActionCtx, request: Request) {
   const form = await request.formData();
   const payloadRaw = form.get("payload");
   if (!payloadRaw || typeof payloadRaw !== "string") throw new Error("Missing payload");
-  const payload = JSON.parse(payloadRaw) as Record<string, unknown>;
-  const files: Array<{
-    path: string;
-    size: number;
-    storageId: Id<"_storage">;
-    sha256: string;
-    contentType?: string;
-  }> = [];
-  let artifact:
-    | {
-        kind: "npm-pack";
-        storageId: Id<"_storage">;
-        sha256: string;
-        size: number;
-        format: "tgz";
-        npmIntegrity: string;
-        npmShasum: string;
-        npmTarballName: string;
-        npmUnpackedSize: number;
-        npmFileCount: number;
-      }
-    | undefined;
+  const parsedPayload: unknown = JSON.parse(payloadRaw);
+  const parsedMetadata = parseArk(
+    PackagePublishMetadataSchema,
+    parsedPayload,
+    "Package publish payload",
+  );
+  const metadata = {
+    name: parsedMetadata.name,
+    displayName: parsedMetadata.displayName ?? undefined,
+    ownerHandle: parsedMetadata.ownerHandle?.trim().replace(/^@+/, "") || undefined,
+    family: parsedMetadata.family,
+    version: parsedMetadata.version,
+    changelog: parsedMetadata.changelog,
+    clawScanNote: parsedMetadata.clawScanNote?.trim() || undefined,
+    manualOverrideReason: parsedMetadata.manualOverrideReason?.trim() || undefined,
+    channel: parsedMetadata.channel ?? undefined,
+    tags: parsedMetadata.tags?.filter(Boolean) ?? undefined,
+    source: parsedMetadata.source ?? undefined,
+    bundle: parsedMetadata.bundle ?? undefined,
+  } satisfies PackagePublishMetadata;
+  const files: StoredPackagePublishFile[] = [];
+  const tarballEntry = form.get("tarball");
+  const fileParts = form.getAll("files[]").filter((entry) => typeof entry !== "string");
 
-  const clawpackEntry = form.get("clawpack") ?? form.get("artifact");
-  if (clawpackEntry && typeof clawpackEntry !== "string") {
-    if (form.getAll("files").some((entry) => typeof entry !== "string")) {
-      throw new Error("Upload either a ClawPack tarball or individual files, not both");
+  if (tarballEntry && typeof tarballEntry !== "string") {
+    if (fileParts.length > 0) {
+      throw new Error("Upload either a package tarball or individual files, not both");
     }
-    if (clawpackEntry.size > MAX_CLAWPACK_BYTES) {
-      throw new Error(getClawPackSizeError(clawpackEntry.name));
+    if (tarballEntry.size > MAX_CLAWPACK_BYTES) {
+      throw new Error(getClawPackSizeError(tarballEntry.name));
     }
-    const artifactBytes = new Uint8Array(await clawpackEntry.arrayBuffer());
+    const artifactBytes = new Uint8Array(await tarballEntry.arrayBuffer());
     const parsed = await parseClawPack(artifactBytes);
     const artifactBlob = new Blob([artifactBytes], { type: "application/octet-stream" });
     const artifactStorageId = await ctx.storage.store(artifactBlob);
-    artifact = {
-      kind: "npm-pack",
+    const artifact = {
+      kind: "npm-pack" as const,
       storageId: artifactStorageId,
       sha256: parsed.artifactSha256,
       size: artifactBytes.byteLength,
-      format: "tgz",
+      format: "tgz" as const,
       npmIntegrity: parsed.npmIntegrity,
       npmShasum: parsed.npmShasum,
       npmTarballName: parsed.npmTarballName,
@@ -1176,11 +1132,10 @@ async function parseMultipartPackagePublish(ctx: ActionCtx, request: Request) {
       npmFileCount: parsed.fileCount,
     };
     files.push(...(await storeClawPackFiles(ctx, parsed.entries)));
-    return parsePackagePublishBody({ ...payload, files, artifact });
+    return { ...buildPackagePublishBody(metadata, files), artifact };
   }
 
-  for (const entry of form.getAll("files")) {
-    if (typeof entry === "string") continue;
+  for (const entry of fileParts) {
     if (isMacJunkPath(entry.name)) continue;
     if (entry.size > MAX_PUBLISH_FILE_BYTES) {
       throw new Error(getPublishFileSizeError(entry.name));
@@ -1199,7 +1154,7 @@ async function parseMultipartPackagePublish(ctx: ActionCtx, request: Request) {
       contentType: entry.type || undefined,
     });
   }
-  return parsePackagePublishBody({ ...payload, files });
+  return buildPackagePublishBody(metadata, files);
 }
 
 async function listPackages(
@@ -1480,9 +1435,10 @@ export async function publishPackageV1Handler(ctx: ActionCtx, request: Request) 
 
   try {
     const contentType = request.headers.get("content-type") ?? "";
-    const payload = contentType.includes("multipart/form-data")
-      ? await parseMultipartPackagePublish(ctx, request)
-      : parsePackagePublishBody(await request.json());
+    if (!contentType.includes("multipart/form-data")) {
+      return text("Package publish requires multipart/form-data", 415, rate.headers);
+    }
+    const payload = await parseMultipartPackagePublish(ctx, request);
     const result =
       auth.auth.kind === "user"
         ? await runActionRef(ctx, internalRefs.packages.publishPackageForUserInternal, {

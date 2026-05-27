@@ -99,21 +99,21 @@ function getPublishPayload() {
 
 function getUploadedFileNames() {
   const form = getPublishForm();
-  return (form.getAll("files") as Array<Blob & { name?: string }>)
+  return (form.getAll("files[]") as Array<Blob & { name?: string }>)
     .map((file) => file.name ?? "")
     .sort();
 }
 
-function getUploadedClawPackNames() {
+function getUploadedTarballNames() {
   const form = getPublishForm();
-  return (form.getAll("clawpack") as Array<Blob & { name?: string }>)
+  return (form.getAll("tarball") as Array<Blob & { name?: string }>)
     .map((file) => file.name ?? "")
     .sort();
 }
 
-function getUploadedClawPacks() {
+function getUploadedTarballs() {
   const form = getPublishForm();
-  return form.getAll("clawpack") as Array<Blob & { name?: string }>;
+  return form.getAll("tarball") as Array<Blob & { name?: string }>;
 }
 
 function makeCodePluginPackageJson(overrides: Record<string, unknown>) {
@@ -1033,12 +1033,11 @@ describe("package commands", () => {
           importedAt: 123_456_789,
         },
       });
-      expect(getUploadedFileNames()).toEqual([]);
-      expect(getUploadedClawPackNames()).toEqual(["scope-demo-plugin-1.0.0.tgz"]);
+      expect(getUploadedTarballNames()).toEqual(["scope-demo-plugin-1.0.0.tgz"]);
       expect(httpMocks.apiRequestForm.mock.calls[0]?.[1]).toEqual(
         expect.objectContaining({ retryCount: 5 }),
       );
-      const uploadedPack = getUploadedClawPacks()[0];
+      const uploadedPack = getUploadedTarballs()[0];
       if (!uploadedPack) throw new Error("Missing uploaded ClawPack");
       const parsed = parseClawPack(new Uint8Array(await uploadedPack.arrayBuffer()));
       expect(parsed.entries.map((entry) => entry.path).sort()).toEqual([
@@ -1290,8 +1289,7 @@ describe("package commands", () => {
           importedAt: 123_456_789,
         },
       });
-      expect(getUploadedClawPackNames()).toEqual([packName]);
-      expect(getUploadedFileNames()).toEqual([]);
+      expect(getUploadedTarballNames()).toEqual([packName]);
       expect(uiMocks.spinner.succeed).toHaveBeenCalledWith(
         "OK. Published @scope/demo-plugin@1.0.0 (rel_1)",
       );
@@ -1800,6 +1798,7 @@ describe("package commands", () => {
         "openclaw.plugin.json",
         "package.json",
       ]);
+      expect(getUploadedTarballNames()).toEqual([]);
     } finally {
       await rm(workdir, { recursive: true, force: true });
     }
@@ -2006,7 +2005,6 @@ describe("package commands", () => {
         sourceRepo: "openclaw/ignored-plugin",
         sourceCommit: "abc123",
       });
-
       expect(getUploadedFileNames()).toEqual([
         ".clawhubignore",
         ".codex-plugin/plugin.json",
@@ -2014,6 +2012,7 @@ describe("package commands", () => {
         "openclaw.plugin.json",
         "package.json",
       ]);
+      expect(getUploadedTarballNames()).toEqual([]);
     } finally {
       await rm(workdir, { recursive: true, force: true });
     }
@@ -2106,15 +2105,15 @@ describe("package commands", () => {
         sourceRef: "v1.0.0",
       });
       const explicitPayload = getPublishPayload();
-      const explicitFiles = getUploadedFileNames();
+      const explicitTarballs = getUploadedTarballNames();
 
       httpMocks.apiRequestForm.mockClear();
       await cmdPublishPackage(makeOpts(workdir), "demo-plugin", {});
       const inferredPayload = getPublishPayload();
-      const inferredFiles = getUploadedFileNames();
+      const inferredTarballs = getUploadedTarballNames();
 
       expect(inferredPayload).toEqual(explicitPayload);
-      expect(inferredFiles).toEqual(explicitFiles);
+      expect(inferredTarballs).toEqual(explicitTarballs);
       dateSpy.mockRestore();
     } finally {
       await rm(workdir, { recursive: true, force: true });
@@ -2312,9 +2311,7 @@ describe("package commands", () => {
       await cmdPublishPackage(makeOpts(workdir), "owner/repo@main", {
         sourcePath: "plugins/demo",
       });
-
-      expect(getUploadedFileNames()).toEqual([]);
-      expect(getUploadedClawPackNames()).toEqual(["scope-demo-plugin-1.0.0.tgz"]);
+      expect(getUploadedTarballNames()).toEqual(["scope-demo-plugin-1.0.0.tgz"]);
       expect(getPublishPayload()).toEqual({
         name: "@scope/demo-plugin",
         displayName: "Demo Plugin",

@@ -1224,15 +1224,15 @@ Publishes a new version.
 Publishes a code-plugin or bundle-plugin release.
 
 - Requires Bearer token auth.
-- Preferred: `multipart/form-data` with `payload` JSON + `files[]` blobs.
-- JSON body with `files` (storageId-based) is also accepted.
+- Requires `multipart/form-data` with `payload` JSON + either `files[]` blobs or one `tarball` `.tgz` upload.
+- JSON request bodies are not accepted for package publish.
 - Optional payload field: `ownerHandle`. When present, only admins may publish on behalf of that owner.
 
 Validation highlights:
 
 - `family` must be `code-plugin` or `bundle-plugin`.
-- Plugin packages require `openclaw.plugin.json`. ClawPack `.tgz` uploads must
-  contain it at `package/openclaw.plugin.json`.
+- Plugin packages require `openclaw.plugin.json`. `.tgz` uploads must contain it
+  at `package/openclaw.plugin.json`.
 - Code plugins require `package.json`, source repo metadata, source commit
   metadata, config schema metadata, `openclaw.compat.pluginApi`, and
   `openclaw.build.openclawVersion`.

@@ -675,7 +675,7 @@ export async function cmdPublishPackage(
         const blob = new Blob([Buffer.from(plan.clawpackOnDisk.bytes)], {
           type: "application/octet-stream",
         });
-        form.append("clawpack", blob, plan.clawpackOnDisk.relPath);
+        form.append("tarball", blob, plan.clawpackOnDisk.relPath);
       } else {
         let index = 0;
         for (const file of plan.filesOnDisk) {
@@ -686,7 +686,7 @@ export async function cmdPublishPackage(
           const blob = new Blob([Buffer.from(file.bytes)], {
             type: file.contentType ?? "application/octet-stream",
           });
-          form.append("files", blob, file.relPath);
+          form.append("files[]", blob, file.relPath);
         }
       }
 
@@ -1669,9 +1669,9 @@ async function preparePackagePublishPlan(
     }
   } else {
     const folderStat = await stat(folder).catch(() => null);
-    if (!folderStat) fail("Path must be a folder or ClawPack .tgz");
+    if (!folderStat) fail("Path must be a folder or package tarball .tgz");
     if (folderStat.isFile()) {
-      if (!folder.endsWith(".tgz")) fail("ClawPack publish files must end in .tgz");
+      if (!folder.endsWith(".tgz")) fail("Package publish files must end in .tgz");
       const bytes = new Uint8Array(await readFile(folder));
       assertClawPackSize(bytes.byteLength, basename(folder));
       parsedClawpack = parseClawPack(bytes);
@@ -1681,7 +1681,7 @@ async function preparePackagePublishPlan(
         contentType: "application/octet-stream",
       };
     } else if (!folderStat.isDirectory()) {
-      fail("Path must be a folder or ClawPack .tgz");
+      fail("Path must be a folder or package tarball .tgz");
     }
 
     const localGitInfo = folderStat.isDirectory() ? resolveLocalGitInfo(folder) : null;
