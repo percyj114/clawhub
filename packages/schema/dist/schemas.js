@@ -133,6 +133,13 @@ export const ApiV1UserSearchResponseSchema = type({
     }).array(),
     total: "number",
 });
+export const ApiV1PublisherCreateResponseSchema = type({
+    ok: "true",
+    publisherId: "string",
+    handle: "string",
+    created: "true",
+    trusted: "false",
+});
 export const ApiV1SearchResponseSchema = type({
     results: type({
         slug: "string?",
@@ -142,6 +149,14 @@ export const ApiV1SearchResponseSchema = type({
         version: "string|null?",
         score: "number",
         updatedAt: "number?",
+        ownerHandle: "string|null?",
+        owner: type({
+            handle: "string|null?",
+            displayName: "string|null?",
+            image: "string|null?",
+        })
+            .or("null")
+            .optional(),
     }).array(),
 });
 export const ApiV1SkillListResponseSchema = type({
@@ -314,6 +329,47 @@ export const ApiV1SkillAppealResolveResponseSchema = type({
     status: SkillAppealStatusSchema,
     actionTaken: SkillAppealFinalActionSchema.optional(),
 });
+export const ApiV1SkillRescanResponseSchema = type({
+    ok: "true",
+    slug: "string",
+    version: "string",
+    skillId: "string",
+    skillVersionId: "string",
+    jobId: "string",
+    alreadyQueued: "boolean",
+});
+export const ApiV1SkillBulkRescanBatchRequestSchema = type({
+    mode: '"all-active-latest"?',
+    cursor: "string|null?",
+    batchSize: "number?",
+    dryRun: "boolean?",
+});
+export const ApiV1SkillBulkRescanBatchResponseSchema = type({
+    ok: "true",
+    mode: '"all-active-latest"',
+    queued: "number",
+    alreadyQueued: "number",
+    skipped: "number",
+    jobIds: "string[]",
+    nextCursor: "string|null",
+    done: "boolean",
+    sampleSlugs: "string[]",
+});
+export const ApiV1SkillBulkRescanStatusRequestSchema = type({
+    jobIds: "string[]",
+});
+export const ApiV1SkillBulkRescanStatusResponseSchema = type({
+    ok: "true",
+    total: "number",
+    queued: "number",
+    running: "number",
+    succeeded: "number",
+    failed: "number",
+    missing: "number",
+    terminal: "number",
+    done: "boolean",
+    failedJobIds: "string[]",
+});
 export const ApiV1SkillVersionListResponseSchema = type({
     items: type({
         version: "string",
@@ -347,6 +403,27 @@ export const ApiV1SkillVersionResponseSchema = type({
 export const ApiV1SkillResolveResponseSchema = type({
     match: type({ version: "string" }).or("null"),
     latestVersion: type({ version: "string" }).or("null"),
+});
+export const ApiV1SkillVerifyResponseSchema = type({
+    schema: '"clawhub.skill.verify.v1"',
+    ok: "boolean",
+    decision: '"pass"|"fail"',
+    reasons: "string[]",
+    slug: "string",
+    displayName: "string",
+    pageUrl: "string",
+    publisherHandle: "string|null",
+    publisherDisplayName: "string|null",
+    publisherProfileUrl: "string|null",
+    version: "string",
+    resolvedFrom: '"latest"|"version"|"tag"',
+    tag: "string|null",
+    createdAt: "number",
+    card: "unknown",
+    artifact: "unknown",
+    provenance: "unknown",
+    security: "unknown",
+    signature: "unknown",
 });
 export const ApiV1PublishResponseSchema = type({
     ok: "true",
@@ -406,6 +483,28 @@ export const ApiV1TransferListResponseSchema = type({
 export const ApiV1SetRoleResponseSchema = type({
     ok: "true",
     role: '"admin"|"moderator"|"user"',
+});
+export const ApiV1ReclassifyBanResponseSchema = type({
+    ok: "true",
+    dryRun: "boolean",
+    userId: "string",
+    handle: "string|null",
+    previousReason: "string|null",
+    nextReason: "string",
+    changed: "boolean",
+});
+export const ApiV1RemediateAutobansResponseSchema = type({
+    ok: "true",
+    dryRun: "boolean",
+    scanned: "number",
+    wouldUnban: "number",
+    unbanned: "number",
+    skipped: "number",
+    restoredSkills: "number",
+    restoredPackages: "number",
+    items: "unknown[]",
+    "nextCursor?": "string|null",
+    "done?": "boolean",
 });
 export const ApiV1StarResponseSchema = type({
     ok: "true",

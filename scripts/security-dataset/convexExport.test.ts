@@ -17,6 +17,8 @@ describe("Convex export dataset ingestion", () => {
           _id: "skills:1",
           displayName: "Demo Skill",
           slug: "demo-skill",
+          ownerPublisherId: "publishers:openclaw",
+          ownerUserId: "users:owner",
           capabilityTags: ["filesystem"],
           moderationSourceVersionId: "skillVersions:1",
           moderationVerdict: "suspicious",
@@ -46,8 +48,43 @@ describe("Convex export dataset ingestion", () => {
             verdict: "suspicious",
             confidence: "high",
             summary: "asks for secrets",
+            agenticRiskFindings: [
+              {
+                categoryId: "ASI04",
+                categoryLabel: "Tool and permission overreach",
+                riskBucket: "permission_boundary",
+                status: "concern",
+                severity: "high",
+                confidence: "high",
+                evidence: {
+                  path: "SKILL.md",
+                  snippet: "Use token=supersecret123",
+                  explanation: "References sensitive token handling.",
+                },
+                userImpact: "Could expose credentials.",
+                recommendation: "Require least-privilege credentials.",
+              },
+            ],
             model: "gpt-test",
             checkedAt: 3,
+          },
+          skillSpectorAnalysis: {
+            status: "suspicious",
+            score: 55,
+            severity: "HIGH",
+            recommendation: "DO_NOT_INSTALL",
+            issueCount: 1,
+            scannerVersion: "skillspector-v2.0.0",
+            summary: "found deceptive metadata",
+            checkedAt: 6,
+            issues: [
+              {
+                issueId: "SDI-1",
+                severity: "HIGH",
+                confidence: 0.98,
+                explanation: "The skill body does not match the declaration.",
+              },
+            ],
           },
         },
       ],
@@ -56,6 +93,7 @@ describe("Convex export dataset ingestion", () => {
           _id: "packages:public",
           displayName: "Demo Package",
           name: "@demo/pkg",
+          ownerUserId: "users:owner",
           channel: "community",
           family: "code-plugin",
           sourceRepo: "git@github.com:demo/pkg.git",
@@ -66,6 +104,7 @@ describe("Convex export dataset ingestion", () => {
           _id: "packages:private",
           displayName: "Private Package",
           name: "@demo/private",
+          ownerUserId: "users:owner",
           channel: "private",
           family: "code-plugin",
         },
@@ -96,6 +135,8 @@ describe("Convex export dataset ingestion", () => {
           files: [],
         },
       ],
+      users: [{ _id: "users:owner", handle: "alice" }],
+      publishers: [{ _id: "publishers:openclaw", handle: "openclaw" }],
     });
 
     expect(rows).toHaveLength(2);
@@ -104,6 +145,7 @@ describe("Convex export dataset ingestion", () => {
       sourceKind: "package",
       sourceDocId: "packageReleases:1",
       artifactSha256: "pkg-sha",
+      publicOwnerHandle: "alice",
       packageChannel: "community",
       sourceRepoHost: "github.com",
       staticScan: { status: "clean" },
@@ -112,19 +154,42 @@ describe("Convex export dataset ingestion", () => {
       sourceKind: "skill",
       sourceDocId: "skillVersions:1",
       artifactSha256: "skill-sha",
+      publicOwnerHandle: "openclaw",
+      publicSlug: "demo-skill",
       moderationConsensus: {
         verdict: "suspicious",
         reasonCodes: ["network.exfiltration"],
       },
       llmAnalysis: { model: "gpt-test" },
+      skillSpectorAnalysis: {
+        status: "suspicious",
+        score: 55,
+        issues: [{ issueId: "SDI-1" }],
+      },
       skillMdContentRedacted: "Use this skill safely. [REDACTED_SECRET]",
     });
+    expect(rows[1]?.llmAnalysis?.agenticRiskFindings).toMatchObject([
+      {
+        categoryId: "ASI04",
+        riskBucket: "permission_boundary",
+        status: "concern",
+        severity: "high",
+        evidence: {
+          path: "SKILL.md",
+        },
+      },
+    ]);
   });
 
   it("reads table JSONL files from a Convex export zip", async () => {
     const zip = zipSync({
       "tables/skills.jsonl": strToU8(
-        `${JSON.stringify({ _id: "skills:1", displayName: "S", slug: "s" })}\n`,
+        `${JSON.stringify({
+          _id: "skills:1",
+          displayName: "S",
+          slug: "s",
+          ownerUserId: "users:owner",
+        })}\n`,
       ),
       "tables/skillVersions.jsonl": strToU8(
         `${JSON.stringify({
@@ -137,6 +202,7 @@ describe("Convex export dataset ingestion", () => {
       ),
       "tables/packages.jsonl": strToU8(""),
       "tables/packageReleases.jsonl": strToU8(""),
+      "tables/users.jsonl": strToU8(`${JSON.stringify({ _id: "users:owner", handle: "owner" })}\n`),
     });
     const directory = await mkdtemp(join(tmpdir(), "clawhub-convex-export-"));
     try {
@@ -144,10 +210,81 @@ describe("Convex export dataset ingestion", () => {
       await writeFile(path, Buffer.from(zip));
 
       await expect(artifactInputsFromConvexExportZip(path)).resolves.toMatchObject([
-        { sourceKind: "skill", sourceDocId: "skillVersions:1" },
+        { sourceKind: "skill", sourceDocId: "skillVersions:1", publicOwnerHandle: "owner" },
       ]);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
+  });
+
+  it("ignores inactive owner handles from Convex export tables", () => {
+    const rows = artifactInputsFromConvexExportTables({
+      skills: [
+        {
+          _id: "skills:1",
+          displayName: "Demo Skill",
+          slug: "demo-skill",
+          ownerPublisherId: "publishers:inactive",
+          ownerUserId: "users:owner",
+        },
+        {
+          _id: "skills:2",
+          displayName: "Deleted Owner Skill",
+          slug: "deleted-owner-skill",
+          ownerUserId: "users:deleted",
+        },
+        {
+          _id: "skills:3",
+          displayName: "Linked Personal Publisher Skill",
+          slug: "linked-personal-publisher-skill",
+          ownerUserId: "users:linked",
+        },
+      ],
+      skillVersions: [
+        {
+          _id: "skillVersions:1",
+          skillId: "skills:1",
+          version: "1.0.0",
+          createdAt: 1,
+          files: [],
+        },
+        {
+          _id: "skillVersions:2",
+          skillId: "skills:2",
+          version: "1.0.0",
+          createdAt: 2,
+          files: [],
+        },
+        {
+          _id: "skillVersions:3",
+          skillId: "skills:3",
+          version: "1.0.0",
+          createdAt: 3,
+          files: [],
+        },
+      ],
+      packages: [],
+      packageReleases: [],
+      users: [
+        {
+          _id: "users:owner",
+          handle: "fallback-owner",
+          personalPublisherId: "publishers:personal",
+        },
+        { _id: "users:deleted", handle: "deleted-owner", deletedAt: 123 },
+        { _id: "users:linked", handle: "legacy-user" },
+      ],
+      publishers: [
+        { _id: "publishers:inactive", handle: "inactive-org", deactivatedAt: 456 },
+        { _id: "publishers:personal", handle: "personal-owner" },
+        { _id: "publishers:linked", handle: "linked-personal", linkedUserId: "users:linked" },
+      ],
+    });
+
+    expect(rows).toMatchObject([
+      { sourceDocId: "skillVersions:1", publicOwnerHandle: "personal-owner" },
+      { sourceDocId: "skillVersions:2", publicOwnerHandle: null },
+      { sourceDocId: "skillVersions:3", publicOwnerHandle: "linked-personal" },
+    ]);
   });
 });

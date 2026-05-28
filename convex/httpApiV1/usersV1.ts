@@ -12,6 +12,33 @@ import {
   toOptionalNumber,
 } from "./shared";
 
+const usersV1InternalRefs = internal as unknown as {
+  publishers: {
+    removeOrgPublisherMemberInternal: unknown;
+  };
+  users: {
+    getByHandleInternal: unknown;
+    remediateAutobansInternal: unknown;
+    reclassifyBanInternal: unknown;
+  };
+};
+
+async function runUsersV1QueryRef<T>(
+  ctx: Pick<ActionCtx, "runQuery">,
+  ref: unknown,
+  args: unknown,
+): Promise<T> {
+  return (await ctx.runQuery(ref as never, args as never)) as T;
+}
+
+async function runUsersV1MutationRef<T>(
+  ctx: Pick<ActionCtx, "runMutation">,
+  ref: unknown,
+  args: unknown,
+): Promise<T> {
+  return (await ctx.runMutation(ref as never, args as never)) as T;
+}
+
 export async function usersPostRouterV1Handler(ctx: ActionCtx, request: Request) {
   const rate = await applyRateLimit(ctx, request, "write");
   if (!rate.ok) return rate.response;
@@ -26,9 +53,12 @@ export async function usersPostRouterV1Handler(ctx: ActionCtx, request: Request)
     action !== "unban" &&
     action !== "role" &&
     action !== "restore" &&
+    action !== "remediate-autobans" &&
+    action !== "reclassify-ban" &&
     action !== "reclaim" &&
     action !== "reserve" &&
-    action !== "publisher"
+    action !== "publisher" &&
+    action !== "publisher-member"
   ) {
     return text("Not found", 404, rate.headers);
   }
@@ -49,6 +79,18 @@ export async function usersPostRouterV1Handler(ctx: ActionCtx, request: Request)
     return handleAdminRestore(ctx, request, payload, actorUserId, rate.headers);
   }
 
+  if (action === "remediate-autobans") {
+    const admin = requireAdminOrResponse(actorUser, rate.headers);
+    if (!admin.ok) return admin.response;
+    return handleAdminRemediateAutobans(ctx, payload, actorUserId, rate.headers);
+  }
+
+  if (action === "reclassify-ban") {
+    const admin = requireAdminOrResponse(actorUser, rate.headers);
+    if (!admin.ok) return admin.response;
+    return handleAdminReclassifyBan(ctx, payload, actorUserId, rate.headers);
+  }
+
   if (action === "reclaim") {
     const admin = requireAdminOrResponse(actorUser, rate.headers);
     if (!admin.ok) return admin.response;
@@ -65,6 +107,12 @@ export async function usersPostRouterV1Handler(ctx: ActionCtx, request: Request)
     const admin = requireAdminOrResponse(actorUser, rate.headers);
     if (!admin.ok) return admin.response;
     return handleAdminEnsurePublisher(ctx, payload, actorUserId, rate.headers);
+  }
+
+  if (action === "publisher-member") {
+    const admin = requireAdminOrResponse(actorUser, rate.headers);
+    if (!admin.ok) return admin.response;
+    return handleAdminRemovePublisherMember(ctx, payload, actorUserId, rate.headers);
   }
 
   const handleRaw = typeof payload.handle === "string" ? payload.handle.trim() : "";
@@ -160,6 +208,117 @@ export async function usersPostRouterV1Handler(ctx: ActionCtx, request: Request)
       return text(message, 404, rate.headers);
     }
     return text(message, 400, rate.headers);
+  }
+}
+
+async function handleAdminReclassifyBan(
+  ctx: ActionCtx,
+  payload: unknown,
+  actorUserId: Id<"users">,
+  headers: HeadersInit,
+) {
+  const body = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+  const handle = typeof body.handle === "string" ? body.handle.trim() : "";
+  const userId = typeof body.userId === "string" ? body.userId.trim() : "";
+  const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+  const dryRun = body.dryRun !== false;
+
+  if (handle && userId) return text("Pass handle or userId, not both", 400, headers);
+  if (!handle && !userId) return text("Missing userId or handle", 400, headers);
+  if (!reason) return text("Missing reason", 400, headers);
+  if (reason.length > 500) return text("Reason too long (max 500 chars)", 400, headers);
+
+  let targetUserId: Id<"users"> | null = userId ? (userId as Id<"users">) : null;
+  if (!targetUserId) {
+    const user = await runUsersV1QueryRef<{ _id?: Id<"users"> } | null>(
+      ctx,
+      usersV1InternalRefs.users.getByHandleInternal,
+      { handle: handle.toLowerCase() },
+    );
+    if (!user?._id) return text("User not found", 404, headers);
+    targetUserId = user._id;
+  }
+
+  try {
+    const result = await runUsersV1MutationRef(
+      ctx,
+      usersV1InternalRefs.users.reclassifyBanInternal,
+      {
+        actorUserId,
+        targetUserId,
+        reason,
+        dryRun,
+      },
+    );
+    return json(result, 200, headers);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Ban reclassification failed";
+    if (message.toLowerCase().includes("forbidden")) {
+      return text("Forbidden", 403, headers);
+    }
+    if (message.toLowerCase().includes("not found")) {
+      return text(message, 404, headers);
+    }
+    return text(message, 400, headers);
+  }
+}
+
+async function handleAdminRemediateAutobans(
+  ctx: ActionCtx,
+  payload: unknown,
+  actorUserId: Id<"users">,
+  headers: HeadersInit,
+) {
+  const body = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+  const handle = typeof body.handle === "string" ? body.handle.trim() : "";
+  const userId = typeof body.userId === "string" ? body.userId.trim() : "";
+  const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+  const since = typeof body.since === "string" ? body.since.trim() : "";
+  const cursor = typeof body.cursor === "string" ? body.cursor.trim() : "";
+  const dryRun = body.dryRun !== false;
+  const limit =
+    typeof body.limit === "number"
+      ? body.limit
+      : typeof body.limit === "string" || body.limit === null
+        ? toOptionalNumber(body.limit)
+        : undefined;
+
+  if (handle && userId) return text("Pass handle or userId, not both", 400, headers);
+  if (reason && reason.length > 500) {
+    return text("Reason too long (max 500 chars)", 400, headers);
+  }
+  if (since && Number.isNaN(Date.parse(since))) {
+    return text("Invalid since date", 400, headers);
+  }
+  if (limit !== undefined && (!Number.isFinite(limit) || limit < 1)) {
+    return text("Invalid limit", 400, headers);
+  }
+
+  try {
+    const result = await runUsersV1MutationRef(
+      ctx,
+      usersV1InternalRefs.users.remediateAutobansInternal,
+      {
+        actorUserId,
+        ...(userId ? { targetUserId: userId as Id<"users"> } : {}),
+        ...(handle ? { handle } : {}),
+        dryRun,
+        ...(reason ? { reason } : {}),
+        ...(since ? { since } : {}),
+        ...(cursor ? { cursor } : {}),
+        ...(limit !== undefined ? { limit } : {}),
+      },
+    );
+    return json(result, 200, headers);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Autoban remediation failed";
+    if (message.toLowerCase().includes("forbidden")) {
+      return text("Forbidden", 403, headers);
+    }
+    if (message.toLowerCase().includes("not found")) {
+      return text(message, 404, headers);
+    }
+    return text(message, 400, headers);
   }
 }
 
@@ -354,18 +513,66 @@ async function handleAdminEnsurePublisher(
 
   const displayName =
     typeof payload.displayName === "string" ? payload.displayName.trim() : undefined;
-  const trusted = typeof payload.trusted === "boolean" ? payload.trusted : true;
+  const trusted = typeof payload.trusted === "boolean" ? payload.trusted : undefined;
+  const memberHandle =
+    typeof payload.memberHandle === "string" ? payload.memberHandle.trim().toLowerCase() : "";
+  const memberRoleRaw =
+    typeof payload.memberRole === "string" ? payload.memberRole.trim().toLowerCase() : "";
+  const memberRole =
+    memberRoleRaw === "owner" || memberRoleRaw === "admin" || memberRoleRaw === "publisher"
+      ? memberRoleRaw
+      : undefined;
+  if (memberRoleRaw && !memberRole) {
+    return text("memberRole must be owner, admin, or publisher", 400, headers);
+  }
 
   try {
     const result = await ctx.runMutation(internal.publishers.ensureOrgPublisherHandleInternal, {
       actorUserId,
       handle,
       displayName,
-      trusted,
+      ...(typeof trusted === "boolean" ? { trusted } : {}),
+      ...(memberHandle ? { memberHandle } : {}),
+      ...(memberRole ? { memberRole } : {}),
     });
     return json(result, 200, headers);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Publisher ensure failed";
+    if (message.toLowerCase().includes("forbidden")) {
+      return text("Forbidden", 403, headers);
+    }
+    if (message.toLowerCase().includes("not found")) {
+      return text(message, 404, headers);
+    }
+    return text(message, 400, headers);
+  }
+}
+
+async function handleAdminRemovePublisherMember(
+  ctx: ActionCtx,
+  payload: Record<string, unknown>,
+  actorUserId: Id<"users">,
+  headers: HeadersInit,
+) {
+  const handle = typeof payload.handle === "string" ? payload.handle.trim().toLowerCase() : "";
+  const memberHandle =
+    typeof payload.memberHandle === "string" ? payload.memberHandle.trim().toLowerCase() : "";
+  if (!handle) return text("Missing handle", 400, headers);
+  if (!memberHandle) return text("Missing memberHandle", 400, headers);
+
+  try {
+    const result = await runUsersV1MutationRef(
+      ctx,
+      usersV1InternalRefs.publishers.removeOrgPublisherMemberInternal,
+      {
+        actorUserId,
+        handle,
+        memberHandle,
+      },
+    );
+    return json(result, 200, headers);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Publisher member removal failed";
     if (message.toLowerCase().includes("forbidden")) {
       return text("Forbidden", 403, headers);
     }

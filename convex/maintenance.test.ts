@@ -16,6 +16,9 @@ vi.mock("./_generated/api", () => ({
         "applySkillFingerprintBackfillPatchInternal",
       ),
       backfillSkillFingerprintsInternal: Symbol("backfillSkillFingerprintsInternal"),
+      applySkillCapabilityTagsInternal: Symbol("applySkillCapabilityTagsInternal"),
+      backfillSkillCapabilityTagsInternal: Symbol("backfillSkillCapabilityTagsInternal"),
+      backfillDigestVersionSummary: Symbol("backfillDigestVersionSummary"),
       getEmptySkillCleanupPageInternal: Symbol("getEmptySkillCleanupPageInternal"),
       applyEmptySkillCleanupInternal: Symbol("applyEmptySkillCleanupInternal"),
       nominateUserForEmptySkillSpamInternal: Symbol("nominateUserForEmptySkillSpamInternal"),
@@ -38,6 +41,8 @@ vi.mock("./lib/skillSummary", () => ({
 }));
 
 const {
+  applySkillCapabilityTagsInternal,
+  backfillDigestVersionSummary,
   backfillLatestVersionSummaryInternal,
   backfillSkillFingerprintsInternalHandler,
   backfillSkillSummariesInternalHandler,
@@ -266,6 +271,72 @@ describe("maintenance backfill", () => {
     expect(runAfter).not.toHaveBeenCalled();
   });
 
+  it("backfills digest capability tags even when version summary already matches", async () => {
+    const digest = {
+      _id: "skillSearchDigest:1",
+      skillId: "skills:1",
+      latestVersionId: "skillVersions:1",
+      latestVersionSkillId: "skills:1",
+      latestVersionSummary: {
+        version: "1.0.0",
+        createdAt: 123,
+        changelog: "Same changelog",
+        changelogSource: "user",
+        clawdis: undefined,
+      },
+      capabilityTags: ["old"],
+    };
+    const skill = {
+      _id: "skills:1",
+      slug: "demo",
+      displayName: "Demo",
+      latestVersionId: "skillVersions:1",
+      latestVersionSummary: digest.latestVersionSummary,
+      capabilityTags: ["read-files"],
+    };
+    const version = {
+      _id: "skillVersions:1",
+      skillId: "skills:1",
+      softDeletedAt: undefined,
+      version: "1.0.0",
+    };
+    const paginate = vi.fn().mockResolvedValue({
+      page: [digest],
+      continueCursor: null,
+      isDone: true,
+    });
+    const patch = vi.fn().mockResolvedValue(undefined);
+    const ctx = {
+      db: {
+        query: vi.fn(() => ({ paginate })),
+        get: vi.fn(async (id: string) => {
+          if (id === "skills:1") return skill;
+          if (id === "skillVersions:1") return version;
+          return null;
+        }),
+        patch,
+        normalizeId: vi.fn(),
+      },
+      scheduler: {
+        runAfter: vi.fn(),
+      },
+    } as never;
+
+    const result = await (
+      backfillDigestVersionSummary as unknown as { _handler: Function }
+    )._handler(ctx, {
+      batchSize: 10,
+    });
+
+    expect(result).toEqual({ patched: 1, isDone: true, scanned: 1 });
+    expect(patch).toHaveBeenCalledWith("skillSearchDigest:1", {
+      latestVersionId: "skillVersions:1",
+      latestVersionSkillId: "skills:1",
+      latestVersionSummary: digest.latestVersionSummary,
+      capabilityTags: ["read-files"],
+    });
+  });
+
   it("backfills denormalized user hover stats from indexed owner pages", async () => {
     const runQuery = vi
       .fn()
@@ -406,6 +477,188 @@ describe("maintenance badge denormalization", () => {
       badges: {
         official: { byUserId: "users:2", at: 456 },
       },
+    });
+  });
+});
+
+describe("maintenance capability tag backfill", () => {
+  it("keeps latest skill search digest capability tags in sync", async () => {
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1234);
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce({
+        _id: "skillVersions:1",
+        capabilityTags: ["can-make-purchases"],
+      })
+      .mockResolvedValueOnce({
+        _id: "skills:1",
+        latestVersionId: "skillVersions:1",
+        capabilityTags: ["can-make-purchases"],
+      });
+    const unique = vi.fn().mockResolvedValue({
+      _id: "skillSearchDigest:1",
+      capabilityTags: ["can-make-purchases"],
+    });
+    const withIndex = vi.fn((_indexName, callback) => {
+      callback({ eq: vi.fn() });
+      return { unique };
+    });
+    const query = vi.fn().mockReturnValue({ withIndex });
+    const patch = vi.fn().mockResolvedValue(undefined);
+
+    const result = await (
+      applySkillCapabilityTagsInternal as unknown as { _handler: Function }
+    )._handler(
+      {
+        db: {
+          get,
+          patch,
+          query,
+          normalizeId: vi.fn(),
+        },
+      } as never,
+      {
+        skillId: "skills:1",
+        versionId: "skillVersions:1",
+        capabilityTags: ["financial-authority", "can-make-purchases"],
+      },
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      versionPatched: true,
+      skillPatched: true,
+      digestPatched: true,
+    });
+    expect(patch).toHaveBeenNthCalledWith(1, "skillVersions:1", {
+      capabilityTags: ["financial-authority", "can-make-purchases"],
+    });
+    expect(patch).toHaveBeenNthCalledWith(2, "skills:1", {
+      capabilityTags: ["financial-authority", "can-make-purchases"],
+      updatedAt: 1234,
+    });
+    expect(patch).toHaveBeenNthCalledWith(3, "skillSearchDigest:1", {
+      capabilityTags: ["financial-authority", "can-make-purchases"],
+      updatedAt: 1234,
+    });
+    expect(query).toHaveBeenCalledWith("skillSearchDigest");
+    expect(withIndex).toHaveBeenCalledWith("by_skill", expect.any(Function));
+
+    nowSpy.mockRestore();
+  });
+
+  it("counts trigger-synced digest tags when the latest skill tags change", async () => {
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(2222);
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce({
+        _id: "skillVersions:1",
+        capabilityTags: ["can-make-purchases"],
+      })
+      .mockResolvedValueOnce({
+        _id: "skills:1",
+        latestVersionId: "skillVersions:1",
+        capabilityTags: ["can-make-purchases"],
+      });
+    const unique = vi.fn().mockResolvedValue({
+      _id: "skillSearchDigest:1",
+      capabilityTags: ["financial-authority", "can-make-purchases"],
+    });
+    const withIndex = vi.fn((_indexName, callback) => {
+      callback({ eq: vi.fn() });
+      return { unique };
+    });
+    const query = vi.fn().mockReturnValue({ withIndex });
+    const patch = vi.fn().mockResolvedValue(undefined);
+
+    const result = await (
+      applySkillCapabilityTagsInternal as unknown as { _handler: Function }
+    )._handler(
+      {
+        db: {
+          get,
+          patch,
+          query,
+          normalizeId: vi.fn(),
+        },
+      } as never,
+      {
+        skillId: "skills:1",
+        versionId: "skillVersions:1",
+        capabilityTags: ["financial-authority", "can-make-purchases"],
+      },
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      versionPatched: true,
+      skillPatched: true,
+      digestPatched: true,
+    });
+    expect(patch).toHaveBeenCalledTimes(2);
+    expect(patch).toHaveBeenNthCalledWith(1, "skillVersions:1", {
+      capabilityTags: ["financial-authority", "can-make-purchases"],
+    });
+    expect(patch).toHaveBeenNthCalledWith(2, "skills:1", {
+      capabilityTags: ["financial-authority", "can-make-purchases"],
+      updatedAt: 2222,
+    });
+
+    nowSpy.mockRestore();
+  });
+
+  it("repairs a stale latest skill search digest even when skill tags already match", async () => {
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce({
+        _id: "skillVersions:1",
+        capabilityTags: ["financial-authority", "can-make-purchases"],
+      })
+      .mockResolvedValueOnce({
+        _id: "skills:1",
+        latestVersionId: "skillVersions:1",
+        capabilityTags: ["financial-authority", "can-make-purchases"],
+        updatedAt: 987,
+      });
+    const unique = vi.fn().mockResolvedValue({
+      _id: "skillSearchDigest:1",
+      capabilityTags: ["can-make-purchases"],
+    });
+    const withIndex = vi.fn((_indexName, callback) => {
+      callback({ eq: vi.fn() });
+      return { unique };
+    });
+    const query = vi.fn().mockReturnValue({ withIndex });
+    const patch = vi.fn().mockResolvedValue(undefined);
+
+    const result = await (
+      applySkillCapabilityTagsInternal as unknown as { _handler: Function }
+    )._handler(
+      {
+        db: {
+          get,
+          patch,
+          query,
+          normalizeId: vi.fn(),
+        },
+      } as never,
+      {
+        skillId: "skills:1",
+        versionId: "skillVersions:1",
+        capabilityTags: ["financial-authority", "can-make-purchases"],
+      },
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      versionPatched: false,
+      skillPatched: false,
+      digestPatched: true,
+    });
+    expect(patch).toHaveBeenCalledTimes(1);
+    expect(patch).toHaveBeenCalledWith("skillSearchDigest:1", {
+      capabilityTags: ["financial-authority", "can-make-purchases"],
+      updatedAt: 987,
     });
   });
 });
@@ -551,6 +804,57 @@ describe("maintenance fingerprint backfill", () => {
       replaceEntries: true,
       existingEntryIds: ["skillVersionFingerprints:1"],
     });
+  });
+
+  it("ignores generated Skill Cards and bundle fingerprints for source backfills", async () => {
+    const { hashSkillFiles } = await import("./lib/skills");
+    const sourceFingerprint = await hashSkillFiles([{ path: "SKILL.md", sha256: "abc" }]);
+    const bundleFingerprint = await hashSkillFiles([
+      { path: "SKILL.md", sha256: "abc" },
+      { path: "skill-card.md", sha256: "def" },
+    ]);
+
+    const runQuery = vi.fn().mockResolvedValue({
+      items: [
+        {
+          skillId: "skills:1",
+          versionId: "skillVersions:1",
+          versionFingerprint: sourceFingerprint,
+          files: [
+            { path: "SKILL.md", sha256: "abc" },
+            { path: "skill-card.md", sha256: "def" },
+          ],
+          hasGeneratedBundleFingerprint: true,
+          existingEntries: [
+            {
+              id: "skillVersionFingerprints:source",
+              fingerprint: sourceFingerprint,
+              kind: "source",
+            },
+            {
+              id: "skillVersionFingerprints:bundle",
+              fingerprint: bundleFingerprint,
+              kind: "generated-bundle",
+            },
+          ],
+        },
+      ],
+      cursor: null,
+      isDone: true,
+    });
+
+    const runMutation = vi.fn();
+
+    const result = await backfillSkillFingerprintsInternalHandler(
+      { runQuery, runMutation } as never,
+      { dryRun: false, batchSize: 10, maxBatches: 1 },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.stats.versionsPatched).toBe(0);
+    expect(result.stats.fingerprintsInserted).toBe(0);
+    expect(result.stats.fingerprintMismatches).toBe(0);
+    expect(runMutation).not.toHaveBeenCalled();
   });
 });
 

@@ -7,6 +7,8 @@ import { DocsLinks, openClawDocsUrl } from "./docsLinks";
 import { getPackageScopeOwnerMismatch, inferPackageNameScope } from "./packages";
 import {
   ApiSearchResponseSchema,
+  ApiV1SearchResponseSchema,
+  ApiV1SkillVerifyResponseSchema,
   CliPublishRequestSchema,
   CliSkillDeleteRequestSchema,
   LockfileSchema,
@@ -208,6 +210,64 @@ describe("clawhub-schema", () => {
     expect(parsed.results).toHaveLength(2);
     expect(parsed.results[0]?.slug).toBe("a");
     expect(parsed.results[0]?.ownerHandle).toBe("openclaw");
+  });
+
+  it("parses v1 search owner metadata", () => {
+    const parsed = parseArk(
+      ApiV1SearchResponseSchema,
+      {
+        results: [
+          {
+            slug: "demo",
+            displayName: "Demo",
+            summary: null,
+            version: "1.0.0",
+            score: 1,
+            ownerHandle: "openclaw",
+            owner: {
+              handle: "openclaw",
+              displayName: "OpenClaw",
+              image: null,
+            },
+          },
+        ],
+      },
+      "Search",
+    );
+
+    expect(parsed.results[0]?.ownerHandle).toBe("openclaw");
+    expect(parsed.results[0]?.owner?.displayName).toBe("OpenClaw");
+  });
+
+  it("parses flattened skill verification envelopes", () => {
+    const parsed = parseArk(
+      ApiV1SkillVerifyResponseSchema,
+      {
+        schema: "clawhub.skill.verify.v1",
+        ok: true,
+        decision: "pass",
+        reasons: [],
+        slug: "demo",
+        displayName: "Demo",
+        pageUrl: "https://clawhub.ai/openclaw/demo",
+        publisherHandle: "openclaw",
+        publisherDisplayName: "OpenClaw",
+        publisherProfileUrl: "https://clawhub.ai/user/openclaw",
+        version: "1.0.0",
+        resolvedFrom: "latest",
+        tag: null,
+        createdAt: 1,
+        card: { available: true },
+        artifact: { sourceFingerprint: "source", bundleFingerprints: [], files: [] },
+        provenance: { source: "unavailable" },
+        security: { status: "clean", passed: true },
+        signature: { status: "unsigned" },
+      },
+      "Verify",
+    );
+
+    expect(parsed.slug).toBe("demo");
+    expect(parsed.version).toBe("1.0.0");
   });
 
   it("parses delete request payload", () => {

@@ -1,11 +1,13 @@
 /* @vitest-environment node */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { buildDeterministicZip } from "./lib/skillZip";
 import {
   __test,
   fetchResults,
   pollPendingScans,
   pollPackageReleaseScanResults,
+  repairPendingSkillVtAnalysis,
   scanWithVirusTotal,
   scanPackageReleaseWithVirusTotal,
 } from "./vt";
@@ -46,7 +48,41 @@ const pollPendingScansHandler = (
   >
 )._handler;
 
+const repairPendingSkillVtAnalysisHandler = (
+  repairPendingSkillVtAnalysis as unknown as WrappedHandler<
+    { dryRun: boolean; batchSize?: number; cursor?: string | null },
+    {
+      dryRun: boolean;
+      total: number;
+      wouldUpdate: number;
+      updated: number;
+      noResults: number;
+      noDecisiveStats: number;
+      errors: number;
+      done: boolean;
+      cursor: string | null;
+      statusCounts: Record<string, number>;
+      sampleUpdated: Array<{ slug: string; status: string }>;
+    }
+  >
+)._handler;
+
 const originalVtApiKey = process.env.VT_API_KEY;
+
+function mutationPayloads(mock: ReturnType<typeof vi.fn>) {
+  return mock.mock.calls.map((call) => call[1] as Record<string, unknown>);
+}
+
+function expectVtAnalysisMutation(
+  mock: ReturnType<typeof vi.fn>,
+  expected: Record<string, unknown>,
+) {
+  expect(mutationPayloads(mock)).toContainEqual(
+    expect.objectContaining({
+      vtAnalysis: expect.objectContaining(expected),
+    }),
+  );
+}
 
 afterEach(() => {
   if (originalVtApiKey === undefined) {
@@ -101,7 +137,7 @@ describe("vt unavailable fallback", () => {
     });
 
     expect(result).toMatchObject({ processed: 1, updated: 0, staled: 1 });
-    expect(runMutation).toHaveBeenCalledTimes(2);
+    expect(runMutation).toHaveBeenCalledTimes(3);
     expect(runMutation).toHaveBeenNthCalledWith(1, expect.anything(), {
       skillId: "skills:pending",
     });
@@ -109,6 +145,77 @@ describe("vt unavailable fallback", () => {
       versionId: "skillVersions:pending",
       vtAnalysis: { status: "stale", checkedAt: expect.any(Number) },
     });
+    expect(runMutation).toHaveBeenNthCalledWith(3, expect.anything(), {
+      versionId: "skillVersions:pending",
+      source: "vt-update",
+      waitForVtMs: 0,
+    });
+  });
+});
+
+describe("skill VT scans", () => {
+  it("hashes and uploads source files without generated Skill Cards", async () => {
+    process.env.VT_API_KEY = "test-key";
+    const skillBytes = new TextEncoder().encode("# Demo Skill");
+    const cardBytes = new TextEncoder().encode("# Generated card");
+    const expectedZip = buildDeterministicZip([{ path: "SKILL.md", bytes: skillBytes }], {
+      ownerId: "users:owner",
+      slug: "demo-skill",
+      version: "1.0.0",
+      publishedAt: 123,
+    });
+    const expectedSha = await __test.sha256Hex(expectedZip);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("", { status: 404 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: { id: "analysis" } })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const runMutation = vi.fn(async () => null);
+    await scanWithVirusTotalHandler(
+      {
+        runQuery: vi
+          .fn()
+          .mockResolvedValueOnce({
+            _id: "skillVersions:demo",
+            skillId: "skills:demo",
+            version: "1.0.0",
+            createdAt: 123,
+            files: [
+              { path: "SKILL.md", storageId: "storage:skill" },
+              { path: "skill-card.md", storageId: "storage:card" },
+            ],
+          })
+          .mockResolvedValueOnce({
+            _id: "skills:demo",
+            slug: "demo-skill",
+            ownerUserId: "users:owner",
+          })
+          .mockResolvedValueOnce([{ fingerprint: "bundle-fingerprint", kind: "generated-bundle" }]),
+        runMutation,
+        storage: {
+          get: vi.fn(async (storageId) => {
+            if (storageId === "storage:skill") return new Blob([skillBytes]);
+            if (storageId === "storage:card") return new Blob([cardBytes]);
+            return null;
+          }),
+        },
+      } as never,
+      { versionId: "skillVersions:demo" },
+    );
+
+    expect(runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        versionId: "skillVersions:demo",
+        sha256hash: expectedSha,
+      }),
+    );
+    const uploadedFile = (
+      fetchMock.mock.calls[1]?.[1] as { body?: FormData } | undefined
+    )?.body?.get("file") as File | null;
+    expect(uploadedFile?.name).toBe("skill.zip");
+    expect(new Uint8Array((await uploadedFile?.arrayBuffer()) ?? [])).toEqual(expectedZip);
   });
 });
 
@@ -162,7 +269,7 @@ describe("vt AV engine fallback verdicts", () => {
     ).toBe("clean");
   });
 
-  it("keeps undetected-only results pending", () => {
+  it("treats undetected-only engine results as clean no-detections telemetry", () => {
     expect(
       __test.statusFromAvStats({
         malicious: 0,
@@ -170,7 +277,7 @@ describe("vt AV engine fallback verdicts", () => {
         harmless: 0,
         undetected: 40,
       }),
-    ).toBeNull();
+    ).toBe("clean");
   });
 });
 
@@ -213,6 +320,54 @@ describe("vt result lookup", () => {
       method: "GET",
       headers: { "x-apikey": "test-key" },
     });
+  });
+
+  it("ignores VirusTotal Code Insight results and reports engine stats only", async () => {
+    process.env.VT_API_KEY = "test-key";
+    const hash = "b".repeat(64);
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: {
+          attributes: {
+            crowdsourced_ai_results: [
+              {
+                category: "code_insight",
+                verdict: "malicious",
+                analysis: "AI-only claim that should be ignored.",
+                source: "palm",
+              },
+            ],
+            last_analysis_stats: {
+              malicious: 0,
+              suspicious: 0,
+              harmless: 2,
+              undetected: 20,
+            },
+          },
+        },
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await fetchResultsHandler({} as never, { sha256hash: hash });
+
+    expect(result).toMatchObject({
+      status: "clean",
+      source: "engines",
+      metadata: {
+        stats: {
+          malicious: 0,
+          suspicious: 0,
+          harmless: 2,
+          undetected: 20,
+        },
+      },
+    });
+    expect((result as { metadata?: Record<string, unknown> }).metadata).not.toHaveProperty(
+      "aiVerdict",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -464,7 +619,7 @@ describe("package VT retries", () => {
     expect(scheduler.runAfter).not.toHaveBeenCalled();
   });
 
-  it("does not promote official source-linked packages with suspicious static scans via fallback", async () => {
+  it("stores undetected-only package VT telemetry even when static scans are suspicious", async () => {
     process.env.VT_API_KEY = "test-key";
     const fetchMock = vi
       .fn()
@@ -521,16 +676,16 @@ describe("package VT retries", () => {
       { releaseId: "packageReleases:demo" },
     );
 
-    expect(runMutation.mock.calls.length).toBe(1);
-    const mutationCalls = runMutation.mock.calls as unknown as Array<
-      [unknown, Record<string, unknown>]
-    >;
-    expect(mutationCalls.some(([, payload]) => "vtAnalysis" in payload)).toBe(false);
-    expect(fetchMock.mock.calls.length).toBe(2);
-    expect(scheduler.runAfter.mock.calls.length).toBe(1);
+    expectVtAnalysisMutation(runMutation, {
+      status: "clean",
+      source: "engines",
+      engineStats: expect.objectContaining({ undetected: 66 }),
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(scheduler.runAfter).not.toHaveBeenCalled();
   });
 
-  it("promotes official source-linked packages with clean static scans via fallback", async () => {
+  it("stores undetected-only official package VT telemetry as clean engine results", async () => {
     process.env.VT_API_KEY = "test-key";
     const fetchMock = vi.fn().mockResolvedValueOnce({
       ok: true,
@@ -581,22 +736,16 @@ describe("package VT retries", () => {
       { releaseId: "packageReleases:demo" },
     );
 
-    expect(runMutation).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        releaseId: "packageReleases:demo",
-        vtAnalysis: expect.objectContaining({
-          status: "clean",
-          source: "engines-undetected-fallback",
-          verdict: "undetected-only-fallback",
-        }),
-      }),
-    );
+    expectVtAnalysisMutation(runMutation, {
+      status: "clean",
+      source: "engines",
+      engineStats: expect.objectContaining({ undetected: 66 }),
+    });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(scheduler.runAfter).not.toHaveBeenCalled();
   });
 
-  it("promotes community source-linked packages with undetected-only VT stats via fallback", async () => {
+  it("stores undetected-only community package VT telemetry as clean engine results", async () => {
     process.env.VT_API_KEY = "test-key";
     const fetchMock = vi.fn().mockResolvedValueOnce({
       ok: true,
@@ -647,17 +796,11 @@ describe("package VT retries", () => {
       { releaseId: "packageReleases:demo" },
     );
 
-    expect(runMutation).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        releaseId: "packageReleases:demo",
-        vtAnalysis: expect.objectContaining({
-          status: "clean",
-          source: "engines-undetected-fallback",
-          verdict: "undetected-only-fallback",
-        }),
-      }),
-    );
+    expectVtAnalysisMutation(runMutation, {
+      status: "clean",
+      source: "engines",
+      engineStats: expect.objectContaining({ undetected: 66 }),
+    });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(scheduler.runAfter).not.toHaveBeenCalled();
   });
@@ -687,7 +830,7 @@ describe("package VT retries", () => {
     });
   });
 
-  it("does not apply undetected-only fallback during package polling when static scan is suspicious", async () => {
+  it("stores undetected-only package VT telemetry during polling even when static scan is suspicious", async () => {
     process.env.VT_API_KEY = "test-key";
     vi.stubGlobal(
       "fetch",
@@ -734,11 +877,15 @@ describe("package VT retries", () => {
       { releaseId: "packageReleases:demo", attempt: 3 },
     );
 
-    expect(runMutation).not.toHaveBeenCalled();
-    expect(scheduler.runAfter).toHaveBeenCalledTimes(1);
+    expectVtAnalysisMutation(runMutation, {
+      status: "clean",
+      source: "engines",
+      engineStats: expect.objectContaining({ undetected: 66 }),
+    });
+    expect(scheduler.runAfter).not.toHaveBeenCalled();
   });
 
-  it("applies the same undetected-only fallback during community package polling", async () => {
+  it("stores undetected-only community package VT telemetry during polling", async () => {
     process.env.VT_API_KEY = "test-key";
     vi.stubGlobal(
       "fetch",
@@ -785,21 +932,15 @@ describe("package VT retries", () => {
       { releaseId: "packageReleases:demo", attempt: 3 },
     );
 
-    expect(runMutation).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        releaseId: "packageReleases:demo",
-        vtAnalysis: expect.objectContaining({
-          status: "clean",
-          source: "engines-undetected-fallback",
-          verdict: "undetected-only-fallback",
-        }),
-      }),
-    );
+    expectVtAnalysisMutation(runMutation, {
+      status: "clean",
+      source: "engines",
+      engineStats: expect.objectContaining({ undetected: 66 }),
+    });
     expect(scheduler.runAfter).not.toHaveBeenCalled();
   });
 
-  it("does not promote undetected-only community packages without trusted verification", async () => {
+  it("stores undetected-only package VT telemetry without requiring trusted verification", async () => {
     process.env.VT_API_KEY = "test-key";
     const fetchMock = vi
       .fn()
@@ -850,11 +991,320 @@ describe("package VT retries", () => {
       { releaseId: "packageReleases:demo", attempt: 3 },
     );
 
+    expectVtAnalysisMutation(runMutation, {
+      status: "clean",
+      source: "engines",
+      engineStats: expect.objectContaining({ undetected: 66 }),
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(scheduler.runAfter).not.toHaveBeenCalled();
+  });
+});
+
+describe("vt pending polling", () => {
+  it("does not request VirusTotal reanalysis to trigger Code Insight", async () => {
+    process.env.VT_API_KEY = "test-key";
+    const hash = "c".repeat(64);
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: {
+          attributes: {
+            last_analysis_stats: {
+              malicious: 0,
+              suspicious: 0,
+              harmless: 0,
+              undetected: 66,
+            },
+          },
+        },
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const runQuery = vi
+      .fn()
+      .mockResolvedValueOnce({
+        queueSize: 1,
+        staleCount: 0,
+        veryStaleCount: 0,
+        oldestAgeMinutes: 5,
+        healthy: true,
+      })
+      .mockResolvedValueOnce([
+        {
+          skillId: "skills:pending",
+          versionId: "skillVersions:pending",
+          sha256hash: hash,
+          checkCount: 9,
+        },
+      ]);
+    const runMutation = vi.fn(async () => null);
+
+    const result = await pollPendingScansHandler({ runQuery, runMutation } as never, {
+      batchSize: 1,
+    });
+
+    expect(result).toMatchObject({ processed: 1, updated: 1, staled: 0 });
+    expect(runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        versionId: "skillVersions:pending",
+        vtAnalysis: expect.objectContaining({
+          status: "clean",
+          source: "engines",
+          engineStats: expect.objectContaining({ undetected: 66 }),
+        }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(`https://www.virustotal.com/api/v3/files/${hash}`, {
+      method: "GET",
+      headers: { "x-apikey": "test-key" },
+    });
+  });
+});
+
+describe("vt pending repair", () => {
+  it("dry-runs completed undetected-only pending skills without writing", async () => {
+    process.env.VT_API_KEY = "test-key";
+    const hash = "d".repeat(64);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          data: {
+            attributes: {
+              last_analysis_stats: {
+                malicious: 0,
+                suspicious: 0,
+                harmless: 0,
+                undetected: 66,
+              },
+            },
+          },
+        }),
+      }),
+    );
+
+    const runMutation = vi.fn(async () => null);
+    const result = await repairPendingSkillVtAnalysisHandler(
+      {
+        runQuery: vi.fn().mockResolvedValue({
+          skills: [
+            {
+              skillId: "skills:pending",
+              versionId: "skillVersions:pending",
+              slug: "pending-skill",
+              sha256hash: hash,
+            },
+          ],
+          cursor: "next-page",
+          done: false,
+        }),
+        runMutation,
+      } as never,
+      { dryRun: true, batchSize: 1, cursor: "start-page" },
+    );
+
+    expect(result).toMatchObject({
+      dryRun: true,
+      total: 1,
+      wouldUpdate: 1,
+      updated: 0,
+      done: false,
+      cursor: "next-page",
+      statusCounts: { clean: 1 },
+      sampleUpdated: [{ slug: "pending-skill", status: "clean" }],
+    });
     expect(runMutation).not.toHaveBeenCalled();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(scheduler.runAfter).toHaveBeenCalledWith(5 * 60 * 1000, expect.anything(), {
-      releaseId: "packageReleases:demo",
-      attempt: 4,
+  });
+
+  it("repairs completed undetected-only pending skills and recomputes moderation", async () => {
+    process.env.VT_API_KEY = "test-key";
+    const hash = "e".repeat(64);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          data: {
+            attributes: {
+              last_analysis_stats: {
+                malicious: 0,
+                suspicious: 0,
+                harmless: 0,
+                undetected: 66,
+              },
+            },
+          },
+        }),
+      }),
+    );
+
+    const runMutation = vi.fn(async () => null);
+    const result = await repairPendingSkillVtAnalysisHandler(
+      {
+        runQuery: vi.fn().mockResolvedValue({
+          skills: [
+            {
+              skillId: "skills:pending",
+              versionId: "skillVersions:pending",
+              slug: "pending-skill",
+              sha256hash: hash,
+            },
+          ],
+          cursor: null,
+          done: true,
+        }),
+        runMutation,
+      } as never,
+      { dryRun: false, batchSize: 1 },
+    );
+
+    expect(result).toMatchObject({
+      dryRun: false,
+      total: 1,
+      wouldUpdate: 1,
+      updated: 1,
+      done: true,
+      cursor: null,
+      statusCounts: { clean: 1 },
+    });
+    expect(mutationPayloads(runMutation)).toContainEqual(
+      expect.objectContaining({
+        versionId: "skillVersions:pending",
+        sha256hash: hash,
+        vtAnalysis: expect.objectContaining({
+          status: "clean",
+          source: "engines",
+          engineStats: expect.objectContaining({ undetected: 66 }),
+        }),
+      }),
+    );
+    expect(mutationPayloads(runMutation)).toContainEqual(
+      expect.objectContaining({ skillId: "skills:pending" }),
+    );
+    expect(mutationPayloads(runMutation)).not.toContainEqual(
+      expect.objectContaining({ source: "vt-update" }),
+    );
+  });
+
+  it("queues ClawScan follow-up when repaired VT telemetry is suspicious", async () => {
+    process.env.VT_API_KEY = "test-key";
+    const hash = "f".repeat(64);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          data: {
+            attributes: {
+              last_analysis_stats: {
+                malicious: 0,
+                suspicious: 1,
+                harmless: 0,
+                undetected: 65,
+              },
+            },
+          },
+        }),
+      }),
+    );
+
+    const runMutation = vi.fn(async () => null);
+    const result = await repairPendingSkillVtAnalysisHandler(
+      {
+        runQuery: vi.fn().mockResolvedValue({
+          skills: [
+            {
+              skillId: "skills:pending",
+              versionId: "skillVersions:pending",
+              slug: "pending-skill",
+              sha256hash: hash,
+            },
+          ],
+          cursor: null,
+          done: true,
+        }),
+        runMutation,
+      } as never,
+      { dryRun: false, batchSize: 100 },
+    );
+
+    expect(result).toMatchObject({
+      wouldUpdate: 1,
+      updated: 1,
+      statusCounts: { suspicious: 1 },
+    });
+    expect(mutationPayloads(runMutation)).toContainEqual(
+      expect.objectContaining({
+        versionId: "skillVersions:pending",
+        source: "vt-update",
+        waitForVtMs: 0,
+      }),
+    );
+    expect(mutationPayloads(runMutation)).not.toContainEqual(
+      expect.objectContaining({ skillId: "skills:pending" }),
+    );
+  });
+
+  it("returns pagination cursor when unresolved pending VT rows are skipped", async () => {
+    process.env.VT_API_KEY = "test-key";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 404,
+      }),
+    );
+
+    const runMutation = vi.fn(async () => null);
+    const result = await repairPendingSkillVtAnalysisHandler(
+      {
+        runQuery: vi.fn().mockResolvedValue({
+          skills: [
+            {
+              skillId: "skills:pending",
+              versionId: "skillVersions:pending",
+              slug: "pending-skill",
+              sha256hash: "a".repeat(64),
+            },
+          ],
+          cursor: "next-page",
+          done: false,
+        }),
+        runMutation,
+      } as never,
+      { dryRun: true, batchSize: 1 },
+    );
+
+    expect(result).toMatchObject({
+      total: 1,
+      wouldUpdate: 0,
+      noResults: 1,
+      done: false,
+      cursor: "next-page",
+    });
+    expect(runMutation).not.toHaveBeenCalled();
+  });
+
+  it("reports done only when no pending VT skills are selected", async () => {
+    process.env.VT_API_KEY = "test-key";
+
+    const result = await repairPendingSkillVtAnalysisHandler(
+      {
+        runQuery: vi.fn().mockResolvedValue({ skills: [], cursor: null, done: true }),
+        runMutation: vi.fn(async () => null),
+      } as never,
+      { dryRun: true, batchSize: 100 },
+    );
+
+    expect(result).toMatchObject({
+      total: 0,
+      wouldUpdate: 0,
+      done: true,
     });
   });
 });

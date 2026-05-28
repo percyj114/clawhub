@@ -33,6 +33,7 @@ const {
 } = await import("./lib/apiTokenAuth");
 const { fetchGitHubRepositoryIdentity, verifyGitHubActionsTrustedPublishJwt } =
   await import("./lib/githubActionsOidc");
+const { buildBundleFingerprint } = await import("./lib/skillCards");
 const { publishVersionForUser } = await import("./skills");
 const { __handlers } = await import("./httpApiV1");
 
@@ -149,7 +150,7 @@ function makeCtx(partial: Record<string, unknown>) {
       ? (partial.runQuery as (query: unknown, args: Record<string, unknown>) => unknown)
       : null;
   const runQuery = vi.fn(async (query: unknown, args: Record<string, unknown>) => {
-    if (isRateLimitArgs(args)) return okRate();
+    if (isRateLimitArgs(args)) return { ...okRate(), limit: args.limit };
     return partialRunQuery ? await partialRunQuery(query, args) : null;
   });
   const runMutation =
@@ -267,6 +268,398 @@ describe("httpApiV1 handlers", () => {
       slugs: ["a", "b"],
       forceOverwriteSquatter: true,
     });
+  });
+
+  it("skills export allows authenticated non-admin users at the key rate limit", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:actor",
+      user: { _id: "users:actor", role: "user" },
+    } as never);
+    vi.mocked(getOptionalApiTokenUser).mockResolvedValue({
+      userId: "users:actor",
+      user: { _id: "users:actor", role: "user" },
+    } as never);
+
+    const runMutation = vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {
+      if (isRateLimitArgs(args)) return { ...okRate(), limit: args.limit };
+      return { ok: true };
+    });
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("startDate" in args) return { page: [], nextCursor: null, hasMore: false };
+      return null;
+    });
+
+    const response = await __handlers.exportSkillsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/skills/export?startDate=1&endDate=2", {
+        headers: { authorization: "Bearer user-token" },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("X-RateLimit-Limit")).toBe(String(RATE_LIMITS.export.key));
+    expect(runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        key: "user:users:actor:export",
+        limit: RATE_LIMITS.export.key,
+      }),
+    );
+  });
+
+  it("skills export defaults to the proven 250 item page limit", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:actor",
+      user: { _id: "users:actor", role: "user" },
+    } as never);
+    vi.mocked(getOptionalApiTokenUser).mockResolvedValue({
+      userId: "users:actor",
+      user: { _id: "users:actor", role: "user" },
+    } as never);
+
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("startDate" in args) return { page: [], nextCursor: null, hasMore: false };
+      return null;
+    });
+
+    const response = await __handlers.exportSkillsV1Handler(
+      makeCtx({ runQuery }),
+      new Request("https://example.com/api/v1/skills/export?startDate=1&endDate=2", {
+        headers: { authorization: "Bearer user-token" },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const listCall = runQuery.mock.calls.find(([, args]) => "startDate" in args);
+    expect(listCall?.[1]).toMatchObject({ numItems: 250 });
+  });
+
+  it("skills export rejects pages above 250 items", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:actor",
+      user: { _id: "users:actor", role: "user" },
+    } as never);
+    vi.mocked(getOptionalApiTokenUser).mockResolvedValue({
+      userId: "users:actor",
+      user: { _id: "users:actor", role: "user" },
+    } as never);
+
+    const runQuery = vi.fn();
+    const response = await __handlers.exportSkillsV1Handler(
+      makeCtx({ runQuery }),
+      new Request("https://example.com/api/v1/skills/export?startDate=1&endDate=2&limit=251", {
+        headers: { authorization: "Bearer user-token" },
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe("limit must be <= 250");
+    expect(runQuery).not.toHaveBeenCalledWith(
+      (internal as unknown as { skills: Record<string, unknown> }).skills.listByDateRange,
+      expect.anything(),
+    );
+  });
+
+  it("skills export rejects unauthenticated requests", async () => {
+    vi.mocked(requireApiTokenUser).mockRejectedValue(new Error("Unauthorized"));
+
+    const runQuery = vi.fn();
+    const response = await __handlers.exportSkillsV1Handler(
+      makeCtx({ runQuery }),
+      new Request("https://example.com/api/v1/skills/export?startDate=1&endDate=2"),
+    );
+
+    expect(response.status).toBe(401);
+    expect(runQuery).not.toHaveBeenCalledWith(
+      (internal as unknown as { skills: Record<string, unknown> }).skills.listByDateRange,
+      expect.anything(),
+    );
+  });
+
+  it("skills export preserves pagination headers for empty filtered pages", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:actor",
+      user: { _id: "users:actor", role: "user" },
+    } as never);
+    vi.mocked(getOptionalApiTokenUser).mockResolvedValue({
+      userId: "users:actor",
+      user: { _id: "users:actor", role: "user" },
+    } as never);
+
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("startDate" in args) return { page: [], nextCursor: "next-page", hasMore: true };
+      return null;
+    });
+
+    const response = await __handlers.exportSkillsV1Handler(
+      makeCtx({ runQuery }),
+      new Request("https://example.com/api/v1/skills/export?startDate=1&endDate=2", {
+        headers: { authorization: "Bearer user-token" },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("X-Next-Cursor")).toBe("next-page");
+    expect(response.headers.get("X-Has-More")).toBe("true");
+  });
+
+  it("skills export namespaces files by publisher and slug", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:actor",
+      user: { _id: "users:actor", role: "user" },
+    } as never);
+    vi.mocked(getOptionalApiTokenUser).mockResolvedValue({
+      userId: "users:actor",
+      user: { _id: "users:actor", role: "user" },
+    } as never);
+
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("startDate" in args) {
+        return {
+          page: [
+            {
+              skillId: "skills:alice",
+              slug: "demo",
+              displayName: "Alice Demo",
+              latestVersionId: "skillVersions:alice",
+              createdAt: 1,
+              updatedAt: 2,
+              stats: {},
+              ownerUserId: "users:alice",
+              ownerHandle: "alice",
+              ownerDisplayName: "Alice",
+            },
+            {
+              skillId: "skills:bob",
+              slug: "demo",
+              displayName: "Bob Demo",
+              latestVersionId: "skillVersions:bob",
+              createdAt: 1,
+              updatedAt: 3,
+              stats: {},
+              ownerUserId: "users:bob",
+              ownerHandle: "bob",
+              ownerDisplayName: "Bob",
+            },
+          ],
+          nextCursor: null,
+          hasMore: false,
+        };
+      }
+      if (args.versionId === "skillVersions:alice") {
+        return {
+          skillId: "skills:alice",
+          version: "1.0.0",
+          files: [{ storageId: "storage:alice", path: "SKILL.md" }],
+        };
+      }
+      if (args.versionId === "skillVersions:bob") {
+        return {
+          skillId: "skills:bob",
+          version: "1.0.0",
+          files: [{ storageId: "storage:bob", path: "SKILL.md" }],
+        };
+      }
+      return null;
+    });
+
+    const response = await __handlers.exportSkillsV1Handler(
+      makeCtx({
+        runQuery,
+        storage: {
+          get: vi.fn(
+            async (storageId: string) =>
+              new Blob([storageId === "storage:alice" ? "alice" : "bob"]),
+          ),
+        },
+      }),
+      new Request("https://example.com/api/v1/skills/export?startDate=1&endDate=5", {
+        headers: { authorization: "Bearer user-token" },
+      }),
+    );
+
+    if (response.status !== 200) throw new Error(await response.text());
+    const zipEntries = unzipSync(new Uint8Array(await response.arrayBuffer()));
+    expect(Object.keys(zipEntries).sort()).toEqual([
+      "_manifest.json",
+      "alice/demo/SKILL.md",
+      "alice/demo/_export_skill_meta.json",
+      "bob/demo/SKILL.md",
+      "bob/demo/_export_skill_meta.json",
+    ]);
+  });
+
+  it("skills export skips stale latest versions before reading blobs", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:actor",
+      user: { _id: "users:actor", role: "user" },
+    } as never);
+    vi.mocked(getOptionalApiTokenUser).mockResolvedValue({
+      userId: "users:actor",
+      user: { _id: "users:actor", role: "user" },
+    } as never);
+
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("startDate" in args) {
+        return {
+          page: [
+            {
+              skillId: "skills:demo",
+              slug: "demo",
+              displayName: "Demo",
+              latestVersionId: "skillVersions:other",
+              createdAt: 1,
+              updatedAt: 2,
+              stats: {},
+              ownerUserId: "users:alice",
+              ownerHandle: "alice",
+              ownerDisplayName: "Alice",
+            },
+            {
+              skillId: "skills:deleted",
+              slug: "deleted",
+              displayName: "Deleted",
+              latestVersionId: "skillVersions:deleted",
+              createdAt: 1,
+              updatedAt: 3,
+              stats: {},
+              ownerUserId: "users:bob",
+              ownerHandle: "bob",
+              ownerDisplayName: "Bob",
+            },
+          ],
+          nextCursor: null,
+          hasMore: false,
+        };
+      }
+      if (args.versionId === "skillVersions:other") {
+        return {
+          skillId: "skills:other",
+          version: "9.9.9",
+          files: [{ storageId: "storage:other", path: "SKILL.md" }],
+          softDeletedAt: undefined,
+        };
+      }
+      if (args.versionId === "skillVersions:deleted") {
+        return {
+          skillId: "skills:deleted",
+          version: "1.0.0",
+          files: [{ storageId: "storage:deleted", path: "SKILL.md" }],
+          softDeletedAt: 123,
+        };
+      }
+      return null;
+    });
+    const storageGet = vi.fn();
+
+    const response = await __handlers.exportSkillsV1Handler(
+      makeCtx({ runQuery, storage: { get: storageGet } }),
+      new Request("https://example.com/api/v1/skills/export?startDate=1&endDate=5", {
+        headers: { authorization: "Bearer user-token" },
+      }),
+    );
+
+    if (response.status !== 200) throw new Error(await response.text());
+    expect(response.headers.get("X-Export-Errors")).toBe("2");
+    expect(response.headers.get("X-Total-Returned")).toBe("0");
+    expect(storageGet).not.toHaveBeenCalled();
+
+    const zipEntries = unzipSync(new Uint8Array(await response.arrayBuffer()));
+    const errors = JSON.parse(new TextDecoder().decode(zipEntries["_errors.json"]));
+    expect(errors).toEqual([
+      {
+        slug: "demo",
+        error: "version not found (latestVersionId: skillVersions:other)",
+      },
+      {
+        slug: "deleted",
+        error: "version not available (latestVersionId: skillVersions:deleted)",
+      },
+    ]);
+    expect(Object.keys(zipEntries).some((path) => path.endsWith("/SKILL.md"))).toBe(false);
+  });
+
+  it("skills export logs generation failure context", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:actor",
+      user: { _id: "users:actor", role: "user" },
+    } as never);
+    vi.mocked(getOptionalApiTokenUser).mockResolvedValue({
+      userId: "users:actor",
+      user: { _id: "users:actor", role: "user" },
+    } as never);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("startDate" in args) {
+        return {
+          page: [
+            {
+              skillId: "skills:demo",
+              slug: "demo",
+              displayName: "Demo",
+              latestVersionId: "skillVersions:demo",
+              createdAt: 1,
+              updatedAt: 2,
+              stats: {},
+              ownerUserId: "users:alice",
+              ownerHandle: "alice",
+              ownerDisplayName: "Alice",
+            },
+          ],
+          nextCursor: null,
+          hasMore: false,
+        };
+      }
+      if (args.versionId === "skillVersions:demo") {
+        return {
+          skillId: "skills:demo",
+          version: "1.0.0",
+          files: [
+            { storageId: "storage:one", path: "SKILL.md" },
+            { storageId: "storage:two", path: "SKILL.md" },
+          ],
+        };
+      }
+      return null;
+    });
+
+    try {
+      await expect(
+        __handlers.exportSkillsV1Handler(
+          makeCtx({
+            runQuery,
+            storage: { get: vi.fn(async () => new Blob(["content"])) },
+          }),
+          new Request("https://example.com/api/v1/skills/export?startDate=1&endDate=5", {
+            headers: { authorization: "Bearer user-token" },
+          }),
+        ),
+      ).rejects.toThrow(/Duplicate ZIP path/);
+
+      expect(consoleError).toHaveBeenCalledWith(
+        "skills_export_failed",
+        expect.objectContaining({
+          phase: "build_zip",
+          startDate: 1,
+          endDate: 5,
+          limit: 250,
+          cursorPresent: false,
+          pageLength: 1,
+          versionCount: 1,
+          blobTaskCount: 2,
+          blobCount: 2,
+          zipEntryCount: 3,
+          manifestCount: 1,
+          exportErrorCount: 0,
+          totalExportBytes: 14,
+          errorName: "Error",
+        }),
+      );
+      expect(JSON.stringify(consoleError.mock.calls)).not.toContain("user-token");
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("users/reclaim forbids non-admin api tokens", async () => {
@@ -445,6 +838,130 @@ describe("httpApiV1 handlers", () => {
     );
   });
 
+  it("users/publisher-member removes an org publisher member for admin", async () => {
+    const runMutation = vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {
+      if (isRateLimitArgs(args)) return okRate();
+      return {
+        ok: true,
+        publisherId: "publishers:opik",
+        handle: "opik",
+        removed: true,
+        member: {
+          userId: "users:patrick",
+          handle: "patrick-erichsen-2",
+          role: "owner",
+        },
+      };
+    });
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:admin",
+      user: { _id: "users:admin", role: "admin" },
+    } as never);
+
+    const response = await __handlers.usersPostRouterV1Handler(
+      makeCtx({ runQuery: vi.fn(), runAction: vi.fn(), runMutation }),
+      new Request("https://example.com/api/v1/users/publisher-member", {
+        method: "POST",
+        body: JSON.stringify({ handle: "Opik", memberHandle: "@patrick-erichsen-2" }),
+      }),
+    );
+    if (response.status !== 200) throw new Error(await response.text());
+
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      handle: "opik",
+      removed: true,
+    });
+    expect(runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        actorUserId: "users:admin",
+        handle: "opik",
+        memberHandle: "@patrick-erichsen-2",
+      }),
+    );
+  });
+
+  it("publishers creates a self-serve org publisher for the authenticated user", async () => {
+    const runMutation = vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {
+      if (isRateLimitArgs(args)) return okRate();
+      return {
+        ok: true,
+        publisherId: "publishers:opik",
+        handle: "opik",
+        created: true,
+        trusted: false,
+      };
+    });
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:vincent",
+      user: { _id: "users:vincent", role: "user" },
+    } as never);
+
+    const response = await __handlers.createPublisherV1Handler(
+      makeCtx({ runQuery: vi.fn(), runAction: vi.fn(), runMutation }),
+      new Request("https://example.com/api/v1/publishers", {
+        method: "POST",
+        body: JSON.stringify({ handle: "Opik", displayName: "Opik" }),
+      }),
+    );
+    if (response.status !== 201) throw new Error(await response.text());
+
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      publisherId: "publishers:opik",
+      handle: "opik",
+      created: true,
+      trusted: false,
+    });
+    expect(runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        actorUserId: "users:vincent",
+        handle: "opik",
+        displayName: "Opik",
+      }),
+    );
+  });
+
+  it("publishers returns conflict when the org already exists", async () => {
+    const runMutation = vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {
+      if (isRateLimitArgs(args)) return okRate();
+      throw new Error('Publisher "@opik" already exists');
+    });
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:vincent",
+      user: { _id: "users:vincent", role: "user" },
+    } as never);
+
+    const response = await __handlers.createPublisherV1Handler(
+      makeCtx({ runQuery: vi.fn(), runAction: vi.fn(), runMutation }),
+      new Request("https://example.com/api/v1/publishers", {
+        method: "POST",
+        body: JSON.stringify({ handle: "opik" }),
+      }),
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.text()).toBe('Publisher "@opik" already exists');
+  });
+
+  it("publishers returns a controlled error when JSON is not an object", async () => {
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.createPublisherV1Handler(
+      makeCtx({ runQuery: vi.fn(), runAction: vi.fn(), runMutation }),
+      new Request("https://example.com/api/v1/publishers", {
+        method: "POST",
+        body: "null",
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe("JSON body must be an object");
+    expect(requireApiTokenUser).not.toHaveBeenCalled();
+  });
+
   it("search forwards limit and highlightedOnly", async () => {
     const runAction = vi.fn().mockResolvedValue([
       {
@@ -470,6 +987,49 @@ describe("httpApiV1 handlers", () => {
     });
     expect(await response.json()).toMatchObject({
       results: [{ slug: "a", ownerHandle: "openclaw" }],
+    });
+  });
+
+  it("search includes public owner metadata without publisher bio", async () => {
+    const runAction = vi.fn().mockResolvedValue([
+      {
+        score: 1,
+        skill: { slug: "demo", displayName: "Demo", summary: "Summary", updatedAt: 1 },
+        version: { version: "1.0.0" },
+        ownerHandle: "openclaw",
+        owner: {
+          handle: "openclaw",
+          displayName: "OpenClaw",
+          image: "https://example.com/avatar.png",
+          bio: "private-ish profile text",
+        },
+      },
+    ]);
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.searchSkillsV1Handler(
+      makeCtx({ runAction, runMutation }),
+      new Request("https://example.com/api/v1/search?q=demo"),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      results: [
+        {
+          score: 1,
+          slug: "demo",
+          displayName: "Demo",
+          summary: "Summary",
+          version: "1.0.0",
+          updatedAt: 1,
+          ownerHandle: "openclaw",
+          owner: {
+            handle: "openclaw",
+            displayName: "OpenClaw",
+            image: "https://example.com/avatar.png",
+          },
+        },
+      ],
     });
   });
 
@@ -613,7 +1173,9 @@ describe("httpApiV1 handlers", () => {
       }
       // Batch query: versionIds (plural)
       if ("versionIds" in args) {
-        return [{ _id: "versions:1", version: "1.0.0", softDeletedAt: undefined }];
+        return [
+          { _id: "versions:1", skillId: "skills:1", version: "1.0.0", softDeletedAt: undefined },
+        ];
       }
       return null;
     });
@@ -670,9 +1232,9 @@ describe("httpApiV1 handlers", () => {
         expect(ids).toContain("versions:2");
         expect(ids).toContain("versions:3");
         return [
-          { _id: "versions:1", version: "2.0.0", softDeletedAt: undefined },
-          { _id: "versions:2", version: "1.0.0", softDeletedAt: undefined },
-          { _id: "versions:3", version: "1.0.0", softDeletedAt: undefined },
+          { _id: "versions:1", skillId: "skills:1", version: "2.0.0", softDeletedAt: undefined },
+          { _id: "versions:2", skillId: "skills:1", version: "1.0.0", softDeletedAt: undefined },
+          { _id: "versions:3", skillId: "skills:2", version: "1.0.0", softDeletedAt: undefined },
         ];
       }
       return null;
@@ -891,7 +1453,6 @@ describe("httpApiV1 handlers", () => {
       ["rating", "stars"],
       ["installs", "installs"],
       ["installs-all-time", "installs"],
-      ["unknown", "updated"],
       ["trending", null],
     ];
 
@@ -916,6 +1477,18 @@ describe("httpApiV1 handlers", () => {
       );
       expect(response.status).toBe(200);
     }
+  });
+
+  it("lists skills rejects invalid sort", async () => {
+    const runQuery = vi.fn();
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const response = await __handlers.listSkillsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/skills?sort=unknown"),
+    );
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe("Invalid sort query parameter");
+    expect(runQuery).not.toHaveBeenCalled();
   });
 
   it("lists skills forwards nonSuspiciousOnly", async () => {
@@ -1694,7 +2267,7 @@ describe("httpApiV1 handlers", () => {
           sha256hash: "a".repeat(64),
           vtAnalysis: {
             status: "suspicious",
-            source: "code_insight",
+            source: "legacy-ai",
             checkedAt: 123,
           },
           files: [],
@@ -1709,12 +2282,12 @@ describe("httpApiV1 handlers", () => {
     );
     expect(response.status).toBe(200);
     const json = await response.json();
-    expect(json.version.security.status).toBe("suspicious");
+    expect(json.version.security.status).toBe("pending");
     expect(json.version.security.scanners.vt.normalizedStatus).toBe("suspicious");
     expect(json.version.security.virustotalUrl).toContain("virustotal.com/gui/file/");
   });
 
-  it("keeps static-scan suspicious status advisory in version security snapshot", async () => {
+  it("keeps static-scan suspicious status out of version security snapshot verdicts", async () => {
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
       if ("slug" in args) {
         return {
@@ -1762,12 +2335,12 @@ describe("httpApiV1 handlers", () => {
     expect(json.version.security.status).toBe("clean");
     expect(json.version.security.hasWarnings).toBe(false);
     expect(json.version.security.hasScanResult).toBe(true);
-    expect(json.version.security.scanners.static.normalizedStatus).toBe("pending");
+    expect(json.version.security.scanners.static).toBeUndefined();
     expect(json.version.security.scanners.vt.normalizedStatus).toBe("clean");
     expect(json.version.security.scanners.llm.normalizedStatus).toBe("clean");
   });
 
-  it("lets static-scan malicious status dominate benign vt and llm results", async () => {
+  it("keeps static-scan malicious status advisory when ClawScan is benign", async () => {
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
       if ("slug" in args) {
         return {
@@ -1812,14 +2385,14 @@ describe("httpApiV1 handlers", () => {
     );
     expect(response.status).toBe(200);
     const json = await response.json();
-    expect(json.version.security.status).toBe("malicious");
-    expect(json.version.security.hasWarnings).toBe(true);
+    expect(json.version.security.status).toBe("clean");
+    expect(json.version.security.hasWarnings).toBe(false);
     expect(json.version.security.hasScanResult).toBe(true);
-    expect(json.version.security.checkedAt).toBe(555);
-    expect(json.version.security.scanners.static.normalizedStatus).toBe("malicious");
+    expect(json.version.security.checkedAt).toBe(222);
+    expect(json.version.security.scanners.static).toBeUndefined();
   });
 
-  it("does not treat a static scan by itself as a definitive scan result", async () => {
+  it("omits version security when only static scan evidence exists", async () => {
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
       if ("slug" in args) {
         return {
@@ -1853,13 +2426,7 @@ describe("httpApiV1 handlers", () => {
     );
     expect(response.status).toBe(200);
     const json = await response.json();
-    expect(json.version.security.status).toBe("pending");
-    expect(json.version.security.hasWarnings).toBe(false);
-    expect(json.version.security.hasScanResult).toBe(false);
-    expect(json.version.security.virustotalUrl).toBeNull();
-    expect(json.version.security.scanners.static.normalizedStatus).toBe("pending");
-    expect(json.version.security.scanners.vt).toBeNull();
-    expect(json.version.security.scanners.llm).toBeNull();
+    expect(json.version.security).toBeUndefined();
   });
 
   it("keeps hasWarnings true when llm dimensions include non-ok ratings", async () => {
@@ -1922,6 +2489,8 @@ describe("httpApiV1 handlers", () => {
             updatedAt: 2,
           },
           latestVersion: {
+            _id: "skillVersions:1",
+            skillId: "skills:1",
             version: "1.0.0",
             createdAt: 1,
             changelog: "c",
@@ -1992,6 +2561,8 @@ describe("httpApiV1 handlers", () => {
             updatedAt: 2,
           },
           latestVersion: {
+            _id: "skillVersions:1",
+            skillId: "skills:1",
             version: "1.0.0",
             createdAt: 1,
             changelog: "c",
@@ -2043,6 +2614,8 @@ describe("httpApiV1 handlers", () => {
             updatedAt: 2,
           },
           latestVersion: {
+            _id: "skillVersions:1",
+            skillId: "skills:1",
             version: "1.0.0",
             createdAt: 1,
             changelog: "c",
@@ -2089,6 +2662,7 @@ describe("httpApiV1 handlers", () => {
           },
           latestVersion: {
             _id: "skillVersions:2",
+            skillId: "skills:1",
             version: "2.0.0",
             createdAt: 2,
             changelog: "c",
@@ -2125,7 +2699,7 @@ describe("httpApiV1 handlers", () => {
     expect(response.status).toBe(200);
     const json = await response.json();
     expect(json.security.status).toBe("error");
-    expect(json.security.hasScanResult).toBe(true);
+    expect(json.security.hasScanResult).toBe(false);
     expect(json.security.scanners.vt.normalizedStatus).toBe("clean");
     expect(json.security.scanners.llm.normalizedStatus).toBe("error");
   });
@@ -2146,6 +2720,7 @@ describe("httpApiV1 handlers", () => {
           },
           latestVersion: {
             _id: "skillVersions:2",
+            skillId: "skills:1",
             version: "2.0.0",
             createdAt: 2,
             changelog: "c2",
@@ -2170,6 +2745,7 @@ describe("httpApiV1 handlers", () => {
       if ("skillId" in args && "version" in args) {
         return {
           _id: "skillVersions:1",
+          skillId: "skills:1",
           version: "1.0.0",
           createdAt: 1,
           changelog: "c1",
@@ -2219,6 +2795,7 @@ describe("httpApiV1 handlers", () => {
           },
           latestVersion: {
             _id: "skillVersions:2",
+            skillId: "skills:1",
             version: "2.0.0",
             createdAt: 2,
             changelog: "c2",
@@ -2243,6 +2820,7 @@ describe("httpApiV1 handlers", () => {
       if ("versionId" in args) {
         return {
           _id: "skillVersions:1",
+          skillId: "skills:1",
           version: "1.0.0",
           createdAt: 1,
           changelog: "c1",
@@ -2265,7 +2843,7 @@ describe("httpApiV1 handlers", () => {
     expect(response.status).toBe(200);
     const json = await response.json();
     expect(json.version.version).toBe("1.0.0");
-    expect(json.security.status).toBe("malicious");
+    expect(json.security.status).toBe("pending");
     expect(json.moderation.sourceVersion).toEqual({
       version: "2.0.0",
       createdAt: 2,
@@ -2273,8 +2851,51 @@ describe("httpApiV1 handlers", () => {
     expect(json.moderation.matchesRequestedVersion).toBe(false);
   });
 
+  it("does not resolve scan tags to another skill's version", async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+            displayName: "Demo",
+            summary: "s",
+            tags: { old: "skillVersions:other" },
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+          },
+          latestVersion: null,
+          owner: null,
+          moderationInfo: null,
+        };
+      }
+      if ("versionId" in args) {
+        return {
+          _id: "skillVersions:other",
+          skillId: "skills:other",
+          version: "9.9.9",
+          createdAt: 9,
+          changelog: "other",
+          files: [],
+        };
+      }
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/skills/demo/scan?tag=old"),
+    );
+
+    expect(response.status).toBe(404);
+    expect(await response.text()).toBe("Version not found");
+  });
+
   it("returns raw file content", async () => {
     const internalVersion = {
+      skillId: "skills:1",
       version: "1.0.0",
       createdAt: 1,
       changelog: "c",
@@ -2373,8 +2994,1319 @@ describe("httpApiV1 handlers", () => {
     );
   });
 
+  it("blocks raw file reads for malware-blocked skills", async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+            displayName: "Demo",
+            summary: "s",
+            tags: {},
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+            latestVersionId: "skillVersions:1",
+          },
+          latestVersion: null,
+          owner: null,
+          moderationInfo: {
+            isMalwareBlocked: true,
+            isPendingScan: false,
+            isHiddenByMod: false,
+            isRemoved: false,
+          },
+        };
+      }
+      throw new Error("unexpected version lookup");
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const storage = { get: vi.fn() };
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation, storage }),
+      new Request("https://example.com/api/v1/skills/demo/file?path=SKILL.md"),
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.text()).toContain("flagged as malicious");
+    expect(storage.get).not.toHaveBeenCalled();
+  });
+
+  it("does not serve raw files from another skill's tagged version", async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+            displayName: "Demo",
+            summary: "s",
+            tags: { old: "skillVersions:other" },
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+            latestVersionId: "skillVersions:1",
+          },
+          latestVersion: null,
+          owner: null,
+          moderationInfo: null,
+        };
+      }
+      if (args.versionId === "skillVersions:1") {
+        return { _id: "skillVersions:1", skillId: "skills:1", version: "1.0.0", files: [] };
+      }
+      if (args.versionId === "skillVersions:other") {
+        return {
+          _id: "skillVersions:other",
+          skillId: "skills:other",
+          version: "9.9.9",
+          files: [{ path: "SKILL.md", size: 5, storageId: "storage:other", sha256: "other" }],
+          softDeletedAt: undefined,
+        };
+      }
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const storage = { get: vi.fn() };
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation, storage }),
+      new Request("https://example.com/api/v1/skills/demo/file?path=SKILL.md&tag=old"),
+    );
+
+    expect(response.status).toBe(404);
+    expect(await response.text()).toBe("Version not found");
+    expect(storage.get).not.toHaveBeenCalled();
+  });
+
+  it("returns stored Skill Card markdown", async () => {
+    const internalVersion = {
+      _id: "skillVersions:1",
+      skillId: "skills:1",
+      version: "1.0.0",
+      createdAt: 1,
+      changelog: "c",
+      files: [
+        {
+          path: "skill-card.md",
+          size: 12,
+          storageId: "storage:card",
+          sha256: "card-sha",
+          contentType: "text/markdown",
+        },
+      ],
+      softDeletedAt: undefined,
+    };
+    const generatedBundleFingerprint = await buildBundleFingerprint(internalVersion.files);
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+            displayName: "Demo",
+            summary: "s",
+            tags: { stable: "skillVersions:1" },
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+            latestVersionId: "skillVersions:1",
+          },
+          latestVersion: { _id: "skillVersions:1", version: "1.0.0" },
+          owner: null,
+        };
+      }
+      if ("skillVersionId" in args) {
+        return [
+          { fingerprint: generatedBundleFingerprint, kind: "generated-bundle", createdAt: 2 },
+        ];
+      }
+      if ("versionId" in args) return internalVersion;
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const storage = {
+      get: vi.fn().mockResolvedValue(new Blob(["# Skill Card"], { type: "text/markdown" })),
+    };
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation, storage }),
+      new Request("https://example.com/api/v1/skills/demo/card?tag=stable"),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("# Skill Card");
+    expect(response.headers.get("X-Content-SHA256")).toBe("card-sha");
+  });
+
+  it("blocks Skill Card reads for malware-blocked skills", async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+            displayName: "Demo",
+            summary: "s",
+            tags: {},
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+            latestVersionId: "skillVersions:1",
+          },
+          latestVersion: null,
+          owner: null,
+          moderationInfo: {
+            isMalwareBlocked: true,
+            isPendingScan: false,
+            isHiddenByMod: false,
+            isRemoved: false,
+          },
+        };
+      }
+      throw new Error("unexpected version lookup");
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const storage = { get: vi.fn() };
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation, storage }),
+      new Request("https://example.com/api/v1/skills/demo/card"),
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.text()).toContain("flagged as malicious");
+    expect(storage.get).not.toHaveBeenCalled();
+  });
+
+  it("does not serve Skill Cards from another skill's tagged version", async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+            displayName: "Demo",
+            summary: "s",
+            tags: { old: "skillVersions:other" },
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+            latestVersionId: "skillVersions:1",
+          },
+          latestVersion: null,
+          owner: null,
+          moderationInfo: null,
+        };
+      }
+      if (args.versionId === "skillVersions:other") {
+        return {
+          _id: "skillVersions:other",
+          skillId: "skills:other",
+          version: "9.9.9",
+          files: [
+            {
+              path: "skill-card.md",
+              size: 12,
+              storageId: "storage:other",
+              sha256: "other",
+            },
+          ],
+          softDeletedAt: undefined,
+        };
+      }
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const storage = { get: vi.fn() };
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation, storage }),
+      new Request("https://example.com/api/v1/skills/demo/card?tag=old"),
+    );
+
+    expect(response.status).toBe(404);
+    expect(await response.text()).toBe("Version not found");
+    expect(storage.get).not.toHaveBeenCalled();
+  });
+
+  it("does not verify another skill's tagged version", async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+            displayName: "Demo",
+            summary: "s",
+            tags: { old: "skillVersions:other" },
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+            latestVersionId: "skillVersions:1",
+          },
+          latestVersion: null,
+          owner: null,
+          moderationInfo: null,
+        };
+      }
+      if (args.versionId === "skillVersions:other") {
+        return {
+          _id: "skillVersions:other",
+          skillId: "skills:other",
+          version: "9.9.9",
+          files: [],
+          softDeletedAt: undefined,
+        };
+      }
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/skills/demo/verify?tag=old"),
+    );
+
+    expect(response.status).toBe(404);
+    expect(await response.text()).toBe("Version not found");
+  });
+
+  it("returns 404 when a Skill Card is missing", async () => {
+    const internalVersion = {
+      skillId: "skills:1",
+      version: "1.0.0",
+      createdAt: 1,
+      changelog: "c",
+      files: [{ path: "SKILL.md", size: 5, storageId: "storage:1", sha256: "abcd" }],
+      softDeletedAt: undefined,
+    };
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+            displayName: "Demo",
+            summary: "s",
+            tags: {},
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+            latestVersionId: "skillVersions:1",
+          },
+          latestVersion: { _id: "skillVersions:1", version: "1.0.0" },
+          owner: null,
+        };
+      }
+      if ("skillVersionId" in args) return [];
+      if ("versionId" in args) return internalVersion;
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation, storage: { get: vi.fn() } }),
+      new Request("https://example.com/api/v1/skills/demo/card"),
+    );
+
+    expect(response.status).toBe(404);
+    expect(await response.text()).toBe("Skill Card not found");
+  });
+
+  it("does not return publisher-supplied skill-card.md from the Skill Card endpoint", async () => {
+    const internalVersion = {
+      _id: "skillVersions:1",
+      skillId: "skills:1",
+      version: "1.0.0",
+      createdAt: 1,
+      changelog: "c",
+      files: [
+        { path: "SKILL.md", size: 5, storageId: "storage:1", sha256: "source-sha" },
+        { path: "skill-card.md", size: 12, storageId: "storage:card", sha256: "card-sha" },
+      ],
+      softDeletedAt: undefined,
+    };
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+            displayName: "Demo",
+            summary: "s",
+            tags: {},
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+            latestVersionId: "skillVersions:1",
+          },
+          latestVersion: { _id: "skillVersions:1", version: "1.0.0" },
+          owner: null,
+        };
+      }
+      if ("skillVersionId" in args) {
+        return [{ fingerprint: "source-fingerprint", kind: "source", createdAt: 4 }];
+      }
+      if ("versionId" in args) return internalVersion;
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation, storage: { get: vi.fn() } }),
+      new Request("https://example.com/api/v1/skills/demo/card"),
+    );
+
+    expect(response.status).toBe(404);
+    expect(await response.text()).toBe("Skill Card not found");
+  });
+
+  it("returns bulk skill security verdicts without card data", async () => {
+    const version = {
+      _id: "skillVersions:1",
+      skillId: "skills:1",
+      version: "1.0.0",
+      createdAt: 1,
+      changelog: "c",
+      files: [{ path: "SKILL.md", size: 5, storageId: "storage:1", sha256: "source-sha" }],
+      staticScan: {
+        status: "clean",
+        reasonCodes: [],
+        findings: [],
+        summary: "Static scan clean.",
+        engineVersion: "static-v1",
+        checkedAt: 2,
+      },
+      llmAnalysis: {
+        status: "clean",
+        verdict: "clean",
+        confidence: "high",
+        summary: "ClawScan clean.",
+        checkedAt: 3,
+        model: "gpt-test",
+      },
+      depRegistryAnalysis: {
+        status: "clean",
+        results: [],
+        notFoundPackages: [],
+        unresolvedPackages: [],
+        summary: "No dependency issues.",
+        checkedAt: 4,
+      },
+      capabilityTags: ["dev-tools"],
+      softDeletedAt: undefined,
+    };
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+            displayName: "Demo",
+          },
+          owner: { _id: "users:1", handle: "acme", displayName: "Acme" },
+          moderationInfo: {
+            isPendingScan: false,
+            isMalwareBlocked: false,
+            isSuspicious: false,
+            isHiddenByMod: false,
+            isRemoved: false,
+          },
+          version,
+        };
+      }
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillSecurityVerdictsV1Handler(
+      makeCtx({ runQuery, runMutation, storage: { get: vi.fn() } }),
+      new Request("https://example.com/api/v1/skills/-/security-verdicts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ items: [{ slug: "demo", version: "1.0.0" }] }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json).toMatchObject({
+      schema: "clawhub.skill.security-verdicts.v1",
+      items: [
+        {
+          ok: true,
+          decision: "pass",
+          reasons: [],
+          slug: "demo",
+          requestedSlug: "demo",
+          displayName: "Demo",
+          publisherHandle: "acme",
+          publisherDisplayName: "Acme",
+          requestedVersion: "1.0.0",
+          version: "1.0.0",
+          createdAt: 1,
+          checkedAt: 4,
+          skillUrl: "https://example.com/acme/demo",
+          securityAuditUrl: "https://example.com/acme/demo/security-audit?version=1.0.0",
+          security: {
+            status: "clean",
+            passed: true,
+            rawStatus: "clean",
+            verdict: "clean",
+            signals: {
+              staticScan: { status: "clean", rawStatus: "clean" },
+              dependencyRegistry: { status: "clean", rawStatus: "clean" },
+            },
+          },
+        },
+      ],
+    });
+    expect(json.items[0].card).toBeUndefined();
+    expect(json.items[0].artifact).toBeUndefined();
+    expect(json.items[0].security.signals.staticScan.findings).toBeUndefined();
+    expect(json.items[0].security.signals.dependencyRegistry.notFoundPackages).toBeUndefined();
+    expect(runQuery.mock.calls.map(([, args]) => args)).toContainEqual({
+      slug: "demo",
+      version: "1.0.0",
+    });
+    expect(runQuery.mock.calls.some(([, args]) => "skillId" in args)).toBe(false);
+  });
+
+  it("uses the public site origin for production bulk verdict links", async () => {
+    vi.stubEnv("CONVEX_DEPLOYMENT", "prod:wry-manatee-359");
+    const runQuery = vi.fn(async () => ({
+      skill: { _id: "skills:1", slug: "demo", displayName: "Demo" },
+      owner: { _id: "users:1", handle: "acme", displayName: "Acme" },
+      moderationInfo: {
+        isPendingScan: false,
+        isMalwareBlocked: false,
+        isSuspicious: false,
+        isHiddenByMod: false,
+        isRemoved: false,
+      },
+      version: {
+        _id: "skillVersions:1",
+        version: "1.0.0",
+        createdAt: 1,
+        llmAnalysis: { status: "clean", verdict: "clean", checkedAt: 2 },
+      },
+    }));
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillSecurityVerdictsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://wry-manatee-359.convex.site/api/v1/skills/-/security-verdicts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ items: [{ slug: "demo", version: "1.0.0" }] }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.items[0]).toMatchObject({
+      skillUrl: "https://clawhub.ai/acme/demo",
+      securityAuditUrl: "https://clawhub.ai/acme/demo/security-audit?version=1.0.0",
+    });
+  });
+
+  it("honors staff-cleared bulk security verdicts", async () => {
+    const runQuery = vi.fn(async () => ({
+      skill: { _id: "skills:1", slug: "demo", displayName: "Demo" },
+      owner: { _id: "users:1", handle: "acme", displayName: "Acme" },
+      moderationInfo: {
+        isPendingScan: false,
+        isMalwareBlocked: false,
+        isSuspicious: false,
+        isHiddenByMod: false,
+        isRemoved: false,
+        overrideActive: true,
+        verdict: "clean",
+        summary: "Security findings were reviewed by moderators and cleared for public use.",
+        updatedAt: 20,
+      },
+      version: {
+        _id: "skillVersions:1",
+        version: "1.0.0",
+        createdAt: 1,
+        llmAnalysis: {
+          status: "completed",
+          verdict: "suspicious",
+          summary: "Scanner found review-worthy behavior.",
+          checkedAt: 10,
+        },
+      },
+    }));
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillSecurityVerdictsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/skills/-/security-verdicts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ items: [{ slug: "demo", version: "1.0.0" }] }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.items[0]).toMatchObject({
+      ok: true,
+      decision: "pass",
+      reasons: [],
+      checkedAt: 20,
+      security: {
+        status: "clean",
+        passed: true,
+        verdict: "clean",
+        summary: "Security findings were reviewed by moderators and cleared for public use.",
+        checkedAt: 20,
+      },
+    });
+  });
+
+  it("keeps bulk verdict item failures local to each requested skill", async () => {
+    const softDeletedVersion = {
+      _id: "skillVersions:deleted",
+      skillId: "skills:soft",
+      version: "2.0.0",
+      createdAt: 2,
+      changelog: "c",
+      files: [],
+      llmAnalysis: { status: "clean", verdict: "clean", checkedAt: 3 },
+      softDeletedAt: 5,
+    };
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if (args.slug === "missing") return null;
+      if (args.slug === "no-version") {
+        return {
+          skill: {
+            _id: "skills:no-version",
+            slug: "no-version",
+            displayName: "No Version",
+          },
+          owner: null,
+          moderationInfo: null,
+          version: null,
+        };
+      }
+      if (args.slug === "soft") {
+        return {
+          skill: {
+            _id: "skills:soft",
+            slug: "soft",
+            displayName: "Soft",
+          },
+          owner: null,
+          moderationInfo: null,
+          version: softDeletedVersion,
+        };
+      }
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillSecurityVerdictsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/skills/-/security-verdicts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          items: [
+            { slug: "missing", version: "1.0.0" },
+            { slug: "no-version", version: "1.0.0" },
+            { slug: "soft", version: "2.0.0" },
+          ],
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.items).toHaveLength(3);
+    expect(json.items.map((item: { ok: boolean }) => item.ok)).toEqual([false, false, false]);
+    expect(json.items[0]).toMatchObject({
+      requestedSlug: "missing",
+      requestedVersion: "1.0.0",
+      decision: "fail",
+      reasons: ["skill.not_found"],
+      error: { code: "skill_not_found", message: "Skill not found" },
+    });
+    expect(json.items[1]).toMatchObject({
+      requestedSlug: "no-version",
+      requestedVersion: "1.0.0",
+      decision: "fail",
+      reasons: ["version.not_found"],
+      error: { code: "version_not_found", message: "Version not found" },
+    });
+    expect(json.items[2]).toMatchObject({
+      requestedSlug: "soft",
+      requestedVersion: "2.0.0",
+      decision: "fail",
+      reasons: ["version.unavailable"],
+      error: { code: "version_unavailable", message: "Version not available" },
+    });
+  });
+
+  it.each([
+    {
+      label: "suspicious",
+      analysis: { status: "completed", verdict: "suspicious", checkedAt: 10 },
+      reasons: ["security.status_not_clean"],
+      security: { status: "suspicious", passed: false },
+    },
+    {
+      label: "malicious",
+      analysis: { status: "completed", verdict: "malicious", checkedAt: 10 },
+      reasons: ["security.status_not_clean"],
+      security: { status: "malicious", passed: false },
+    },
+    {
+      label: "pending",
+      analysis: { status: "completed", checkedAt: 11 },
+      reasons: ["security.status_not_clean", "security.pending"],
+      security: { status: "pending", passed: false },
+    },
+    {
+      label: "error",
+      analysis: { status: "failed", checkedAt: 12 },
+      reasons: ["security.status_not_clean", "security.error"],
+      security: { status: "error", passed: false },
+    },
+  ])("reports $label bulk security verdicts", async ({ analysis, reasons, security }) => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+            displayName: "Demo",
+          },
+          owner: null,
+          moderationInfo: null,
+          version: {
+            _id: "skillVersions:1",
+            skillId: "skills:1",
+            version: "1.0.0",
+            createdAt: 1,
+            changelog: "c",
+            files: [],
+            llmAnalysis: analysis,
+            softDeletedAt: undefined,
+          },
+        };
+      }
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillSecurityVerdictsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/skills/-/security-verdicts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ items: [{ slug: "demo", version: "1.0.0" }] }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.items[0]).toMatchObject({
+      ok: false,
+      decision: "fail",
+      reasons,
+      security,
+    });
+  });
+
+  it("rejects malformed bulk security verdict request bodies", async () => {
+    const runQuery = vi.fn();
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const nullBody = await __handlers.skillSecurityVerdictsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/skills/-/security-verdicts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "null",
+      }),
+    );
+    expect(nullBody.status).toBe(400);
+    expect(await nullBody.text()).toBe("JSON body must be an object");
+
+    const scalarBody = await __handlers.skillSecurityVerdictsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/skills/-/security-verdicts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify("nope"),
+      }),
+    );
+    expect(scalarBody.status).toBe(400);
+    expect(await scalarBody.text()).toBe("JSON body must be an object");
+
+    const missingItems = await __handlers.skillSecurityVerdictsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/skills/-/security-verdicts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ items: [] }),
+      }),
+    );
+    expect(missingItems.status).toBe(400);
+    expect(await missingItems.text()).toBe("items must contain 1 to 100 entries");
+
+    const duplicate = await __handlers.skillSecurityVerdictsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/skills/-/security-verdicts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          items: [
+            { slug: "demo", version: "1.0.0" },
+            { slug: "demo", version: "1.0.0" },
+          ],
+        }),
+      }),
+    );
+    expect(duplicate.status).toBe(400);
+    expect(await duplicate.text()).toBe("Duplicate item: demo@1.0.0");
+
+    const ambiguous = await __handlers.skillSecurityVerdictsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/skills/-/security-verdicts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ items: [{ slug: "demo", version: "1.0.0", tag: "latest" }] }),
+      }),
+    );
+    expect(ambiguous.status).toBe(400);
+    expect(await ambiguous.text()).toBe("items[0] uses version only; tag is not supported");
+
+    expect(runQuery).not.toHaveBeenCalled();
+  });
+
+  it("returns a skill verification envelope with card and security metadata", async () => {
+    const internalVersion = {
+      _id: "skillVersions:1",
+      skillId: "skills:1",
+      version: "1.0.0",
+      createdAt: 1,
+      changelog: "c",
+      fingerprint: "source-fingerprint",
+      files: [
+        {
+          path: "SKILL.md",
+          size: 5,
+          storageId: "storage:1",
+          sha256: "source-sha",
+          contentType: "text/markdown",
+        },
+        {
+          path: "skill-card.md",
+          size: 12,
+          storageId: "storage:card",
+          sha256: "card-sha",
+          contentType: "text/markdown",
+        },
+      ],
+      parsed: { license: "MIT-0", clawdis: { requires: { env: ["TOKEN"] } } },
+      sourceProvenance: {
+        kind: "github",
+        url: "https://github.com/acme/demo/tree/main/skills/demo",
+        repo: "acme/demo",
+        ref: "main",
+        commit: "abc123",
+        path: "skills/demo",
+        importedAt: 10,
+      },
+      staticScan: {
+        status: "clean",
+        reasonCodes: [],
+        findings: [],
+        summary: "Static scan clean.",
+        engineVersion: "static-v1",
+        checkedAt: 2,
+      },
+      llmAnalysis: {
+        status: "clean",
+        verdict: "clean",
+        confidence: "high",
+        summary: "ClawScan clean.",
+        checkedAt: 3,
+        model: "gpt-test",
+      },
+      vtAnalysis: {
+        status: "clean",
+        verdict: "clean",
+        analysis: "VirusTotal clean.",
+        source: "engines",
+        checkedAt: 4,
+      },
+      skillSpectorAnalysis: {
+        status: "clean",
+        score: 0,
+        severity: "LOW",
+        recommendation: "INSTALL",
+        issueCount: 0,
+        issues: [],
+        scannerVersion: "skillspector-test",
+        summary: "SkillSpector clean.",
+        checkedAt: 5,
+      },
+      depRegistryAnalysis: {
+        status: "clean",
+        results: [],
+        notFoundPackages: [],
+        unresolvedPackages: [],
+        summary: "No dependency issues.",
+        checkedAt: 6,
+      },
+      capabilityTags: ["dev-tools"],
+      softDeletedAt: undefined,
+    };
+    const generatedBundleFingerprint = await buildBundleFingerprint(internalVersion.files);
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+            displayName: "Demo",
+            summary: "s",
+            tags: { stable: "skillVersions:1" },
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+            latestVersionId: "skillVersions:1",
+          },
+          latestVersion: { _id: "skillVersions:1", version: "1.0.0" },
+          owner: { _id: "users:1", handle: "acme", displayName: "Acme" },
+        };
+      }
+      if ("skillVersionId" in args) {
+        return [
+          { fingerprint: generatedBundleFingerprint, kind: "generated-bundle", createdAt: 5 },
+        ];
+      }
+      if ("versionId" in args) return internalVersion;
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation, storage: { get: vi.fn() } }),
+      new Request("https://example.com/api/v1/skills/demo/verify?tag=stable"),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json).toMatchObject({
+      schema: "clawhub.skill.verify.v1",
+      ok: true,
+      decision: "pass",
+      reasons: [],
+      slug: "demo",
+      displayName: "Demo",
+      pageUrl: "https://clawhub.ai/acme/demo",
+      publisherHandle: "acme",
+      publisherDisplayName: "Acme",
+      publisherProfileUrl: "https://clawhub.ai/user/acme",
+      version: "1.0.0",
+      resolvedFrom: "tag",
+      tag: "stable",
+      createdAt: 1,
+      card: {
+        available: true,
+        path: "skill-card.md",
+        url: "https://example.com/api/v1/skills/demo/card?version=1.0.0",
+        sha256: "card-sha",
+        size: 12,
+      },
+      artifact: {
+        sourceFingerprint: "source-fingerprint",
+        bundleFingerprints: [generatedBundleFingerprint],
+        files: [{ path: "SKILL.md", sha256: "source-sha", size: 5 }],
+      },
+      provenance: {
+        source: "server-resolved-github-import",
+        repo: "acme/demo",
+        commit: "abc123",
+        path: "skills/demo",
+      },
+      security: {
+        status: "clean",
+        passed: true,
+        rawStatus: "clean",
+        verdict: "clean",
+        confidence: "high",
+        summary: "ClawScan clean.",
+        model: "gpt-test",
+        checkedAt: 3,
+        signals: {
+          staticScan: { status: "clean", rawStatus: "clean", reasonCodes: [] },
+          virusTotal: {
+            status: "clean",
+            rawStatus: "clean",
+            verdict: "clean",
+            source: "engines",
+          },
+          skillSpector: {
+            status: "clean",
+            rawStatus: "clean",
+            score: 0,
+            recommendation: "INSTALL",
+            issueCount: 0,
+          },
+          dependencyRegistry: { status: "clean" },
+        },
+      },
+      signature: { status: "unsigned" },
+    });
+    expect(json.skill).toBeUndefined();
+    expect(json.publisher).toBeUndefined();
+  });
+
+  it("does not let publisher-supplied skill-card.md satisfy verification", async () => {
+    const internalVersion = {
+      _id: "skillVersions:1",
+      skillId: "skills:1",
+      version: "1.0.0",
+      createdAt: 1,
+      changelog: "c",
+      fingerprint: "source-fingerprint",
+      files: [
+        { path: "SKILL.md", size: 5, storageId: "storage:1", sha256: "source-sha" },
+        { path: "skill-card.md", size: 12, storageId: "storage:card", sha256: "card-sha" },
+      ],
+      parsed: {},
+      staticScan: {
+        status: "clean",
+        reasonCodes: [],
+        findings: [],
+        summary: "Static scan clean.",
+        checkedAt: 2,
+      },
+      llmAnalysis: {
+        status: "clean",
+        verdict: "clean",
+        summary: "ClawScan clean.",
+        checkedAt: 3,
+      },
+      softDeletedAt: undefined,
+    };
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+            displayName: "Demo",
+            summary: "s",
+            tags: {},
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+            latestVersionId: "skillVersions:1",
+          },
+          latestVersion: { _id: "skillVersions:1", version: "1.0.0" },
+          owner: null,
+        };
+      }
+      if ("skillVersionId" in args) {
+        return [{ fingerprint: "source-fingerprint", kind: "source", createdAt: 4 }];
+      }
+      if ("versionId" in args) return internalVersion;
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation, storage: { get: vi.fn() } }),
+      new Request("https://example.com/api/v1/skills/demo/verify"),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.ok).toBe(false);
+    expect(json.decision).toBe("fail");
+    expect(json.reasons).toEqual(["card.missing"]);
+    expect(json.card).toMatchObject({
+      available: false,
+      path: "skill-card.md",
+      sha256: null,
+      size: null,
+    });
+    expect(json.artifact.bundleFingerprints).toEqual([]);
+  });
+
+  it("fails verification when the skill is malware-blocked by moderation", async () => {
+    const internalVersion = {
+      _id: "skillVersions:1",
+      skillId: "skills:1",
+      version: "1.0.0",
+      createdAt: 1,
+      changelog: "c",
+      fingerprint: "source-fingerprint",
+      files: [
+        { path: "SKILL.md", size: 5, storageId: "storage:1", sha256: "source-sha" },
+        { path: "skill-card.md", size: 12, storageId: "storage:card", sha256: "card-sha" },
+      ],
+      parsed: {},
+      staticScan: {
+        status: "clean",
+        reasonCodes: [],
+        findings: [],
+        summary: "Static scan clean.",
+        checkedAt: 2,
+      },
+      llmAnalysis: {
+        status: "clean",
+        verdict: "clean",
+        summary: "ClawScan clean.",
+        checkedAt: 3,
+      },
+      softDeletedAt: undefined,
+    };
+    const generatedBundleFingerprint = await buildBundleFingerprint(internalVersion.files);
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+            displayName: "Demo",
+            summary: "s",
+            tags: {},
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+            latestVersionId: "skillVersions:1",
+          },
+          latestVersion: { _id: "skillVersions:1", version: "1.0.0" },
+          owner: null,
+          moderationInfo: {
+            isPendingScan: false,
+            isMalwareBlocked: true,
+            isSuspicious: false,
+            isHiddenByMod: false,
+            isRemoved: false,
+          },
+        };
+      }
+      if ("skillVersionId" in args) {
+        return [
+          { fingerprint: generatedBundleFingerprint, kind: "generated-bundle", createdAt: 4 },
+        ];
+      }
+      if ("versionId" in args) return internalVersion;
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation, storage: { get: vi.fn() } }),
+      new Request("https://example.com/api/v1/skills/demo/verify"),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.ok).toBe(false);
+    expect(json.decision).toBe("fail");
+    expect(json.reasons).toEqual(["moderation.malware_blocked"]);
+    expect(json.security).toMatchObject({ status: "clean", passed: true });
+  });
+
+  it("passes verification when static and dependency findings are advisory but ClawScan is clean", async () => {
+    const internalVersion = {
+      _id: "skillVersions:1",
+      skillId: "skills:1",
+      version: "1.0.0",
+      createdAt: 1,
+      changelog: "c",
+      fingerprint: "source-fingerprint",
+      files: [
+        { path: "SKILL.md", size: 5, storageId: "storage:1", sha256: "source-sha" },
+        { path: "skill-card.md", size: 12, storageId: "storage:card", sha256: "card-sha" },
+      ],
+      parsed: {},
+      staticScan: {
+        status: "malicious",
+        reasonCodes: ["suspicious.external_api"],
+        findings: [],
+        summary: "Static advisory warning.",
+        engineVersion: "static-v1",
+        checkedAt: 2,
+      },
+      llmAnalysis: {
+        status: "clean",
+        verdict: "benign",
+        summary: "ClawScan clean.",
+        checkedAt: 3,
+      },
+      depRegistryAnalysis: {
+        status: "malicious",
+        results: [],
+        notFoundPackages: ["left-pad"],
+        unresolvedPackages: [],
+        summary: "Dependency advisory warning.",
+        checkedAt: 4,
+      },
+      softDeletedAt: undefined,
+    };
+    const generatedBundleFingerprint = await buildBundleFingerprint(internalVersion.files);
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+            displayName: "Demo",
+            summary: "s",
+            tags: {},
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+            latestVersionId: "skillVersions:1",
+          },
+          latestVersion: { _id: "skillVersions:1", version: "1.0.0" },
+          owner: null,
+        };
+      }
+      if ("skillVersionId" in args) {
+        return [
+          { fingerprint: generatedBundleFingerprint, kind: "generated-bundle", createdAt: 4 },
+        ];
+      }
+      if ("versionId" in args) return internalVersion;
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation, storage: { get: vi.fn() } }),
+      new Request("https://example.com/api/v1/skills/demo/verify"),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.ok).toBe(true);
+    expect(json.decision).toBe("pass");
+    expect(json.reasons).toEqual([]);
+    expect(json.security).toMatchObject({
+      status: "clean",
+      passed: true,
+      rawStatus: "clean",
+      verdict: "benign",
+      signals: {
+        staticScan: { status: "malicious", rawStatus: "malicious" },
+        dependencyRegistry: { status: "malicious", rawStatus: "malicious" },
+      },
+    });
+  });
+
+  it("returns ok false when verification has no card or clean scan result", async () => {
+    const internalVersion = {
+      _id: "skillVersions:1",
+      skillId: "skills:1",
+      version: "1.0.0",
+      createdAt: 1,
+      changelog: "c",
+      fingerprint: "source-fingerprint",
+      files: [{ path: "SKILL.md", size: 5, storageId: "storage:1", sha256: "source-sha" }],
+      parsed: {},
+      staticScan: {
+        status: "clean",
+        reasonCodes: [],
+        findings: [],
+        summary: "Static scan clean.",
+        engineVersion: "static-v1",
+        checkedAt: 2,
+      },
+      llmAnalysis: {
+        status: "completed",
+        verdict: "suspicious",
+        summary: "Review risky behavior.",
+        checkedAt: 3,
+      },
+      softDeletedAt: undefined,
+    };
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+            displayName: "Demo",
+            summary: "s",
+            tags: {},
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+            latestVersionId: "skillVersions:1",
+          },
+          latestVersion: { _id: "skillVersions:1", version: "1.0.0" },
+          owner: null,
+        };
+      }
+      if ("skillVersionId" in args) return [];
+      if ("versionId" in args) return internalVersion;
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation, storage: { get: vi.fn() } }),
+      new Request("https://example.com/api/v1/skills/demo/verify"),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.ok).toBe(false);
+    expect(json.decision).toBe("fail");
+    expect(json.reasons).toEqual(["card.missing", "security.status_not_clean"]);
+    expect(json.card.available).toBe(false);
+    expect(json.security).toMatchObject({ status: "suspicious", passed: false });
+  });
+
+  it("returns 410 for soft-deleted Skill Card versions", async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+            displayName: "Demo",
+            summary: "s",
+            tags: {},
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+            latestVersionId: "skillVersions:1",
+          },
+          latestVersion: { _id: "skillVersions:1", version: "1.0.0" },
+          owner: null,
+        };
+      }
+      if ("versionId" in args) return { skillId: "skills:1", softDeletedAt: 123, files: [] };
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation, storage: { get: vi.fn() } }),
+      new Request("https://example.com/api/v1/skills/demo/card"),
+    );
+
+    expect(response.status).toBe(410);
+  });
+
   it("returns 413 when raw file too large", async () => {
     const internalVersion = {
+      skillId: "skills:1",
       version: "1.0.0",
       createdAt: 1,
       changelog: "c",
@@ -2524,6 +4456,62 @@ describe("httpApiV1 handlers", () => {
       "sourceOwnerPublisherId",
     );
     expect(vi.mocked(publishVersionForUser).mock.calls[0]?.[3]).not.toHaveProperty("migrateOwner");
+  });
+
+  it("keeps client-declared publish source out of trusted provenance options", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValueOnce({
+      userId: "users:1",
+      user: { handle: "p" },
+    } as never);
+    vi.mocked(publishVersionForUser).mockResolvedValueOnce({
+      skillId: "s",
+      versionId: "v",
+      embeddingId: "e",
+    } as never);
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const source = {
+      kind: "github",
+      url: "https://github.com/spoofed/repo",
+      repo: "spoofed/repo",
+      ref: "main",
+      commit: "f".repeat(40),
+      path: "skills/demo",
+      importedAt: 123,
+    };
+    const body = JSON.stringify({
+      slug: "demo",
+      displayName: "Demo",
+      version: "1.0.0",
+      changelog: "c",
+      acceptLicenseTerms: true,
+      source,
+      files: [
+        {
+          path: "SKILL.md",
+          size: 1,
+          storageId: "storage:1",
+          sha256: "abc",
+          contentType: "text/plain",
+        },
+      ],
+    });
+
+    const response = await __handlers.publishSkillV1Handler(
+      makeCtx({ runMutation }),
+      new Request("https://example.com/api/v1/skills", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer clh_test" },
+        body,
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(publishVersionForUser).toHaveBeenCalledWith(
+      expect.anything(),
+      "users:1",
+      expect.objectContaining({ source }),
+    );
+    expect(vi.mocked(publishVersionForUser).mock.calls[0]?.[3]).toBeUndefined();
   });
 
   it("publish json resolves requested owner publisher", async () => {
@@ -2968,42 +4956,261 @@ describe("httpApiV1 handlers", () => {
     );
   });
 
-  it("does not expose the removed skill rescan route", async () => {
+  it("skill rescan enqueues owner-authorized ClawScan jobs", async () => {
     vi.mocked(requireApiTokenUser).mockResolvedValue({
-      userId: "users:1",
-      user: { handle: "p" },
+      userId: "users:moderator",
+      user: { _id: "users:moderator", role: "moderator" },
     } as never);
-    const runMutation = vi.fn(async () => okRate());
+    const runMutation = vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {
+      if (isRateLimitArgs(args)) return okRate();
+      return {
+        ok: true,
+        slug: "demo",
+        version: "1.0.0",
+        skillId: "skills:1",
+        skillVersionId: "skillVersions:1",
+        jobId: "securityScanJobs:1",
+        alreadyQueued: false,
+      };
+    });
 
     const response = await __handlers.skillsPostRouterV1Handler(
       makeCtx({ runMutation }),
       new Request("https://example.com/api/v1/skills/demo/rescan", {
         method: "POST",
         headers: { Authorization: "Bearer clh_test" },
+        body: JSON.stringify({ version: "1.0.0" }),
       }),
     );
 
-    expect(response.status).toBe(404);
-    expect(runMutation.mock.calls.length).toBe(1);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      slug: "demo",
+      version: "1.0.0",
+      jobId: "securityScanJobs:1",
+    });
+    expect(runMutation).toHaveBeenCalledWith(
+      (internal as unknown as { securityScan: Record<string, unknown> }).securityScan
+        .requestSkillRescanForUserInternal,
+      {
+        actorUserId: "users:moderator",
+        slug: "demo",
+        version: "1.0.0",
+      },
+    );
   });
 
-  it("does not expose the removed package rescan route", async () => {
+  it("skill rescan rejects malformed JSON", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:moderator",
+      user: { _id: "users:moderator", role: "moderator" },
+    } as never);
+    const runMutation = vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {
+      if (isRateLimitArgs(args)) return okRate();
+      throw new Error("should not enqueue");
+    });
+
+    const response = await __handlers.skillsPostRouterV1Handler(
+      makeCtx({ runMutation }),
+      new Request("https://example.com/api/v1/skills/demo/rescan", {
+        method: "POST",
+        headers: { Authorization: "Bearer clh_test" },
+        body: "{",
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.text()).resolves.toBe("Invalid JSON");
+    expect(runMutation).toHaveBeenCalledTimes(1);
+  });
+
+  it("bulk skill rescan batch requires admin role", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:moderator",
+      user: { _id: "users:moderator", role: "moderator" },
+    } as never);
+    const runMutation = vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {
+      if (isRateLimitArgs(args)) return okRate();
+      throw new Error("should not enqueue");
+    });
+
+    const response = await __handlers.skillsPostRouterV1Handler(
+      makeCtx({ runMutation }),
+      new Request("https://example.com/api/v1/skills/-/rescan-batch", {
+        method: "POST",
+        headers: { Authorization: "Bearer clh_test" },
+        body: JSON.stringify({ batchSize: 25 }),
+      }),
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.text()).resolves.toBe("Admin role required.");
+    expect(runMutation).toHaveBeenCalledTimes(1);
+  });
+
+  it("bulk skill rescan batch enqueues via admin API", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:admin",
+      user: { _id: "users:admin", role: "admin" },
+    } as never);
+    const runMutation = vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {
+      if (isRateLimitArgs(args)) return okRate();
+      return {
+        ok: true,
+        mode: "all-active-latest",
+        queued: 2,
+        alreadyQueued: 1,
+        skipped: 0,
+        jobIds: ["securityScanJobs:1", "securityScanJobs:2", "securityScanJobs:3"],
+        nextCursor: "cursor-2",
+        done: false,
+        sampleSlugs: ["demo"],
+      };
+    });
+
+    const response = await __handlers.skillsPostRouterV1Handler(
+      makeCtx({ runMutation }),
+      new Request("https://example.com/api/v1/skills/-/rescan-batch", {
+        method: "POST",
+        headers: { Authorization: "Bearer clh_test" },
+        body: JSON.stringify({ batchSize: 25, cursor: null, dryRun: false }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      queued: 2,
+      alreadyQueued: 1,
+      nextCursor: "cursor-2",
+    });
+    expect(runMutation).toHaveBeenCalledWith(
+      (internal as unknown as { securityScan: Record<string, unknown> }).securityScan
+        .enqueueBulkSkillRescanBatchForAdminInternal,
+      {
+        actorUserId: "users:admin",
+        cursor: null,
+        batchSize: 25,
+        dryRun: false,
+      },
+    );
+  });
+
+  it("bulk skill rescan status aggregates via admin API", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:admin",
+      user: { _id: "users:admin", role: "admin" },
+    } as never);
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if (isRateLimitArgs(args)) return okRate();
+      return {
+        ok: true,
+        total: 2,
+        queued: 0,
+        running: 1,
+        succeeded: 1,
+        failed: 0,
+        missing: 0,
+        terminal: 1,
+        done: false,
+        failedJobIds: [],
+      };
+    });
+
+    const response = await __handlers.skillsPostRouterV1Handler(
+      makeCtx({ runQuery }),
+      new Request("https://example.com/api/v1/skills/-/rescan-batch/status", {
+        method: "POST",
+        headers: { Authorization: "Bearer clh_test" },
+        body: JSON.stringify({ jobIds: ["securityScanJobs:1", "securityScanJobs:2"] }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      total: 2,
+      running: 1,
+      done: false,
+    });
+    expect(runQuery).toHaveBeenCalledWith(
+      (internal as unknown as { securityScan: Record<string, unknown> }).securityScan
+        .getBulkSkillRescanBatchStatusForAdminInternal,
+      {
+        actorUserId: "users:admin",
+        jobIds: ["securityScanJobs:1", "securityScanJobs:2"],
+      },
+    );
+  });
+
+  it("package rescan enqueues owner-authorized ClawScan jobs", async () => {
     vi.mocked(requireApiTokenUser).mockResolvedValue({
       userId: "users:1",
       user: { handle: "p" },
     } as never);
-    const runMutation = vi.fn(async () => okRate());
+    const runMutation = vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {
+      if (isRateLimitArgs(args)) return okRate();
+      return {
+        ok: true,
+        name: "@scope/demo",
+        version: "1.2.3",
+        packageId: "packages:1",
+        packageReleaseId: "packageReleases:1",
+        jobId: "securityScanJobs:1",
+        alreadyQueued: false,
+      };
+    });
 
     const response = await __handlers.packagesPostRouterV1Handler(
       makeCtx({ runMutation }),
       new Request("https://example.com/api/v1/packages/%40scope%2Fdemo/rescan", {
         method: "POST",
         headers: { Authorization: "Bearer clh_test" },
+        body: JSON.stringify({ version: "1.2.3" }),
       }),
     );
 
-    expect(response.status).toBe(404);
-    expect(runMutation.mock.calls.length).toBe(0);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      name: "@scope/demo",
+      version: "1.2.3",
+      jobId: "securityScanJobs:1",
+    });
+    expect(runMutation).toHaveBeenCalledWith(
+      (internal as unknown as { securityScan: Record<string, unknown> }).securityScan
+        .requestPackageRescanForUserInternal,
+      {
+        actorUserId: "users:1",
+        name: "@scope/demo",
+        version: "1.2.3",
+      },
+    );
+  });
+
+  it("package rescan rejects malformed JSON", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:1",
+      user: { handle: "p" },
+    } as never);
+    const runMutation = vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {
+      if (isRateLimitArgs(args)) return okRate();
+      throw new Error("should not enqueue");
+    });
+
+    const response = await __handlers.packagesPostRouterV1Handler(
+      makeCtx({ runMutation }),
+      new Request("https://example.com/api/v1/packages/%40scope%2Fdemo/rescan", {
+        method: "POST",
+        headers: { Authorization: "Bearer clh_test" },
+        body: "{",
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.text()).resolves.toBe("Invalid JSON");
+    expect(runMutation).toHaveBeenCalledTimes(1);
   });
 
   it("transfer request requires auth", async () => {
@@ -3209,6 +5416,41 @@ describe("httpApiV1 handlers", () => {
       }),
     );
     expect(response.status).toBe(404);
+  });
+
+  it("transfer accept maps committed cancellation failures to an error response", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:1",
+      user: { handle: "p" },
+    } as never);
+
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("slug" in args) return { _id: "skills:1", slug: "demo" };
+      if ("toUserId" in args) {
+        return {
+          _id: "skillOwnershipTransfers:1",
+          skillId: "skills:1",
+          toUserId: "users:1",
+          status: "pending",
+        };
+      }
+      return null;
+    });
+    const runMutation = vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {
+      if ("key" in args) return okRate();
+      return { ok: false, error: "Skill is under moderation" };
+    });
+
+    const response = await __handlers.skillsPostRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/skills/demo/transfer/accept", {
+        method: "POST",
+        headers: { Authorization: "Bearer clh_test" },
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe("Skill is under moderation");
   });
 
   it("rename endpoint forwards to renameOwnedSkillInternal", async () => {
@@ -3439,6 +5681,166 @@ describe("httpApiV1 handlers", () => {
     );
   });
 
+  it("remediate autobans requires admin", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:actor",
+      user: { _id: "users:actor", role: "user" },
+    } as never);
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const response = await __handlers.usersPostRouterV1Handler(
+      makeCtx({ runMutation }),
+      new Request("https://example.com/api/v1/users/remediate-autobans", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ dryRun: true }),
+      }),
+    );
+    expect(response.status).toBe(403);
+  });
+
+  it("remediate autobans forwards admin payload", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:admin",
+      user: { _id: "users:admin", role: "admin" },
+    } as never);
+    const runMutation = vi.fn().mockResolvedValueOnce(okRate()).mockResolvedValueOnce({
+      ok: true,
+      dryRun: false,
+      scanned: 1,
+      wouldUnban: 0,
+      unbanned: 1,
+      skipped: 0,
+      restoredSkills: 12,
+      restoredPackages: 0,
+      items: [],
+      nextCursor: null,
+      done: true,
+    });
+    const response = await __handlers.usersPostRouterV1Handler(
+      makeCtx({ runMutation }),
+      new Request("https://example.com/api/v1/users/remediate-autobans", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          dryRun: false,
+          userId: "users:target",
+          reason: "appeal accepted",
+          since: "2026-05-12",
+          cursor: "cursor-1",
+          limit: 5,
+        }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        actorUserId: "users:admin",
+        targetUserId: "users:target",
+        dryRun: false,
+        reason: "appeal accepted",
+        since: "2026-05-12",
+        cursor: "cursor-1",
+        limit: 5,
+      }),
+    );
+  });
+
+  it("reclassify ban requires admin", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:actor",
+      user: { _id: "users:actor", role: "user" },
+    } as never);
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const response = await __handlers.usersPostRouterV1Handler(
+      makeCtx({ runMutation }),
+      new Request("https://example.com/api/v1/users/reclassify-ban", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ handle: "demo", reason: "bulk publishing spam" }),
+      }),
+    );
+    expect(response.status).toBe(403);
+  });
+
+  it("reclassify ban forwards admin payload", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:admin",
+      user: { _id: "users:admin", role: "admin" },
+    } as never);
+    const runMutation = vi.fn().mockResolvedValueOnce(okRate()).mockResolvedValueOnce({
+      ok: true,
+      dryRun: false,
+      userId: "users:target",
+      handle: "demo",
+      previousReason: "malware auto-ban",
+      nextReason: "bulk publishing spam",
+      changed: true,
+    });
+    const response = await __handlers.usersPostRouterV1Handler(
+      makeCtx({ runMutation }),
+      new Request("https://example.com/api/v1/users/reclassify-ban", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          dryRun: false,
+          userId: "users:target",
+          reason: "bulk publishing spam",
+        }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        actorUserId: "users:admin",
+        targetUserId: "users:target",
+        dryRun: false,
+        reason: "bulk publishing spam",
+      }),
+    );
+  });
+
+  it("reclassify ban resolves banned users by handle", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:admin",
+      user: { _id: "users:admin", role: "admin" },
+    } as never);
+    const runQuery = vi.fn().mockResolvedValue({ _id: "users:target", deletedAt: 123 });
+    const runMutation = vi.fn().mockResolvedValueOnce(okRate()).mockResolvedValueOnce({
+      ok: true,
+      dryRun: true,
+      userId: "users:target",
+      handle: "demo",
+      previousReason: "malware auto-ban",
+      nextReason: "bulk publishing spam",
+      changed: true,
+    });
+    const response = await __handlers.usersPostRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/users/reclassify-ban", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          handle: "demo",
+          reason: "bulk publishing spam",
+        }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(runQuery).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ handle: "demo" }),
+    );
+    expect(runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        targetUserId: "users:target",
+        dryRun: true,
+      }),
+    );
+  });
+
   it("set role requires auth", async () => {
     vi.mocked(requireApiTokenUser).mockRejectedValueOnce(new Error("Unauthorized"));
     const runMutation = vi.fn().mockResolvedValue(okRate());
@@ -3598,6 +6000,30 @@ describe("httpApiV1 handlers", () => {
     );
   });
 
+  it("packages search rejects invalid known filters", async () => {
+    const runQuery = vi.fn();
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    for (const [param, message] of [
+      ["family=bad", "Invalid family query parameter"],
+      ["channel=bad", "Invalid channel query parameter"],
+      ["isOfficial=maybe", "Invalid isOfficial query parameter"],
+      ["executesCode=maybe", "Invalid executesCode query parameter"],
+      ["featured=maybe", "Invalid featured query parameter"],
+      ["artifactKind=bad", "Invalid artifactKind query parameter"],
+      ["requiresBrowser=maybe", "Invalid requiresBrowser query parameter"],
+    ]) {
+      const response = await __handlers.packagesGetRouterV1Handler(
+        makeCtx({ runQuery, runMutation }),
+        new Request(`https://example.com/api/v1/packages/search?q=test&${param}`),
+      );
+      expect(response.status).toBe(400);
+      expect(await response.text()).toBe(message);
+    }
+
+    expect(runQuery).not.toHaveBeenCalled();
+  });
+
   it("packages list supports family=skill on the generic route", async () => {
     const runQuery = vi.fn().mockResolvedValue({ page: [], isDone: true, continueCursor: "" });
     const runMutation = vi.fn().mockResolvedValue(okRate());
@@ -3611,6 +6037,50 @@ describe("httpApiV1 handlers", () => {
     expect(runQuery).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
+        paginationOpts: { cursor: null, numItems: 7 },
+      }),
+    );
+  });
+
+  it("packages list rejects invalid known filters but ignores unknown params", async () => {
+    const runQuery = vi.fn().mockResolvedValue({ page: [], isDone: true, continueCursor: "" });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const invalid = await __handlers.listPackagesV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages?family=bad"),
+    );
+    expect(invalid.status).toBe(400);
+    expect(await invalid.text()).toBe("Invalid family query parameter");
+
+    const unknown = await __handlers.listPackagesV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages?unknown=bad&limit=7"),
+    );
+    expect(unknown.status).toBe(200);
+    expect(runQuery).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        paginationOpts: { cursor: null, numItems: 7 },
+      }),
+    );
+  });
+
+  it("packages list supports category when scoped to a plugin family", async () => {
+    const runQuery = vi.fn().mockResolvedValue({ page: [], isDone: true, continueCursor: "" });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.listPackagesV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages?family=code-plugin&category=data&limit=7"),
+    );
+
+    expect(response.status).toBe(200);
+    expect(runQuery).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        family: "code-plugin",
+        category: "data",
         paginationOpts: { cursor: null, numItems: 7 },
       }),
     );
@@ -3661,10 +6131,45 @@ describe("httpApiV1 handlers", () => {
     for (const [, args] of runQuery.mock.calls) {
       expect(args).toEqual(
         expect.objectContaining({
+          category: undefined,
           paginationOpts: { cursor: null, numItems: 7 },
         }),
       );
     }
+  });
+
+  it("plugins list forwards category to both plugin families", async () => {
+    const runQuery = vi.fn().mockResolvedValue({ page: [], isDone: true, continueCursor: "" });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.listPluginsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/plugins?category=data&limit=7"),
+    );
+
+    expect(response.status).toBe(200);
+    for (const [, args] of runQuery.mock.calls) {
+      expect(args).toEqual(
+        expect.objectContaining({
+          category: "data",
+          paginationOpts: { cursor: null, numItems: 7 },
+        }),
+      );
+    }
+  });
+
+  it("plugins list rejects invalid categories", async () => {
+    const runQuery = vi.fn();
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.listPluginsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/plugins?category=other"),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe("Invalid plugin category");
+    expect(runQuery).not.toHaveBeenCalled();
   });
 
   it("plugins list paginates with separate plugin family cursors", async () => {
@@ -3733,6 +6238,60 @@ describe("httpApiV1 handlers", () => {
     ]);
   });
 
+  it("plugins list ignores stale plugin search cursors", async () => {
+    const runQuery = vi.fn().mockResolvedValue({ page: [], isDone: true, continueCursor: "" });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const staleSearchCursor = `pkgpluginsearch:${JSON.stringify({
+      codePlugins: { cursor: "code-search", offset: 0, pageSize: 2, done: false },
+      bundlePlugins: { cursor: null, offset: 0, pageSize: 2, done: true },
+    })}`;
+
+    const response = await __handlers.listPluginsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request(
+        `https://example.com/api/v1/plugins?limit=7&cursor=${encodeURIComponent(staleSearchCursor)}`,
+      ),
+    );
+
+    expect(response.status).toBe(200);
+    const packageCalls = runQuery.mock.calls
+      .map(([, args]) => args as { family?: string; paginationOpts?: { cursor: string | null } })
+      .filter((args) => args.family === "code-plugin" || args.family === "bundle-plugin");
+    expect(packageCalls.map((args) => args.paginationOpts?.cursor ?? null)).toEqual([null, null]);
+  });
+
+  it("package and plugin lists ignore stale skill cursors", async () => {
+    const runQuery = vi.fn().mockResolvedValue({ page: [], isDone: true, continueCursor: "" });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const staleSkillCursor = `skillcat:${JSON.stringify({
+      cursor: "skill-cursor",
+      offset: 0,
+      pageSize: 20,
+      done: false,
+    })}`;
+
+    const packagesResponse = await __handlers.listPackagesV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request(
+        `https://example.com/api/v1/packages?limit=7&cursor=${encodeURIComponent(staleSkillCursor)}`,
+      ),
+    );
+    const pluginsResponse = await __handlers.listPluginsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request(
+        `https://example.com/api/v1/plugins?limit=7&cursor=${encodeURIComponent(staleSkillCursor)}`,
+      ),
+    );
+
+    expect(packagesResponse.status).toBe(200);
+    expect(pluginsResponse.status).toBe(200);
+    const cursors = runQuery.mock.calls
+      .map(([, args]) => (args as { paginationOpts?: { cursor: string | null } }).paginationOpts)
+      .filter(Boolean)
+      .map((pagination) => pagination?.cursor ?? null);
+    expect(cursors).toEqual(cursors.map(() => null));
+  });
+
   it("packages search supports family=skill on the generic route", async () => {
     const runQuery = vi.fn().mockResolvedValue([]);
     const runMutation = vi.fn().mockResolvedValue(okRate());
@@ -3747,6 +6306,28 @@ describe("httpApiV1 handlers", () => {
       expect.anything(),
       expect.objectContaining({
         query: "demo",
+      }),
+    );
+  });
+
+  it("packages search supports category when scoped to a plugin family", async () => {
+    const runQuery = vi.fn().mockResolvedValue([]);
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request(
+        "https://example.com/api/v1/packages/search?q=api&family=code-plugin&category=data",
+      ),
+    );
+
+    expect(response.status).toBe(200);
+    expect(runQuery).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        query: "api",
+        family: "code-plugin",
+        category: "data",
       }),
     );
   });
@@ -3791,7 +6372,7 @@ describe("httpApiV1 handlers", () => {
 
     const response = await __handlers.pluginsGetRouterV1Handler(
       makeCtx({ runQuery, runMutation }),
-      new Request("https://example.com/api/v1/plugins/search?q=weather&limit=7"),
+      new Request("https://example.com/api/v1/plugins/search?q=weather&category=data&limit=7"),
     );
 
     expect(response.status).toBe(200);
@@ -3806,6 +6387,7 @@ describe("httpApiV1 handlers", () => {
       expect(args).toEqual(
         expect.objectContaining({
           query: "weather",
+          category: "data",
           limit: 7,
         }),
       );
@@ -3863,6 +6445,81 @@ describe("httpApiV1 handlers", () => {
       { family: "code-plugin", name: "plugin-code" },
       { family: "code-plugin", name: "shared-plugin" },
     ]);
+  });
+
+  it("plugins search ignores client-only sort and cursor params", async () => {
+    const runQuery = vi.fn((_, args: Record<string, unknown>) => {
+      expect(args).not.toHaveProperty("sort");
+      expect(args).not.toHaveProperty("cursor");
+      return [];
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const url = new URL("https://example.com/api/v1/plugins/search");
+    url.searchParams.set("q", "plugin");
+    url.searchParams.set("sort", "name");
+    url.searchParams.set("limit", "2");
+    url.searchParams.set("cursor", "pkgplugins:stale");
+
+    const response = await __handlers.pluginsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request(url),
+    );
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).results).toEqual([]);
+  });
+
+  it("plugins search rejects invalid categories", async () => {
+    const runQuery = vi.fn();
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.pluginsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/plugins/search?q=plugin&category=other"),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe("Invalid plugin category");
+    expect(runQuery).not.toHaveBeenCalled();
+  });
+
+  it("plugins search sorts by rank tier before score without exposing rank metadata", async () => {
+    const runQuery = vi.fn((_, args: Record<string, unknown>) => {
+      if (args.family === "code-plugin") {
+        return [
+          {
+            score: 20,
+            rankTier: 3,
+            package: makeCatalogItem("summary-plugin", { family: "code-plugin", updatedAt: 100 }),
+          },
+        ];
+      }
+      if (args.family === "bundle-plugin") {
+        return [
+          {
+            score: 10,
+            rankTier: 1,
+            package: makeCatalogItem("name-plugin", { family: "bundle-plugin", updatedAt: 50 }),
+          },
+        ];
+      }
+      throw new Error(`unexpected family ${String(args.family)}`);
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.pluginsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/plugins/search?q=plugin&limit=2"),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.results.map((entry: { package: { name: string } }) => entry.package.name)).toEqual([
+      "name-plugin",
+      "summary-plugin",
+    ]);
+    expect(body.results[0]).not.toHaveProperty("rankTier");
+    expect(body.results[0]).not.toHaveProperty("matchReason");
   });
 
   it("packages list forwards viewerUserId for authenticated private package browsing", async () => {
@@ -4172,6 +6829,101 @@ describe("httpApiV1 handlers", () => {
     expect(storage.get).toHaveBeenCalledWith("storage:skill");
   });
 
+  it("packages file blocks skill compatibility files for malware-blocked skills", async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("name" in args) return null;
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:demo",
+            slug: "demo",
+            displayName: "Demo Skill",
+            summary: "Skill summary",
+            latestVersionId: "skillVersions:demo-1",
+            tags: { latest: "skillVersions:demo-1" },
+            badges: {},
+            createdAt: 1,
+            updatedAt: 2,
+          },
+          latestVersion: null,
+          owner: { handle: "steipete" },
+          moderationInfo: {
+            isMalwareBlocked: true,
+            isPendingScan: false,
+            isHiddenByMod: false,
+            isRemoved: false,
+          },
+        };
+      }
+      throw new Error("unexpected version lookup");
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const storage = { get: vi.fn() };
+
+    const response = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation, storage }),
+      new Request("https://example.com/api/v1/packages/demo/file?path=README.md"),
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.text()).toContain("flagged as malicious");
+    expect(storage.get).not.toHaveBeenCalled();
+  });
+
+  it("packages file does not serve skill tags pointing at another skill's version", async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("name" in args) return null;
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:demo",
+            slug: "demo",
+            displayName: "Demo Skill",
+            summary: "Skill summary",
+            latestVersionId: "skillVersions:demo-1",
+            tags: { latest: "skillVersions:demo-1", old: "skillVersions:other" },
+            badges: {},
+            createdAt: 1,
+            updatedAt: 2,
+          },
+          latestVersion: null,
+          owner: { handle: "steipete" },
+          moderationInfo: null,
+        };
+      }
+      if (args.versionId === "skillVersions:other") {
+        return {
+          _id: "skillVersions:other",
+          skillId: "skills:other",
+          version: "9.9.9",
+          createdAt: 9,
+          changelog: "other",
+          files: [
+            {
+              path: "SKILL.md",
+              size: 11,
+              sha256: "abc",
+              storageId: "storage:other",
+              contentType: "text/markdown",
+            },
+          ],
+        };
+      }
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const storage = { get: vi.fn() };
+
+    const response = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation, storage }),
+      new Request("https://example.com/api/v1/packages/demo/file?path=README.md&tag=old"),
+    );
+
+    expect(response.status).toBe(404);
+    expect(await response.text()).toBe("Version not found");
+    expect(storage.get).not.toHaveBeenCalled();
+  });
+
   it("packages download redirects skills to the skill download endpoint", async () => {
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
       if ("name" in args) return null;
@@ -4289,6 +7041,7 @@ describe("httpApiV1 handlers", () => {
             name: "demo-plugin",
             displayName: "Demo Plugin",
             family: "code-plugin",
+            reportCount: 7,
           },
           version: {
             _id: "packageReleases:1",
@@ -4309,7 +7062,7 @@ describe("httpApiV1 handlers", () => {
             verification: {
               tier: "source-linked",
               scope: "artifact-only",
-              scanStatus: "clean",
+              scanStatus: "malicious",
             },
             sha256hash: "a".repeat(64),
             vtAnalysis: {
@@ -4324,10 +7077,10 @@ describe("httpApiV1 handlers", () => {
               checkedAt: 1,
             },
             staticScan: {
-              status: "clean",
-              reasonCodes: [],
+              status: "malicious",
+              reasonCodes: ["malicious.static_fixture"],
               findings: [],
-              summary: "No issues",
+              summary: "Static fixture only.",
               engineVersion: "1",
               checkedAt: 1,
             },
@@ -4360,9 +7113,12 @@ describe("httpApiV1 handlers", () => {
           status: "clean",
           verdict: "clean",
         },
+        verification: {
+          scanStatus: "clean",
+        },
         staticScan: {
-          status: "clean",
-          summary: "No issues",
+          status: "malicious",
+          summary: "Static fixture only.",
         },
       },
     });
@@ -4427,7 +7183,9 @@ describe("httpApiV1 handlers", () => {
     );
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
+    const json = await response.json();
+    expect(json.package).not.toHaveProperty("reportCount");
+    expect(json).toMatchObject({
       version: {
         artifact: {
           kind: "npm-pack",
@@ -4467,6 +7225,7 @@ describe("httpApiV1 handlers", () => {
             name: "demo-plugin",
             displayName: "Demo Plugin",
             family: "code-plugin",
+            reportCount: 7,
           },
           version: {
             _id: "packageReleases:1",
@@ -4497,7 +7256,9 @@ describe("httpApiV1 handlers", () => {
     );
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
+    const json = await response.json();
+    expect(json.package).not.toHaveProperty("reportCount");
+    expect(json).toMatchObject({
       artifact: {
         kind: "npm-pack",
         tarballUrl: "https://example.com/api/npm/demo-plugin/-/demo-plugin-1.0.0.tgz",
@@ -4574,6 +7335,423 @@ describe("httpApiV1 handlers", () => {
         legacyDownloadUrl: "https://example.com/api/v1/packages/demo-plugin/download?version=1.0.0",
       },
     });
+  });
+
+  it("package security endpoint returns exact release trust and blocked reasons", async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("name" in args && !("version" in args)) {
+        return {
+          package: {
+            _id: "packages:demo-plugin",
+            name: "demo-plugin",
+            displayName: "Demo Plugin",
+            family: "code-plugin",
+            tags: { latest: "packageReleases:1" },
+            latestReleaseId: "packageReleases:1",
+            channel: "community",
+            isOfficial: false,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+          latestRelease: null,
+          owner: { _id: "publishers:demo", handle: "demo" },
+        };
+      }
+      if ("name" in args && "version" in args) {
+        return {
+          package: {
+            _id: "packages:demo-plugin",
+            name: "demo-plugin",
+            displayName: "Demo Plugin",
+            family: "code-plugin",
+            channel: "community",
+            isOfficial: false,
+          },
+          version: {
+            _id: "packageReleases:1",
+            packageId: "packages:demo-plugin",
+            version: "1.0.0",
+            createdAt: 1,
+            changelog: "Initial release",
+            distTags: ["latest"],
+            files: [],
+            artifactKind: "npm-pack",
+            sha256hash: "c".repeat(64),
+            clawpackSha256: "e".repeat(64),
+            clawpackSize: 123,
+            clawpackFormat: "tgz",
+            npmIntegrity: "sha512-demo",
+            npmShasum: "d".repeat(40),
+            npmTarballName: "demo-plugin-1.0.0.tgz",
+            verification: { scanStatus: "malicious" },
+            manualModeration: { state: "quarantined", reason: "private reviewer note" },
+          },
+        };
+      }
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages/demo-plugin/versions/1.0.0/security"),
+    );
+
+    expect(response.status).toBe(200);
+    const packageLookupArgs = runQuery.mock.calls
+      .map(([, args]) => args)
+      .filter(hasPackageNameArgs);
+    expect(packageLookupArgs).toContainEqual(
+      expect.objectContaining({ name: "demo-plugin", version: "1.0.0" }),
+    );
+    expect(packageLookupArgs.some((args) => !("version" in args))).toBe(false);
+    const json = await response.json();
+    expect(json.trust).not.toHaveProperty("moderationReason");
+    expect(json).toEqual({
+      package: {
+        name: "demo-plugin",
+        displayName: "Demo Plugin",
+        family: "code-plugin",
+      },
+      release: {
+        releaseId: "packageReleases:1",
+        version: "1.0.0",
+        artifactKind: "npm-pack",
+        artifactSha256: "c".repeat(64),
+        npmIntegrity: "sha512-demo",
+        npmShasum: "d".repeat(40),
+        npmTarballName: "demo-plugin-1.0.0.tgz",
+        createdAt: 1,
+      },
+      trust: {
+        scanStatus: "malicious",
+        moderationState: "quarantined",
+        blockedFromDownload: true,
+        reasons: ["manual:quarantined", "scan:malicious"],
+        pending: false,
+        stale: false,
+      },
+    });
+  });
+
+  it("package security endpoint includes package-level public download blocks", async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("name" in args && "version" in args) {
+        return {
+          package: {
+            _id: "packages:demo-plugin",
+            name: "demo-plugin",
+            displayName: "Demo Plugin",
+            family: "code-plugin",
+            channel: "community",
+            isOfficial: false,
+            scanStatus: "malicious",
+            publicDownloadBlocked: true,
+          },
+          version: {
+            _id: "packageReleases:1",
+            packageId: "packages:demo-plugin",
+            version: "1.0.0",
+            createdAt: 1,
+            changelog: "Initial release",
+            distTags: ["latest"],
+            files: [],
+            artifactKind: "npm-pack",
+            sha256hash: "c".repeat(64),
+            verification: { scanStatus: "clean" },
+          },
+        };
+      }
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages/demo-plugin/versions/1.0.0/security"),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.trust).toMatchObject({
+      scanStatus: "clean",
+      blockedFromDownload: true,
+      reasons: ["package:malicious"],
+      pending: false,
+      stale: false,
+    });
+  });
+
+  it("package security endpoint does not use file-set integrity as npm artifact hash", async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("name" in args && "version" in args) {
+        return {
+          package: {
+            _id: "packages:demo-plugin",
+            name: "demo-plugin",
+            displayName: "Demo Plugin",
+            family: "code-plugin",
+            channel: "community",
+            isOfficial: false,
+          },
+          version: {
+            _id: "packageReleases:1",
+            packageId: "packages:demo-plugin",
+            version: "1.0.0",
+            createdAt: 1,
+            changelog: "Initial release",
+            distTags: ["latest"],
+            files: [],
+            artifactKind: "npm-pack",
+            integritySha256: "a".repeat(64),
+            npmIntegrity: "sha512-demo",
+            npmShasum: "d".repeat(40),
+            npmTarballName: "demo-plugin-1.0.0.tgz",
+            verification: { scanStatus: "clean" },
+          },
+        };
+      }
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages/demo-plugin/versions/1.0.0/security"),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.release).not.toHaveProperty("artifactSha256");
+    expect(json.release).toMatchObject({
+      artifactKind: "npm-pack",
+      npmIntegrity: "sha512-demo",
+      npmShasum: "d".repeat(40),
+      npmTarballName: "demo-plugin-1.0.0.tgz",
+    });
+  });
+
+  it("package security endpoint does not use file-set integrity as legacy artifact hash", async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("name" in args && "version" in args) {
+        return {
+          package: {
+            _id: "packages:demo-plugin",
+            name: "demo-plugin",
+            displayName: "Demo Plugin",
+            family: "code-plugin",
+            channel: "community",
+            isOfficial: false,
+          },
+          version: {
+            _id: "packageReleases:1",
+            packageId: "packages:demo-plugin",
+            version: "1.0.0",
+            createdAt: 1,
+            changelog: "Initial release",
+            distTags: ["latest"],
+            files: [],
+            artifactKind: "legacy-zip",
+            integritySha256: "a".repeat(64),
+            verification: { scanStatus: "clean" },
+          },
+        };
+      }
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages/demo-plugin/versions/1.0.0/security"),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.release).not.toHaveProperty("artifactSha256");
+    expect(json.release).toMatchObject({
+      artifactKind: "legacy-zip",
+      version: "1.0.0",
+    });
+  });
+
+  it.each([
+    {
+      name: "clean",
+      release: { verification: { scanStatus: "clean" } },
+      expected: { scanStatus: "clean", blockedFromDownload: false, reasons: [], pending: false },
+    },
+    {
+      name: "pending",
+      release: { sha256hash: "b".repeat(64) },
+      expected: {
+        scanStatus: "pending",
+        blockedFromDownload: false,
+        reasons: ["scan:pending"],
+        pending: true,
+      },
+    },
+    {
+      name: "stale",
+      release: { sha256hash: "b".repeat(64), vtAnalysis: { status: "stale", checkedAt: 123 } },
+      expected: {
+        scanStatus: "pending",
+        blockedFromDownload: false,
+        reasons: ["scan:pending"],
+        pending: true,
+        stale: true,
+      },
+    },
+    {
+      name: "suspicious",
+      release: {
+        vtAnalysis: {
+          status: "suspicious",
+          source: "engines",
+          engineStats: { suspicious: 1 },
+          checkedAt: 123,
+        },
+      },
+      expected: {
+        scanStatus: "pending",
+        blockedFromDownload: false,
+        reasons: ["scan:pending"],
+        pending: true,
+      },
+    },
+    {
+      name: "malicious",
+      release: {
+        llmAnalysis: {
+          status: "malicious",
+          verdict: "malicious",
+          summary: "ClawScan found malicious behavior.",
+          checkedAt: 123,
+        },
+      },
+      expected: {
+        scanStatus: "malicious",
+        blockedFromDownload: true,
+        reasons: ["scan:malicious"],
+        pending: false,
+      },
+    },
+    {
+      name: "static-only",
+      release: {
+        sha256hash: "b".repeat(64),
+        staticScan: {
+          status: "malicious",
+          reasonCodes: ["malicious.test"],
+          findings: [],
+          summary: "Detected: malicious.test",
+          engineVersion: "v1",
+          checkedAt: 123,
+        },
+      },
+      expected: {
+        scanStatus: "pending",
+        blockedFromDownload: false,
+        reasons: ["scan:pending"],
+        pending: true,
+      },
+    },
+    {
+      name: "quarantined",
+      release: {
+        verification: { scanStatus: "clean" },
+        manualModeration: { state: "quarantined", reason: "private reviewer note" },
+      },
+      expected: {
+        scanStatus: "malicious",
+        moderationState: "quarantined",
+        blockedFromDownload: true,
+        reasons: ["manual:quarantined", "scan:malicious"],
+        pending: false,
+      },
+    },
+    {
+      name: "revoked",
+      release: {
+        verification: { scanStatus: "clean" },
+        manualModeration: { state: "revoked", reason: "unsafe artifact" },
+      },
+      expected: {
+        scanStatus: "malicious",
+        moderationState: "revoked",
+        blockedFromDownload: true,
+        reasons: ["manual:revoked", "scan:malicious"],
+        pending: false,
+      },
+    },
+  ])("package security endpoint reports $name trust state", async ({ release, expected }) => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("name" in args && !("version" in args)) {
+        return {
+          package: {
+            _id: "packages:demo-plugin",
+            name: "demo-plugin",
+            displayName: "Demo Plugin",
+            family: "code-plugin",
+            tags: { latest: "packageReleases:1" },
+            latestReleaseId: "packageReleases:1",
+            channel: "community",
+            isOfficial: false,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+          latestRelease: null,
+          owner: { _id: "publishers:demo", handle: "demo" },
+        };
+      }
+      if ("name" in args && "version" in args) {
+        return {
+          package: {
+            _id: "packages:demo-plugin",
+            name: "demo-plugin",
+            displayName: "Demo Plugin",
+            family: "code-plugin",
+            channel: "community",
+            isOfficial: false,
+          },
+          version: {
+            _id: "packageReleases:1",
+            packageId: "packages:demo-plugin",
+            version: "1.0.0",
+            createdAt: 1,
+            changelog: "Initial release",
+            distTags: ["latest"],
+            files: [],
+            artifactKind: "legacy-zip",
+            sha256hash: "b".repeat(64),
+            ...release,
+          },
+        };
+      }
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages/demo-plugin/versions/1.0.0/security"),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.release).toMatchObject({
+      releaseId: "packageReleases:1",
+      version: "1.0.0",
+      artifactKind: "legacy-zip",
+      artifactSha256: "b".repeat(64),
+      createdAt: 1,
+    });
+    expect(json.trust).toMatchObject({
+      moderationState: null,
+      stale: false,
+      ...expected,
+    });
+    expect(json.trust).not.toHaveProperty("moderationReason");
   });
 
   it("package artifact endpoint omits legacy zip archive aliases when archive hash is missing", async () => {
@@ -5736,42 +8914,72 @@ describe("httpApiV1 handlers", () => {
     });
   });
 
-  it("treats /packages/search without q as a package detail route", async () => {
+  it("returns 400 for /packages/search without q", async () => {
     const runMutation = vi.fn().mockResolvedValue(okRate());
-    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
-      if ("name" in args) {
-        return {
-          package: {
-            _id: "packages:search",
-            name: "search",
-            displayName: "Search Package",
-            family: "code-plugin",
-            tags: {},
-            latestReleaseId: null,
-            channel: "community",
-            isOfficial: false,
-            createdAt: 1,
-            updatedAt: 1,
-          },
-          latestRelease: null,
-          owner: null,
-        };
-      }
-      return [];
-    });
+    const runQuery = vi.fn();
 
     const response = await __handlers.packagesGetRouterV1Handler(
       makeCtx({ runQuery, runMutation }),
       new Request("https://example.com/api/v1/packages/search"),
     );
 
+    expect(response.status).toBe(400);
+    await expect(response.text()).resolves.toBe("Missing q query parameter");
+    expect(runQuery).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for /packages/search with blank q", async () => {
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const runQuery = vi.fn();
+
+    const response = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages/search?q=%20%20"),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.text()).resolves.toBe("Missing q query parameter");
+    expect(runQuery).not.toHaveBeenCalled();
+  });
+
+  it("routes /packages/search with q to catalog search only", async () => {
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const runQuery = vi.fn(async () => []);
+
+    const response = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages/search?q=demo"),
+    );
+
     expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ results: [] });
     expect(runQuery).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        query: "demo",
+      }),
+    );
+    expect(runQuery).not.toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
         name: "search",
       }),
     );
+  });
+
+  it("does not treat nested /packages/search paths as catalog search", async () => {
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("name" in args) return null;
+      return [];
+    });
+
+    const response = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages/search/extra?q=demo"),
+    );
+
+    expect(response.status).toBe(404);
     expect(runQuery).not.toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -6381,6 +9589,64 @@ describe("httpApiV1 handlers", () => {
     );
   });
 
+  it("package publish returns retryable status for transient Convex contention", async () => {
+    vi.mocked(getOptionalApiTokenUser).mockResolvedValue({
+      userId: "users:1",
+      user: { _id: "users:1", handle: "p" },
+    } as never);
+    vi.mocked(getOptionalApiTokenUserId).mockResolvedValue("users:1" as never);
+    vi.mocked(requirePackagePublishAuth).mockResolvedValue({
+      kind: "user",
+      userId: "users:1",
+      user: { _id: "users:1", handle: "p" },
+    } as never);
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const runAction = vi
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          'Documents read from or written to the "publishers" table changed while this mutation was being run and on every subsequent retry.',
+        ),
+      );
+
+    const response = await __handlers.publishPackageV1Handler(
+      makeCtx({ runAction, runMutation }),
+      new Request("https://example.com/api/v1/packages", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer clh_test",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          name: "demo-plugin",
+          ownerHandle: "openclaw",
+          family: "bundle-plugin",
+          version: "1.0.0",
+          changelog: "init",
+          bundle: { hostTargets: ["desktop"] },
+          files: [
+            {
+              path: "openclaw.plugin.json",
+              size: 2,
+              storageId: "storage:1",
+              sha256: "a".repeat(64),
+            },
+            {
+              path: ".codex-plugin/plugin.json",
+              size: 2,
+              storageId: "storage:1",
+              sha256: "a".repeat(64),
+            },
+          ],
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("1");
+    await expect(response.text()).resolves.toContain("Transient ClawHub write contention");
+  });
+
   it("multipart package publish ignores macOS junk files", async () => {
     vi.mocked(getOptionalApiTokenUserId).mockResolvedValue("users:1" as never);
     vi.mocked(requirePackagePublishAuth).mockResolvedValue({
@@ -6888,6 +10154,194 @@ describe("httpApiV1 handlers", () => {
         toOwner: "opik",
       }),
     );
+  });
+
+  it("dry-runs package name repair without mutating packages", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-15T12:00:00Z"));
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:admin",
+      user: { _id: "users:admin", role: "admin", handle: "patrick" },
+    } as never);
+    const sourcePackage = {
+      _id: "packages:source",
+      name: "@openclaw/openviking",
+      normalizedName: "@openclaw/openviking",
+      runtimeId: "openviking",
+      ownerUserId: "users:lin",
+      ownerPublisherId: "publishers:lin",
+      channel: "community",
+      softDeletedAt: undefined,
+    };
+    const targetPackage = {
+      _id: "packages:target",
+      name: "@openviking/openclaw-plugin",
+      normalizedName: "@openviking/openclaw-plugin",
+      runtimeId: "openviking-openclaw-plugin-placeholder",
+      ownerUserId: "users:openviking",
+      ownerPublisherId: "publishers:openviking",
+      channel: "private",
+      softDeletedAt: undefined,
+    };
+    const runMutation = vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {
+      if ("key" in args) return okRate();
+      return { ok: true };
+    });
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("key" in args) return okRate();
+      if (args.name === "@openclaw/openviking") return sourcePackage;
+      if (args.name === "@openviking/openclaw-plugin") return targetPackage;
+      if (args.name === "@openviking/openclaw-plugin-retired-20260515") return null;
+      return null;
+    });
+
+    const response = await __handlers.packagesPostRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages/%40openclaw%2Fopenviking/repair-name", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer clh_test",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          nextName: "@openviking/openclaw-plugin",
+          retireTarget: true,
+          reason: "Admin repair for openclaw/clawhub#2133",
+          dryRun: true,
+        }),
+      }),
+    );
+
+    if (response.status !== 200) throw new Error(await response.text());
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      dryRun: true,
+      source: { packageId: "packages:source", name: "@openclaw/openviking" },
+      target: { packageId: "packages:target", name: "@openviking/openclaw-plugin" },
+      retiredName: "@openviking/openclaw-plugin-retired-20260515",
+      operations: [
+        {
+          action: "retire-target",
+          from: "@openviking/openclaw-plugin",
+          to: "@openviking/openclaw-plugin-retired-20260515",
+        },
+        {
+          action: "rename-source",
+          from: "@openclaw/openviking",
+          to: "@openviking/openclaw-plugin",
+        },
+      ],
+    });
+    expect(runMutation).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ name: "@openviking/openclaw-plugin" }),
+    );
+    vi.useRealTimers();
+  });
+
+  it("applies package name repair by retiring the occupied target first", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-15T12:00:00Z"));
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:admin",
+      user: { _id: "users:admin", role: "admin", handle: "patrick" },
+    } as never);
+    const sourcePackage = {
+      _id: "packages:source",
+      name: "@openclaw/openviking",
+      normalizedName: "@openclaw/openviking",
+      runtimeId: "openviking",
+      ownerUserId: "users:lin",
+      ownerPublisherId: "publishers:lin",
+      channel: "community",
+      softDeletedAt: undefined,
+    };
+    const targetPackage = {
+      _id: "packages:target",
+      name: "@openviking/openclaw-plugin",
+      normalizedName: "@openviking/openclaw-plugin",
+      runtimeId: "openviking-openclaw-plugin-placeholder",
+      ownerUserId: "users:openviking",
+      ownerPublisherId: "publishers:openviking",
+      channel: "private",
+      softDeletedAt: undefined,
+    };
+    const ownerPublisher = {
+      _id: "publishers:openviking",
+      handle: "openviking",
+      kind: "org",
+      deletedAt: undefined,
+    };
+    const runMutation = vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {
+      if ("key" in args) return okRate();
+      return { ok: true, packageId: "packages:source" };
+    });
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("key" in args) return okRate();
+      if (args.name === "@openclaw/openviking") return sourcePackage;
+      if (args.name === "@openviking/openclaw-plugin") return targetPackage;
+      if (args.name === "@openviking/openclaw-plugin-retired-20260515") return null;
+      if (args.handle === "openviking") return ownerPublisher;
+      return null;
+    });
+
+    const response = await __handlers.packagesPostRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages/%40openclaw%2Fopenviking/repair-name", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer clh_test",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          nextName: "@openviking/openclaw-plugin",
+          retireTarget: true,
+          owner: "openviking",
+          reason: "Admin repair for openclaw/clawhub#2133",
+          dryRun: false,
+        }),
+      }),
+    );
+
+    if (response.status !== 200) throw new Error(await response.text());
+    expect(runMutation).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      expect.objectContaining({
+        actorUserId: "users:admin",
+        name: "@openviking/openclaw-plugin",
+        nextName: "@openviking/openclaw-plugin-retired-20260515",
+      }),
+    );
+    expect(runMutation).toHaveBeenNthCalledWith(
+      3,
+      expect.anything(),
+      expect.objectContaining({
+        userId: "users:admin",
+        name: "@openviking/openclaw-plugin-retired-20260515",
+      }),
+    );
+    expect(runMutation).toHaveBeenNthCalledWith(
+      4,
+      expect.anything(),
+      expect.objectContaining({
+        actorUserId: "users:admin",
+        name: "@openclaw/openviking",
+        nextName: "@openviking/openclaw-plugin",
+      }),
+    );
+    expect(runMutation).toHaveBeenNthCalledWith(
+      5,
+      expect.anything(),
+      expect.objectContaining({
+        actorUserId: "users:admin",
+        name: "@openviking/openclaw-plugin",
+        ownerUserId: "users:lin",
+        ownerPublisherId: "publishers:openviking",
+        channel: "community",
+      }),
+    );
+    vi.useRealTimers();
   });
 
   it("package transfer maps ownership denials to 403", async () => {

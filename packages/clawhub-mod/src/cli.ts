@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { Command } from "commander";
 import { resolveClawdbotDefaultWorkspace } from "../../clawhub/src/cli/clawdbotConfig.js";
 import { cmdLoginFlow, cmdLogout, cmdWhoami } from "../../clawhub/src/cli/commands/auth.js";
+import { cmdUnhideSkill } from "../../clawhub/src/cli/commands/delete.js";
 import {
   cmdGetPackageTrustedPublisher,
   cmdPackageModerationStatus,
@@ -21,7 +22,16 @@ import { DEFAULT_REGISTRY, DEFAULT_SITE } from "../../clawhub/src/cli/registry.j
 import type { GlobalOpts } from "../../clawhub/src/cli/types.js";
 import { fail } from "../../clawhub/src/cli/ui.js";
 import { getModeratorCliBuildLabel, getModeratorCliVersion } from "./buildInfo.js";
-import { cmdBanUser, cmdSetRole, cmdUnbanUser } from "./commands/moderation.js";
+import {
+  cmdBanUser,
+  cmdReclassifyBan,
+  cmdRemediateAutobans,
+  cmdRescanAllSkills,
+  cmdRescanSkill,
+  cmdSetRole,
+  cmdUnbanUser,
+} from "./commands/moderation.js";
+import { cmdCreateOrg, cmdRemoveOrgMember, cmdRepairScopedPackages } from "./commands/orgs.js";
 import {
   cmdBackfillPackageArtifacts,
   cmdDeletePackageTrustedPublisher,
@@ -29,8 +39,10 @@ import {
   cmdListPackageReports,
   cmdModeratePackageRelease,
   cmdPackageModerationQueue,
+  cmdRepairPackageName,
   cmdSetPackageTrustedPublisher,
   cmdTriagePackageReport,
+  cmdTransferPackageOwner,
   cmdUpsertPackageMigration,
 } from "./commands/packages.js";
 
@@ -224,6 +236,40 @@ users
     await cmdSetRole(opts, handleOrId, role, options, isInputAllowed());
   });
 
+users
+  .command("reclassify-ban")
+  .description("Change the stored reason for an existing ban")
+  .argument("<handleOrId>", "User handle (default) or user id")
+  .option("--apply", "Write changes; defaults to dry-run")
+  .option("--dry-run", "Plan only (default)")
+  .option("--id", "Treat argument as user id")
+  .option("--fuzzy", "Resolve handle via fuzzy user search")
+  .requiredOption("--reason <reason>", "New ban reason")
+  .option("--yes", "Skip confirmation for --apply")
+  .option("--json", "Output JSON")
+  .action(async (handleOrId, options) => {
+    const opts = await resolveGlobalOpts();
+    await cmdReclassifyBan(opts, handleOrId, options, isInputAllowed());
+  });
+
+users
+  .command("remediate-autobans")
+  .description("Dry-run or apply malware autoban remediation")
+  .option("--apply", "Write changes; defaults to dry-run")
+  .option("--dry-run", "Plan only (default)")
+  .option("--user <handleOrId>", "Limit to one user handle or id")
+  .option("--id", "Treat --user as a user id")
+  .option("--since <date>", "Only scan autobans at or after this date")
+  .option("--limit <n>", "Maximum users to scan per page")
+  .option("--cursor <cursor>", "Resume cursor")
+  .option("--all", "Continue until all pages are processed")
+  .option("--reason <reason>", "Audit reason for apply")
+  .option("--json", "Output JSON")
+  .action(async (options) => {
+    const opts = await resolveGlobalOpts();
+    await cmdRemediateAutobans(opts, options, isInputAllowed());
+  });
+
 program
   .command("ban-user")
   .description("Alias for users ban")
@@ -270,6 +316,19 @@ const plugins = program
   .showHelpAfterError()
   .showSuggestionAfterError();
 
+const packages = program
+  .command("packages")
+  .alias("package")
+  .description("Package moderation and operations")
+  .showHelpAfterError()
+  .showSuggestionAfterError();
+
+const org = program
+  .command("org")
+  .description("Org publisher administration")
+  .showHelpAfterError()
+  .showSuggestionAfterError();
+
 const skills = program
   .command("skills")
   .alias("skill")
@@ -280,9 +339,70 @@ const skills = program
 registerPluginOperations(plugins);
 registerPluginModerationCommands(plugins);
 registerPluginGovernanceCommands(plugins);
+registerPluginOperations(packages);
+registerPluginModerationCommands(packages);
+registerPluginGovernanceCommands(packages);
+registerOrgCommands(org);
 registerSkillModerationCommands(skills);
 
+function registerOrgCommands(command: Command) {
+  command
+    .command("create")
+    .description("Create or update an org publisher")
+    .argument("<handle>", "Org publisher handle")
+    .option("--display-name <name>", "Display name")
+    .option("--member <handle>", "User handle to add to the org")
+    .option("--role <role>", "owner|admin|publisher for --member", "owner")
+    .option("--trusted", "Mark org as trusted")
+    .option("--json", "Output JSON")
+    .action(async (handle, options) => {
+      const opts = await resolveGlobalOpts();
+      await cmdCreateOrg(opts, handle, options);
+    });
+
+  command
+    .command("remove-member")
+    .description("Remove a user from an org publisher")
+    .argument("<handle>", "Org publisher handle")
+    .argument("<member>", "User handle to remove")
+    .option("--json", "Output JSON")
+    .action(async (handle, member, options) => {
+      const opts = await resolveGlobalOpts();
+      await cmdRemoveOrgMember(opts, handle, member, options);
+    });
+
+  command
+    .command("repair-scoped-packages")
+    .description("Batch-create org publishers and transfer scoped packages from a CSV")
+    .argument("<csv>", "CSV with packageName,intendedOrg,legacyOwner[,orgDisplayName]")
+    .option("--apply", "Write changes; defaults to dry-run")
+    .option("--start <n>", "Start at zero-based CSV row offset", (value) =>
+      Number.parseInt(value, 10),
+    )
+    .option("--limit <n>", "Limit rows processed", (value) => Number.parseInt(value, 10))
+    .option("--reason <reason>", "Override audit reason for all rows")
+    .option("--result-file <path>", "Write JSON result report")
+    .option("--json", "Output JSON")
+    .action(async (csv, options) => {
+      const opts = await resolveGlobalOpts();
+      await cmdRepairScopedPackages(opts, csv, options);
+    });
+}
+
 function registerPluginGovernanceCommands(command: Command) {
+  command
+    .command("transfer")
+    .description("Transfer a plugin package to another publisher without changing package stats")
+    .argument("<name>", "Plugin package name")
+    .requiredOption("--to <owner>", "Destination publisher handle")
+    .requiredOption("--reason <reason>", "Audit reason")
+    .option("--apply", "Write changes; defaults to dry-run")
+    .option("--json", "Output JSON")
+    .action(async (name, options) => {
+      const opts = await resolveGlobalOpts();
+      await cmdTransferPackageOwner(opts, name, options);
+    });
+
   command
     .command("backfill-artifacts")
     .description("Backfill missing plugin artifact-kind metadata")
@@ -294,6 +414,21 @@ function registerPluginGovernanceCommands(command: Command) {
     .action(async (options) => {
       const opts = await resolveGlobalOpts();
       await cmdBackfillPackageArtifacts(opts, options);
+    });
+
+  command
+    .command("repair-name")
+    .description("Admin repair for plugin package names")
+    .argument("<name>", "Current plugin package name")
+    .requiredOption("--next-name <name>", "Target plugin package name")
+    .option("--retire-target", "Rename and soft-delete the current target package first")
+    .option("--owner <handle>", "Transfer repaired package to a publisher handle")
+    .requiredOption("--reason <reason>", "Audit reason")
+    .option("--apply", "Write changes; defaults to dry-run")
+    .option("--json", "Output JSON")
+    .action(async (name, options) => {
+      const opts = await resolveGlobalOpts();
+      await cmdRepairPackageName(opts, name, options);
     });
 
   command
@@ -451,6 +586,62 @@ function registerPluginOperations(command: Command) {
 }
 
 function registerSkillModerationCommands(command: Command) {
+  command
+    .command("unhide")
+    .description("Manually restore a hidden skill after moderator review")
+    .argument("<slug>", "Skill slug")
+    .option("--reason <text>", "Audit reason")
+    .option("--note <text>", "Alias for --reason")
+    .option("--yes", "Skip confirmation")
+    .action(async (slug, options) => {
+      if (
+        options.reason?.trim() &&
+        options.note?.trim() &&
+        options.reason.trim() !== options.note.trim()
+      ) {
+        fail("Pass only one of --reason or --note");
+      }
+      if (!options.reason?.trim() && !options.note?.trim()) {
+        fail("--reason required");
+      }
+      const opts = await resolveGlobalOpts();
+      await cmdUnhideSkill(opts, slug, options, isInputAllowed());
+    });
+
+  command
+    .command("rescan")
+    .description("Queue a moderator ClawScan rescan for a skill")
+    .argument("<slug>", "Skill slug")
+    .option("--version <version>", "Specific skill version; defaults to latest")
+    .option("--yes", "Skip confirmation")
+    .option("--json", "Output JSON")
+    .action(async (slug, options) => {
+      const opts = await resolveGlobalOpts();
+      await cmdRescanSkill(opts, slug, options, isInputAllowed());
+    });
+
+  command
+    .command("rescan-all")
+    .description("Queue admin ClawScan rescans for active latest skills in paced batches")
+    .option("--batch-size <n>", "Batch size; backend caps at 100", (value) =>
+      Number.parseInt(value, 10),
+    )
+    .option("--poll-interval <sec>", "Seconds between batch status polls", (value) =>
+      Number.parseInt(value, 10),
+    )
+    .option("--cursor <cursor>", "Resume from a backend pagination cursor")
+    .option("--max-skills <n>", "Stop after this many scanned/queued/skipped skills", (value) =>
+      Number.parseInt(value, 10),
+    )
+    .option("--dry-run", "Page eligible skills without queueing jobs")
+    .option("--yes", "Skip confirmation")
+    .option("--json", "Output JSON progress events")
+    .option("--fail-fast", "Stop after the first drained batch with failed jobs")
+    .action(async (options) => {
+      const opts = await resolveGlobalOpts();
+      await cmdRescanAllSkills(opts, options, isInputAllowed());
+    });
+
   command
     .command("reports")
     .description("List skill reports for moderator review")

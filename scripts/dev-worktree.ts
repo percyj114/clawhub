@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { generateKeyPairSync } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
@@ -10,6 +11,7 @@ type Options = {
   seed: boolean;
   seedOnly: boolean;
   detach: boolean;
+  workers: boolean;
 };
 
 const DEFAULT_ENV_SOURCES = [".env.local"];
@@ -19,6 +21,7 @@ const REACHABILITY_POLL_MS = 500;
 const RUNTIME_DIR = ".codex/runtime";
 const DETACHED_PID_FILE = `${RUNTIME_DIR}/dev-worktree.pid`;
 const DETACHED_LOG_FILE = `${RUNTIME_DIR}/dev-worktree.log`;
+const LOCAL_DEV_WORKER_TOKEN = "local-dev-worker-token";
 const managedChildren = new Set<ChildProcess>();
 
 export function parseArgs(argv: string[]): Options {
@@ -28,12 +31,15 @@ export function parseArgs(argv: string[]): Options {
     seed: false,
     seedOnly: false,
     detach: false,
+    workers: true,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--detach") {
       options.detach = true;
+    } else if (arg === "--no-workers") {
+      options.workers = false;
     } else if (arg === "--seed") {
       options.seed = true;
     } else if (arg === "--seed-only") {
@@ -59,6 +65,86 @@ export function buildForegroundArgs(argv: string[]) {
   return argv.filter((arg) => arg !== "--detach");
 }
 
+export function buildViteArgs(port: string) {
+  return ["--bun", "vite", "dev", "--host", "127.0.0.1", "--port", port];
+}
+
+export function buildDevWorkersArgs(envFile: string) {
+  return ["scripts/dev-workers.ts", "--env-file", envFile];
+}
+
+export function shouldStartDevWorkers(options: Pick<Options, "workers">, convexUrl: string) {
+  if (!options.workers) return { start: false, reason: "--no-workers was passed" };
+  if (!isLocalConvexUrl(convexUrl)) {
+    return { start: false, reason: "VITE_CONVEX_URL is not local" };
+  }
+  return { start: true, reason: null };
+}
+
+export function applyLocalDevWorkerToken(env: NodeJS.ProcessEnv) {
+  env.SECURITY_SCAN_WORKER_TOKEN = LOCAL_DEV_WORKER_TOKEN;
+  return LOCAL_DEV_WORKER_TOKEN;
+}
+
+function buildLocalAuthKeys() {
+  const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const privatePem = privateKey.export({ type: "pkcs8", format: "pem" });
+  const publicJwk = publicKey.export({ format: "jwk" });
+  return {
+    JWT_PRIVATE_KEY: privatePem.trimEnd().replace(/\n/g, " "),
+    JWKS: JSON.stringify({ keys: [{ use: "sig", ...publicJwk }] }),
+  };
+}
+
+export function buildLocalConvexEnvChanges(env: NodeJS.ProcessEnv) {
+  const authKeys =
+    env.JWT_PRIVATE_KEY?.trim() && env.JWKS?.trim()
+      ? { JWT_PRIVATE_KEY: env.JWT_PRIVATE_KEY, JWKS: env.JWKS }
+      : buildLocalAuthKeys();
+  const deployment =
+    env.CONVEX_DEPLOYMENT?.trim() ||
+    env.DEV_AUTH_CONVEX_DEPLOYMENT?.trim() ||
+    "anonymous:anonymous-agent";
+
+  return [
+    { name: "DEV_AUTH_ENABLED", value: "1" },
+    { name: "DEV_AUTH_CONVEX_DEPLOYMENT", value: deployment },
+    { name: "SECURITY_SCAN_WORKER_TOKEN", value: LOCAL_DEV_WORKER_TOKEN },
+    { name: "SECURITY_SCAN_DEFAULT_VT_WAIT_MS", value: "0" },
+    { name: "JWT_PRIVATE_KEY", value: authKeys.JWT_PRIVATE_KEY },
+    { name: "JWKS", value: authKeys.JWKS },
+    { name: "AUTH_GITHUB_ID", value: env.AUTH_GITHUB_ID?.trim() || "local-dev" },
+    { name: "AUTH_GITHUB_SECRET", value: env.AUTH_GITHUB_SECRET?.trim() || "local-dev" },
+  ];
+}
+
+function applyLocalConvexEnvToProcess(env: NodeJS.ProcessEnv) {
+  for (const change of buildLocalConvexEnvChanges(env)) {
+    env[change.name] = change.value;
+  }
+}
+
+export function applyLocalConvexEnvForUrl(env: NodeJS.ProcessEnv, convexUrl: string) {
+  if (!isLocalConvexUrl(convexUrl)) return false;
+  applyLocalConvexEnvToProcess(env);
+  return true;
+}
+
+export function isLocalConvexUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      (url.hostname === "127.0.0.1" ||
+        url.hostname === "localhost" ||
+        url.hostname === "::1" ||
+        url.hostname === "[::1]")
+    );
+  } catch {
+    return false;
+  }
+}
+
 function readDetachedPid() {
   if (!existsSync(DETACHED_PID_FILE)) return null;
   const raw = readFileSync(DETACHED_PID_FILE, "utf8").trim();
@@ -77,43 +163,19 @@ export function isRunningPid(pid: number | null) {
   }
 }
 
-export function parseGitWorktreeList(text: string) {
-  return text
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith("worktree "))
-    .map((line) => line.slice("worktree ".length).trim())
-    .filter(Boolean);
-}
-
-function listGitWorktrees() {
-  const result = spawnSync("git", ["worktree", "list", "--porcelain"], {
-    cwd: process.cwd(),
-    encoding: "utf8",
-  });
-  if (result.status !== 0 || typeof result.stdout !== "string") return [];
-  return parseGitWorktreeList(result.stdout);
-}
-
 export function buildEnvFileCandidates(options: {
   explicit: string | null;
   cwd: string;
   worktrees?: string[];
 }) {
   if (options.explicit) return [options.explicit];
-  const primaryWorktree = options.worktrees?.[0];
-  return [
-    ...DEFAULT_ENV_SOURCES,
-    ...(primaryWorktree && resolve(primaryWorktree) !== resolve(options.cwd)
-      ? [`${primaryWorktree}/.env.local`]
-      : []),
-  ];
+  return DEFAULT_ENV_SOURCES;
 }
 
 function findEnvFile(explicit: string | null) {
   const candidates = buildEnvFileCandidates({
     explicit,
     cwd: process.cwd(),
-    worktrees: explicit ? [] : listGitWorktrees(),
   });
   return candidates
     .map((candidate) => resolve(candidate))
@@ -173,7 +235,11 @@ async function isReachable(url: string) {
   }
 }
 
-function runSync(command: string, args: string[], extraEnv: Record<string, string | undefined>) {
+export function runSync(
+  command: string,
+  args: string[],
+  extraEnv: Record<string, string | undefined>,
+) {
   return (
     spawnSync(command, args, {
       cwd: process.cwd(),
@@ -237,6 +303,7 @@ async function runConvexFunctionWhenReady(args: string[]) {
 function spawnManaged(command: string, args: string[]) {
   const child = spawn(command, args, {
     cwd: process.cwd(),
+    detached: process.platform !== "win32",
     env: process.env,
     stdio: "inherit",
   });
@@ -247,24 +314,38 @@ function spawnManaged(command: string, args: string[]) {
 
 function stopManagedChildren() {
   for (const child of managedChildren) {
-    if (!child.killed) child.kill("SIGTERM");
+    if (child.killed) continue;
+    if (process.platform !== "win32" && child.pid) {
+      try {
+        process.kill(-child.pid, "SIGTERM");
+        continue;
+      } catch {
+        // Fall through to the direct child signal below.
+      }
+    }
+    child.kill("SIGTERM");
   }
 }
 
+function exitAfterStoppingManagedChildren(status: number): never {
+  stopManagedChildren();
+  process.exit(status);
+}
+
 function waitForExit(child: ChildProcess) {
-  return new Promise<number>((resolve) => {
+  return new Promise<number>((done) => {
     child.once("exit", (code, signal) => {
       if (typeof code === "number") {
-        resolve(code);
+        done(code);
       } else {
-        resolve(signal === "SIGINT" ? 130 : 1);
+        done(signal === "SIGINT" ? 130 : 1);
       }
     });
   });
 }
 
 function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((done) => setTimeout(done, ms));
 }
 
 function startDetached(argv: string[]) {
@@ -319,6 +400,50 @@ async function ensureConvex(convexUrl: string) {
   }
 }
 
+function readLocalDeploymentConfig() {
+  try {
+    const raw = readFileSync(".convex/local/default/config.json", "utf8");
+    const parsed = JSON.parse(raw) as { adminKey?: unknown };
+    return typeof parsed.adminKey === "string" && parsed.adminKey
+      ? { adminKey: parsed.adminKey }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function setLocalConvexEnv(
+  convexUrl: string,
+  changes: Array<{ name: string; value: string }>,
+) {
+  const config = readLocalDeploymentConfig();
+  if (!config) {
+    console.warn(
+      "Could not configure local Convex dev environment because .convex/local/default/config.json was not found.",
+    );
+    return;
+  }
+
+  const response = await fetch(new URL("/api/update_environment_variables", convexUrl), {
+    body: JSON.stringify({ changes }),
+    headers: {
+      Authorization: `Convex ${config.adminKey}`,
+      "Content-Type": "application/json",
+    },
+    method: "POST",
+  });
+  if (!response.ok) {
+    console.warn(
+      `Could not configure local Convex dev environment: ${response.status} ${await response.text()}`,
+    );
+  }
+}
+
+async function configureLocalConvexEnv(convexUrl: string) {
+  if (!applyLocalConvexEnvForUrl(process.env, convexUrl)) return;
+  await setLocalConvexEnv(convexUrl, buildLocalConvexEnvChanges(process.env));
+}
+
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => {
     stopManagedChildren();
@@ -337,7 +462,7 @@ async function main() {
   const envFile = findEnvFile(options.envFile);
   if (!envFile) {
     console.error(
-      "Could not find .env.local in this checkout or the primary git worktree. Pass --env-file <path> or set CLAWHUB_ENV_FILE to a shared local env file.",
+      "Could not find .env.local in this checkout. Run bun run setup:worktree, pass --env-file <path>, or set CLAWHUB_ENV_FILE.",
     );
     process.exit(1);
   }
@@ -350,23 +475,22 @@ async function main() {
     process.exit(1);
   }
 
-  if (!existsSync("node_modules/.bin/vite")) {
-    console.log("Installing dependencies for this worktree...");
-    const installStatus = runSync("bun", ["install"], {});
-    if (installStatus !== 0) process.exit(installStatus);
-  }
-
+  applyLocalConvexEnvForUrl(process.env, convexUrl);
   await ensureConvex(convexUrl);
+  await configureLocalConvexEnv(convexUrl);
 
   if (options.seed) {
-    console.log("Seeding sample skills...");
+    console.log("Seeding local fixtures and public corpus...");
     const seedStatus = await runConvexFunctionWhenReady([
       "convex",
       "run",
       "--no-push",
-      "devSeed:seedNixSkills",
+      "devSeed:seedLocalFixtures",
     ]);
-    if (seedStatus !== 0) process.exit(seedStatus);
+    if (seedStatus !== 0) exitAfterStoppingManagedChildren(seedStatus);
+
+    const publicCorpusStatus = runSync("bun", ["scripts/public-corpus/seed-public-corpus.ts"], {});
+    if (publicCorpusStatus !== 0) exitAfterStoppingManagedChildren(publicCorpusStatus);
 
     const statsStatus = await runConvexFunctionWhenReady([
       "convex",
@@ -374,7 +498,7 @@ async function main() {
       "--no-push",
       "statsMaintenance:updateGlobalStatsAction",
     ]);
-    if (statsStatus !== 0) process.exit(statsStatus);
+    if (statsStatus !== 0) exitAfterStoppingManagedChildren(statsStatus);
   }
 
   if (options.seedOnly) {
@@ -382,9 +506,17 @@ async function main() {
     return;
   }
 
+  const workers = shouldStartDevWorkers(options, convexUrl);
+  if (workers.start) {
+    console.log("Starting local background workers...");
+    spawnManaged("bun", buildDevWorkersArgs(envFile));
+  } else {
+    console.log(`Skipping local background workers: ${workers.reason}.`);
+  }
+
   console.log(`Starting ClawHub from ${process.cwd()}`);
   console.log(`Using env file: ${envFile}`);
-  const vite = spawnManaged("bun", ["--bun", "vite", "dev", "--port", options.port]);
+  const vite = spawnManaged("bun", buildViteArgs(options.port));
   process.exit(await waitForExit(vite));
 }
 

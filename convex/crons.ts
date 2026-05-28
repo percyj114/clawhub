@@ -57,6 +57,13 @@ crons.interval(
   {},
 );
 
+crons.interval(
+  "publisher-abuse-score-refresh",
+  { hours: 24 },
+  internal.publisherAbuse.runPublisherAbuseScoreRunInternal,
+  { batchSize: 250, maxPages: 5, trigger: "cron" },
+);
+
 crons.interval("vt-pending-scans", { minutes: 5 }, internal.vt.pollPendingScans, {
   batchSize: 100,
 });
@@ -71,9 +78,6 @@ crons.interval(
   internal.packages.backfillPackageReleaseScansInternal,
   { batchSize: 100 },
 );
-
-// Daily re-scan of all active skills at 3am UTC
-crons.daily("vt-daily-rescan", { hourUTC: 3, minuteUTC: 0 }, internal.vt.rescanActiveSkills, {});
 
 crons.interval(
   "download-dedupe-prune",

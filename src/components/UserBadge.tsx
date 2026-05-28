@@ -6,6 +6,7 @@ import { convexHttp } from "../convex/client";
 import { hasOwnProperty } from "../lib/hasOwnProperty";
 import { formatCompactStat } from "../lib/numberFormat";
 import type { PublicPublisher, PublicUser } from "../lib/publicUser";
+import { OfficialBadge } from "./OfficialBadge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 
 type UserBadgeProps = {
@@ -33,7 +34,7 @@ export function UserBadge({
     hasOwnProperty(user, "name") && typeof user.name === "string" ? user.name.trim() : undefined;
   const displayName = user?.displayName?.trim() || userName || null;
   const handle = user?.handle ?? fallbackHandle ?? null;
-  const href = user?.handle ? `/p/${encodeURIComponent(user.handle)}` : null;
+  const href = user?.handle ? `/user/${encodeURIComponent(user.handle)}` : null;
   const label = handle ? `@${handle}` : "user";
   const image = user?.image ?? null;
   const hasUsefulName =
@@ -41,6 +42,7 @@ export function UserBadge({
     Boolean(displayName) &&
     (!showHandle || !handle || displayName!.toLowerCase() !== handle.toLowerCase());
   const initial = (displayName ?? handle ?? "u").charAt(0).toUpperCase();
+  const isOfficial = user && hasOwnProperty(user, "official") && user.official === true;
 
   // Resolve userId for stats query — PublicUser has _id directly,
   // PublicPublisher has linkedUserId
@@ -76,6 +78,7 @@ export function UserBadge({
       ) : showHandle ? (
         <span className="user-handle">{label}</span>
       ) : null}
+      {isOfficial ? <OfficialBadge /> : null}
     </>
   );
 

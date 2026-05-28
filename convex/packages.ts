@@ -1,11 +1,13 @@
 import {
   PackagePublishRequestSchema,
   getPackageScopeOwnerMismatch,
+  isPluginCategorySlug,
   parseArk,
   validateOpenClawExternalCodePluginPackageContents,
   type PackageArtifactSummary,
   type PackageChannel,
   type PackageFamily,
+  type PluginCategorySlug,
   type PackageModerationQueueStatus,
   type PackageOfficialMigrationListPhase,
   type PackageOfficialMigrationPhase,
@@ -44,6 +46,7 @@ import {
 import { normalizeClawScanNoteForWrite } from "./lib/clawScanNote";
 import { requireGitHubAccountAge } from "./lib/githubAccount";
 import { normalizeGitHubRepository } from "./lib/githubActionsOidc";
+import { isOfficialPublisher } from "./lib/officialPublishers";
 import {
   assertPackageVersion,
   ensurePluginNameMatchesPackage,
@@ -57,13 +60,20 @@ import {
   toConvexSafeJsonValue,
 } from "./lib/packageRegistry";
 import { extractPackageDigestFields, upsertPackageSearchDigest } from "./lib/packageSearchDigest";
-import { isPackageBlockedFromPublic, resolvePackageReleaseScanStatus } from "./lib/packageSecurity";
+import {
+  getPackageTrustReasons,
+  isPackageBlockedFromPublic,
+  resolvePackageReleaseScanStatus,
+} from "./lib/packageSecurity";
 import { toPublicPublisher } from "./lib/public";
 import {
   assertCanManageOwnedResource,
+  canAccessPublisherOwnerScope,
   getPublisherByHandle,
+  getPersonalPublisherForUser,
   getOwnerPublisher,
   getPublisherMembership,
+  isPublisherActive,
   isPublisherRoleAllowed,
   normalizePublisherHandle,
 } from "./lib/publishers";
@@ -74,7 +84,7 @@ import {
   MAX_PUBLISH_TOTAL_BYTES,
 } from "./lib/publishLimits";
 import { MAX_ACTIVE_REPORTS_PER_USER, MAX_REPORT_REASON_LENGTH } from "./lib/reporting";
-import { tokenize } from "./lib/searchText";
+import { matchesAllTokens, matchesExploratoryTokenPrefixes, tokenize } from "./lib/searchText";
 import { hashSkillFiles } from "./lib/skills";
 import { runStaticPublishScan } from "./lib/staticPublishScan";
 
@@ -86,6 +96,7 @@ const MAX_OFFICIAL_MIGRATION_BLOCKERS = 20;
 const MAX_OFFICIAL_MIGRATION_FIELD_LENGTH = 300;
 const MAX_OFFICIAL_MIGRATION_NOTES_LENGTH = 2_000;
 const MAX_STORED_PACKAGE_METADATA_DEPTH = 10;
+const CLAWHUB_PUBLISHER_HANDLE_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
 const REAL_BUNDLE_MANIFESTS = [
   { path: ".codex-plugin/plugin.json", format: "codex" },
   { path: ".claude-plugin/plugin.json", format: "claude" },
@@ -145,15 +156,90 @@ const vtAnalysisValidator = v.object({
   checkedAt: v.number(),
 });
 
+const skillSpectorIssueValidator = v.object({
+  issueId: v.string(),
+  category: v.optional(v.string()),
+  pattern: v.optional(v.string()),
+  severity: v.string(),
+  confidence: v.optional(v.number()),
+  file: v.optional(v.string()),
+  startLine: v.optional(v.number()),
+  endLine: v.optional(v.number()),
+  explanation: v.string(),
+  remediation: v.optional(v.string()),
+  finding: v.optional(v.string()),
+  codeSnippet: v.optional(v.string()),
+});
+
+const skillSpectorAnalysisValidator = v.object({
+  status: v.string(),
+  score: v.optional(v.number()),
+  severity: v.optional(v.string()),
+  recommendation: v.optional(v.string()),
+  issueCount: v.number(),
+  issues: v.array(skillSpectorIssueValidator),
+  scannerVersion: v.optional(v.string()),
+  summary: v.optional(v.string()),
+  error: v.optional(v.string()),
+  checkedAt: v.number(),
+});
+
 function inferOwnerHandleFromScopedPackageName(name: string) {
   const match = /^@([^/]+)\//.exec(name);
   return match?.[1] || undefined;
 }
 
+function getPackageSlugFromName(name: string) {
+  return name.split("/").pop()?.trim() || "plugin-name";
+}
+
+function getClawHubPublisherHandleSuggestion(handle: string) {
+  const suggestion = handle
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40)
+    .replace(/-+$/g, "");
+  return CLAWHUB_PUBLISHER_HANDLE_PATTERN.test(suggestion) ? suggestion : null;
+}
+
+function getScopedPackageMissingPublisherMessage(params: {
+  scopedOwnerHandle: string;
+  packageName: string;
+  legacyPersonalOwnerHandle?: string;
+}) {
+  if (!CLAWHUB_PUBLISHER_HANDLE_PATTERN.test(params.scopedOwnerHandle)) {
+    const suggestedOwnerHandle = getClawHubPublisherHandleSuggestion(params.scopedOwnerHandle);
+    const packageSlug = getPackageSlugFromName(params.packageName);
+    const renameGuidance = suggestedOwnerHandle
+      ? ` Rename package.json to a ClawHub-compatible scope, such as "@${suggestedOwnerHandle}/${packageSlug}", then publish again.`
+      : " Rename package.json to a ClawHub-compatible scope that uses lowercase letters, numbers, and hyphens, then publish again.";
+    return `Cannot publish ${params.packageName}: package.json name is scoped to "@${params.scopedOwnerHandle}", but ClawHub publisher handles may only use lowercase letters, numbers, and hyphens.${renameGuidance}`;
+  }
+  if (params.legacyPersonalOwnerHandle) {
+    const displayName = params.scopedOwnerHandle
+      .split(/[-_]+/)
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ");
+    return `Cannot publish ${params.packageName}: package.json name is scoped to "@${params.scopedOwnerHandle}", but ClawHub has no "@${params.scopedOwnerHandle}" publisher.\n\nThis package already exists under your personal publisher "@${params.legacyPersonalOwnerHandle}". To move it into the matching org publisher, run:\n\n  clawhub publisher create ${params.scopedOwnerHandle} --display-name "${displayName || params.scopedOwnerHandle}"\n  clawhub package transfer ${params.packageName} --to ${params.scopedOwnerHandle} --reason "Move legacy personal package into @${params.scopedOwnerHandle}"\n\nThen rerun publish.`;
+  }
+  return `Cannot publish ${params.packageName}: package.json name is scoped to "@${params.scopedOwnerHandle}", but ClawHub has no "@${params.scopedOwnerHandle}" publisher. Create it with "clawhub publisher create ${params.scopedOwnerHandle}".`;
+}
+
+function isTrustedOpenClawPluginPackage(params: {
+  family: PackageFamily;
+  normalizedName: string;
+  ownerPublisher?: Pick<Doc<"publishers">, "handle" | "deletedAt"> | null;
+}) {
+  if (params.family !== "code-plugin" && params.family !== "bundle-plugin") return false;
+  if (!params.normalizedName.startsWith("@openclaw/")) return false;
+  const ownerHandle = params.ownerPublisher?.handle?.trim().toLowerCase();
+  return ownerHandle === "openclaw" && params.ownerPublisher?.deletedAt === undefined;
+}
+
 const internalRefs = internal as unknown as {
-  llmEval: {
-    evaluatePackageReleaseWithLlm: unknown;
-  };
   packages: {
     backfillPackageReleaseScansInternal: unknown;
     scanPackageReleaseStaticallyInternal: unknown;
@@ -184,13 +270,29 @@ const internalRefs = internal as unknown as {
     getByHandleInternal: unknown;
   };
   publishers: {
+    getByIdInternal: unknown;
     resolvePublishTargetForUserInternal: unknown;
+  };
+  securityScan: {
+    enqueuePackageReleaseScanInternal: unknown;
   };
   vt: {
     scanPackageReleaseWithVirusTotal: unknown;
   };
 };
+const packageAutobanRemediationInternalRefs = internal as unknown as {
+  packages: {
+    restoreOwnedPackagesForAutobanRemediationBatchInternal: never;
+  };
+};
 type DbReaderCtx = Pick<QueryCtx | MutationCtx, "db">;
+const BAN_USER_PACKAGES_BATCH_SIZE = 25;
+const PACKAGE_PUBLISH_TOKEN_REVOKE_BATCH_SIZE = 25;
+type PackageSoftDeletedReason = "user.banned" | "user.deactivated";
+const ownedPackageScanScopeValidator = v.optional(
+  v.union(v.literal("ownerUserId"), v.literal("personalPublisher")),
+);
+type OwnedPackageScanScope = "ownerUserId" | "personalPublisher";
 type PackagePublishActor =
   | {
       kind: "user";
@@ -371,26 +473,27 @@ function getRequestedPackageOwnerKey(args: {
   return args.ownerPublisherId ? `publisher:${args.ownerPublisherId}` : `user:${args.ownerUserId}`;
 }
 
-function isReservedPackagePlaceholder(pkg: PackageDoc | null | undefined) {
-  return Boolean(pkg && !pkg.latestReleaseId && !pkg.latestVersionSummary);
+function derivePackagePublisherChannel(args: {
+  requestedChannel?: PackageChannel;
+  currentChannel?: PackageChannel;
+  currentIsReservation?: boolean;
+  publisherOfficial: boolean;
+}) {
+  if (
+    args.currentChannel === "private" &&
+    !args.currentIsReservation &&
+    args.requestedChannel === undefined
+  ) {
+    return "private";
+  }
+  if (args.publisherOfficial) {
+    return args.requestedChannel === "private" ? "private" : "official";
+  }
+  return args.requestedChannel ?? "community";
 }
 
-function getPackageModerationQueueReasons(
-  release: Pick<Doc<"packageReleases">, "manualModeration" | "staticScan" | "vtAnalysis">,
-  scanStatus: PackageReleaseScanStatus,
-  reportCount = 0,
-) {
-  const reasons: string[] = [];
-  if (release.manualModeration?.state) reasons.push(`manual:${release.manualModeration.state}`);
-  if (scanStatus !== "clean" && scanStatus !== "not-run") reasons.push(`scan:${scanStatus}`);
-  if (release.staticScan?.status === "malicious") {
-    reasons.push(`static:${release.staticScan.status}`);
-  }
-  if (release.vtAnalysis?.status === "suspicious" || release.vtAnalysis?.status === "malicious") {
-    reasons.push(`vt:${release.vtAnalysis.status}`);
-  }
-  if (reportCount > 0) reasons.push(`reports:${reportCount}`);
-  return [...new Set(reasons)];
+function isReservedPackagePlaceholder(pkg: PackageDoc | null | undefined) {
+  return Boolean(pkg && !pkg.latestReleaseId && !pkg.latestVersionSummary);
 }
 
 function shouldIncludePackageReportsInModerationQueue(
@@ -453,7 +556,7 @@ function toPackageModerationQueueItem(
     sourceCommit: typeof source.commit === "string" ? source.commit : null,
     reportCount,
     lastReportedAt: pkg.lastReportedAt ?? null,
-    reasons: getPackageModerationQueueReasons(release, scanStatus, reportCount),
+    reasons: getPackageTrustReasons(release, scanStatus, reportCount),
   };
 }
 
@@ -477,13 +580,17 @@ type PackageDigestLike = Pick<
   | "updatedAt"
   | "latestVersion"
   | "capabilityTags"
+  | "pluginCategoryTags"
   | "executesCode"
   | "verificationTier"
   | "scanStatus"
   | "softDeletedAt"
 > & {
   capabilityTag?: string;
+  pluginCategory?: string;
 };
+type PackageOwnerAccessRef = Pick<PackageDigestLike, "ownerUserId" | "ownerPublisherId"> &
+  Partial<Pick<PackageDigestLike, "ownerKind">>;
 type PublicPageCursorState = {
   cursor: string | null;
   offset: number;
@@ -587,46 +694,51 @@ function requiresPrivilegedPackageAccess(
 
 async function viewerCanAccessPackageOwner(
   ctx: DbReaderCtx,
-  digest: Pick<PackageDigestLike, "ownerUserId" | "ownerPublisherId">,
+  digest: PackageOwnerAccessRef,
   viewerUserId: Id<"users"> | undefined,
   membershipCache?: Map<string, Promise<boolean>>,
 ) {
   if (!viewerUserId) return false;
   if (!digest.ownerPublisherId) return digest.ownerUserId === viewerUserId;
 
-  const cacheKey = String(digest.ownerPublisherId);
+  const ownerPublisherId = digest.ownerPublisherId;
+  const cacheKey = `${ownerPublisherId}:${digest.ownerUserId}`;
   const cached = membershipCache?.get(cacheKey);
   if (cached) return await cached;
 
-  const membershipPromise = getPublisherMembership(ctx, digest.ownerPublisherId, viewerUserId).then(
-    Boolean,
-  );
+  const membershipPromise = (async () => {
+    const ownerPublisher = await ctx.db.get(ownerPublisherId);
+    return await canAccessPublisherOwnerScope(ctx, {
+      publisher: ownerPublisher,
+      userId: viewerUserId,
+      legacyOwnerUserId: digest.ownerUserId,
+    });
+  })();
   membershipCache?.set(cacheKey, membershipPromise);
-  if (await membershipPromise) return true;
-
-  if (digest.ownerUserId !== viewerUserId) return false;
-  const ownerPublisher = await ctx.db.get(digest.ownerPublisherId);
-  return ownerPublisher?.kind === "user" && ownerPublisher.linkedUserId === viewerUserId;
+  return await membershipPromise;
 }
 
 async function viewerCanManagePackageOwner(
   ctx: DbReaderCtx,
-  digest: Pick<PackageDigestLike, "ownerUserId" | "ownerPublisherId">,
+  digest: PackageOwnerAccessRef,
   viewerUserId: Id<"users"> | undefined,
 ) {
   if (!viewerUserId) return false;
   if (!digest.ownerPublisherId) return digest.ownerUserId === viewerUserId;
 
   const ownerPublisher = await ctx.db.get(digest.ownerPublisherId);
-  if (ownerPublisher?.kind === "user" && ownerPublisher.linkedUserId === viewerUserId) return true;
-
-  const membership = await getPublisherMembership(ctx, digest.ownerPublisherId, viewerUserId);
-  return Boolean(membership && isPublisherRoleAllowed(membership.role, ["admin"]));
+  return await canAccessPublisherOwnerScope(ctx, {
+    publisher: ownerPublisher,
+    userId: viewerUserId,
+    allowedPublisherRoles: ["admin"],
+    legacyOwnerUserId: digest.ownerUserId,
+  });
 }
 
 async function canViewerReadPackage(
   ctx: DbReaderCtx,
-  digest: Pick<PackageDigestLike, "channel" | "scanStatus" | "ownerUserId" | "ownerPublisherId">,
+  digest: Pick<PackageDigestLike, "channel" | "scanStatus" | "ownerUserId" | "ownerPublisherId"> &
+    Partial<Pick<PackageDigestLike, "ownerKind">>,
   viewerUserId: Id<"users"> | undefined,
   membershipCache?: Map<string, Promise<boolean>>,
 ) {
@@ -643,6 +755,26 @@ async function canViewerReadPackage(
   );
 }
 
+function resolvePublicPackageScanStatus(
+  pkg: Pick<Doc<"packages">, "scanStatus">,
+  latestRelease?: Doc<"packageReleases"> | null,
+) {
+  if (latestRelease && !latestRelease.softDeletedAt) {
+    const releaseScanStatus = resolvePackageReleaseScanStatus(latestRelease);
+    return releaseScanStatus === "not-run" ? pkg.scanStatus : releaseScanStatus;
+  }
+  return pkg.scanStatus;
+}
+
+function resolvePublicPackageVerification(
+  pkg: Pick<Doc<"packages">, "verification" | "latestVersionSummary" | "scanStatus">,
+  latestRelease?: Doc<"packageReleases"> | null,
+) {
+  const scanStatus = resolvePublicPackageScanStatus(pkg, latestRelease);
+  const source = pkg.verification ?? pkg.latestVersionSummary?.verification;
+  return source && scanStatus ? { ...source, scanStatus } : source;
+}
+
 function toPublicPackage(
   pkg: Doc<"packages"> | null | undefined,
   latestRelease?: Doc<"packageReleases"> | null,
@@ -654,6 +786,7 @@ function toPublicPackage(
       : latestRelease && !latestRelease.softDeletedAt
         ? latestRelease.version
         : null;
+  const scanStatus = resolvePublicPackageScanStatus(pkg, latestRelease);
   return {
     _id: pkg._id,
     name: pkg.name,
@@ -668,14 +801,14 @@ function toPublicPackage(
     latestVersion,
     compatibility: pkg.compatibility,
     capabilities: pkg.capabilities,
-    verification: pkg.verification,
+    verification: resolvePublicPackageVerification(pkg, latestRelease),
     artifact:
       latestRelease === undefined
         ? pkg.latestVersionSummary?.artifact
         : latestRelease && !latestRelease.softDeletedAt
           ? packageArtifactSummary(latestRelease)
           : undefined,
-    scanStatus: pkg.scanStatus,
+    scanStatus,
     stats: pkg.stats,
     createdAt: pkg.createdAt,
     updatedAt: pkg.updatedAt,
@@ -754,6 +887,7 @@ function digestMatchesFilters(
   args: {
     executesCode?: boolean;
     capabilityTag?: string;
+    category?: string;
   },
 ) {
   if (
@@ -763,8 +897,18 @@ function digestMatchesFilters(
     return false;
   }
   if (args.capabilityTag) {
-    if (digest.capabilityTag) return digest.capabilityTag === args.capabilityTag;
-    return (digest.capabilityTags ?? []).includes(args.capabilityTag);
+    if (digest.capabilityTag) {
+      if (digest.capabilityTag !== args.capabilityTag) return false;
+    } else if (!(digest.capabilityTags ?? []).includes(args.capabilityTag)) {
+      return false;
+    }
+  }
+  if (args.category) {
+    if (digest.pluginCategory) {
+      if (digest.pluginCategory !== args.category) return false;
+    } else if (!(digest.pluginCategoryTags ?? []).includes(args.category)) {
+      return false;
+    }
   }
   return true;
 }
@@ -777,6 +921,7 @@ function digestMatchesSearchFilters(
     isOfficial?: boolean;
     executesCode?: boolean;
     capabilityTag?: string;
+    category?: string;
   },
 ) {
   if (args.family && digest.family !== args.family) return false;
@@ -887,16 +1032,19 @@ async function listDashboardPackagesForOwnerPublisher(
 ) {
   const takeLimit = Math.min(limit * 5, 500);
   const ownerPublisher = await ctx.db.get(ownerPublisherId);
-  const membership =
-    (await ctx.db
-      .query("publisherMembers")
-      .withIndex("by_publisher_user", (q) =>
-        q.eq("publisherId", ownerPublisherId).eq("userId", viewerUserId),
-      )
-      .unique()) ?? null;
-  const isOwnDashboard = Boolean(
-    membership || (ownerPublisher?.kind === "user" && ownerPublisher.linkedUserId === viewerUserId),
-  );
+  const owner =
+    ownerPublisher?.kind === "user" && !ownerPublisher.linkedUserId
+      ? await ctx.db.get(viewerUserId)
+      : null;
+  const isOwnDashboard =
+    (await canAccessPublisherOwnerScope(ctx, {
+      publisher: ownerPublisher,
+      userId: viewerUserId,
+    })) ||
+    (ownerPublisher?.kind === "user" &&
+      isPublisherActive(ownerPublisher) &&
+      !ownerPublisher.linkedUserId &&
+      owner?.personalPublisherId === ownerPublisherId);
   if (!isOwnDashboard) return [];
 
   const scopedEntries = await ctx.db
@@ -904,14 +1052,17 @@ async function listDashboardPackagesForOwnerPublisher(
     .withIndex("by_owner_publisher", (q) => q.eq("ownerPublisherId", ownerPublisherId))
     .order("desc")
     .take(takeLimit);
-  const legacyEntries =
-    ownerPublisher?.kind === "user" && ownerPublisher.linkedUserId
-      ? await ctx.db
-          .query("packages")
-          .withIndex("by_owner", (q) => q.eq("ownerUserId", ownerPublisher.linkedUserId!))
-          .order("desc")
-          .take(takeLimit)
-      : [];
+  const legacyPersonalOwnerUserId =
+    ownerPublisher?.kind === "user"
+      ? (ownerPublisher.linkedUserId ?? (isOwnDashboard ? viewerUserId : undefined))
+      : undefined;
+  const legacyEntries = legacyPersonalOwnerUserId
+    ? await ctx.db
+        .query("packages")
+        .withIndex("by_owner", (q) => q.eq("ownerUserId", legacyPersonalOwnerUserId))
+        .order("desc")
+        .take(takeLimit)
+    : [];
 
   const combined = [...scopedEntries, ...legacyEntries].filter(
     (pkg, index, all) =>
@@ -923,6 +1074,33 @@ async function listDashboardPackagesForOwnerPublisher(
   return (
     await Promise.all(limited.map(async (pkg) => await toDashboardPackageListItem(ctx, pkg)))
   ).filter((pkg): pkg is DashboardPackageListItem => Boolean(pkg));
+}
+
+async function packageBelongsToOwnerUserDashboardScope(
+  ctx: Pick<QueryCtx, "db">,
+  pkg: Pick<Doc<"packages">, "ownerUserId" | "ownerPublisherId">,
+  ownerUserId: Id<"users">,
+) {
+  if (pkg.ownerUserId !== ownerUserId) return false;
+  if (!pkg.ownerPublisherId) return true;
+  const ownerPublisher = await ctx.db.get(pkg.ownerPublisherId);
+  if (!ownerPublisher || !isPublisherActive(ownerPublisher) || ownerPublisher.kind !== "user") {
+    return false;
+  }
+  return ownerPublisher.linkedUserId ? ownerPublisher.linkedUserId === ownerUserId : true;
+}
+
+async function filterPackagesForOwnerUserDashboard(
+  ctx: Pick<QueryCtx, "db">,
+  packages: Doc<"packages">[],
+  ownerUserId: Id<"users">,
+) {
+  const scoped = await Promise.all(
+    packages.map(async (pkg) =>
+      (await packageBelongsToOwnerUserDashboardScope(ctx, pkg, ownerUserId)) ? pkg : null,
+    ),
+  );
+  return scoped.filter((pkg): pkg is Doc<"packages"> => Boolean(pkg));
 }
 
 async function listDashboardPackagesForOwnerUser(
@@ -938,7 +1116,8 @@ async function listDashboardPackagesForOwnerUser(
     .withIndex("by_owner", (q) => q.eq("ownerUserId", ownerUserId))
     .order("desc")
     .take(takeLimit);
-  const filtered = entries.filter((pkg) => !pkg.softDeletedAt).slice(0, limit);
+  const scoped = await filterPackagesForOwnerUserDashboard(ctx, entries, ownerUserId);
+  const filtered = scoped.filter((pkg) => !pkg.softDeletedAt).slice(0, limit);
   return (
     await Promise.all(filtered.map(async (pkg) => await toDashboardPackageListItem(ctx, pkg)))
   ).filter((pkg): pkg is DashboardPackageListItem => Boolean(pkg));
@@ -973,31 +1152,102 @@ async function getOptionalViewerUserId(ctx: QueryCtx | MutationCtx) {
   return await getOptionalActiveAuthUserId(ctx);
 }
 
-function packageSearchScore(digest: PackageDigestLike, queryText: string) {
+const EXPLORATORY_SEARCH_MIN_TOKEN_LENGTH = 3;
+
+type PackageSearchMatch = {
+  rankTier: number;
+  score: number;
+};
+
+function packageSearchMatch(
+  digest: PackageDigestLike,
+  queryText: string,
+): PackageSearchMatch | null {
   const needle = queryText.toLowerCase();
+  const queryTokens = tokenize(queryText);
+  if (queryTokens.length === 0) return null;
   const normalized = digest.normalizedName.toLowerCase();
   const display = digest.displayName.toLowerCase();
   const runtimeId = digest.runtimeId?.toLowerCase() ?? "";
-  const summary = (digest.summary ?? "").toLowerCase();
+  const nameTokens = tokenize(normalized);
+  const displayTokens = tokenize(display);
+  const runtimeTokens = tokenize(runtimeId);
   let score = 0;
-  if (normalized === needle) score += 200;
-  else if (normalized.startsWith(needle)) score += 120;
-  else if (normalized.includes(needle)) score += 80;
+  let rankTier = Number.POSITIVE_INFINITY;
 
-  if (display === needle) score += 150;
-  else if (display.startsWith(needle)) score += 70;
-  else if (display.includes(needle)) score += 40;
+  const setMatch = (tier: number, boost: number) => {
+    score += boost;
+    rankTier = Math.min(rankTier, tier);
+  };
 
-  if (runtimeId === needle) score += 180;
-  else if (runtimeId.startsWith(needle)) score += 90;
-  else if (runtimeId.includes(needle)) score += 45;
+  if (normalized === needle) setMatch(0, 200);
+  else if (normalized.startsWith(needle)) setMatch(1, 120);
+  else if (normalized.includes(needle)) setMatch(1, 80);
 
-  if (summary.includes(needle)) score += 20;
-  if ((digest.capabilityTags ?? []).some((entry) => entry.toLowerCase().includes(needle))) {
-    score += 12;
+  if (display === needle) setMatch(0, 150);
+  else if (display.startsWith(needle)) setMatch(1, 70);
+  else if (display.includes(needle)) setMatch(1, 40);
+
+  if (runtimeId === needle) setMatch(0, 180);
+  else if (runtimeId.startsWith(needle)) setMatch(1, 90);
+  else if (runtimeId.includes(needle)) setMatch(1, 45);
+
+  if (
+    matchesAllTokens(
+      queryTokens,
+      [...nameTokens, ...displayTokens, ...runtimeTokens],
+      (a, b) => a === b,
+    )
+  ) {
+    setMatch(1, 65);
+  } else if (
+    matchesAllTokens(queryTokens, [...nameTokens, ...displayTokens, ...runtimeTokens], (a, b) =>
+      a.startsWith(b),
+    )
+  ) {
+    setMatch(1, 35);
   }
-  if (digest.isOfficial) score += 5;
-  return score;
+
+  if (
+    matchesExploratoryTokenPrefixes(
+      queryTokens,
+      [digest.summary],
+      EXPLORATORY_SEARCH_MIN_TOKEN_LENGTH,
+    )
+  ) {
+    setMatch(3, 20);
+  }
+  if (
+    matchesExploratoryTokenPrefixes(
+      queryTokens,
+      digest.capabilityTags ?? [],
+      EXPLORATORY_SEARCH_MIN_TOKEN_LENGTH,
+    )
+  ) {
+    setMatch(2, 12);
+  }
+  if (!Number.isFinite(rankTier)) return null;
+  return { rankTier, score };
+}
+
+function comparePackageSearchMatches<
+  T extends PackageSearchMatch & { package: Pick<PackageDigestLike, "isOfficial" | "updatedAt"> },
+>(a: T, b: T) {
+  return (
+    a.rankTier - b.rankTier ||
+    b.score - a.score ||
+    Number(b.package.isOfficial) - Number(a.package.isOfficial) ||
+    b.package.updatedAt - a.package.updatedAt
+  );
+}
+
+function toPublicPackageSearchEntry(
+  entry: PackageSearchMatch & { package: PublicPackageListItem },
+) {
+  return {
+    score: entry.score,
+    package: entry.package,
+  };
 }
 
 function prefixUpperBound(value: string) {
@@ -1341,6 +1591,164 @@ function buildPackageCapabilityDigestQuery(
     );
 }
 
+function buildPackagePluginCategoryDigestQuery(
+  ctx: DbReaderCtx,
+  args: {
+    category: PluginCategorySlug;
+    family?: PackageFamily;
+    channel?: PackageChannel;
+    isOfficial?: boolean;
+    executesCode?: boolean;
+  },
+) {
+  const family = args.family;
+  const channel = args.channel;
+  const isOfficial = args.isOfficial;
+  const executesCode = args.executesCode;
+
+  if (family && channel && typeof executesCode === "boolean") {
+    return ctx.db
+      .query("packagePluginCategorySearchDigest")
+      .withIndex("by_active_family_channel_category_executes_updated", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("family", family)
+          .eq("channel", channel)
+          .eq("pluginCategory", args.category)
+          .eq("executesCode", executesCode),
+      );
+  }
+  if (family && typeof isOfficial === "boolean" && typeof executesCode === "boolean") {
+    return ctx.db
+      .query("packagePluginCategorySearchDigest")
+      .withIndex("by_active_family_official_category_executes_updated", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("family", family)
+          .eq("isOfficial", isOfficial)
+          .eq("pluginCategory", args.category)
+          .eq("executesCode", executesCode),
+      );
+  }
+  if (channel && typeof isOfficial === "boolean" && typeof executesCode === "boolean") {
+    return ctx.db
+      .query("packagePluginCategorySearchDigest")
+      .withIndex("by_active_channel_official_category_executes_updated", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("channel", channel)
+          .eq("isOfficial", isOfficial)
+          .eq("pluginCategory", args.category)
+          .eq("executesCode", executesCode),
+      );
+  }
+  if (family && channel) {
+    return ctx.db
+      .query("packagePluginCategorySearchDigest")
+      .withIndex("by_active_family_channel_category_updated", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("family", family)
+          .eq("channel", channel)
+          .eq("pluginCategory", args.category),
+      );
+  }
+  if (family && typeof isOfficial === "boolean") {
+    return ctx.db
+      .query("packagePluginCategorySearchDigest")
+      .withIndex("by_active_family_official_category_updated", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("family", family)
+          .eq("isOfficial", isOfficial)
+          .eq("pluginCategory", args.category),
+      );
+  }
+  if (channel && typeof isOfficial === "boolean") {
+    return ctx.db
+      .query("packagePluginCategorySearchDigest")
+      .withIndex("by_active_channel_official_category_updated", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("channel", channel)
+          .eq("isOfficial", isOfficial)
+          .eq("pluginCategory", args.category),
+      );
+  }
+  if (family && typeof executesCode === "boolean") {
+    return ctx.db
+      .query("packagePluginCategorySearchDigest")
+      .withIndex("by_active_family_category_executes_updated", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("family", family)
+          .eq("pluginCategory", args.category)
+          .eq("executesCode", executesCode),
+      );
+  }
+  if (channel && typeof executesCode === "boolean") {
+    return ctx.db
+      .query("packagePluginCategorySearchDigest")
+      .withIndex("by_active_channel_category_executes_updated", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("channel", channel)
+          .eq("pluginCategory", args.category)
+          .eq("executesCode", executesCode),
+      );
+  }
+  if (typeof isOfficial === "boolean" && typeof executesCode === "boolean") {
+    return ctx.db
+      .query("packagePluginCategorySearchDigest")
+      .withIndex("by_active_official_category_executes_updated", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("isOfficial", isOfficial)
+          .eq("pluginCategory", args.category)
+          .eq("executesCode", executesCode),
+      );
+  }
+  if (family) {
+    return ctx.db
+      .query("packagePluginCategorySearchDigest")
+      .withIndex("by_active_family_category_updated", (q) =>
+        q.eq("softDeletedAt", undefined).eq("family", family).eq("pluginCategory", args.category),
+      );
+  }
+  if (channel) {
+    return ctx.db
+      .query("packagePluginCategorySearchDigest")
+      .withIndex("by_active_channel_category_updated", (q) =>
+        q.eq("softDeletedAt", undefined).eq("channel", channel).eq("pluginCategory", args.category),
+      );
+  }
+  if (typeof isOfficial === "boolean") {
+    return ctx.db
+      .query("packagePluginCategorySearchDigest")
+      .withIndex("by_active_official_category_updated", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("isOfficial", isOfficial)
+          .eq("pluginCategory", args.category),
+      );
+  }
+  if (typeof executesCode === "boolean") {
+    return ctx.db
+      .query("packagePluginCategorySearchDigest")
+      .withIndex("by_active_category_executes_updated", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("pluginCategory", args.category)
+          .eq("executesCode", executesCode),
+      );
+  }
+  return ctx.db
+    .query("packagePluginCategorySearchDigest")
+    .withIndex("by_active_category_updated", (q) =>
+      q.eq("softDeletedAt", undefined).eq("pluginCategory", args.category),
+    );
+}
+
 async function fetchHighlightedPackageDigests(
   ctx: DbReaderCtx,
   args: {
@@ -1349,6 +1757,7 @@ async function fetchHighlightedPackageDigests(
     isOfficial?: boolean;
     executesCode?: boolean;
     capabilityTag?: string;
+    category?: string;
     viewerUserId?: Id<"users">;
   },
 ) {
@@ -1412,7 +1821,29 @@ async function getReadablePackageByName(
   const normalizedName = normalizePackageName(name);
   const pkg = await getPackageByNormalizedName(ctx, normalizedName);
   if (!pkg || pkg.softDeletedAt) return null;
-  if (!(await canViewerReadPackage(ctx, pkg, viewerUserId))) return null;
+  if (pkg.channel === "private" || isPackageBlockedFromPublic(pkg.scanStatus)) {
+    const canAccessOwner = await viewerCanAccessPackageOwner(ctx, pkg, viewerUserId);
+    if (pkg.channel === "private" && !canAccessOwner) return null;
+
+    if (isPackageBlockedFromPublic(pkg.scanStatus)) {
+      const latestRelease = pkg.latestReleaseId ? await ctx.db.get(pkg.latestReleaseId) : null;
+      const scanStatus = resolvePublicPackageScanStatus(pkg, latestRelease);
+      if (isPackageBlockedFromPublic(scanStatus) && !canAccessOwner) return null;
+    }
+  }
+  return pkg;
+}
+
+async function getPackageReadableForPublicTrust(
+  ctx: DbReaderCtx,
+  name: string,
+  viewerUserId?: Id<"users">,
+) {
+  const pkg = await getPackageByNormalizedName(ctx, normalizePackageName(name));
+  if (!pkg || pkg.softDeletedAt) return null;
+  if (pkg.channel === "private" && !(await viewerCanAccessPackageOwner(ctx, pkg, viewerUserId))) {
+    return null;
+  }
   return pkg;
 }
 
@@ -1619,8 +2050,6 @@ export const getVersionByName = query({
     const viewerUserId = await getOptionalViewerUserId(ctx);
     const pkg = await getReadablePackageByName(ctx, args.name, viewerUserId);
     if (!pkg) return null;
-    const publicPackage = toPublicPackage(pkg);
-    if (!publicPackage) return null;
     const release = await ctx.db
       .query("packageReleases")
       .withIndex("by_package_version", (q) =>
@@ -1628,6 +2057,14 @@ export const getVersionByName = query({
       )
       .unique();
     if (!release || release.softDeletedAt) return null;
+    const latestRelease =
+      pkg.latestReleaseId === release._id
+        ? release
+        : pkg.latestReleaseId
+          ? await ctx.db.get(pkg.latestReleaseId)
+          : null;
+    const publicPackage = toPublicPackage(pkg, latestRelease);
+    if (!publicPackage) return null;
     return {
       package: publicPackage,
       version: release,
@@ -1644,8 +2081,6 @@ export const getVersionByNameForViewerInternal = internalQuery({
   handler: async (ctx, args) => {
     const pkg = await getReadablePackageByName(ctx, args.name, args.viewerUserId);
     if (!pkg) return null;
-    const publicPackage = toPublicPackage(pkg);
-    if (!publicPackage) return null;
     const release = await ctx.db
       .query("packageReleases")
       .withIndex("by_package_version", (q) =>
@@ -1653,8 +2088,53 @@ export const getVersionByNameForViewerInternal = internalQuery({
       )
       .unique();
     if (!release || release.softDeletedAt) return null;
+    const latestRelease =
+      pkg.latestReleaseId === release._id
+        ? release
+        : pkg.latestReleaseId
+          ? await ctx.db.get(pkg.latestReleaseId)
+          : null;
+    const publicPackage = toPublicPackage(pkg, latestRelease);
+    if (!publicPackage) return null;
     return {
       package: publicPackage,
+      version: release,
+    };
+  },
+});
+
+export const getVersionSecurityByNameForViewerInternal = internalQuery({
+  args: {
+    name: v.string(),
+    version: v.string(),
+    viewerUserId: v.optional(v.id("users")),
+  },
+  handler: async (ctx, args) => {
+    const pkg = await getPackageReadableForPublicTrust(ctx, args.name, args.viewerUserId);
+    if (!pkg) return null;
+    const release = await ctx.db
+      .query("packageReleases")
+      .withIndex("by_package_version", (q) =>
+        q.eq("packageId", pkg._id).eq("version", args.version),
+      )
+      .unique();
+    if (!release || release.softDeletedAt) return null;
+    const latestRelease =
+      pkg.latestReleaseId === release._id
+        ? release
+        : pkg.latestReleaseId
+          ? await ctx.db.get(pkg.latestReleaseId)
+          : null;
+    const publicPackage = toPublicPackage(pkg, latestRelease);
+    if (!publicPackage) return null;
+    const publicDownloadBlocked =
+      isPackageBlockedFromPublic(publicPackage.scanStatus) &&
+      !(await viewerCanAccessPackageOwner(ctx, pkg, args.viewerUserId));
+    return {
+      package: {
+        ...publicPackage,
+        publicDownloadBlocked,
+      },
       version: release,
     };
   },
@@ -1697,10 +2177,90 @@ export const listPublicPage = query({
     highlightedOnly: v.optional(v.boolean()),
     executesCode: v.optional(v.boolean()),
     capabilityTag: v.optional(v.string()),
+    category: v.optional(v.string()),
     paginationOpts: paginationOptsValidator,
   },
   handler: async (ctx, args) => {
     return await listPackagePageImpl(ctx, args);
+  },
+});
+
+export const listAuditPage = query({
+  args: {
+    paginationOpts: paginationOptsValidator,
+  },
+  handler: async (ctx, args) => {
+    const numItems = Math.max(1, Math.min(args.paginationOpts.numItems, MAX_PUBLIC_LIST_PAGE_SIZE));
+    const result = await ctx.db
+      .query("packages")
+      .withIndex("by_active_downloads", (q) => q.eq("softDeletedAt", undefined))
+      .order("desc")
+      .paginate({ cursor: args.paginationOpts.cursor, numItems });
+
+    const page = [];
+    const membershipCache = new Map<string, Promise<boolean>>();
+    for (const pkg of result.page) {
+      if (pkg.family === "skill") continue;
+      if (!(await canViewerReadPackage(ctx, pkg, undefined, membershipCache))) continue;
+
+      const owner = toPublicPublisher(
+        await getOwnerPublisher(ctx, {
+          ownerPublisherId: pkg.ownerPublisherId,
+          ownerUserId: pkg.ownerUserId,
+        }),
+      );
+      const latestRelease = pkg.latestReleaseId ? await ctx.db.get(pkg.latestReleaseId) : null;
+      page.push({
+        kind: "plugin" as const,
+        package: {
+          name: pkg.name,
+          displayName: pkg.displayName,
+          family: pkg.family,
+          channel: pkg.channel,
+          isOfficial: pkg.isOfficial,
+          summary: pkg.summary ?? null,
+          ownerHandle: owner?.handle ?? null,
+          createdAt: pkg.createdAt,
+          updatedAt: pkg.updatedAt,
+          latestVersion: pkg.latestVersionSummary?.version ?? null,
+          stats: pkg.stats,
+          verificationTier: pkg.verification?.tier ?? null,
+        },
+        owner,
+        latestRelease:
+          latestRelease && !latestRelease.softDeletedAt
+            ? {
+                version: latestRelease.version,
+                createdAt: latestRelease.createdAt,
+                vtAnalysis: latestRelease.vtAnalysis,
+                llmAnalysis: latestRelease.llmAnalysis,
+                staticScan: latestRelease.staticScan
+                  ? {
+                      status: latestRelease.staticScan.status,
+                      reasonCodes: latestRelease.staticScan.reasonCodes,
+                      findings: (latestRelease.staticScan.findings ?? []).map((finding) => ({
+                        code: finding.code,
+                        severity: finding.severity,
+                        file: finding.file,
+                        line: finding.line,
+                        message: finding.message,
+                        evidence: "",
+                      })),
+                      summary: latestRelease.staticScan.summary,
+                      engineVersion: latestRelease.staticScan.engineVersion,
+                      checkedAt: latestRelease.staticScan.checkedAt,
+                    }
+                  : null,
+              }
+            : null,
+      });
+    }
+
+    return {
+      page,
+      isDone: result.isDone,
+      continueCursor: result.isDone ? "" : result.continueCursor,
+    };
   },
 });
 
@@ -1716,6 +2276,7 @@ export const listPageForViewerInternal = internalQuery({
     highlightedOnly: v.optional(v.boolean()),
     executesCode: v.optional(v.boolean()),
     capabilityTag: v.optional(v.string()),
+    category: v.optional(v.string()),
     viewerUserId: v.optional(v.id("users")),
     paginationOpts: paginationOptsValidator,
   },
@@ -1733,11 +2294,15 @@ async function listPackagePageImpl(
     highlightedOnly?: boolean;
     executesCode?: boolean;
     capabilityTag?: string;
+    category?: string;
     viewerUserId?: Id<"users">;
     paginationOpts: { cursor: string | null; numItems: number };
   },
 ) {
   if (args.channel === "private" && !args.viewerUserId) {
+    return { page: [], isDone: true, continueCursor: "" };
+  }
+  if (args.category && !isPluginCategorySlug(args.category)) {
     return { page: [], isDone: true, continueCursor: "" };
   }
   const viewerUserId = args.viewerUserId;
@@ -1772,21 +2337,30 @@ async function listPackagePageImpl(
   const family = args.family;
   const channel = args.channel;
   const isOfficial = args.isOfficial;
+  const category = isPluginCategorySlug(args.category) ? args.category : undefined;
 
-  const builder = args.capabilityTag
-    ? buildPackageCapabilityDigestQuery(ctx, {
-        capabilityTag: args.capabilityTag,
+  const builder = category
+    ? buildPackagePluginCategoryDigestQuery(ctx, {
+        category,
         family,
         channel,
         isOfficial,
         executesCode: args.executesCode,
       })
-    : buildPackageDigestQuery(ctx, {
-        family,
-        channel,
-        isOfficial,
-        executesCode: args.executesCode,
-      });
+    : args.capabilityTag
+      ? buildPackageCapabilityDigestQuery(ctx, {
+          capabilityTag: args.capabilityTag,
+          family,
+          channel,
+          isOfficial,
+          executesCode: args.executesCode,
+        })
+      : buildPackageDigestQuery(ctx, {
+          family,
+          channel,
+          isOfficial,
+          executesCode: args.executesCode,
+        });
   const page: {
     page: PackageDigestLike[];
     isDone: boolean;
@@ -1851,9 +2425,10 @@ export const searchPublic = query({
     highlightedOnly: v.optional(v.boolean()),
     executesCode: v.optional(v.boolean()),
     capabilityTag: v.optional(v.string()),
+    category: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    return await searchPackagesImpl(ctx, args);
+    return (await searchPackagesImpl(ctx, args)).map(toPublicPackageSearchEntry);
   },
 });
 
@@ -1871,6 +2446,7 @@ export const searchForViewerInternal = internalQuery({
     highlightedOnly: v.optional(v.boolean()),
     executesCode: v.optional(v.boolean()),
     capabilityTag: v.optional(v.string()),
+    category: v.optional(v.string()),
     viewerUserId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
@@ -1889,11 +2465,13 @@ async function searchPackagesImpl(
     highlightedOnly?: boolean;
     executesCode?: boolean;
     capabilityTag?: string;
+    category?: string;
     viewerUserId?: Id<"users">;
   },
 ) {
   const queryText = args.query.trim().toLowerCase();
   if (!queryText) return [];
+  if (args.category && !isPluginCategorySlug(args.category)) return [];
   if (args.channel === "private" && !args.viewerUserId) return [];
   const targetCount = Math.max(1, Math.min(args.limit ?? 20, 100));
   const viewerUserId = args.viewerUserId;
@@ -1903,52 +2481,60 @@ async function searchPackagesImpl(
   if (args.highlightedOnly) {
     const digests = await fetchHighlightedPackageDigests(ctx, args);
     return digests
-      .map((digest) => ({
-        score: packageSearchScore(digest, queryText),
-        package: digest,
-      }))
-      .filter((entry) => entry.score > 0)
-      .sort(
-        (a, b) =>
-          b.score - a.score ||
-          Number(b.package.isOfficial) - Number(a.package.isOfficial) ||
-          b.package.updatedAt - a.package.updatedAt,
+      .map((digest) => {
+        const match = packageSearchMatch(digest, queryText);
+        return match ? { ...match, package: digest } : null;
+      })
+      .filter((entry): entry is PackageSearchMatch & { package: PackageDigestLike } =>
+        Boolean(entry),
       )
+      .sort(comparePackageSearchMatches)
       .slice(0, targetCount)
       .map((entry) => ({
         score: entry.score,
+        rankTier: entry.rankTier,
         package: toPublicPackageListItem(entry.package),
       }));
   }
 
+  const category = isPluginCategorySlug(args.category) ? args.category : undefined;
   const buildSearchDigestQuery = () =>
-    args.capabilityTag
-      ? buildPackageCapabilityDigestQuery(ctx, {
-          capabilityTag: args.capabilityTag,
+    category
+      ? buildPackagePluginCategoryDigestQuery(ctx, {
+          category,
           family: args.family,
           channel: args.channel,
           isOfficial: args.isOfficial,
           executesCode: args.executesCode,
         })
-      : buildPackageDigestQuery(ctx, {
-          family: args.family,
-          channel: args.channel,
-          isOfficial: args.isOfficial,
-          executesCode: args.executesCode,
-        });
-  const matches: Array<{ score: number; package: PublicPackageListItem }> = [];
+      : args.capabilityTag
+        ? buildPackageCapabilityDigestQuery(ctx, {
+            capabilityTag: args.capabilityTag,
+            family: args.family,
+            channel: args.channel,
+            isOfficial: args.isOfficial,
+            executesCode: args.executesCode,
+          })
+        : buildPackageDigestQuery(ctx, {
+            family: args.family,
+            channel: args.channel,
+            isOfficial: args.isOfficial,
+            executesCode: args.executesCode,
+          });
+  const matches: Array<PackageSearchMatch & { package: PublicPackageListItem }> = [];
   const seen = new Set<string>();
-  const directDigests = args.capabilityTag
-    ? []
-    : await resolveDirectPackageSearchDigests(ctx, queryText);
+  const directDigests =
+    args.capabilityTag || args.category
+      ? []
+      : await resolveDirectPackageSearchDigests(ctx, queryText);
   for (const digest of directDigests) {
     if (!(await canViewPackage(digest))) continue;
     if (!digestMatchesSearchFilters(digest, args)) continue;
-    const score = packageSearchScore(digest, queryText);
-    if (score <= 0 || seen.has(digest.packageId)) continue;
+    const match = packageSearchMatch(digest, queryText);
+    if (!match || seen.has(digest.packageId)) continue;
     seen.add(digest.packageId);
     matches.push({
-      score,
+      ...match,
       package: toPublicPackageListItem(digest),
     });
   }
@@ -1962,25 +2548,18 @@ async function searchPackagesImpl(
     for (const digest of digests) {
       if (!(await canViewPackage(digest))) continue;
       if (!digestMatchesSearchFilters(digest, args)) continue;
-      const score = packageSearchScore(digest, queryText);
-      if (score <= 0 || seen.has(digest.packageId)) continue;
+      const match = packageSearchMatch(digest, queryText);
+      if (!match || seen.has(digest.packageId)) continue;
       seen.add(digest.packageId);
       matches.push({
-        score,
+        ...match,
         package: toPublicPackageListItem(digest),
       });
       if (matches.length >= targetCount) break;
     }
   }
 
-  return matches
-    .sort(
-      (a, b) =>
-        b.score - a.score ||
-        Number(b.package.isOfficial) - Number(a.package.isOfficial) ||
-        b.package.updatedAt - a.package.updatedAt,
-    )
-    .slice(0, targetCount);
+  return matches.sort(comparePackageSearchMatches).slice(0, targetCount);
 }
 
 export const getPackageByNameInternal = internalQuery({
@@ -2202,15 +2781,33 @@ async function softDeletePackageDoc(
   params: {
     actorUserId: Id<"users">;
     actorRole?: Doc<"users">["role"];
+    deletedAt?: number;
+    reason?: PackageSoftDeletedReason;
     source: "cli" | "dashboard";
   },
 ) {
+  const now = params.deletedAt ?? Date.now();
   if (pkg.softDeletedAt) {
     if (params.actorRole === "admin" || params.actorRole === "moderator") {
-      await ctx.db.patch(pkg._id, {
+      const packagePatch: Partial<Doc<"packages">> = {
         softDeletedBy: params.actorUserId,
         softDeletedByRole: params.actorRole,
-        updatedAt: Date.now(),
+        updatedAt: now,
+      };
+      if (pkg.softDeletedReason === "user.banned" && params.reason !== "user.banned") {
+        packagePatch.softDeletedAt = now;
+        packagePatch.softDeletedReason = params.reason;
+      }
+      const nextPackage: Doc<"packages"> = { ...pkg, ...packagePatch };
+      await ctx.db.patch(pkg._id, packagePatch);
+      const deleteOwner = await getOwnerPublisher(ctx, {
+        ownerPublisherId: pkg.ownerPublisherId,
+        ownerUserId: pkg.ownerUserId,
+      });
+      await upsertPackageSearchDigest(ctx, {
+        ...extractPackageDigestFields(nextPackage),
+        ownerHandle: deleteOwner?.handle ?? "",
+        ownerKind: deleteOwner?.kind,
       });
     }
     return {
@@ -2221,7 +2818,6 @@ async function softDeletePackageDoc(
     };
   }
 
-  const now = Date.now();
   const releases = await ctx.db
     .query("packageReleases")
     .withIndex("by_package", (q) => q.eq("packageId", pkg._id))
@@ -2237,13 +2833,22 @@ async function softDeletePackageDoc(
 
   const packagePatch: Partial<Doc<"packages">> = {
     softDeletedAt: now,
+    softDeletedReason: params.reason,
     softDeletedBy: params.actorUserId,
     softDeletedByRole: params.actorRole ?? "user",
     updatedAt: now,
   };
   const nextPackage: Doc<"packages"> = { ...pkg, ...packagePatch };
   await ctx.db.patch(pkg._id, packagePatch);
-  await upsertPackageSearchDigest(ctx, extractPackageDigestFields(nextPackage));
+  const deleteOwner = await getOwnerPublisher(ctx, {
+    ownerPublisherId: pkg.ownerPublisherId,
+    ownerUserId: pkg.ownerUserId,
+  });
+  await upsertPackageSearchDigest(ctx, {
+    ...extractPackageDigestFields(nextPackage),
+    ownerHandle: deleteOwner?.handle ?? "",
+    ownerKind: deleteOwner?.kind,
+  });
   await ctx.db.insert("auditLogs", {
     actorUserId: params.actorUserId,
     action: "package.delete",
@@ -2255,6 +2860,7 @@ async function softDeletePackageDoc(
       ownerUserId: pkg.ownerUserId,
       ownerPublisherId: pkg.ownerPublisherId,
       actorRole: params.actorRole ?? "user",
+      softDeletedReason: params.reason ?? null,
       releaseCount,
       releaseIds: deletedReleaseIds,
       source: params.source,
@@ -2330,6 +2936,8 @@ async function restorePackageDoc(
   params: {
     actorUserId: Id<"users">;
     actorRole?: Doc<"users">["role"];
+    allowBanRestore?: boolean;
+    releaseSoftDeletedAt?: number;
     source: "cli" | "dashboard";
   },
 ) {
@@ -2344,7 +2952,13 @@ async function restorePackageDoc(
 
   const now = Date.now();
   const actorRole = params.actorRole ?? "user";
-  if (actorRole !== "admin" && actorRole !== "moderator" && pkg.softDeletedByRole !== "user") {
+  const isPrivilegedActor = actorRole === "admin" || actorRole === "moderator";
+  const isDirectlyRestorableDelete = pkg.softDeletedReason === undefined;
+  const isPrivilegedRestorableDelete = isPrivilegedActor && isDirectlyRestorableDelete;
+  const isUserRestorableDelete = pkg.softDeletedByRole === "user" && isDirectlyRestorableDelete;
+  const isUnbanBatchRestore =
+    params.allowBanRestore === true && pkg.softDeletedReason === "user.banned";
+  if (!isPrivilegedRestorableDelete && !isUserRestorableDelete && !isUnbanBatchRestore) {
     throw new ConvexError(
       "Forbidden: This package was hidden by moderation and cannot be restored by the owner. Please contact a moderator.",
     );
@@ -2359,6 +2973,12 @@ async function restorePackageDoc(
   const activeReleases: Doc<"packageReleases">[] = [];
   for (const release of releases) {
     if (release.softDeletedAt) {
+      if (
+        params.releaseSoftDeletedAt !== undefined &&
+        release.softDeletedAt !== params.releaseSoftDeletedAt
+      ) {
+        continue;
+      }
       const restoredRelease = { ...release, softDeletedAt: undefined };
       await ctx.db.patch(release._id, { softDeletedAt: undefined });
       releaseCount += 1;
@@ -2384,6 +3004,7 @@ async function restorePackageDoc(
 
   const packagePatch: Partial<Doc<"packages">> = {
     softDeletedAt: undefined,
+    softDeletedReason: undefined,
     softDeletedBy: undefined,
     softDeletedByRole: undefined,
     tags: nextTags,
@@ -2413,7 +3034,15 @@ async function restorePackageDoc(
   };
   const nextPackage: Doc<"packages"> = { ...pkg, ...packagePatch };
   await ctx.db.patch(pkg._id, packagePatch);
-  await upsertPackageSearchDigest(ctx, extractPackageDigestFields(nextPackage));
+  const restoreOwner = await getOwnerPublisher(ctx, {
+    ownerPublisherId: pkg.ownerPublisherId,
+    ownerUserId: pkg.ownerUserId,
+  });
+  await upsertPackageSearchDigest(ctx, {
+    ...extractPackageDigestFields(nextPackage),
+    ownerHandle: restoreOwner?.handle ?? "",
+    ownerKind: restoreOwner?.kind,
+  });
   await ctx.db.insert("auditLogs", {
     actorUserId: params.actorUserId,
     action: "package.undelete",
@@ -2440,6 +3069,359 @@ async function restorePackageDoc(
     alreadyRestored: false as const,
   };
 }
+
+async function revokePackagePublishTokensForPackage(
+  ctx: Pick<MutationCtx, "db" | "scheduler">,
+  packageId: Id<"packages">,
+  revokedAt: number,
+) {
+  const tokens = await ctx.db
+    .query("packagePublishTokens")
+    .withIndex("by_package_revoked_created", (q) =>
+      q.eq("packageId", packageId).eq("revokedAt", undefined).lte("createdAt", revokedAt),
+    )
+    .order("desc")
+    .take(PACKAGE_PUBLISH_TOKEN_REVOKE_BATCH_SIZE + 1);
+  let revokedCount = 0;
+  for (const token of tokens.slice(0, PACKAGE_PUBLISH_TOKEN_REVOKE_BATCH_SIZE)) {
+    await ctx.db.patch(token._id, { revokedAt });
+    revokedCount += 1;
+  }
+  const scheduled = tokens.length > PACKAGE_PUBLISH_TOKEN_REVOKE_BATCH_SIZE;
+  if (scheduled) {
+    void ctx.scheduler.runAfter(
+      0,
+      internal.packages.revokePackagePublishTokensForPackageBatchInternal,
+      { packageId, revokedAt },
+    );
+  }
+  return { revokedCount, scheduled };
+}
+
+async function isPackageOwnedByPersonalUser(
+  ctx: Pick<MutationCtx, "db">,
+  pkg: Pick<Doc<"packages">, "ownerPublisherId">,
+  owner: Doc<"users">,
+) {
+  if (!pkg.ownerPublisherId) return true;
+  if (owner.personalPublisherId && pkg.ownerPublisherId === owner.personalPublisherId) {
+    return true;
+  }
+  const ownerPublisher = await ctx.db.get(pkg.ownerPublisherId);
+  return ownerPublisher?.kind === "user" && ownerPublisher.linkedUserId === owner._id;
+}
+
+async function getOwnedPackagePersonalPublisherId(
+  ctx: Pick<MutationCtx, "db">,
+  owner: Pick<Doc<"users">, "_id" | "personalPublisherId">,
+) {
+  if (owner.personalPublisherId) return owner.personalPublisherId;
+  const linkedPublisher = await getPersonalPublisherForUser(ctx, owner._id);
+  if (
+    linkedPublisher?.kind === "user" &&
+    !linkedPublisher.deletedAt &&
+    !linkedPublisher.deactivatedAt
+  ) {
+    return linkedPublisher._id;
+  }
+  return undefined;
+}
+
+function getOwnedPackageScanScope(args: { scope?: OwnedPackageScanScope }) {
+  return args.scope ?? "ownerUserId";
+}
+
+function shouldSkipOwnedPackageScanRow(
+  pkg: Pick<Doc<"packages">, "ownerUserId">,
+  args: { ownerUserId: Id<"users">; scope?: OwnedPackageScanScope },
+) {
+  return (
+    getOwnedPackageScanScope(args) === "personalPublisher" && pkg.ownerUserId === args.ownerUserId
+  );
+}
+
+function scheduleNextOwnedPackageScanBatch(
+  ctx: Pick<MutationCtx, "scheduler">,
+  fn: unknown,
+  args: { ownerUserId: Id<"users">; cursor?: string; scope?: OwnedPackageScanScope } & Record<
+    string,
+    unknown
+  >,
+  personalPublisherId: Id<"publishers"> | undefined,
+  isDone: boolean,
+  continueCursor: string | null,
+) {
+  if (!isDone) {
+    void ctx.scheduler.runAfter(
+      0,
+      fn as never,
+      {
+        ...args,
+        cursor: continueCursor ?? undefined,
+      } as never,
+    );
+    return true;
+  }
+  if (getOwnedPackageScanScope(args) === "ownerUserId" && personalPublisherId) {
+    void ctx.scheduler.runAfter(
+      0,
+      fn as never,
+      {
+        ...args,
+        scope: "personalPublisher",
+        cursor: undefined,
+      } as never,
+    );
+    return true;
+  }
+  return false;
+}
+
+export const revokePackagePublishTokensForPackageBatchInternal = internalMutation({
+  args: {
+    packageId: v.id("packages"),
+    revokedAt: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const result = await revokePackagePublishTokensForPackage(ctx, args.packageId, args.revokedAt);
+    return { ok: true as const, ...result };
+  },
+});
+
+export const applyBanToOwnedPackagesBatchInternal = internalMutation({
+  args: {
+    ownerUserId: v.id("users"),
+    bannedAt: v.number(),
+    deletedBy: v.id("users"),
+    deletedByRole: v.union(v.literal("admin"), v.literal("moderator"), v.literal("user")),
+    cursor: v.optional(v.string()),
+    scope: ownedPackageScanScopeValidator,
+  },
+  handler: async (ctx, args) => {
+    const owner = await ctx.db.get(args.ownerUserId);
+    const scope = getOwnedPackageScanScope(args);
+    const isInitialOwnerUserIdBatch = !args.cursor && scope === "ownerUserId";
+    const ownerMatchesCurrentBan = owner?.deletedAt === args.bannedAt;
+    if (!owner || owner.deactivatedAt || (!isInitialOwnerUserIdBatch && !ownerMatchesCurrentBan)) {
+      return {
+        ok: true as const,
+        deletedCount: 0,
+        revokedTokenCount: 0,
+        scheduled: false,
+        stale: true as const,
+      };
+    }
+
+    const personalPublisherId = await getOwnedPackagePersonalPublisherId(ctx, owner);
+    const packageQuery =
+      scope === "personalPublisher" && personalPublisherId
+        ? ctx.db
+            .query("packages")
+            .withIndex("by_owner_publisher", (q) => q.eq("ownerPublisherId", personalPublisherId))
+        : ctx.db
+            .query("packages")
+            .withIndex("by_owner", (q) => q.eq("ownerUserId", args.ownerUserId));
+    const { page, isDone, continueCursor } = await packageQuery.order("desc").paginate({
+      cursor: args.cursor ?? null,
+      numItems: BAN_USER_PACKAGES_BATCH_SIZE,
+    });
+
+    let deletedCount = 0;
+    let revokedTokenCount = 0;
+    for (const pkg of page) {
+      if (shouldSkipOwnedPackageScanRow(pkg, args)) continue;
+      if (!(await isPackageOwnedByPersonalUser(ctx, pkg, owner))) continue;
+      const revokeResult = await revokePackagePublishTokensForPackage(ctx, pkg._id, args.bannedAt);
+      revokedTokenCount += revokeResult.revokedCount;
+      if (pkg.softDeletedAt) {
+        if (pkg.softDeletedReason === "user.banned" && pkg.softDeletedAt !== args.bannedAt) {
+          const previousBanHiddenAt = pkg.softDeletedAt;
+          const releases = await ctx.db
+            .query("packageReleases")
+            .withIndex("by_package", (q) => q.eq("packageId", pkg._id))
+            .collect();
+          for (const release of releases) {
+            if (release.softDeletedAt === previousBanHiddenAt) {
+              await ctx.db.patch(release._id, { softDeletedAt: args.bannedAt });
+            }
+          }
+          const packagePatch: Partial<Doc<"packages">> = {
+            softDeletedAt: args.bannedAt,
+            softDeletedBy: args.deletedBy,
+            softDeletedByRole: args.deletedByRole,
+            updatedAt: args.bannedAt,
+          };
+          const nextPackage: Doc<"packages"> = { ...pkg, ...packagePatch };
+          await ctx.db.patch(pkg._id, packagePatch);
+          const ownerPublisher = await getOwnerPublisher(ctx, {
+            ownerPublisherId: pkg.ownerPublisherId,
+            ownerUserId: pkg.ownerUserId,
+          });
+          await upsertPackageSearchDigest(ctx, {
+            ...extractPackageDigestFields(nextPackage),
+            ownerHandle: ownerPublisher?.handle ?? "",
+            ownerKind: ownerPublisher?.kind,
+          });
+        }
+        continue;
+      }
+
+      await softDeletePackageDoc(ctx, pkg, {
+        actorUserId: args.deletedBy,
+        actorRole: args.deletedByRole,
+        deletedAt: args.bannedAt,
+        reason: "user.banned",
+        source: "dashboard",
+      });
+      deletedCount += 1;
+    }
+
+    const scheduled = scheduleNextOwnedPackageScanBatch(
+      ctx,
+      internal.packages.applyBanToOwnedPackagesBatchInternal,
+      args,
+      personalPublisherId,
+      isDone,
+      continueCursor,
+    );
+
+    return { ok: true as const, deletedCount, revokedTokenCount, scheduled };
+  },
+});
+
+export const restoreOwnedPackagesForUnbanBatchInternal = internalMutation({
+  args: {
+    actorUserId: v.id("users"),
+    ownerUserId: v.id("users"),
+    bannedAt: v.number(),
+    cursor: v.optional(v.string()),
+    scope: ownedPackageScanScopeValidator,
+  },
+  handler: async (ctx, args) => {
+    const actor = await ctx.db.get(args.actorUserId);
+    if (!actor || actor.deletedAt || actor.deactivatedAt) {
+      throw new ConvexError("Unauthorized");
+    }
+    const owner = await ctx.db.get(args.ownerUserId);
+    if (!owner || owner.deletedAt || owner.deactivatedAt) {
+      return { ok: true as const, restoredCount: 0, scheduled: false, stale: true as const };
+    }
+
+    const scope = getOwnedPackageScanScope(args);
+    const personalPublisherId = await getOwnedPackagePersonalPublisherId(ctx, owner);
+    const packageQuery =
+      scope === "personalPublisher" && personalPublisherId
+        ? ctx.db
+            .query("packages")
+            .withIndex("by_owner_publisher", (q) => q.eq("ownerPublisherId", personalPublisherId))
+        : ctx.db
+            .query("packages")
+            .withIndex("by_owner", (q) => q.eq("ownerUserId", args.ownerUserId));
+    const { page, isDone, continueCursor } = await packageQuery.order("desc").paginate({
+      cursor: args.cursor ?? null,
+      numItems: BAN_USER_PACKAGES_BATCH_SIZE,
+    });
+
+    let restoredCount = 0;
+    for (const pkg of page) {
+      if (shouldSkipOwnedPackageScanRow(pkg, args)) continue;
+      if (!(await isPackageOwnedByPersonalUser(ctx, pkg, owner))) continue;
+      if (
+        !pkg.softDeletedAt ||
+        pkg.softDeletedAt !== args.bannedAt ||
+        pkg.softDeletedReason !== "user.banned"
+      ) {
+        continue;
+      }
+
+      await restorePackageDoc(ctx, pkg, {
+        actorUserId: actor._id,
+        actorRole: actor.role,
+        allowBanRestore: true,
+        releaseSoftDeletedAt: args.bannedAt,
+        source: "dashboard",
+      });
+      restoredCount += 1;
+    }
+
+    const scheduled = scheduleNextOwnedPackageScanBatch(
+      ctx,
+      internal.packages.restoreOwnedPackagesForUnbanBatchInternal,
+      args,
+      personalPublisherId,
+      isDone,
+      continueCursor,
+    );
+
+    return { ok: true as const, restoredCount, scheduled };
+  },
+});
+
+export const applyAccountDeletionToOwnedPackagesBatchInternal = internalMutation({
+  args: {
+    ownerUserId: v.id("users"),
+    deletedAt: v.number(),
+    cursor: v.optional(v.string()),
+    scope: ownedPackageScanScopeValidator,
+  },
+  handler: async (ctx, args) => {
+    const owner = await ctx.db.get(args.ownerUserId);
+    if (!owner) {
+      return {
+        ok: true as const,
+        deletedCount: 0,
+        revokedTokenCount: 0,
+        scheduled: false,
+        stale: true as const,
+      };
+    }
+
+    const scope = getOwnedPackageScanScope(args);
+    const personalPublisherId = await getOwnedPackagePersonalPublisherId(ctx, owner);
+    const packageQuery =
+      scope === "personalPublisher" && personalPublisherId
+        ? ctx.db
+            .query("packages")
+            .withIndex("by_owner_publisher", (q) => q.eq("ownerPublisherId", personalPublisherId))
+        : ctx.db
+            .query("packages")
+            .withIndex("by_owner", (q) => q.eq("ownerUserId", args.ownerUserId));
+    const { page, isDone, continueCursor } = await packageQuery.order("desc").paginate({
+      cursor: args.cursor ?? null,
+      numItems: BAN_USER_PACKAGES_BATCH_SIZE,
+    });
+
+    let deletedCount = 0;
+    let revokedTokenCount = 0;
+    for (const pkg of page) {
+      if (shouldSkipOwnedPackageScanRow(pkg, args)) continue;
+      if (!(await isPackageOwnedByPersonalUser(ctx, pkg, owner))) continue;
+      const revokeResult = await revokePackagePublishTokensForPackage(ctx, pkg._id, args.deletedAt);
+      revokedTokenCount += revokeResult.revokedCount;
+      if (pkg.softDeletedAt) continue;
+
+      await softDeletePackageDoc(ctx, pkg, {
+        actorUserId: args.ownerUserId,
+        actorRole: "user",
+        deletedAt: args.deletedAt,
+        reason: "user.deactivated",
+        source: "dashboard",
+      });
+      deletedCount += 1;
+    }
+
+    const scheduled = scheduleNextOwnedPackageScanBatch(
+      ctx,
+      internal.packages.applyAccountDeletionToOwnedPackagesBatchInternal,
+      args,
+      personalPublisherId,
+      isDone,
+      continueCursor,
+    );
+
+    return { ok: true as const, deletedCount, revokedTokenCount, scheduled };
+  },
+});
 
 export const softDeletePackageInternal = internalMutation({
   args: {
@@ -2506,6 +3488,177 @@ export const restorePackageInternal = internalMutation({
       actorRole: user.role,
       source: "cli",
     });
+  },
+});
+
+export const restoreOwnedPackagesForAutobanRemediationBatchInternal = internalMutation({
+  args: {
+    actorUserId: v.id("users"),
+    ownerUserId: v.id("users"),
+    bannedAt: v.number(),
+    cursor: v.optional(v.string()),
+    scope: ownedPackageScanScopeValidator,
+  },
+  handler: async (ctx, args) => {
+    const owner = await ctx.db.get(args.ownerUserId);
+    if (!owner || owner.deletedAt || owner.deactivatedAt || owner.purgedAt) {
+      return {
+        ok: true as const,
+        restoredCount: 0,
+        restoredReleases: 0,
+        skippedMalicious: 0,
+        scheduled: false,
+        aborted: true,
+      };
+    }
+
+    const scope = getOwnedPackageScanScope(args);
+    const personalPublisherId = await getOwnedPackagePersonalPublisherId(ctx, owner);
+    const packageQuery =
+      scope === "personalPublisher" && personalPublisherId
+        ? ctx.db
+            .query("packages")
+            .withIndex("by_owner_publisher", (q) => q.eq("ownerPublisherId", personalPublisherId))
+        : ctx.db
+            .query("packages")
+            .withIndex("by_owner", (q) => q.eq("ownerUserId", args.ownerUserId));
+    const { page, isDone, continueCursor } = await packageQuery.order("desc").paginate({
+      cursor: args.cursor ?? null,
+      numItems: BAN_USER_PACKAGES_BATCH_SIZE,
+    });
+
+    let restoredCount = 0;
+    let restoredReleases = 0;
+    let skippedMalicious = 0;
+    for (const pkg of page) {
+      if (shouldSkipOwnedPackageScanRow(pkg, args)) continue;
+      if (!(await isPackageOwnedByPersonalUser(ctx, pkg, owner))) continue;
+      if (!pkg.softDeletedAt || pkg.softDeletedAt !== args.bannedAt) continue;
+      if (pkg.scanStatus === "malicious") {
+        skippedMalicious += 1;
+        continue;
+      }
+
+      const releases = await ctx.db
+        .query("packageReleases")
+        .withIndex("by_package", (q) => q.eq("packageId", pkg._id))
+        .collect();
+      const nonMaliciousActiveReleases: Doc<"packageReleases">[] = [];
+      const restoredReleaseIds: Array<Id<"packageReleases">> = [];
+      for (const release of releases) {
+        let nextRelease = release;
+        if (
+          release.softDeletedAt === args.bannedAt &&
+          resolvePackageReleaseScanStatus(release) !== "malicious"
+        ) {
+          nextRelease = { ...release, softDeletedAt: undefined };
+          restoredReleaseIds.push(release._id);
+        }
+        if (
+          !nextRelease.softDeletedAt &&
+          resolvePackageReleaseScanStatus(nextRelease) !== "malicious"
+        ) {
+          nonMaliciousActiveReleases.push(nextRelease);
+        }
+      }
+
+      const nextLatest =
+        getPreservedRestoredPackageRelease(pkg, nonMaliciousActiveReleases) ??
+        getPreferredRestoredPackageRelease(pkg.family, nonMaliciousActiveReleases);
+      if (!nextLatest) {
+        skippedMalicious += 1;
+        continue;
+      }
+      for (const releaseId of restoredReleaseIds) {
+        await ctx.db.patch(releaseId, { softDeletedAt: undefined });
+        restoredReleases += 1;
+      }
+
+      const nextTags = rebuildPackageTagsFromActiveReleases(nonMaliciousActiveReleases);
+      if (nextLatest) nextTags.latest = nextLatest._id;
+      if (!(nextLatest.distTags ?? []).includes("latest")) {
+        await ctx.db.patch(nextLatest._id, {
+          distTags: [...(nextLatest.distTags ?? []), "latest"],
+        });
+      }
+
+      const packagePatch: Partial<Doc<"packages">> = {
+        softDeletedAt: undefined,
+        softDeletedBy: undefined,
+        softDeletedByRole: undefined,
+        softDeletedReason: undefined,
+        tags: nextTags,
+        latestReleaseId: nextLatest?._id,
+        latestVersionSummary: nextLatest
+          ? {
+              version: nextLatest.version,
+              createdAt: nextLatest.createdAt,
+              changelog: nextLatest.changelog,
+              compatibility: nextLatest.compatibility,
+              capabilities: nextLatest.capabilities,
+              verification: nextLatest.verification,
+              artifact: packageArtifactSummary(nextLatest),
+            }
+          : undefined,
+        summary: nextLatest?.summary,
+        capabilityTags: nextLatest?.capabilities?.capabilityTags,
+        executesCode:
+          typeof nextLatest?.capabilities?.executesCode === "boolean"
+            ? nextLatest.capabilities.executesCode
+            : undefined,
+        compatibility: nextLatest?.compatibility,
+        capabilities: nextLatest?.capabilities,
+        verification: nextLatest?.verification,
+        scanStatus: nextLatest ? resolvePackageReleaseScanStatus(nextLatest) : pkg.scanStatus,
+        updatedAt: Date.now(),
+      };
+      const nextPackage: Doc<"packages"> = { ...pkg, ...packagePatch };
+      await ctx.db.patch(pkg._id, packagePatch);
+      const restoreOwner = await getOwnerPublisher(ctx, {
+        ownerPublisherId: pkg.ownerPublisherId,
+        ownerUserId: pkg.ownerUserId,
+      });
+      await upsertPackageSearchDigest(ctx, {
+        ...extractPackageDigestFields(nextPackage),
+        ownerHandle: restoreOwner?.handle ?? "",
+        ownerKind: restoreOwner?.kind,
+      });
+      await ctx.db.insert("auditLogs", {
+        actorUserId: args.actorUserId,
+        action: "package.autoban_remediation.restore",
+        targetType: "package",
+        targetId: pkg._id,
+        metadata: {
+          name: pkg.name,
+          normalizedName: pkg.normalizedName,
+          ownerUserId: pkg.ownerUserId,
+          ownerPublisherId: pkg.ownerPublisherId,
+          bannedAt: args.bannedAt,
+          releaseCount: restoredReleaseIds.length,
+          releaseIds: restoredReleaseIds,
+        },
+        createdAt: Date.now(),
+      });
+      restoredCount += 1;
+    }
+
+    const scheduled = scheduleNextOwnedPackageScanBatch(
+      ctx,
+      packageAutobanRemediationInternalRefs.packages
+        .restoreOwnedPackagesForAutobanRemediationBatchInternal,
+      args,
+      personalPublisherId,
+      isDone,
+      continueCursor,
+    );
+
+    return {
+      ok: true as const,
+      restoredCount,
+      restoredReleases,
+      skippedMalicious,
+      scheduled,
+    };
   },
 });
 
@@ -3116,7 +4269,7 @@ export const getPackageModerationStatusForUserInternal = internalQuery({
             moderationState: activeLatestRelease.manualModeration?.state ?? null,
             moderationReason: activeLatestRelease.manualModeration?.reason ?? null,
             blockedFromDownload: releaseScanStatus === "malicious",
-            reasons: getPackageModerationQueueReasons(
+            reasons: getPackageTrustReasons(
               activeLatestRelease,
               releaseScanStatus,
               pkg.reportCount ?? 0,
@@ -3982,8 +5135,30 @@ async function publishPackageImpl(
     } catch (error) {
       if (scopedOwnerHandle && error instanceof Error) {
         if (/not found/i.test(error.message)) {
+          let legacyPersonalOwnerHandle: string | undefined;
+          if (existingPackage && actor && existingPackage.ownerUserId === actor._id) {
+            if (existingPackage.ownerPublisherId) {
+              const existingOwnerPublisher = await runQueryRef<Doc<"publishers"> | null>(
+                ctx,
+                internalRefs.publishers.getByIdInternal,
+                { publisherId: existingPackage.ownerPublisherId },
+              );
+              if (
+                existingOwnerPublisher?.kind === "user" &&
+                existingOwnerPublisher.linkedUserId === actor._id
+              ) {
+                legacyPersonalOwnerHandle = normalizePublisherHandle(existingOwnerPublisher.handle);
+              }
+            } else {
+              legacyPersonalOwnerHandle = normalizePublisherHandle(actor.handle);
+            }
+          }
           throw new ConvexError(
-            `This package name uses the "@${scopedOwnerHandle}" namespace, but that publisher does not exist on ClawHub. Create the "@${scopedOwnerHandle}" organization or choose a different package name.`,
+            getScopedPackageMissingPublisherMessage({
+              scopedOwnerHandle,
+              packageName: name,
+              legacyPersonalOwnerHandle,
+            }),
           );
         }
         if (/forbidden|publish access/i.test(error.message)) {
@@ -4134,11 +5309,22 @@ async function publishPackageImpl(
     },
     files,
   });
+  const ownerPublisher = ownerPublisherId
+    ? await runQueryRef<Doc<"publishers"> | null>(ctx, internalRefs.publishers.getByIdInternal, {
+        publisherId: ownerPublisherId,
+      })
+    : null;
+  const trustedOpenClawPlugin = isTrustedOpenClawPluginPackage({
+    family,
+    normalizedName: name,
+    ownerPublisher,
+  });
   const verificationSource = codeArtifacts?.verification ?? bundleArtifacts?.verification;
-  const initialScanStatus = staticScan.status === "malicious" ? "malicious" : "pending";
+  const initialScanStatus = trustedOpenClawPlugin ? "clean" : "pending";
   const verification = verificationSource
     ? {
         ...verificationSource,
+        trustedOpenClawPlugin: trustedOpenClawPlugin || undefined,
         scanStatus: initialScanStatus,
       }
     : undefined;
@@ -4240,8 +5426,9 @@ async function publishPackageImpl(
       releaseId: publishResult.releaseId,
     },
   );
-  await runAfterRef(ctx, 0, internalRefs.llmEval.evaluatePackageReleaseWithLlm, {
+  await runMutationRef(ctx, internalRefs.securityScan.enqueuePackageReleaseScanInternal, {
     releaseId: publishResult.releaseId,
+    source: "publish",
   });
 
   return publishResult;
@@ -4422,15 +5609,21 @@ async function patchPackageOwnerWithAudit(
     pkg: Doc<"packages">;
     owner: Doc<"users">;
     ownerPublisher?: Doc<"publishers"> | null;
+    publisherOfficial?: boolean;
     channel?: "official" | "community" | "private";
     reason?: string;
   },
 ) {
   const now = Date.now();
-  const nextChannel = args.channel ?? args.pkg.channel;
-  const publisherTrusted = args.ownerPublisher?.trustedPublisher ?? args.owner.trustedPublisher;
-  if (nextChannel === "official" && !publisherTrusted) {
-    throw new ConvexError("Only trusted publishers may own official packages");
+  const publisherOfficial =
+    args.publisherOfficial ?? (await isOfficialPublisher(ctx, args.ownerPublisher));
+  const nextChannel = derivePackagePublisherChannel({
+    requestedChannel: args.channel,
+    currentChannel: args.pkg.channel,
+    publisherOfficial,
+  });
+  if (nextChannel === "official" && !publisherOfficial) {
+    throw new ConvexError("Only official publishers may own official packages");
   }
   const nextPackageFields = {
     ownerUserId: args.owner._id,
@@ -4506,10 +5699,16 @@ async function transferPackageOwnerForUser(
   if (pkg.ownerPublisherId) {
     const sourcePublisher = await ctx.db.get(pkg.ownerPublisherId);
     const sourceMembership = await getPublisherMembership(ctx, pkg.ownerPublisherId, actor._id);
+    const canManagePersonalSource =
+      sourcePublisher?.kind === "user" &&
+      (sourcePublisher.linkedUserId
+        ? sourcePublisher.linkedUserId === actor._id
+        : pkg.ownerUserId === actor._id);
     const canManageSource =
       actor.role === "admin" ||
-      sourcePublisher?.linkedUserId === actor._id ||
-      Boolean(sourceMembership && isPublisherRoleAllowed(sourceMembership.role, ["admin"]));
+      (sourcePublisher?.kind === "user"
+        ? canManagePersonalSource
+        : Boolean(sourceMembership && isPublisherRoleAllowed(sourceMembership.role, ["admin"])));
     if (!canManageSource) {
       throw new ConvexError("Forbidden");
     }
@@ -4539,10 +5738,18 @@ async function transferPackageOwnerForUser(
     destinationPublisher._id,
     actor._id,
   );
+  const canManagePersonalDestination =
+    destinationPublisher.kind === "user" &&
+    (destinationPublisher.linkedUserId
+      ? destinationPublisher.linkedUserId === actor._id
+      : actor.personalPublisherId === destinationPublisher._id);
   const canManageDestination =
     actor.role === "admin" ||
-    destinationPublisher.linkedUserId === actor._id ||
-    Boolean(destinationMembership && isPublisherRoleAllowed(destinationMembership.role, ["admin"]));
+    (destinationPublisher.kind === "user"
+      ? canManagePersonalDestination
+      : Boolean(
+          destinationMembership && isPublisherRoleAllowed(destinationMembership.role, ["admin"]),
+        ));
   if (!canManageDestination) {
     throw new ConvexError(
       `You do not have admin access for "@${destinationHandle}". Ask an owner or admin to add you before transferring this package.`,
@@ -4554,6 +5761,7 @@ async function transferPackageOwnerForUser(
     pkg,
     owner: actor,
     ownerPublisher: destinationPublisher,
+    publisherOfficial: await isOfficialPublisher(ctx, destinationPublisher),
     reason: args.reason,
   });
 }
@@ -4608,6 +5816,10 @@ export const transferPackageOwnerInternal = internalMutation({
     if (args.ownerPublisherId && (!ownerPublisher || ownerPublisher.deletedAt)) {
       throw new ConvexError("Owner publisher not found");
     }
+    const officialPublisher = await getOwnerPublisher(ctx, {
+      ownerPublisherId: args.ownerPublisherId,
+      ownerUserId: args.ownerUserId,
+    });
 
     const normalizedName = normalizePackageName(args.name);
     const pkg = await getPackageByNormalizedName(ctx, normalizedName);
@@ -4618,6 +5830,7 @@ export const transferPackageOwnerInternal = internalMutation({
       pkg,
       owner,
       ownerPublisher,
+      publisherOfficial: await isOfficialPublisher(ctx, officialPublisher),
       channel: args.channel,
       reason: args.reason,
     });
@@ -4680,6 +5893,10 @@ export const repairPackageIdentityInternal = internalMutation({
     }
 
     await ctx.db.patch(pkg._id, patch);
+    await upsertPackageSearchDigest(ctx, {
+      ...extractPackageDigestFields(pkg),
+      ...patch,
+    });
     await ctx.db.insert("auditLogs", {
       actorUserId: args.actorUserId,
       action: "package.identity.repair",
@@ -4766,16 +5983,53 @@ export const insertReleaseInternal = internalMutation({
     const now = Date.now();
     const normalizedName = normalizePackageName(args.name);
     const actor = await ctx.db.get(args.actorUserId);
-    if (!actor) throw new ConvexError("Unauthorized");
+    if (!actor || actor.deletedAt || actor.deactivatedAt) throw new ConvexError("Unauthorized");
     const owner = await ctx.db.get(args.ownerUserId);
-    if (!owner) throw new ConvexError("Unauthorized");
+    if (!owner || owner.deletedAt || owner.deactivatedAt) {
+      throw new ConvexError("Package owner is unavailable");
+    }
     const ownerPublisher = args.ownerPublisherId ? await ctx.db.get(args.ownerPublisherId) : null;
+    if (
+      args.ownerPublisherId &&
+      (!ownerPublisher || ownerPublisher.deletedAt || ownerPublisher.deactivatedAt)
+    ) {
+      throw new ConvexError("Package owner publisher is unavailable");
+    }
+    if (ownerPublisher?.kind === "user" && ownerPublisher.linkedUserId) {
+      const linkedPublisherUser = await ctx.db.get(ownerPublisher.linkedUserId);
+      if (
+        !linkedPublisherUser ||
+        linkedPublisherUser.deletedAt ||
+        linkedPublisherUser.deactivatedAt
+      ) {
+        throw new ConvexError("Package owner publisher is unavailable");
+      }
+    }
+    if (args.publishActor?.kind === "user" && args.publishActor.userId !== args.actorUserId) {
+      throw new ConvexError("Publish actor must match the authenticated actor");
+    }
+    if (args.publishActor?.kind === "user" && ownerPublisher?.kind === "org") {
+      const membership = await getPublisherMembership(
+        ctx,
+        ownerPublisher._id,
+        args.publishActor.userId,
+      );
+      if (!membership || !isPublisherRoleAllowed(membership.role, ["publisher"])) {
+        throw new ConvexError(
+          `You do not have publish access for "@${ownerPublisher.handle}". Ask an owner or admin to add you before publishing this package.`,
+        );
+      }
+    }
     if (args.ownerUserId !== args.actorUserId) {
       assertAdmin(actor);
     }
-    const publisherTrusted = ownerPublisher?.trustedPublisher ?? owner.trustedPublisher;
-    if (args.channel === "official" && !publisherTrusted) {
-      throw new ConvexError("Only trusted publishers may publish to the official channel");
+    const officialPublisher = await getOwnerPublisher(ctx, {
+      ownerPublisherId: args.ownerPublisherId,
+      ownerUserId: args.ownerUserId,
+    });
+    const publisherOfficial = await isOfficialPublisher(ctx, officialPublisher);
+    if (args.channel === "official" && !publisherOfficial) {
+      throw new ConvexError("Only official publishers may publish to the official channel");
     }
     const nextCapabilities = withArtifactCapabilityTags(args.capabilities, args);
     const nextCapabilityTags = mergeArtifactCapabilityTags(args.capabilities?.capabilityTags, args);
@@ -4787,13 +6041,12 @@ export const insertReleaseInternal = internalMutation({
         `Package "${nextNameLabel}" was deleted. Restore it before publishing another release or choose a new package name.`,
       );
     }
-    const nextChannel =
-      args.channel ??
-      (existing?.channel === "private" && !existingIsReservation
-        ? "private"
-        : publisherTrusted
-          ? "official"
-          : "community");
+    const nextChannel = derivePackagePublisherChannel({
+      requestedChannel: args.channel,
+      currentChannel: existing?.channel,
+      currentIsReservation: existingIsReservation,
+      publisherOfficial,
+    });
     const nextIsOfficial = nextChannel === "official";
     const nextRuntimeIdLabel = typeof args.runtimeId === "string" ? args.runtimeId : "<unknown>";
     const nextVersionLabel = typeof args.version === "string" ? args.version : "<unknown>";
@@ -5014,16 +6267,32 @@ async function syncLatestPackageVerification(ctx: MutationCtx, release: Doc<"pac
           scanStatus,
         }
       : undefined;
+  const nextLatestVersionSummary = pkg.latestVersionSummary
+    ? {
+        ...pkg.latestVersionSummary,
+        verification: nextVerification,
+      }
+    : pkg.latestVersionSummary;
+  const nextPackage: Doc<"packages"> = {
+    ...pkg,
+    verification: nextVerification,
+    scanStatus,
+    latestVersionSummary: nextLatestVersionSummary,
+  };
 
   await ctx.db.patch(pkg._id, {
     verification: nextVerification,
     scanStatus,
-    latestVersionSummary: pkg.latestVersionSummary
-      ? {
-          ...pkg.latestVersionSummary,
-          verification: nextVerification,
-        }
-      : pkg.latestVersionSummary,
+    latestVersionSummary: nextLatestVersionSummary,
+  });
+  const owner = await getOwnerPublisher(ctx, {
+    ownerPublisherId: pkg.ownerPublisherId,
+    ownerUserId: pkg.ownerUserId,
+  });
+  await upsertPackageSearchDigest(ctx, {
+    ...extractPackageDigestFields(nextPackage),
+    ownerHandle: owner?.handle ?? "",
+    ownerKind: owner?.kind,
   });
 }
 
@@ -5036,33 +6305,29 @@ export const updateReleaseScanResultsInternal = internalMutation({
   handler: async (ctx, args) => {
     const release = await ctx.db.get(args.releaseId);
     if (!release || release.softDeletedAt) return;
-    const activeRelease = release;
 
     const patch: Partial<Doc<"packageReleases">> = {};
     if (args.sha256hash !== undefined) patch.sha256hash = args.sha256hash;
     if (args.vtAnalysis !== undefined) {
-      const nextScanStatus = resolvePackageReleaseScanStatus({
-        ...activeRelease,
-        vtAnalysis: args.vtAnalysis,
-      });
       patch.vtAnalysis = args.vtAnalysis;
-      patch.verification = activeRelease.verification
-        ? {
-            ...activeRelease.verification,
-            scanStatus: nextScanStatus,
-          }
-        : activeRelease.verification;
     }
     if (Object.keys(patch).length > 0) {
       await ctx.db.patch(args.releaseId, patch);
     }
-    if (args.vtAnalysis !== undefined) {
-      const updatedRelease = {
-        ...activeRelease,
-        ...patch,
-      } as Doc<"packageReleases">;
-      await syncLatestPackageVerification(ctx, updatedRelease);
-    }
+  },
+});
+
+export const updateReleaseSkillSpectorAnalysisInternal = internalMutation({
+  args: {
+    releaseId: v.id("packageReleases"),
+    skillSpectorAnalysis: skillSpectorAnalysisValidator,
+  },
+  handler: async (ctx, args) => {
+    const release = await ctx.db.get(args.releaseId);
+    if (!isReleaseActive(release)) return;
+    await ctx.db.patch(args.releaseId, {
+      skillSpectorAnalysis: args.skillSpectorAnalysis,
+    });
   },
 });
 
@@ -5274,6 +6539,12 @@ export const backfillLatestPackageScanStatusInternal = internalMutation({
             verification: nextVerification,
           }
         : pkg.latestVersionSummary;
+      const nextPackage: Doc<"packages"> = {
+        ...pkg,
+        verification: nextVerification,
+        scanStatus,
+        latestVersionSummary: nextLatestVersionSummary,
+      };
 
       if (
         pkg.scanStatus !== scanStatus ||
@@ -5288,6 +6559,15 @@ export const backfillLatestPackageScanStatusInternal = internalMutation({
         });
         patched++;
       }
+      const owner = await getOwnerPublisher(ctx, {
+        ownerPublisherId: pkg.ownerPublisherId,
+        ownerUserId: pkg.ownerUserId,
+      });
+      await upsertPackageSearchDigest(ctx, {
+        ...extractPackageDigestFields(nextPackage),
+        ownerHandle: owner?.handle ?? "",
+        ownerKind: owner?.kind,
+      });
     }
 
     if (!isDone) {
@@ -5453,8 +6733,9 @@ export const backfillPackageReleaseScansInternal = internalAction({
         });
       }
       if (release.needsLlm) {
-        await runAfterRef(ctx, 0, internalRefs.llmEval.evaluatePackageReleaseWithLlm, {
+        await runMutationRef(ctx, internalRefs.securityScan.enqueuePackageReleaseScanInternal, {
           releaseId: release.releaseId,
+          source: "backfill",
         });
       }
       if (release.needsStatic) {
@@ -5538,8 +6819,10 @@ export const updateLatestClawScanNoteAndRequestRescan = mutation({
       createdAt: now,
     });
 
-    await runAfterRef(ctx, 0, internalRefs.llmEval.evaluatePackageReleaseWithLlm, {
+    await runAfterRef(ctx, 0, internalRefs.securityScan.enqueuePackageReleaseScanInternal, {
       releaseId: release._id,
+      source: "clawscan-note",
+      waitForVtMs: 0,
     });
 
     return { ok: true as const, packageReleaseId: release._id };

@@ -228,6 +228,16 @@ export const importGitHubSkill = action({
       minimumRole: "publisher",
     })) as { publisherId: Id<"publishers"> };
 
+    const sourceProvenance = {
+      kind: "github" as const,
+      url: resolved.originalUrl,
+      repo: `${resolved.owner}/${resolved.repo}`,
+      ref: resolved.ref,
+      commit: resolved.commit,
+      path: candidate.path,
+      importedAt: Date.now(),
+    };
+
     let result: Awaited<ReturnType<typeof publishVersionForUser>>;
     try {
       result = await publishVersionForUser(
@@ -240,17 +250,9 @@ export const importGitHubSkill = action({
           changelog: "",
           tags,
           files: storedFiles,
-          source: {
-            kind: "github",
-            url: resolved.originalUrl,
-            repo: `${resolved.owner}/${resolved.repo}`,
-            ref: resolved.ref,
-            commit: resolved.commit,
-            path: candidate.path,
-            importedAt: Date.now(),
-          },
+          source: sourceProvenance,
         },
-        { ownerPublisherId: target.publisherId },
+        { ownerPublisherId: target.publisherId, sourceProvenance },
       );
     } catch (error) {
       throw new ConvexError(buildPublishFailureMessage(error));

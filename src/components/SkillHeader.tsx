@@ -1,15 +1,19 @@
 import { Link } from "@tanstack/react-router";
 import type { ClawdisSkillMetadata } from "clawhub-schema";
 import { PLATFORM_SKILL_LICENSE } from "clawhub-schema/licenseConstants";
-import { Download, Flag, Settings, ShieldCheck, Star } from "lucide-react";
+import { Download, Flag, Settings, ShieldCheck, Star, Upload } from "lucide-react";
 import type { ReactNode } from "react";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
 import { getSkillBadges } from "../lib/badges";
+import { buildSkillCategoryBrowseHref, type SkillCategory } from "../lib/categories";
 import { formatSkillStatsTriplet } from "../lib/numberFormat";
 import type { PublicPublisher, PublicSkill } from "../lib/publicUser";
 import { getRuntimeEnv } from "../lib/runtimeEnv";
 import { timeAgo } from "../lib/timeAgo";
+import { ApiKeyRequiredBadge } from "./ApiKeyRequiredBadge";
 import { DetailHero } from "./DetailPageShell";
+import { DetailSecuritySummaryLabel } from "./DetailSecuritySummary";
+import { OfficialTag } from "./OfficialBadge";
 import { SidebarMetadata } from "./SidebarMetadata";
 import { buildSkillHref } from "./skillDetailUtils";
 import { SkillCommandLineCard } from "./SkillInstallSurface";
@@ -17,7 +21,6 @@ import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { UserBadge } from "./UserBadge";
-import { VerifiedBadge } from "./VerifiedBadge";
 
 type SkillModerationInfo = {
   isPendingScan: boolean;
@@ -94,7 +97,11 @@ type SkillHeaderProps = {
   configRequirements: ClawdisSkillMetadata["config"] | undefined;
   cliHelp: string | undefined;
   clawdis: ClawdisSkillMetadata | undefined;
+  category?: SkillCategory | null;
   priorityContent?: ReactNode;
+  postInstallContent?: ReactNode;
+  securityAuditSummary?: ReactNode;
+  newVersionHref?: string | null;
   settingsHref?: string | null;
   children?: ReactNode;
 };
@@ -105,6 +112,7 @@ export function SkillHeader({
   ownerHandle,
   latestVersion,
   modInfo,
+  canManage,
   isAuthenticated,
   isStaff,
   isStarred,
@@ -123,7 +131,11 @@ export function SkillHeader({
   configRequirements,
   cliHelp,
   clawdis,
+  category,
   priorityContent,
+  postInstallContent,
+  securityAuditSummary,
+  newVersionHref,
   settingsHref,
   children,
 }: SkillHeaderProps) {
@@ -135,11 +147,18 @@ export function SkillHeader({
       ? buildSkillDownloadHref(convexSiteUrl, skill.slug, ownerHandle)
       : null;
   const hasTitleActions = isStaff;
+  const showReportAction = !canManage || isStaff;
   const hasSidebarActions =
-    Boolean(downloadHref) || Boolean(onOpenReport) || Boolean(settingsHref) || hasTitleActions;
+    Boolean(downloadHref) ||
+    showReportAction ||
+    Boolean(newVersionHref) ||
+    Boolean(settingsHref) ||
+    hasTitleActions;
   const badges = getSkillBadges(skill);
+  const isOfficial = badges.includes("Official") || owner?.official === true;
+  const titleBadges = badges.filter((badge) => badge !== "Official");
   const showHeroMeta = Boolean((forkOf && forkOfHref) || canonicalHref);
-  const showTitleBadges = badges.length > 0;
+  const showTitleBadges = titleBadges.length > 0;
   const headerDescription =
     getLatestVersionDescription(latestVersion) ?? skill.summary ?? "No summary provided.";
 
@@ -153,16 +172,6 @@ export function SkillHeader({
               Your skill is being scanned by VirusTotal. It will be visible to others once the scan
               completes. This usually takes up to 5 minutes — grab a coffee or exfoliate your shell
               while you wait.
-            </p>
-          </div>
-        </div>
-      ) : modInfo?.isSuspicious ? (
-        <div className="pending-banner pending-banner-warning">
-          <div className="pending-banner-content">
-            <strong>Skill flagged — review recommended</strong>
-            <p>
-              ClawHub Security found sensitive or high-impact capabilities. Review the scan results
-              before using.
             </p>
           </div>
         </div>
@@ -192,6 +201,7 @@ export function SkillHeader({
               ownerHandle={ownerHandle}
               formattedStats={formattedStats}
               latestVersion={latestVersion}
+              securityAuditSummary={securityAuditSummary}
             />
             {hasSidebarActions ? (
               <div className="skill-sidebar-actions">
@@ -224,20 +234,30 @@ export function SkillHeader({
                     </a>
                   </Button>
                 ) : null}
-                <SignedInActionTooltip
-                  isAuthenticated={isAuthenticated}
-                  message="You must be signed in to report a skill"
-                >
-                  <Button
-                    variant="outline"
-                    type="button"
-                    className="skill-sidebar-action-button"
-                    onClick={isAuthenticated ? onOpenReport : onRequireSignIn}
+                {showReportAction ? (
+                  <SignedInActionTooltip
+                    isAuthenticated={isAuthenticated}
+                    message="You must be signed in to report a skill"
                   >
-                    <Flag size={14} aria-hidden="true" />
-                    Report
+                    <Button
+                      variant="outline"
+                      type="button"
+                      className="skill-sidebar-action-button"
+                      onClick={isAuthenticated ? onOpenReport : onRequireSignIn}
+                    >
+                      <Flag size={14} aria-hidden="true" />
+                      Report
+                    </Button>
+                  </SignedInActionTooltip>
+                ) : null}
+                {newVersionHref ? (
+                  <Button asChild variant="outline" className="skill-sidebar-action-button">
+                    <a href={newVersionHref}>
+                      <Upload size={14} aria-hidden="true" />
+                      New version
+                    </a>
                   </Button>
-                </SignedInActionTooltip>
+                ) : null}
                 {settingsHref ? (
                   <Button asChild variant="outline" className="skill-sidebar-action-button">
                     <a href={settingsHref}>
@@ -268,7 +288,7 @@ export function SkillHeader({
               <nav className="skill-hero-breadcrumbs" aria-label="Skill breadcrumbs">
                 <a href="/skills">skills</a>
                 <span aria-hidden="true">/</span>
-                <a href={ownerHandle ? `/${encodeURIComponent(ownerHandle)}` : "#"}>
+                <a href={ownerHandle ? `/user/${encodeURIComponent(ownerHandle)}` : "#"}>
                   {ownerHandle ?? owner?.displayName ?? owner?._id ?? "unknown"}
                 </a>
                 <span aria-hidden="true">/</span>
@@ -276,22 +296,31 @@ export function SkillHeader({
                   {skill.slug}
                 </a>
               </nav>
-              <div className="skill-hero-title-row">
-                <h1 className="skill-page-title">{skill.displayName}</h1>
-                {showTitleBadges ? (
-                  <div className="skill-title-badges">
-                    {badges.map((badge) =>
-                      badge === "Verified" ? (
-                        <VerifiedBadge key={badge} />
-                      ) : (
+              <div className="skill-hero-heading-stack">
+                <div className="skill-hero-title-row">
+                  <h1 className="skill-page-title">{skill.displayName}</h1>
+                  {isOfficial ? <OfficialTag /> : null}
+                  {showTitleBadges ? (
+                    <div className="skill-title-badges">
+                      {titleBadges.map((badge) => (
                         <Badge key={badge} variant="compact">
                           {badge}
                         </Badge>
-                      ),
-                    )}
-                  </div>
+                      ))}
+                    </div>
+                  ) : null}
+                  {nixPlugin ? <Badge variant="accent">Plugin bundle (nix)</Badge> : null}
+                  <ApiKeyRequiredBadge apiKeyRequired={latestVersion?.apiKeyRequired} />
+                </div>
+                {category ? (
+                  <a
+                    className="skill-category-chip"
+                    href={buildSkillCategoryBrowseHref(category)}
+                    aria-label={`View ${category.label} skills`}
+                  >
+                    {category.label}
+                  </a>
                 ) : null}
-                {nixPlugin ? <Badge variant="accent">Plugin bundle (nix)</Badge> : null}
               </div>
               <div className="skill-summary-block">
                 <p className="section-subtitle skill-summary-line">{headerDescription}</p>
@@ -344,6 +373,8 @@ export function SkillHeader({
           ownerId={installOwnerId}
           clawdis={clawdis}
         />
+
+        {postInstallContent}
 
         {children}
 
@@ -417,15 +448,15 @@ function SkillSidebarStats({
   ownerHandle,
   formattedStats,
   latestVersion,
+  securityAuditSummary,
 }: {
   skill: Doc<"skills"> | PublicSkill;
   owner: PublicPublisher | null;
   ownerHandle: string | null;
   formattedStats: ReturnType<typeof formatSkillStatsTriplet>;
   latestVersion: SkillHeaderLatestVersion;
+  securityAuditSummary?: ReactNode;
 }) {
-  const versionCount = skill.stats.versions ?? 0;
-
   return (
     <SidebarMetadata
       ariaLabel="Skill metadata"
@@ -446,19 +477,23 @@ function SkillSidebarStats({
             />
           ),
         },
+        securityAuditSummary
+          ? {
+              key: "security-audit",
+              label: <DetailSecuritySummaryLabel />,
+              value: securityAuditSummary,
+            }
+          : { label: "", value: null },
+        { label: "Last updated", value: timeAgo(skill.updatedAt) },
         {
           grid: [
             {
               label: "Current version",
               value: latestVersion?.version ? `v${latestVersion.version}` : "None",
             },
-            { label: "Versions", value: versionCount },
+            { label: "License", value: PLATFORM_SKILL_LICENSE },
           ],
         },
-        {
-          grid: [{ label: "License", value: PLATFORM_SKILL_LICENSE }],
-        },
-        { label: "Last updated", value: timeAgo(skill.updatedAt) },
       ]}
     />
   );

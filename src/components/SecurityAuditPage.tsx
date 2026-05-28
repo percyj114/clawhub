@@ -1,0 +1,964 @@
+import { Check, Clock, ExternalLink, Info, RefreshCw, TriangleAlert, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import type { Id } from "../../convex/_generated/dataModel";
+import { getRuntimeEnv } from "../lib/runtimeEnv";
+import { PublisherClawScanNote } from "./PublisherClawScanNote";
+import {
+  aggregateAuditVerdict,
+  AUDIT_SCANNER_LABELS,
+  SECURITY_AUDIT_SUBTEXT,
+  getAuditScannerOrder,
+  getAuditScannerStatus,
+  getLatestAuditCheckedAt,
+  getSecurityAuditOverviewCopy,
+  type AuditScannerKind,
+} from "./securityAuditModel";
+import { SidebarMetadata } from "./SidebarMetadata";
+import {
+  ClawScanRiskReview,
+  getSkillSpectorOverviewCopy,
+  getSkillSpectorIssueCount,
+  hasClawScanRiskReview,
+  hasSkillSpectorFindings,
+  ScanResultBadge,
+  SkillSpectorFindings,
+  type LlmAnalysis,
+  type SkillSpectorAnalysis,
+  type SkillSpectorIssue,
+  type VtAnalysis,
+} from "./SkillSecurityScanResults";
+import { Alert, AlertDescription } from "./ui/alert";
+import { Button } from "./ui/button";
+import { Skeleton } from "./ui/skeleton";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
+
+type OwnerRef = {
+  _id?: string;
+  handle?: string | null;
+};
+
+type EntityRef = {
+  kind: "skill" | "plugin";
+  title: string;
+  name: string;
+  version?: string | null;
+  owner?: OwnerRef | null;
+  ownerUserId?: Id<"users"> | null;
+  ownerPublisherId?: Id<"publishers"> | null;
+  detailPath: string;
+};
+
+type SecurityAuditPageProps = {
+  entity: EntityRef;
+  sha256hash?: string | null;
+  vtAnalysis?: VtAnalysis | null;
+  llmAnalysis?: LlmAnalysis | null;
+  skillSpectorAnalysis?: SkillSpectorAnalysis | null;
+  source?: Record<string, unknown> | null;
+  clawScanNote?: string | null;
+  canManageArtifact?: boolean;
+  settingsHref?: string | null;
+  onRequestRescan?: (() => Promise<unknown>) | null;
+};
+
+const EMPTY_SKILLSPECTOR_ISSUES: SkillSpectorIssue[] = [];
+const SKILLSPECTOR_VISIBLE_CHECK_LIMIT = 5;
+const RISK_ANALYSIS_SCOPE_COPY =
+  "ClawHub reviews SkillSpector, VirusTotal, and artifact evidence before producing the final verdict.";
+const SKILLSPECTOR_CLEAN_CHECKS = [
+  {
+    category: "Prompt Injection",
+    ruleIds: ["P1", "P2", "P3", "P4", "P5"],
+    patterns: ["Instruction Override", "Hidden Instructions", "Exfiltration Commands"],
+  },
+  {
+    category: "Data Exfiltration",
+    ruleIds: ["E1", "E2", "E3", "E4"],
+    patterns: ["External Transmission", "Env Variable Harvesting", "File System Enumeration"],
+  },
+  {
+    category: "Privilege Escalation",
+    ruleIds: ["PE1", "PE2", "PE3"],
+    patterns: ["Excessive Permissions", "Sudo/Root Execution", "Credential Access"],
+  },
+  {
+    category: "Supply Chain",
+    ruleIds: ["SC1", "SC2", "SC3", "SC4", "SC5", "SC6"],
+    patterns: ["Unpinned Dependencies", "External Script Fetching", "Obfuscated Code"],
+  },
+  {
+    category: "Excessive Agency",
+    ruleIds: ["EA1", "EA2", "EA3", "EA4", "SDI2", "SDI3"],
+    patterns: ["Unrestricted Tool Access", "Autonomous Decision Making", "Scope Creep"],
+  },
+  {
+    category: "Output Handling",
+    ruleIds: ["OH1", "OH2", "OH3"],
+    patterns: ["Unvalidated Output Injection", "Cross-Context Output", "Unbounded Output"],
+  },
+  {
+    category: "System Prompt Leakage",
+    ruleIds: ["P6", "P7", "P8"],
+    patterns: ["Direct Leakage", "Indirect Extraction", "Tool-Based Exfiltration"],
+  },
+  {
+    category: "Memory Poisoning",
+    ruleIds: ["MP1", "MP2", "MP3"],
+    patterns: ["Persistent Context Injection", "Context Window Stuffing", "Memory Manipulation"],
+  },
+  {
+    category: "Tool Misuse",
+    ruleIds: ["TM1", "TM2", "TM3"],
+    patterns: ["Tool Parameter Abuse", "Chaining Abuse", "Unsafe Defaults"],
+  },
+  {
+    category: "Rogue Agent",
+    ruleIds: ["RA1", "RA2"],
+    patterns: ["Self-Modification", "Session Persistence"],
+  },
+  {
+    category: "Trigger Abuse",
+    ruleIds: ["TR1", "TR2", "TR3", "SQP1"],
+    patterns: ["Overly Broad Trigger", "Shadow Command Trigger", "Keyword Baiting Trigger"],
+  },
+  {
+    category: "Behavioral AST",
+    ruleIds: ["AST1", "AST2", "AST3", "AST4", "AST5", "AST6", "AST7", "AST8"],
+    patterns: ["exec() Call", "eval() Call", "Dynamic Import"],
+  },
+  {
+    category: "Taint Tracking",
+    ruleIds: ["TT1", "TT2", "TT3", "TT4", "TT5"],
+    patterns: [
+      "Direct Taint Flow",
+      "Variable-Mediated Taint Flow",
+      "Credential Exfiltration Chain",
+    ],
+  },
+  {
+    category: "YARA Signatures",
+    ruleIds: ["YR1", "YR2", "YR3", "YR4"],
+    patterns: ["Malware Match", "Webshell Match", "Cryptominer Match"],
+  },
+  {
+    category: "MCP Least Privilege",
+    ruleIds: ["LP1", "LP2", "LP3", "LP4"],
+    patterns: ["Underdeclared Capability", "Wildcard Permission", "Missing Permission Declaration"],
+  },
+  {
+    category: "MCP Tool Poisoning",
+    ruleIds: ["TP1", "TP2", "TP3", "TP4", "SDI1", "SDI4"],
+    patterns: ["Hidden Instructions", "Unicode Deception", "Parameter Description Injection"],
+  },
+];
+
+function normalizeSkillSpectorPatternValue(value?: string | null) {
+  return value
+    ?.trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function normalizeSkillSpectorIssueId(value?: string | null) {
+  return value
+    ?.trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "");
+}
+
+function getSkillSpectorIssueSearchText(issue: SkillSpectorIssue) {
+  return [
+    issue.issueId,
+    issue.category,
+    issue.pattern,
+    issue.finding,
+    issue.explanation,
+    issue.codeSnippet,
+    issue.remediation,
+  ]
+    .filter((value): value is string => Boolean(value?.trim()))
+    .join(" ")
+    .toLowerCase();
+}
+
+function inferSkillSpectorPatternCategory(issue: SkillSpectorIssue) {
+  const issueId = normalizeSkillSpectorIssueId(issue.issueId);
+  const category = normalizeSkillSpectorPatternValue(issue.category);
+  const pattern = normalizeSkillSpectorPatternValue(issue.pattern);
+
+  for (const check of SKILLSPECTOR_CLEAN_CHECKS) {
+    if (check.ruleIds.some((ruleId) => normalizeSkillSpectorIssueId(ruleId) === issueId)) {
+      return check.category;
+    }
+  }
+  for (const check of SKILLSPECTOR_CLEAN_CHECKS) {
+    if (normalizeSkillSpectorPatternValue(check.category) === category) return check.category;
+  }
+  for (const check of SKILLSPECTOR_CLEAN_CHECKS) {
+    if (check.patterns.some((value) => normalizeSkillSpectorPatternValue(value) === pattern)) {
+      return check.category;
+    }
+  }
+
+  const text = getSkillSpectorIssueSearchText(issue);
+  if (
+    /\b(exfiltrat\w*|external|transmit\w*|upload\w*|send|sending|post|session|token|secret|credential\w*)\b/.test(
+      text,
+    )
+  ) {
+    return "Data Exfiltration";
+  }
+  if (/\b(sudo|root|ssh key|password|credential access)\b/.test(text)) {
+    return "Privilege Escalation";
+  }
+  if (/\b(unpinned|dependency|curl\s*\|\s*bash|remote script|obfuscat|typosquat)\b/.test(text)) {
+    return "Supply Chain";
+  }
+  if (/\b(scope creep|autonomous|unrestricted|excessive|capability)\b/.test(text)) {
+    return "Excessive Agency";
+  }
+  if (/\b(system prompt|prompt leakage|internal rules)\b/.test(text)) {
+    return "System Prompt Leakage";
+  }
+  if (/\b(trigger|activation|keyword)\b/.test(text)) {
+    return "Trigger Abuse";
+  }
+  if (/\b(exec|eval|subprocess|os\.system|dynamic import)\b/.test(text)) {
+    return "Behavioral AST";
+  }
+  if (
+    /\b(description.behavior|description behavior|mismatch|hidden instruction|unicode|parameter)\b/.test(
+      text,
+    )
+  ) {
+    return "MCP Tool Poisoning";
+  }
+  if (/\b(ignore|override|hidden instruction|jailbreak|instruction)\b/.test(text)) {
+    return "Prompt Injection";
+  }
+  return null;
+}
+
+function getFlaggedSkillSpectorPatternCategories(issues: SkillSpectorIssue[]) {
+  return new Set(
+    issues
+      .map((issue) => inferSkillSpectorPatternCategory(issue))
+      .filter((category): category is string => Boolean(category)),
+  );
+}
+
+function formatTime(value?: number | null) {
+  if (!value) return "Not checked yet";
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
+}
+
+function extractDetailPathParts(detailPath: string) {
+  return detailPath.split("/").filter(Boolean).map(decodeURIComponent);
+}
+
+function getOwnerLabel(entity: EntityRef) {
+  if (entity.owner?.handle) return entity.owner.handle;
+  const parts = extractDetailPathParts(entity.detailPath);
+  if (entity.kind === "skill") return parts[0] ?? "unknown";
+  return entity.owner?._id ?? "plugins";
+}
+
+function SecurityAuditHero({ props }: { props: SecurityAuditPageProps }) {
+  const ownerLabel = getOwnerLabel(props.entity);
+  const listingLabel = props.entity.kind === "skill" ? "skills" : "plugins";
+  const ownerHref =
+    props.entity.kind === "skill" ? `/user/${encodeURIComponent(ownerLabel)}` : "/plugins";
+
+  return (
+    <header className="security-scan-hero">
+      <nav className="skill-hero-breadcrumbs" aria-label="Breadcrumb">
+        <a href={`/${listingLabel}`}>{listingLabel}</a>
+        <span aria-hidden="true">/</span>
+        <a href={ownerHref}>{ownerLabel}</a>
+        <span aria-hidden="true">/</span>
+        <a href={props.entity.detailPath}>{props.entity.name}</a>
+        <span aria-hidden="true">/</span>
+        <span>Security Audit</span>
+      </nav>
+      <div className="security-scan-hero-heading">
+        <h1 className="skill-page-title">{props.entity.title}</h1>
+        <p className="security-scan-hero-subtext">{SECURITY_AUDIT_SUBTEXT}</p>
+      </div>
+    </header>
+  );
+}
+
+function getVirusTotalEngineStats(analysis?: VtAnalysis | null) {
+  return analysis?.engineStats ?? analysis?.metadata?.stats ?? null;
+}
+
+function joinReadableClauses(clauses: string[]) {
+  if (clauses.length <= 1) return clauses[0] ?? "";
+  if (clauses.length === 2) return `${clauses[0]}, and ${clauses[1]}`;
+  return `${clauses.slice(0, -1).join(", ")}, and ${clauses.at(-1)}`;
+}
+
+function hasNonEngineVirusTotalSource(analysis?: VtAnalysis | null) {
+  if (!analysis) return false;
+  const source = analysis.source?.trim().toLowerCase();
+  const scanner = analysis.scanner?.trim().toLowerCase();
+  return Boolean(
+    (source && !source.startsWith("engines")) || (scanner && !scanner.startsWith("engines")),
+  );
+}
+
+function getArtifactKindLabel(entity: EntityRef) {
+  return entity.kind === "plugin" ? "plugin" : "skill";
+}
+
+function getVirusTotalNoFindingsCopy(_entity: EntityRef) {
+  return "No VirusTotal findings";
+}
+
+function getVirusTotalPendingCopy(entity: EntityRef) {
+  return `VirusTotal findings are pending for this ${getArtifactKindLabel(entity)} version.`;
+}
+
+function getVirusTotalEngineOverview(analysis: VtAnalysis | null | undefined, entity: EntityRef) {
+  const stats = getVirusTotalEngineStats(analysis);
+  if (stats) {
+    const malicious = stats.malicious ?? 0;
+    const suspicious = stats.suspicious ?? 0;
+    const clean = (stats.harmless ?? 0) + (stats.undetected ?? 0);
+    const total = malicious + suspicious + clean;
+    if (total <= 0) return getVirusTotalNoFindingsCopy(entity);
+
+    const artifactKind = getArtifactKindLabel(entity);
+    const hasFullEngineStats =
+      stats.malicious !== undefined &&
+      stats.suspicious !== undefined &&
+      stats.harmless !== undefined &&
+      stats.undetected !== undefined;
+    const firstCountLabel = (count: number) =>
+      hasFullEngineStats
+        ? `${count}/${total} vendors`
+        : `${count} ${count === 1 ? "vendor" : "vendors"}`;
+    const followupCountLabel = (count: number) =>
+      hasFullEngineStats ? `${count}/${total}` : `${count} ${count === 1 ? "vendor" : "vendors"}`;
+
+    if (malicious === 0 && suspicious === 0) {
+      return `${firstCountLabel(clean)} flagged this ${artifactKind} as clean.`;
+    }
+
+    const clauses: string[] = [];
+    if (malicious > 0) {
+      clauses.push(`${firstCountLabel(malicious)} flagged this ${artifactKind} as malicious`);
+    }
+    if (suspicious > 0) {
+      clauses.push(
+        clauses.length === 0
+          ? `${firstCountLabel(suspicious)} flagged this ${artifactKind} as suspicious`
+          : `${followupCountLabel(suspicious)} flagged it as suspicious`,
+      );
+    }
+    if (clean > 0) {
+      clauses.push(`${followupCountLabel(clean)} flagged it as clean`);
+    }
+    return `${joinReadableClauses(clauses)}.`;
+  }
+
+  if (hasNonEngineVirusTotalSource(analysis)) {
+    return getVirusTotalNoFindingsCopy(entity);
+  }
+
+  const status = analysis?.status?.trim().toLowerCase();
+  if (
+    status === "clean" ||
+    status === "benign" ||
+    analysis?.verdict === "undetected-only-fallback"
+  ) {
+    return getVirusTotalNoFindingsCopy(entity);
+  }
+  if (status && !["loading", "not_found", "pending"].includes(status)) {
+    return `VirusTotal engine telemetry is currently ${status} for this artifact.`;
+  }
+
+  return null;
+}
+
+function getVirusTotalOverviewCopy(analysis: VtAnalysis | null | undefined, entity: EntityRef) {
+  return getVirusTotalEngineOverview(analysis, entity) ?? getVirusTotalPendingCopy(entity);
+}
+
+function isReviewStatus(status: string) {
+  const normalized = status.trim().toLowerCase();
+  return normalized === "review" || normalized === "warn" || normalized === "suspicious";
+}
+
+function PublisherNotePrompt({
+  storageKey,
+  settingsHref,
+}: {
+  storageKey: string;
+  settingsHref: string;
+}) {
+  const [dismissed, setDismissed] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setDismissed(window.localStorage.getItem(storageKey) === "1");
+  }, [storageKey]);
+
+  if (dismissed) return null;
+
+  function dismiss() {
+    setDismissed(true);
+    if (typeof window !== "undefined") window.localStorage.setItem(storageKey, "1");
+  }
+
+  return (
+    <Alert variant="info" className="publisher-note-prompt" role="status">
+      <Info size={18} aria-hidden="true" />
+      <AlertDescription>
+        <a href={settingsHref}>Add a publisher note</a> to give this audit context on these
+        findings.
+      </AlertDescription>
+      <button type="button" onClick={dismiss} aria-label="Dismiss publisher note prompt">
+        <X size={16} aria-hidden="true" />
+      </button>
+    </Alert>
+  );
+}
+
+function SecurityAuditOverview(props: SecurityAuditPageProps) {
+  const overviewCopy = getSecurityAuditOverviewCopy({ llmAnalysis: props.llmAnalysis });
+  return (
+    <section
+      className="security-report-panel security-report-panel-compact"
+      aria-labelledby="overview-heading"
+    >
+      <div className="security-report-panel-header">
+        <h2 id="overview-heading" className="skill-install-panel-title">
+          Overview
+        </h2>
+      </div>
+      <div className="security-report-overview-body">
+        {overviewCopy.map((copy, index) => (
+          <p key={`security-audit-overview-${index}`}>{copy}</p>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ClawScanSection(props: SecurityAuditPageProps) {
+  const riskAnalysis =
+    props.llmAnalysis && !props.skillSpectorAnalysis && hasClawScanRiskReview(props.llmAnalysis)
+      ? props.llmAnalysis
+      : null;
+  if (!riskAnalysis) return null;
+
+  return (
+    <div className="security-report-panel-body security-report-panel-body-findings">
+      <ClawScanRiskReview analysis={riskAnalysis} showTitle={false} />
+    </div>
+  );
+}
+
+function PublisherNoteSection(props: SecurityAuditPageProps) {
+  const status = getAuditScannerStatus("clawscan", props);
+  const riskAnalysis =
+    props.llmAnalysis && hasClawScanRiskReview(props.llmAnalysis) ? props.llmAnalysis : null;
+  const showPublisherNotePrompt =
+    props.canManageArtifact &&
+    props.settingsHref &&
+    !props.clawScanNote?.trim() &&
+    isReviewStatus(status) &&
+    Boolean(riskAnalysis);
+  const publisherNotePromptHref = showPublisherNotePrompt ? props.settingsHref : null;
+  const publisherNotePromptStorageKey = `clawhub.publisher-note-prompt.${props.entity.kind}.${props.entity.name}.${props.entity.version ?? "latest"}`;
+
+  return (
+    <>
+      <PublisherClawScanNote note={props.clawScanNote} compact />
+      {publisherNotePromptHref ? (
+        <PublisherNotePrompt
+          storageKey={publisherNotePromptStorageKey}
+          settingsHref={publisherNotePromptHref}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function VirusTotalSection(props: SecurityAuditPageProps) {
+  const vtUrl = props.sha256hash ? `https://www.virustotal.com/gui/file/${props.sha256hash}` : null;
+  return (
+    <div className="security-report-panel-body">
+      <div className="security-report-overview-body">
+        <p>{getVirusTotalOverviewCopy(props.vtAnalysis, props.entity)}</p>
+      </div>
+      {vtUrl ? (
+        <a
+          href={vtUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="security-audit-external-link"
+        >
+          View on VirusTotal
+          <ExternalLink className="h-3 w-3" aria-hidden="true" />
+        </a>
+      ) : null}
+    </div>
+  );
+}
+
+function SkillSpectorSection(props: SecurityAuditPageProps) {
+  const analysis = props.skillSpectorAnalysis ?? null;
+  const overviewCopy = getSkillSpectorOverviewCopy(analysis);
+  const contentSnippets = useSkillSpectorContentSnippets(
+    props.entity,
+    analysis?.issues ?? EMPTY_SKILLSPECTOR_ISSUES,
+  );
+  const hasFindings = analysis ? hasSkillSpectorFindings(analysis) : false;
+  const issueCount = getSkillSpectorIssueCount(analysis);
+  const storedIssueCount = analysis?.issues.length ?? 0;
+  const hasHiddenFindings = issueCount > storedIssueCount;
+  const findingsTitle = issueCount > 0 ? `Findings (${issueCount})` : "Findings";
+  const status = analysis?.status?.trim().toLowerCase();
+  const showChecks = Boolean(
+    analysis && !["error", "failed", "loading", "not_found", "pending"].includes(status ?? ""),
+  );
+  const showOverview = !hasFindings && !showChecks;
+
+  return (
+    <div className="security-report-panel-body security-report-panel-body-findings">
+      {showOverview ? (
+        <div className="security-report-overview-body">
+          <p>{overviewCopy}</p>
+        </div>
+      ) : null}
+      {showChecks ? (
+        <SkillSpectorChecks
+          hasHiddenFindings={hasHiddenFindings}
+          issues={analysis?.issues ?? EMPTY_SKILLSPECTOR_ISSUES}
+        />
+      ) : null}
+      {analysis && hasFindings ? (
+        <div className="skillspector-findings-block">
+          <div className="skillspector-subsection-title">{findingsTitle}</div>
+          <SkillSpectorFindings analysis={analysis} contentSnippets={contentSnippets} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SkillSpectorChecks({
+  hasHiddenFindings,
+  issues,
+}: {
+  hasHiddenFindings: boolean;
+  issues: SkillSpectorIssue[];
+}) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const flaggedCategories = getFlaggedSkillSpectorPatternCategories(issues);
+  const sortedChecks = [...SKILLSPECTOR_CLEAN_CHECKS].sort((left, right) => {
+    const leftFlagged = flaggedCategories.has(left.category);
+    const rightFlagged = flaggedCategories.has(right.category);
+    if (leftFlagged === rightFlagged) return 0;
+    return leftFlagged ? -1 : 1;
+  });
+  const visibleChecks = isExpanded
+    ? sortedChecks
+    : sortedChecks.slice(0, SKILLSPECTOR_VISIBLE_CHECK_LIMIT);
+  const remainingCount = sortedChecks.length - SKILLSPECTOR_VISIBLE_CHECK_LIMIT;
+
+  return (
+    <div className="skillspector-checks" aria-label="SkillSpector checks">
+      <div className="skillspector-subsection-title">Vulnerability Patterns</div>
+      <ul className="skillspector-checks-list">
+        {visibleChecks.map((check) => {
+          const isFlagged = flaggedCategories.has(check.category);
+          const isUnknown = hasHiddenFindings && !isFlagged;
+          const Icon = isFlagged ? TriangleAlert : isUnknown ? Info : Check;
+          return (
+            <li
+              className={`skillspector-check-row${isFlagged ? " skillspector-check-row-flagged" : ""}${isUnknown ? " skillspector-check-row-unknown" : ""}`}
+              key={check.category}
+            >
+              <Icon
+                className={`skillspector-check-icon${isFlagged ? " skillspector-check-icon-flagged" : ""}${isUnknown ? " skillspector-check-icon-unknown" : ""}`}
+                aria-hidden="true"
+              />
+              <span className="skillspector-check-category">{check.category}</span>
+              <span className="skillspector-check-patterns">{check.patterns.join(", ")}</span>
+            </li>
+          );
+        })}
+      </ul>
+      {remainingCount > 0 ? (
+        <button
+          type="button"
+          className="skillspector-checks-toggle"
+          onClick={() => setIsExpanded((value) => !value)}
+        >
+          {isExpanded ? "Show less" : `Show ${remainingCount} more`}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function SkillSpectorAttribution() {
+  return (
+    <div className="skillspector-attribution" aria-label="By NVIDIA">
+      <img
+        className="skillspector-nvidia-mark"
+        src="https://www.nvidia.com/favicon.ico"
+        alt=""
+        aria-hidden="true"
+      />
+      <span>By NVIDIA</span>
+    </div>
+  );
+}
+
+function resolveAbsoluteBaseUrl(...candidates: Array<string | undefined>) {
+  for (const candidate of candidates) {
+    const value = candidate?.trim();
+    if (!value) continue;
+    try {
+      return new URL(value).toString();
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+function buildArtifactFileUrl(entity: EntityRef, path: string) {
+  const base =
+    entity.kind === "skill"
+      ? `/api/v1/skills/${encodeURIComponent(entity.name)}/file`
+      : `/api/v1/packages/${encodeURIComponent(entity.name)}/file`;
+  const params = new URLSearchParams({ path });
+  if (entity.version) params.set("version", entity.version);
+  const relativePath = `${base}?${params.toString()}`;
+  const convexClientBaseUrl = resolveAbsoluteBaseUrl(
+    getRuntimeEnv("VITE_CONVEX_SITE_URL"),
+    getRuntimeEnv("VITE_CONVEX_URL"),
+  );
+
+  if (
+    typeof window !== "undefined" &&
+    convexClientBaseUrl &&
+    ["localhost", "127.0.0.1", "0.0.0.0"].includes(window.location.hostname)
+  ) {
+    return new URL(relativePath, convexClientBaseUrl).toString();
+  }
+
+  return relativePath;
+}
+
+function extractLineRangeFromFile(content: string, startLine: number, endLine?: number) {
+  if (!Number.isFinite(startLine) || startLine < 1) return null;
+  const lines = content.split(/\r?\n/);
+  const start = Math.floor(startLine);
+  const end = Math.max(start, Math.min(Math.floor(endLine ?? start), start + 12));
+  const value = lines
+    .slice(start - 1, end)
+    .map((line) => line.trimEnd())
+    .join("\n");
+  return value.trim() ? value : null;
+}
+
+function useSkillSpectorContentSnippets(entity: EntityRef, issues: SkillSpectorIssue[]) {
+  const [snippets, setSnippets] = useState<Record<number, string>>({});
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const issuesWithLocations = issues
+      .map((issue, index) => ({ issue, index }))
+      .filter(
+        ({ issue }) =>
+          Boolean(issue.file?.trim()) &&
+          typeof issue.startLine === "number" &&
+          Number.isFinite(issue.startLine),
+      );
+
+    if (!issuesWithLocations.length) {
+      setSnippets((current) => (Object.keys(current).length ? {} : current));
+      return () => controller.abort();
+    }
+
+    const uniqueFiles = Array.from(
+      new Set(
+        issuesWithLocations
+          .map(({ issue }) => issue.file?.trim())
+          .filter((file): file is string => Boolean(file)),
+      ),
+    );
+
+    async function loadSnippets() {
+      const fileContents = new Map<string, string>();
+      await Promise.all(
+        uniqueFiles.map(async (file) => {
+          try {
+            const response = await fetch(buildArtifactFileUrl(entity, file), {
+              signal: controller.signal,
+            });
+            if (!response.ok) return;
+            fileContents.set(file, await response.text());
+          } catch {
+            return;
+          }
+        }),
+      );
+
+      const entries = issuesWithLocations
+        .map(({ issue, index }) => {
+          const file = issue.file?.trim();
+          const content = file ? fileContents.get(file) : null;
+          if (!content || typeof issue.startLine !== "number") return null;
+          const snippet = extractLineRangeFromFile(content, issue.startLine, issue.endLine);
+          return snippet ? ([index, snippet] as const) : null;
+        })
+        .filter((entry): entry is readonly [number, string] => entry !== null);
+
+      if (!controller.signal.aborted) setSnippets(Object.fromEntries(entries));
+    }
+
+    void loadSnippets();
+    return () => controller.abort();
+  }, [entity.kind, entity.name, entity.version, issues]);
+
+  return snippets;
+}
+
+function RiskAnalysisInfoLink() {
+  return (
+    <TooltipProvider delayDuration={400}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            className="security-report-title-info-link"
+            aria-label={RISK_ANALYSIS_SCOPE_COPY}
+          >
+            <Info size={15} aria-hidden="true" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top" align="start" className="security-report-title-tooltip">
+          {RISK_ANALYSIS_SCOPE_COPY}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
+function SecurityAuditScannerSection({
+  kind,
+  props,
+}: {
+  kind: AuditScannerKind;
+  props: SecurityAuditPageProps;
+}) {
+  const label = AUDIT_SCANNER_LABELS[kind];
+  return (
+    <section
+      className="security-report-panel security-report-panel-compact"
+      aria-labelledby={`${kind}-heading`}
+    >
+      <div className="security-report-panel-header">
+        <div className="security-report-panel-title-row">
+          <h2 id={`${kind}-heading`} className="skill-install-panel-title">
+            {label}
+          </h2>
+          {kind === "clawscan" ? <RiskAnalysisInfoLink /> : null}
+          {kind === "skillspector" ? <SkillSpectorAttribution /> : null}
+        </div>
+      </div>
+      {kind === "clawscan" ? <ClawScanSection {...props} /> : null}
+      {kind === "virustotal" ? <VirusTotalSection {...props} /> : null}
+      {kind === "skillspector" ? <SkillSpectorSection {...props} /> : null}
+    </section>
+  );
+}
+
+function SecurityAuditSidebar(props: SecurityAuditPageProps) {
+  const latestCheckedAt = getLatestAuditCheckedAt(props);
+  const verdict = aggregateAuditVerdict(props);
+  const [rescanState, setRescanState] = useState<"idle" | "submitting" | "queued" | "error">(
+    "idle",
+  );
+  const showRescanButton = props.canManageArtifact && props.onRequestRescan;
+  const isRescanBusy = rescanState === "submitting" || rescanState === "queued";
+
+  async function requestRescan() {
+    if (!props.onRequestRescan || isRescanBusy) return;
+    setRescanState("submitting");
+    try {
+      await props.onRequestRescan();
+      setRescanState("queued");
+    } catch {
+      setRescanState("error");
+    }
+  }
+
+  const versionValue = (
+    <div className="security-audit-version-stack">
+      <span>{props.entity.version ?? "Latest"}</span>
+      {showRescanButton ? (
+        <>
+          <Button
+            type="button"
+            variant="outline"
+            className="skill-sidebar-action-button security-audit-rescan-button"
+            onClick={() => void requestRescan()}
+            disabled={isRescanBusy}
+            loading={isRescanBusy}
+            aria-label={isRescanBusy ? "Scanning" : "Rescan"}
+          >
+            {!isRescanBusy ? (
+              <RefreshCw className="security-audit-rescan-icon" aria-hidden="true" />
+            ) : null}
+            <span>{isRescanBusy ? "Scanning" : "Rescan"}</span>
+          </Button>
+          {rescanState === "error" ? (
+            <span className="security-audit-rescan-error" role="status">
+              Rescan could not be queued.
+            </span>
+          ) : null}
+        </>
+      ) : null}
+    </div>
+  );
+
+  return (
+    <SidebarMetadata
+      ariaLabel="Security audit metadata"
+      density="compact"
+      blocks={[
+        {
+          label: "Outcome",
+          value: <ScanResultBadge status={verdict} />,
+        },
+        {
+          label: "Latest audit",
+          value: (
+            <span className="sidebar-metadata-inline">
+              <Clock className="h-3.5 w-3.5" aria-hidden="true" />
+              {formatTime(latestCheckedAt)}
+            </span>
+          ),
+        },
+        { label: "Version", value: versionValue },
+      ]}
+    />
+  );
+}
+
+export function SecurityAuditPage(props: SecurityAuditPageProps) {
+  const orderedScanners = getAuditScannerOrder(props);
+
+  return (
+    <main className="section detail-page-section security-report-section">
+      <div className="security-report-shell">
+        <SecurityAuditHero props={props} />
+
+        <div className="security-report-layout">
+          <div className="security-report-main">
+            <SecurityAuditOverview {...props} />
+            <PublisherNoteSection {...props} />
+            {orderedScanners.map((kind) => (
+              <SecurityAuditScannerSection key={kind} kind={kind} props={props} />
+            ))}
+          </div>
+
+          <aside className="security-report-sidebar" aria-label="Security audit metadata">
+            <h2 className="sr-only">Security Audit Metadata</h2>
+            <SecurityAuditSidebar {...props} />
+          </aside>
+        </div>
+      </div>
+    </main>
+  );
+}
+
+export function SecurityAuditPageSkeleton() {
+  return (
+    <main className="section detail-page-section security-report-section">
+      <div
+        className="security-report-shell security-scanner-skeleton"
+        role="status"
+        aria-label="Loading security audit"
+        aria-busy="true"
+      >
+        <header className="security-scan-hero">
+          <div className="skill-hero-breadcrumbs">
+            <Skeleton className="h-4 w-12" />
+            <Skeleton className="h-4 w-3" />
+            <Skeleton className="h-4 w-16" />
+            <Skeleton className="h-4 w-3" />
+            <Skeleton className="h-4 w-40 max-w-[42vw]" />
+            <Skeleton className="h-4 w-3" />
+            <Skeleton className="h-4 w-28" />
+          </div>
+          <div className="security-scan-hero-heading">
+            <Skeleton className="h-12 w-full max-w-[520px]" />
+            <div className="security-scan-hero-subtext">
+              <Skeleton className="h-8 w-24 rounded-[var(--r-pill)]" />
+              <Skeleton className="h-5 w-full max-w-[340px]" />
+            </div>
+          </div>
+        </header>
+
+        <div className="security-report-layout">
+          <div className="security-report-main">
+            {Array.from({ length: 3 }).map((_, index) => (
+              <section
+                // biome-ignore lint/suspicious/noArrayIndexKey: static skeleton placeholder count
+                key={index}
+                className="security-report-panel"
+              >
+                <div className="security-report-panel-header">
+                  <Skeleton className="h-6 w-32" />
+                </div>
+                <div className="security-report-overview-body">
+                  <Skeleton className="h-5 w-full" />
+                  <Skeleton className="h-5 w-11/12" />
+                  <Skeleton className="h-5 w-3/4" />
+                </div>
+              </section>
+            ))}
+          </div>
+
+          <aside className="security-report-sidebar" aria-label="Security audit metadata">
+            <div className="sidebar-metadata sidebar-metadata-compact">
+              <div className="sidebar-metadata-row">
+                <Skeleton className="h-3 w-16" />
+                <Skeleton className="h-5 w-40" />
+              </div>
+              <div className="sidebar-metadata-grid">
+                <div className="sidebar-metadata-row">
+                  <Skeleton className="h-3 w-16" />
+                  <Skeleton className="h-5 w-10" />
+                </div>
+                <div className="sidebar-metadata-row">
+                  <Skeleton className="h-3 w-14" />
+                  <Skeleton className="h-5 w-16" />
+                </div>
+              </div>
+              <div className="sidebar-metadata-row">
+                <Skeleton className="h-3 w-24" />
+                <div className="security-report-badge-list">
+                  <Skeleton className="h-6 w-16 rounded-[var(--r-pill)]" />
+                  <Skeleton className="h-6 w-20 rounded-[var(--r-pill)]" />
+                </div>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </main>
+  );
+}

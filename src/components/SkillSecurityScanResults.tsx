@@ -43,9 +43,11 @@ type LlmRiskSummary = Record<ClawScanRiskBucket, LlmRiskSummaryBucket>;
 
 const SKILL_CAPABILITY_LABELS: Record<string, string> = {
   crypto: "Crypto",
+  "financial-authority": "Financial authority",
   "requires-wallet": "Requires wallet",
   "can-make-purchases": "Can make purchases",
   "can-sign-transactions": "Can sign transactions",
+  "requires-paid-service": "Requires paid service",
   "requires-oauth-token": "Requires OAuth token",
   "requires-sensitive-credentials": "Requires sensitive credentials",
   "posts-externally": "Posts externally",
@@ -88,7 +90,35 @@ export type LlmAnalysis = {
   checkedAt: number;
 };
 
-export type StaticFinding = {
+export type SkillSpectorIssue = {
+  issueId: string;
+  category?: string;
+  pattern?: string;
+  severity: string;
+  confidence?: number;
+  file?: string;
+  startLine?: number;
+  endLine?: number;
+  explanation: string;
+  remediation?: string;
+  finding?: string;
+  codeSnippet?: string;
+};
+
+export type SkillSpectorAnalysis = {
+  status: string;
+  score?: number;
+  severity?: string;
+  recommendation?: string;
+  issueCount: number;
+  issues: SkillSpectorIssue[];
+  scannerVersion?: string;
+  summary?: string;
+  error?: string;
+  checkedAt: number;
+};
+
+type StaticFinding = {
   code: string;
   severity: string;
   file: string;
@@ -103,7 +133,6 @@ type SecurityScanResultsProps = {
   llmAnalysis?: LlmAnalysis | null;
   staticFindings?: StaticFinding[];
   capabilityTags?: string[] | null;
-  scannerBasePath?: string | null;
   variant?: "panel" | "badge";
 };
 
@@ -135,6 +164,7 @@ export function getScanStatusInfo(status: string) {
   switch (status.toLowerCase()) {
     case "benign":
     case "clean":
+    case "undetected-only-fallback":
       return { label: "Pass", className: "scan-status-clean", badgeVariant: "success" };
     case "cleared":
       return { label: "Cleared", className: "scan-status-clean", badgeVariant: "success" };
@@ -146,8 +176,10 @@ export function getScanStatusInfo(status: string) {
       };
     case "review":
       return { label: "Review", className: "scan-status-review", badgeVariant: "review" };
+    case "warn":
+    case "warning":
     case "suspicious":
-      return { label: "Suspicious", className: "scan-status-suspicious", badgeVariant: "warning" };
+      return { label: "Warn", className: "scan-status-warn", badgeVariant: "warning" };
     case "advisory":
       return { label: "Advisory", className: "scan-status-unknown", badgeVariant: "compact" };
     case "loading":
@@ -180,15 +212,22 @@ function severityRank(severity?: string) {
   }
 }
 
-function highestConcernSeverityRank(analysis?: LlmAnalysis | null) {
+function isLowConfidence(value: unknown) {
+  return typeof value === "string" && value.trim().toLowerCase() === "low";
+}
+
+function isVisibleAgenticRiskFinding(finding: LlmAgenticRiskFinding) {
+  return (
+    (finding.status === "note" || finding.status === "concern") &&
+    Boolean(finding.evidence) &&
+    !isLowConfidence(finding.confidence)
+  );
+}
+
+function highestVisibleFindingSeverityRank(analysis?: LlmAnalysis | null) {
   let highest = 0;
-  for (const finding of analysis?.agenticRiskFindings ?? []) {
-    if (finding.status === "concern") highest = Math.max(highest, severityRank(finding.severity));
-  }
-  for (const bucket of Object.values(analysis?.riskSummary ?? {})) {
-    if (bucket?.status === "concern") {
-      highest = Math.max(highest, severityRank(bucket.highestSeverity));
-    }
+  for (const finding of getVisibleAgenticRiskFindings(analysis)) {
+    highest = Math.max(highest, severityRank(finding.severity));
   }
   return highest;
 }
@@ -196,18 +235,27 @@ function highestConcernSeverityRank(analysis?: LlmAnalysis | null) {
 export function getClawScanDisplayStatus(analysis?: LlmAnalysis | null) {
   const status = (analysis?.verdict ?? analysis?.status)?.trim().toLowerCase();
   if (!status) return "pending";
-  if (status !== "suspicious") return status;
-  return highestConcernSeverityRank(analysis) >= severityRank("high") ? "suspicious" : "review";
+  const highestSeverity = highestVisibleFindingSeverityRank(analysis);
+  if (status === "suspicious") {
+    return highestSeverity >= severityRank("high") ? "warn" : "review";
+  }
+  if ((status === "clean" || status === "benign") && highestSeverity >= severityRank("medium")) {
+    return "review";
+  }
+  return status;
 }
 
 function getVtEngineStats(analysis?: VtAnalysis | null) {
   return analysis?.engineStats ?? analysis?.metadata?.stats;
 }
 
-function isVtAiOnlyAnalysis(analysis?: VtAnalysis | null) {
-  const scanner = analysis?.scanner?.trim().toLowerCase();
-  const source = analysis?.source?.trim().toLowerCase();
-  return scanner === "code_insight" || source === "palm" || source?.includes("code insight");
+function hasNonEngineVirusTotalSource(analysis?: VtAnalysis | null) {
+  if (!analysis) return false;
+  const source = analysis.source?.trim().toLowerCase();
+  const scanner = analysis.scanner?.trim().toLowerCase();
+  return Boolean(
+    (source && !source.startsWith("engines")) || (scanner && !scanner.startsWith("engines")),
+  );
 }
 
 export function getVirusTotalDisplayStatus(analysis?: VtAnalysis | null) {
@@ -218,8 +266,18 @@ export function getVirusTotalDisplayStatus(analysis?: VtAnalysis | null) {
     return "benign";
   }
 
-  if (isVtAiOnlyAnalysis(analysis)) return "advisory";
+  if (hasNonEngineVirusTotalSource(analysis)) return "benign";
+  if (analysis?.verdict === "undetected-only-fallback") return "benign";
+
   return analysis?.verdict ?? analysis?.status ?? "pending";
+}
+
+export function getSkillSpectorDisplayStatus(analysis?: SkillSpectorAnalysis | null) {
+  const status = analysis?.status?.trim().toLowerCase();
+  if (!status) return "pending";
+  if (status === "clean" || status === "benign") return "benign";
+  if (status === "suspicious") return "review";
+  return status;
 }
 
 export function ScanResultBadge({
@@ -259,77 +317,199 @@ function getDimensionIcon(rating: string) {
   }
 }
 
-const AGENTIC_RISK_STATUS_LABELS: Record<AgenticRiskStatus, string> = {
-  none: "No evidence",
-  note: "Note",
-  concern: "Concern",
+function getVisibleAgenticRiskFindings(analysis?: LlmAnalysis | null) {
+  return (analysis?.agenticRiskFindings ?? []).filter(isVisibleAgenticRiskFinding);
+}
+
+function getVisibleClawScanFindingCount(analysis?: LlmAnalysis | null) {
+  return getVisibleAgenticRiskFindings(analysis).length;
+}
+
+export function hasClawScanRiskReview(analysis?: LlmAnalysis | null) {
+  if (!analysis) return false;
+  return getVisibleClawScanFindingCount(analysis) > 0;
+}
+
+function getFindingSeverityBadgeMeta(severity: string): {
+  label: string;
+  variant: BadgeProps["variant"];
+} {
+  switch (severity.trim().toLowerCase()) {
+    case "critical":
+      return { label: "Critical", variant: "destructive" };
+    case "high":
+      return { label: "High", variant: "destructive" };
+    case "warn":
+    case "warning":
+      return { label: "Warn", variant: "warning" };
+    case "medium":
+      return { label: "Medium", variant: "warning" };
+    case "low":
+      return { label: "Low", variant: "review" };
+    case "info":
+      return { label: "Info", variant: "compact" };
+    default:
+      return { label: severity || "Finding", variant: "compact" };
+  }
+}
+
+function FindingSeverityBadge({ severity }: { severity: string }) {
+  const severityBadge = getFindingSeverityBadgeMeta(severity);
+  return <Badge variant={severityBadge.variant}>{severityBadge.label}</Badge>;
+}
+
+function formatSkillSpectorConfidence(confidence?: number) {
+  if (typeof confidence !== "number" || !Number.isFinite(confidence)) return null;
+  const percent = confidence <= 1 ? confidence * 100 : confidence;
+  return `${Math.round(percent)}% confidence`;
+}
+
+export function getSkillSpectorIssueCount(analysis?: SkillSpectorAnalysis | null) {
+  if (!analysis) return 0;
+  const reportedCount = Number.isFinite(analysis.issueCount) ? analysis.issueCount : 0;
+  return Math.max(reportedCount, analysis.issues.length);
+}
+
+export function hasSkillSpectorFindings(analysis?: SkillSpectorAnalysis | null) {
+  return getSkillSpectorIssueCount(analysis) > 0;
+}
+
+export function getSkillSpectorOverviewCopy(analysis?: SkillSpectorAnalysis | null) {
+  const count = getSkillSpectorIssueCount(analysis);
+  if (count > 0) return `SkillSpector found ${count} issue${count === 1 ? "" : "s"}.`;
+  const status = analysis?.status?.trim().toLowerCase();
+  if (status === "clean" || status === "benign") return "No SkillSpector findings.";
+  if (status === "error" || status === "failed") return "SkillSpector could not complete.";
+  return "SkillSpector findings are pending for this release.";
+}
+
+const SKILLSPECTOR_RULE_LABELS: Record<string, string> = {
+  P1: "Instruction Override",
+  P2: "Hidden Instructions",
+  P3: "Exfiltration Commands",
+  P4: "Behavior Manipulation",
+  P5: "Harmful Content",
+  P6: "Direct Prompt Leakage",
+  P7: "Indirect Prompt Extraction",
+  P8: "Tool-Based Prompt Exfiltration",
+  E1: "External Transmission",
+  E2: "Environment Variable Harvesting",
+  E3: "File System Enumeration",
+  E4: "Context Leakage",
+  PE1: "Excessive Permissions",
+  PE2: "Sudo/Root Execution",
+  PE3: "Credential Access",
+  SDI1: "Description-Behavior Mismatch",
+  SDI2: "Context-Inappropriate Capability",
+  SDI3: "Scope Creep",
+  SDI4: "Intent-Code Divergence",
+  SQP1: "Vague Triggers",
+  SQP2: "Missing User Warnings",
+  SQP3: "Natural-Language Policy Violations",
 };
 
-function formatSecurityLabel(value?: string | null) {
-  if (!value) return null;
-  return value
-    .split(/[-_\s]+/)
+function normalizeSkillSpectorRuleId(ruleId: string) {
+  return ruleId
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "");
+}
+
+function formatFallbackSkillSpectorTitle(ruleId: string) {
+  return ruleId
+    .trim()
+    .split(/[-_.\s]+/)
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
     .join(" ");
 }
 
-function normalizeConfidence(value: unknown, includeNoun = true) {
-  const label = formatSecurityLabel(typeof value === "string" ? value : null);
-  const normalized = label?.toLowerCase();
-  if (normalized === "high") return { label: includeNoun ? "High Confidence" : "High", level: 3 };
-  if (normalized === "medium")
-    return { label: includeNoun ? "Medium Confidence" : "Medium", level: 2 };
-  if (normalized === "low") return { label: includeNoun ? "Low Confidence" : "Low", level: 1 };
-  return { label: "Confidence not reported", level: 0 };
+function getSkillSpectorIssueTitle(issue: SkillSpectorIssue) {
+  const pattern = issue.pattern?.trim();
+  if (pattern) return pattern;
+  const normalized = normalizeSkillSpectorRuleId(issue.issueId);
+  return SKILLSPECTOR_RULE_LABELS[normalized] ?? formatFallbackSkillSpectorTitle(issue.issueId);
 }
 
-export function ConfidenceMeter({
-  value,
-  includeNoun = true,
+function SkillSpectorFindingCard({
+  contentSnippet,
+  issue,
 }: {
-  value: unknown;
-  includeNoun?: boolean;
+  contentSnippet?: string | null;
+  issue: SkillSpectorIssue;
 }) {
-  const confidence = normalizeConfidence(value, includeNoun);
+  const confidence = formatSkillSpectorConfidence(issue.confidence);
+  const trimmedSnippet = contentSnippet?.trim() || issue.codeSnippet?.trim();
+
   return (
-    <Badge variant="compact" className="scan-confidence-meter" data-level={confidence.level}>
-      <span className="scan-confidence-bars" aria-hidden="true">
-        <span />
-        <span />
-        <span />
-      </span>
-      <span>{confidence.label}</span>
-    </Badge>
+    <article className="static-analysis-finding">
+      <div className="static-analysis-finding-header">
+        <h3 className="agentic-risk-finding-title">{getSkillSpectorIssueTitle(issue)}</h3>
+        <div className="agentic-risk-finding-badges">
+          <FindingSeverityBadge severity={issue.severity} />
+        </div>
+      </div>
+      <dl className="static-analysis-finding-details">
+        {issue.category ? (
+          <div>
+            <dt>Category</dt>
+            <dd>{issue.category}</dd>
+          </div>
+        ) : null}
+        {trimmedSnippet ? (
+          <div>
+            <dt>Content</dt>
+            <dd>
+              <pre className="agentic-risk-evidence-snippet">{trimmedSnippet}</pre>
+            </dd>
+          </div>
+        ) : null}
+        {confidence ? (
+          <div>
+            <dt>Confidence</dt>
+            <dd>{confidence}</dd>
+          </div>
+        ) : null}
+        <div>
+          <dt>Finding</dt>
+          <dd>{issue.finding || issue.explanation}</dd>
+        </div>
+      </dl>
+    </article>
   );
 }
 
-function getRiskStatusVariant(status: AgenticRiskStatus): BadgeProps["variant"] {
-  if (status === "none") return "success";
-  if (status === "note") return "review";
-  if (status === "concern") return "warning";
-  return "compact";
-}
-
-function getVisibleAgenticRiskFindings(analysis: LlmAnalysis) {
-  return (analysis.agenticRiskFindings ?? []).filter(
-    (finding) => (finding.status === "note" || finding.status === "concern") && finding.evidence,
+export function SkillSpectorFindings({
+  analysis,
+  contentSnippets,
+}: {
+  analysis: SkillSpectorAnalysis;
+  contentSnippets?: Record<number, string>;
+}) {
+  return (
+    <div className="static-analysis-findings">
+      {analysis.issues.map((issue, index) => (
+        <SkillSpectorFindingCard
+          key={`${issue.issueId}-${index}`}
+          contentSnippet={contentSnippets?.[index]}
+          issue={issue}
+        />
+      ))}
+    </div>
   );
 }
 
-export function hasClawScanRiskReview(analysis?: LlmAnalysis | null) {
-  if (!analysis) return false;
-  return getVisibleAgenticRiskFindings(analysis).length > 0;
+function slugifyFindingAnchorPart(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
-function getFindingBadgeLabel(finding: LlmAgenticRiskFinding) {
-  return AGENTIC_RISK_STATUS_LABELS[finding.status] ?? finding.status;
-}
-
-function getOwaspAgenticSkillsHref(categoryId: string) {
-  const match = categoryId.match(/^(?:ASI|AST)(\d{2})$/i);
-  if (!match) return null;
-  return `https://owasp.org/www-project-agentic-skills-top-10/ast${match[1]}`;
+function getClawScanFindingAnchorId(finding: LlmAgenticRiskFinding, index: number) {
+  const slug = slugifyFindingAnchorPart(`${finding.categoryId}-${finding.categoryLabel}`);
+  return `clawscan-finding-${slug || "finding"}-${index + 1}`;
 }
 
 function AgenticRiskFindingCard({
@@ -341,34 +521,29 @@ function AgenticRiskFindingCard({
 }) {
   const evidence = finding.evidence;
   if (!evidence) return null;
-  const categoryHref = getOwaspAgenticSkillsHref(finding.categoryId);
+  const title = `${finding.categoryId}: ${finding.categoryLabel}`;
+  const anchorId = getClawScanFindingAnchorId(finding, index);
 
   return (
     <div
       key={`${finding.categoryId}-${finding.riskBucket}-${index}`}
       className="agentic-risk-finding"
+      id={anchorId}
     >
       <div className="agentic-risk-finding-header">
-        <div className="agentic-risk-finding-badges">
-          <Badge variant={getRiskStatusVariant(finding.status)}>
-            {getFindingBadgeLabel(finding)}
-          </Badge>
-          <ConfidenceMeter value={finding.confidence} />
-        </div>
-        {categoryHref ? (
+        <div className="agentic-risk-finding-title-row">
           <a
-            className="agentic-risk-finding-title"
-            href={categoryHref}
-            target="_blank"
-            rel="noopener noreferrer"
+            className="agentic-risk-finding-anchor"
+            href={`#${anchorId}`}
+            aria-label={`Link to ${title}`}
           >
-            {finding.categoryId}: {finding.categoryLabel}
+            #
           </a>
-        ) : (
-          <div className="agentic-risk-finding-title">
-            {finding.categoryId}: {finding.categoryLabel}
-          </div>
-        )}
+          <div className="agentic-risk-finding-title">{title}</div>
+        </div>
+        <div className="agentic-risk-finding-badges">
+          <FindingSeverityBadge severity={finding.severity} />
+        </div>
       </div>
       <div className="agentic-risk-report-rows">
         <div className="agentic-risk-report-row">
@@ -504,146 +679,20 @@ function LlmAnalysisDetail({ analysis }: { analysis: LlmAnalysis }) {
   );
 }
 
-function isCleanStatus(status?: string) {
-  if (!status) return false;
-  const s = status.toLowerCase();
-  return s === "clean" || s === "benign";
-}
-
-const EXTERNALLY_CLEARED_STATIC_CODES = new Set(["suspicious.env_credential_access"]);
-
-function areStaticFindingsExternallyCleared(
-  findings: StaticFinding[],
-  vtStatus?: string,
-  llmStatus?: string,
-) {
-  return (
-    findings.length > 0 &&
-    isCleanStatus(vtStatus) &&
-    isCleanStatus(llmStatus) &&
-    findings.every((finding) => EXTERNALLY_CLEARED_STATIC_CODES.has(finding.code))
-  );
-}
-
-function getStaticGuidance(findings: StaticFinding[], vtStatus?: string, llmStatus?: string) {
-  const hasMaliciousCode = findings.some((f) => f.code.startsWith("malicious."));
-  if (hasMaliciousCode) {
-    return {
-      className: "malicious",
-      label: "Critical security concern",
-      text: "These patterns indicate potentially dangerous behavior. Exercise extreme caution and review the code thoroughly before installing.",
-    };
-  }
-  const externallyCleared = areStaticFindingsExternallyCleared(findings, vtStatus, llmStatus);
-  if (externallyCleared) {
-    return {
-      className: "benign",
-      label: "Confirmed safe by external scanners",
-      text: "Static analysis detected API credential-access patterns, but both VirusTotal and ClawScan confirmed this skill is safe. These patterns are common in legitimate API integration skills.",
-    };
-  }
-  const hasCritical = findings.some((f) => f.severity === "critical");
-  if (hasCritical) {
-    return {
-      className: "suspicious",
-      label: "Patterns worth reviewing",
-      text: "These patterns may indicate risky behavior. Check the VirusTotal and ClawScan results above for context-aware analysis before installing.",
-    };
-  }
-  return {
-    className: "benign",
-    label: "About static analysis",
-    text: "These patterns were detected by automated regex scanning. They may be normal for skills that integrate with external APIs. Check the VirusTotal and ClawScan results above for context-aware analysis.",
-  };
-}
-
-function StaticAnalysisDetail({
-  findings,
-  vtStatus,
-  llmStatus,
-}: {
-  findings: StaticFinding[];
-  vtStatus?: string;
-  llmStatus?: string;
-}) {
-  const [isOpen, setIsOpen] = useState(false);
-  const guidance = getStaticGuidance(findings, vtStatus, llmStatus);
-
-  return (
-    <div className={`analysis-detail${isOpen ? " is-open" : ""}`}>
-      <button
-        type="button"
-        className="analysis-detail-header"
-        onClick={() => {
-          const selection = window.getSelection();
-          if (selection && !selection.isCollapsed) return;
-          setIsOpen((prev) => !prev);
-        }}
-        aria-expanded={isOpen}
-      >
-        <span className="analysis-summary-text">
-          Static analysis: {findings.length} pattern{findings.length !== 1 ? "s" : ""} detected
-        </span>
-        <span className="analysis-detail-toggle">
-          Details <span className="chevron">{"\u25BE"}</span>
-        </span>
-      </button>
-      <div className="analysis-body">
-        <div className="analysis-dimensions">
-          {findings.map((finding, i) => {
-            const icon =
-              finding.severity === "critical"
-                ? { className: "dimension-icon-danger", symbol: "\u2717" }
-                : { className: "dimension-icon-concern", symbol: "!" };
-            return (
-              <div key={`${finding.code}-${finding.file}-${i}`} className="dimension-row">
-                <div className={`dimension-icon ${icon.className}`}>{icon.symbol}</div>
-                <div className="dimension-content">
-                  <div className="dimension-label">
-                    {finding.file}:{finding.line}
-                  </div>
-                  <div className="dimension-detail">{finding.message}</div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-        <div className={`analysis-guidance ${guidance.className}`}>
-          <div className="analysis-guidance-label">{guidance.label}</div>
-          {guidance.text}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export function SecurityScanResults({
   sha256hash,
   vtAnalysis,
   llmAnalysis,
-  staticFindings,
   capabilityTags,
-  scannerBasePath,
   variant = "panel",
 }: SecurityScanResultsProps) {
   const visibleCapabilityTags = (capabilityTags ?? []).filter(Boolean);
-  const blockingStaticFindings =
-    staticFindings?.filter((finding) => finding.code.startsWith("malicious.")) ?? [];
-  const hasBlockingStaticFindings = blockingStaticFindings.length > 0;
-  if (
-    !sha256hash &&
-    !llmAnalysis &&
-    !hasBlockingStaticFindings &&
-    visibleCapabilityTags.length === 0
-  ) {
+  if (!sha256hash && !llmAnalysis && visibleCapabilityTags.length === 0) {
     return null;
   }
 
   const vtStatus = getVirusTotalDisplayStatus(vtAnalysis);
   const vtUrl = sha256hash ? `https://www.virustotal.com/gui/file/${sha256hash}` : null;
-  const isCodeInsight = vtAnalysis?.source === "code_insight";
-  const aiAnalysis = vtAnalysis?.analysis;
-
   const llmVerdict = llmAnalysis?.verdict ?? llmAnalysis?.status;
   const llmDisplayStatus = getClawScanDisplayStatus(llmAnalysis);
   const llmStatusInfo = llmVerdict ? getScanStatusInfo(llmDisplayStatus) : null;
@@ -666,30 +715,12 @@ export function SecurityScanResults({
                 ↗
               </a>
             ) : null}
-            {scannerBasePath ? (
-              <a
-                href={`${scannerBasePath}/virustotal`}
-                className="version-scan-link"
-                onClick={(event) => event.stopPropagation()}
-              >
-                Details
-              </a>
-            ) : null}
           </div>
         ) : null}
         {llmStatusInfo ? (
           <div className="version-scan-badge">
             <ClawScanIcon className="version-scan-icon version-scan-icon-oc" />
             <ScanResultBadge status={llmDisplayStatus} tone="review" />
-            {scannerBasePath ? (
-              <a
-                href={`${scannerBasePath}/clawscan`}
-                className="version-scan-link"
-                onClick={(event) => event.stopPropagation()}
-              >
-                Details
-              </a>
-            ) : null}
           </div>
         ) : null}
       </>
@@ -712,7 +743,7 @@ export function SecurityScanResults({
             </div>
             <div className="scan-capability-note">
               These labels describe what authority the skill may exercise. They are separate from
-              suspicious or malicious moderation verdicts.
+              warning or malicious moderation verdicts.
             </div>
           </div>
         ) : null}
@@ -733,17 +764,6 @@ export function SecurityScanResults({
                 View report →
               </a>
             ) : null}
-            {scannerBasePath ? (
-              <a href={`${scannerBasePath}/virustotal`} className="scan-result-link">
-                Details →
-              </a>
-            ) : null}
-          </div>
-        ) : null}
-        {isCodeInsight && aiAnalysis && (vtStatus === "malicious" || vtStatus === "suspicious") ? (
-          <div className={`code-insight-analysis ${vtStatus}`}>
-            <div className="code-insight-label">Code Insight</div>
-            <p className="code-insight-text">{aiAnalysis}</p>
           </div>
         ) : null}
         {llmStatusInfo && llmAnalysis ? (
@@ -753,14 +773,6 @@ export function SecurityScanResults({
               <span className="scan-result-scanner-name">ClawScan</span>
             </div>
             <ScanResultBadge status={llmDisplayStatus} tone="review" />
-            {llmAnalysis.confidence ? (
-              <span className="scan-result-confidence">{llmAnalysis.confidence} confidence</span>
-            ) : null}
-            {scannerBasePath ? (
-              <a href={`${scannerBasePath}/clawscan`} className="scan-result-link">
-                Details →
-              </a>
-            ) : null}
           </div>
         ) : null}
         {llmAnalysis &&
@@ -768,31 +780,6 @@ export function SecurityScanResults({
         llmAnalysis.status !== "pending" &&
         llmAnalysis.summary ? (
           <LlmAnalysisDetail analysis={llmAnalysis} />
-        ) : null}
-        {hasBlockingStaticFindings ? (
-          <>
-            {scannerBasePath ? (
-              <div className="scan-result-row">
-                <div className="scan-result-scanner">
-                  <span className="scan-result-scanner-name">Static analysis</span>
-                </div>
-                <ScanResultBadge
-                  status="malicious"
-                  label={`${blockingStaticFindings.length} blocking finding${
-                    blockingStaticFindings.length === 1 ? "" : "s"
-                  }`}
-                />
-                <a href={`${scannerBasePath}/static-analysis`} className="scan-result-link">
-                  Details →
-                </a>
-              </div>
-            ) : null}
-            <StaticAnalysisDetail
-              findings={blockingStaticFindings}
-              vtStatus={vtStatus}
-              llmStatus={llmVerdict}
-            />
-          </>
         ) : null}
       </div>
     </div>

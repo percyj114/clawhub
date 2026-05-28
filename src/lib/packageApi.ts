@@ -66,6 +66,31 @@ export type PackageVersionDetail = {
       source?: string;
       checkedAt: number;
     } | null;
+    skillSpectorAnalysis?: {
+      status: string;
+      score?: number;
+      severity?: string;
+      recommendation?: string;
+      issueCount: number;
+      issues: Array<{
+        issueId: string;
+        category?: string;
+        pattern?: string;
+        severity: string;
+        confidence?: number;
+        file?: string;
+        startLine?: number;
+        endLine?: number;
+        explanation: string;
+        remediation?: string;
+        finding?: string;
+        codeSnippet?: string;
+      }>;
+      scannerVersion?: string;
+      summary?: string;
+      error?: string;
+      checkedAt: number;
+    } | null;
     llmAnalysis?: {
       status: string;
       verdict?: string;
@@ -335,6 +360,7 @@ export async function fetchPackages(params: {
   featured?: boolean;
   executesCode?: boolean;
   capabilityTag?: string;
+  category?: string;
   limit?: number;
   signal?: AbortSignal;
 }) {
@@ -351,10 +377,13 @@ export async function fetchPackages(params: {
       url.searchParams.set("executesCode", String(params.executesCode));
     }
     if (params.capabilityTag) url.searchParams.set("capabilityTag", params.capabilityTag);
-    return await fetchJson<{ results: Array<{ score: number; package: PackageListItem }> }>(
-      url,
-      params.signal,
-    );
+    if (params.category) url.searchParams.set("category", params.category);
+    return await fetchJson<{
+      results: Array<{
+        score: number;
+        package: PackageListItem;
+      }>;
+    }>(url, params.signal);
   }
 
   const route =
@@ -375,6 +404,7 @@ export async function fetchPackages(params: {
     url.searchParams.set("executesCode", String(params.executesCode));
   }
   if (params.capabilityTag) url.searchParams.set("capabilityTag", params.capabilityTag);
+  if (params.category) url.searchParams.set("category", params.category);
   return await fetchJson<{ items: PackageListItem[]; nextCursor: string | null }>(
     url,
     params.signal,
@@ -388,6 +418,7 @@ export async function fetchPluginCatalog(params: {
   isOfficial?: boolean;
   featured?: boolean;
   executesCode?: boolean;
+  category?: string;
   limit?: number;
   signal?: AbortSignal;
 }): Promise<PluginCatalogResult> {
@@ -399,12 +430,13 @@ export async function fetchPluginCatalog(params: {
       isOfficial: params.isOfficial,
       featured: params.featured,
       executesCode: params.executesCode,
+      category: params.category,
       limit: params.limit,
       signal: params.signal,
     });
     if (hasOwnProperty(response, "results") && Array.isArray(response.results)) {
       return {
-        items: response.results.map((entry) => entry?.package).filter(Boolean) as PackageListItem[],
+        items: response.results.map((entry) => entry?.package).filter(Boolean),
         nextCursor: null,
       };
     }
@@ -427,13 +459,15 @@ export async function fetchPluginCatalog(params: {
     if (typeof params.executesCode === "boolean") {
       url.searchParams.set("executesCode", String(params.executesCode));
     }
+    if (params.category) url.searchParams.set("category", params.category);
     const response = await fetchJson<{
-      results?: Array<{ score: number; package: PackageListItem }>;
+      results?: Array<{
+        score: number;
+        package: PackageListItem;
+      }>;
     }>(url, params.signal);
     return {
-      items: (response?.results ?? [])
-        .map((entry) => entry?.package)
-        .filter(Boolean) as PackageListItem[],
+      items: (response?.results ?? []).map((entry) => entry?.package).filter(Boolean),
       nextCursor: null,
     };
   }
@@ -448,6 +482,7 @@ export async function fetchPluginCatalog(params: {
   if (typeof params.executesCode === "boolean") {
     url.searchParams.set("executesCode", String(params.executesCode));
   }
+  if (params.category) url.searchParams.set("category", params.category);
   const result = await fetchJson<PluginCatalogResult>(url, params.signal);
   return {
     items: result?.items ?? [],

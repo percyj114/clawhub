@@ -2,7 +2,11 @@
 
 import { describe, expect, it } from "vitest";
 import { parseArk } from "./ark";
-import { ClawdisSkillMetadataSchema } from "./schemas";
+import {
+  ApiV1SearchResponseSchema,
+  ApiV1SkillVerifyResponseSchema,
+  ClawdisSkillMetadataSchema,
+} from "./schemas";
 
 describe("packages/clawhub skill metadata schema", () => {
   it("preserves optional env var declarations", () => {
@@ -22,5 +26,63 @@ describe("packages/clawhub skill metadata schema", () => {
       required: false,
       description: "Default project",
     });
+  });
+
+  it("parses v1 search owner metadata", () => {
+    const parsed = parseArk(
+      ApiV1SearchResponseSchema,
+      {
+        results: [
+          {
+            slug: "demo",
+            displayName: "Demo",
+            summary: null,
+            version: "1.0.0",
+            score: 1,
+            ownerHandle: "openclaw",
+            owner: {
+              handle: "openclaw",
+              displayName: "OpenClaw",
+              image: null,
+            },
+          },
+        ],
+      },
+      "Search",
+    );
+
+    expect(parsed.results[0]?.ownerHandle).toBe("openclaw");
+    expect(parsed.results[0]?.owner?.displayName).toBe("OpenClaw");
+  });
+
+  it("parses flattened skill verification envelopes", () => {
+    const parsed = parseArk(
+      ApiV1SkillVerifyResponseSchema,
+      {
+        schema: "clawhub.skill.verify.v1",
+        ok: true,
+        decision: "pass",
+        reasons: [],
+        slug: "demo",
+        displayName: "Demo",
+        pageUrl: "https://clawhub.ai/openclaw/demo",
+        publisherHandle: "openclaw",
+        publisherDisplayName: "OpenClaw",
+        publisherProfileUrl: "https://clawhub.ai/user/openclaw",
+        version: "1.0.0",
+        resolvedFrom: "latest",
+        tag: null,
+        createdAt: 1,
+        card: { available: true },
+        artifact: { sourceFingerprint: "source", bundleFingerprints: [], files: [] },
+        provenance: { source: "unavailable" },
+        security: { status: "clean", passed: true },
+        signature: { status: "unsigned" },
+      },
+      "Verify",
+    );
+
+    expect(parsed.slug).toBe("demo");
+    expect(parsed.version).toBe("1.0.0");
   });
 });

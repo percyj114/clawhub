@@ -6,6 +6,7 @@ import type {
   ExportFileInput,
   LlmAnalysisInput,
   ModerationConsensusInput,
+  SkillSpectorAnalysisInput,
   StaticScanInput,
   VtAnalysisInput,
 } from "./normalize";
@@ -18,18 +19,22 @@ type ConvexExportTables = {
   skillVersions: ConvexDoc[];
   packages: ConvexDoc[];
   packageReleases: ConvexDoc[];
+  users?: ConvexDoc[];
+  publishers?: ConvexDoc[];
 };
 
 const REQUIRED_TABLES = ["skills", "skillVersions", "packages", "packageReleases"] as const;
+const OPTIONAL_TABLES = ["users", "publishers"] as const;
 
 export async function artifactInputsFromConvexExportZip(
   zipPath: string,
 ): Promise<ArtifactExportInput[]> {
   const zipBytes = new Uint8Array(await readFile(zipPath));
   const entries = unzipSync(zipBytes);
-  const tables = Object.fromEntries(
-    REQUIRED_TABLES.map((table) => [table, readExportTable(entries, table)]),
-  ) as ConvexExportTables;
+  const tables = Object.fromEntries([
+    ...REQUIRED_TABLES.map((table) => [table, readExportTable(entries, table)] as const),
+    ...OPTIONAL_TABLES.map((table) => [table, readOptionalExportTable(entries, table)] as const),
+  ]) as ConvexExportTables;
   return artifactInputsFromConvexExportTables(tables);
 }
 
@@ -38,10 +43,27 @@ export function artifactInputsFromConvexExportTables(
 ): ArtifactExportInput[] {
   const skillsById = buildIdMap(tables.skills);
   const packagesById = buildIdMap(tables.packages);
+  const usersById = buildIdMap(tables.users ?? []);
+  const publishersById = buildIdMap(tables.publishers ?? []);
+  const publishersByLinkedUserId = buildLinkedUserPublisherMap(tables.publishers ?? []);
   const rows = [
-    ...tables.skillVersions.flatMap((version) => skillVersionToExportRow(version, skillsById)),
+    ...tables.skillVersions.flatMap((version) =>
+      skillVersionToExportRow(
+        version,
+        skillsById,
+        usersById,
+        publishersById,
+        publishersByLinkedUserId,
+      ),
+    ),
     ...tables.packageReleases.flatMap((release) =>
-      packageReleaseToExportRow(release, packagesById),
+      packageReleaseToExportRow(
+        release,
+        packagesById,
+        usersById,
+        publishersById,
+        publishersByLinkedUserId,
+      ),
     ),
   ];
   return rows.sort((left, right) => {
@@ -67,7 +89,30 @@ function readExportTable(
     .map((line) => JSON.parse(line) as ConvexDoc);
 }
 
+function readOptionalExportTable(
+  entries: Record<string, Uint8Array>,
+  table: (typeof OPTIONAL_TABLES)[number],
+): ConvexDoc[] {
+  const entryName = findOptionalExportTableEntry(Object.keys(entries), table);
+  if (!entryName) return [];
+  const bytes = entries[entryName];
+  if (!bytes) throw new Error(`Convex export table entry disappeared: ${entryName}`);
+  const text = strFromU8(bytes);
+  return text
+    .split(/\r?\n/)
+    .filter((line) => line.trim().length > 0)
+    .map((line) => JSON.parse(line) as ConvexDoc);
+}
+
 function findExportTableEntry(entryNames: string[], table: string) {
+  const entryName = findOptionalExportTableEntry(entryNames, table);
+  if (entryName) return entryName;
+  throw new Error(
+    `Missing ${table} JSONL table in Convex export. Entries: ${entryNamePreview(entryNames)}`,
+  );
+}
+
+function findOptionalExportTableEntry(entryNames: string[], table: string) {
   const normalized = entryNames.map((name) => ({ name, parts: name.split("/") }));
   const exactJsonl = normalized.find(({ name }) => name === `${table}.jsonl`);
   if (exactJsonl) return exactJsonl.name;
@@ -81,9 +126,7 @@ function findExportTableEntry(entryNames: string[], table: string) {
     ({ parts }) => parts.includes(table) && parts.at(-1)?.endsWith(".jsonl"),
   );
   if (tableJsonl) return tableJsonl.name;
-  throw new Error(
-    `Missing ${table} JSONL table in Convex export. Entries: ${entryNamePreview(entryNames)}`,
-  );
+  return null;
 }
 
 function entryNamePreview(entryNames: string[]) {
@@ -101,9 +144,23 @@ function buildIdMap(rows: ConvexDoc[]) {
   return map;
 }
 
+function buildLinkedUserPublisherMap(rows: ConvexDoc[]) {
+  const map = new Map<string, ConvexDoc>();
+  for (const row of rows) {
+    const linkedUserId = stringValue(row.linkedUserId);
+    if (linkedUserId && isActiveExportOwner(row) && !map.has(linkedUserId)) {
+      map.set(linkedUserId, row);
+    }
+  }
+  return map;
+}
+
 function skillVersionToExportRow(
   version: ConvexDoc,
   skillsById: Map<string, ConvexDoc>,
+  usersById: Map<string, ConvexDoc>,
+  publishersById: Map<string, ConvexDoc>,
+  publishersByLinkedUserId: Map<string, ConvexDoc>,
 ): ArtifactExportInput[] {
   if (numberOrNull(version.softDeletedAt) !== null) return [];
   const skill = skillsById.get(stringValue(version.skillId));
@@ -119,6 +176,12 @@ function skillVersionToExportRow(
       sourceDocId: versionId,
       parentDocId: requiredString(skill._id, "skills._id"),
       publicName: requiredString(skill.displayName, "skills.displayName"),
+      publicOwnerHandle: publicOwnerHandleFromExport(
+        skill,
+        usersById,
+        publishersById,
+        publishersByLinkedUserId,
+      ),
       publicSlug: stringOrNull(skill.slug),
       version: requiredString(version.version, "skillVersions.version"),
       artifactSha256: stringOrNull(version.sha256hash),
@@ -132,6 +195,7 @@ function skillVersionToExportRow(
       packageExecutesCode: null,
       sourceRepoHost: null,
       vtAnalysis: vtAnalysisFromExport(version.vtAnalysis),
+      skillSpectorAnalysis: skillSpectorAnalysisFromExport(version.skillSpectorAnalysis),
       staticScan: staticScanFromExport(version.staticScan),
       llmAnalysis: llmAnalysisFromExport(version.llmAnalysis),
       moderationConsensus,
@@ -142,6 +206,9 @@ function skillVersionToExportRow(
 function packageReleaseToExportRow(
   release: ConvexDoc,
   packagesById: Map<string, ConvexDoc>,
+  usersById: Map<string, ConvexDoc>,
+  publishersById: Map<string, ConvexDoc>,
+  publishersByLinkedUserId: Map<string, ConvexDoc>,
 ): ArtifactExportInput[] {
   if (numberOrNull(release.softDeletedAt) !== null) return [];
   const pkg = packagesById.get(stringValue(release.packageId));
@@ -152,6 +219,12 @@ function packageReleaseToExportRow(
       sourceDocId: requiredString(release._id, "packageReleases._id"),
       parentDocId: requiredString(pkg._id, "packages._id"),
       publicName: requiredString(pkg.displayName, "packages.displayName"),
+      publicOwnerHandle: publicOwnerHandleFromExport(
+        pkg,
+        usersById,
+        publishersById,
+        publishersByLinkedUserId,
+      ),
       publicSlug: stringOrNull(pkg.name),
       version: requiredString(release.version, "packageReleases.version"),
       artifactSha256: stringOrNull(release.sha256hash) ?? stringOrNull(release.integritySha256),
@@ -164,11 +237,46 @@ function packageReleaseToExportRow(
       packageExecutesCode: booleanOrNull(pkg.executesCode),
       sourceRepoHost: sourceRepoHost(stringOrNull(pkg.sourceRepo)),
       vtAnalysis: vtAnalysisFromExport(release.vtAnalysis),
+      skillSpectorAnalysis: skillSpectorAnalysisFromExport(release.skillSpectorAnalysis),
       staticScan: staticScanFromExport(release.staticScan),
       llmAnalysis: llmAnalysisFromExport(release.llmAnalysis),
       moderationConsensus: null,
     },
   ];
+}
+
+function publicOwnerHandleFromExport(
+  source: ConvexDoc,
+  usersById: Map<string, ConvexDoc>,
+  publishersById: Map<string, ConvexDoc>,
+  publishersByLinkedUserId: Map<string, ConvexDoc>,
+) {
+  const publisherId = stringValue(source.ownerPublisherId);
+  const publisher = publisherId ? publishersById.get(publisherId) : undefined;
+  const publisherHandle = isActiveExportOwner(publisher) ? stringOrNull(publisher.handle) : null;
+  if (publisherHandle) return publisherHandle;
+
+  const userId = stringValue(source.ownerUserId);
+  const user = userId ? usersById.get(userId) : undefined;
+  if (!isActiveExportOwner(user)) return null;
+
+  const personalPublisherId = stringValue(user.personalPublisherId);
+  const personalPublisher = personalPublisherId
+    ? publishersById.get(personalPublisherId)
+    : undefined;
+  const activePersonalPublisher = isActiveExportOwner(personalPublisher)
+    ? personalPublisher
+    : publishersByLinkedUserId.get(userId);
+  const personalPublisherHandle = isActiveExportOwner(activePersonalPublisher)
+    ? stringOrNull(activePersonalPublisher.handle)
+    : null;
+  return personalPublisherHandle ?? stringOrNull(user.handle);
+}
+
+function isActiveExportOwner(owner: ConvexDoc | undefined): owner is ConvexDoc {
+  return Boolean(
+    owner && numberOrNull(owner.deletedAt) === null && numberOrNull(owner.deactivatedAt) === null,
+  );
 }
 
 function filesFromExport(value: unknown): ExportFileInput[] {
@@ -214,6 +322,37 @@ function vtAnalysisFromExport(value: unknown): VtAnalysisInput | null {
   };
 }
 
+function skillSpectorAnalysisFromExport(value: unknown): SkillSpectorAnalysisInput | null {
+  if (!isRecord(value)) return null;
+  return {
+    status: requiredString(value.status, "skillSpectorAnalysis.status"),
+    score: numberOrNull(value.score),
+    severity: stringOrNull(value.severity),
+    recommendation: stringOrNull(value.recommendation),
+    issueCount: numberValue(value.issueCount, "skillSpectorAnalysis.issueCount"),
+    issues: skillSpectorIssuesFromExport(value.issues),
+    scannerVersion: stringOrNull(value.scannerVersion),
+    summary: stringOrNull(value.summary),
+    error: stringOrNull(value.error),
+    checkedAt: numberValue(value.checkedAt, "skillSpectorAnalysis.checkedAt"),
+  };
+}
+
+function skillSpectorIssuesFromExport(value: unknown): SkillSpectorAnalysisInput["issues"] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((issue) => {
+    if (!isRecord(issue)) return [];
+    return [
+      {
+        issueId: requiredString(issue.issueId, "skillSpectorAnalysis.issue.issueId"),
+        severity: requiredString(issue.severity, "skillSpectorAnalysis.issue.severity"),
+        confidence: numberOrNull(issue.confidence),
+        explanation: requiredString(issue.explanation, "skillSpectorAnalysis.issue.explanation"),
+      },
+    ];
+  });
+}
+
 function staticScanFromExport(value: unknown): StaticScanInput | null {
   if (!isRecord(value)) return null;
   const status = datasetLabelOrNull(value.status);
@@ -257,8 +396,52 @@ function llmAnalysisFromExport(value: unknown): LlmAnalysisInput | null {
     dimensions: llmDimensionsFromExport(value.dimensions),
     guidance: stringOrNull(value.guidance),
     findings: stringOrNull(value.findings),
+    agenticRiskFindings: llmAgenticRiskFindingsFromExport(value.agenticRiskFindings),
     model: stringOrNull(value.model),
     checkedAt: numberValue(value.checkedAt, "llmAnalysis.checkedAt"),
+  };
+}
+
+function llmAgenticRiskFindingsFromExport(value: unknown): LlmAnalysisInput["agenticRiskFindings"] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((finding) => {
+    if (!isRecord(finding)) return [];
+    const riskBucket = finding.riskBucket;
+    if (
+      riskBucket !== "abnormal_behavior_control" &&
+      riskBucket !== "permission_boundary" &&
+      riskBucket !== "sensitive_data_protection"
+    ) {
+      return [];
+    }
+    const status = finding.status;
+    if (status !== "none" && status !== "note" && status !== "concern") return [];
+    const confidence = finding.confidence;
+    if (confidence !== "high" && confidence !== "medium" && confidence !== "low") return [];
+    return [
+      {
+        categoryId: stringOrNull(finding.categoryId) ?? "",
+        categoryLabel: stringOrNull(finding.categoryLabel) ?? "",
+        riskBucket,
+        status,
+        severity: stringOrNull(finding.severity) ?? "none",
+        confidence,
+        evidence: llmRiskEvidenceFromExport(finding.evidence),
+        userImpact: stringOrNull(finding.userImpact) ?? "",
+        recommendation: stringOrNull(finding.recommendation) ?? "",
+      },
+    ];
+  });
+}
+
+function llmRiskEvidenceFromExport(
+  value: unknown,
+): LlmAnalysisInput["agenticRiskFindings"][number]["evidence"] {
+  if (!isRecord(value)) return null;
+  return {
+    path: stringOrNull(value.path) ?? "",
+    snippet: stringOrNull(value.snippet) ?? "",
+    explanation: stringOrNull(value.explanation) ?? "",
   };
 }
 

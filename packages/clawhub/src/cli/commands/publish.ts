@@ -79,7 +79,9 @@ export async function cmdPublish(
 
   const spinner = createSpinner(`Preparing ${slug}@${version}`);
   try {
-    const filesOnDisk = await ensureRootManifestFile(folder, await listTextFiles(folder));
+    const filesOnDisk = stripGeneratedSkillCards(
+      await ensureRootManifestFile(folder, await listTextFiles(folder)),
+    );
     if (filesOnDisk.length === 0) fail("No files found");
     if (
       !filesOnDisk.some((file) => {
@@ -139,6 +141,10 @@ async function resolveDefaultOwnerHandle(registry: string, token: string) {
   const handle = whoami.user.handle?.trim().replace(/^@+/, "");
   if (!handle) fail("Unable to resolve your publisher handle. Pass --owner explicitly.");
   return handle;
+}
+
+function stripGeneratedSkillCards(files: Awaited<ReturnType<typeof listTextFiles>>) {
+  return files.filter((file) => file.relPath.trim().toLowerCase() !== "skill-card.md");
 }
 
 async function ensureRootManifestFile(

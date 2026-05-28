@@ -1035,6 +1035,9 @@ describe("package commands", () => {
       });
       expect(getUploadedFileNames()).toEqual([]);
       expect(getUploadedClawPackNames()).toEqual(["scope-demo-plugin-1.0.0.tgz"]);
+      expect(httpMocks.apiRequestForm.mock.calls[0]?.[1]).toEqual(
+        expect.objectContaining({ retryCount: 5 }),
+      );
       const uploadedPack = getUploadedClawPacks()[0];
       if (!uploadedPack) throw new Error("Missing uploaded ClawPack");
       const parsed = parseClawPack(new Uint8Array(await uploadedPack.arrayBuffer()));
@@ -1052,6 +1055,165 @@ describe("package commands", () => {
       dateSpy.mockRestore();
     } finally {
       await rm(workdir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the README H1 as a package display name fallback", async () => {
+    const workdir = await makeTmpWorkdir();
+    try {
+      const folder = join(workdir, "clawhub-github-publish-clh4hR");
+      await mkdir(join(folder, "dist"), { recursive: true });
+      await writeFile(
+        join(folder, "package.json"),
+        makeCodePluginPackageJson({
+          name: "@scope/demo-plugin",
+          version: "1.0.0",
+          files: ["dist", "openclaw.plugin.json", "README.md"],
+        }),
+        "utf8",
+      );
+      await writeFile(
+        join(folder, "openclaw.plugin.json"),
+        JSON.stringify({ id: "demo.plugin" }),
+        "utf8",
+      );
+      await writeFile(
+        join(folder, "README.md"),
+        "---\nignored: true\n---\n\n# Honcho Memory Plugin for OpenClaw\n\nDetails.\n",
+        "utf8",
+      );
+      await writeFile(join(folder, "dist", "index.js"), "export const demo = true;\n", "utf8");
+
+      await cmdPublishPackage(makeOpts(workdir), "clawhub-github-publish-clh4hR", {
+        dryRun: true,
+        json: true,
+        sourceRepo: "openclaw/demo-plugin",
+        sourceCommit: "abc123",
+      });
+
+      const output = String(mockWrite.mock.calls[0]?.[0] ?? "").trim();
+      expect(JSON.parse(output)).toMatchObject({
+        displayName: "Honcho Memory Plugin for OpenClaw",
+      });
+    } finally {
+      await rm(workdir, { recursive: true, force: true });
+    }
+  });
+
+  it("prefers the OpenClaw plugin manifest name over package.json displayName", async () => {
+    const workdir = await makeTmpWorkdir();
+    try {
+      const folder = join(workdir, "demo-plugin");
+      await mkdir(join(folder, "dist"), { recursive: true });
+      await writeFile(
+        join(folder, "package.json"),
+        makeCodePluginPackageJson({
+          name: "@scope/demo-plugin",
+          displayName: "Package Display Name",
+          version: "1.0.0",
+          files: ["dist", "openclaw.plugin.json"],
+        }),
+        "utf8",
+      );
+      await writeFile(
+        join(folder, "openclaw.plugin.json"),
+        JSON.stringify({ id: "demo.plugin", name: "Manifest Display Name" }),
+        "utf8",
+      );
+      await writeFile(join(folder, "dist", "index.js"), "export const demo = true;\n", "utf8");
+
+      await cmdPublishPackage(makeOpts(workdir), "demo-plugin", {
+        dryRun: true,
+        json: true,
+        sourceRepo: "openclaw/demo-plugin",
+        sourceCommit: "abc123",
+      });
+
+      const output = String(mockWrite.mock.calls[0]?.[0] ?? "").trim();
+      expect(JSON.parse(output)).toMatchObject({
+        displayName: "Manifest Display Name",
+      });
+    } finally {
+      await rm(workdir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves literal trailing hashes in README H1 display name fallbacks", async () => {
+    const workdir = await makeTmpWorkdir();
+    try {
+      const folder = join(workdir, "language-plugin");
+      await mkdir(join(folder, "dist"), { recursive: true });
+      await writeFile(
+        join(folder, "package.json"),
+        makeCodePluginPackageJson({
+          name: "@scope/language-plugin",
+          version: "1.0.0",
+          files: ["dist", "openclaw.plugin.json", "README.md"],
+        }),
+        "utf8",
+      );
+      await writeFile(
+        join(folder, "openclaw.plugin.json"),
+        JSON.stringify({ id: "language.plugin" }),
+        "utf8",
+      );
+      await writeFile(join(folder, "README.md"), "# C#\n\nDetails.\n", "utf8");
+      await writeFile(join(folder, "dist", "index.js"), "export const demo = true;\n", "utf8");
+
+      await cmdPublishPackage(makeOpts(workdir), "language-plugin", {
+        dryRun: true,
+        json: true,
+        sourceRepo: "openclaw/language-plugin",
+        sourceCommit: "abc123",
+      });
+
+      const output = String(mockWrite.mock.calls[0]?.[0] ?? "").trim();
+      expect(JSON.parse(output)).toMatchObject({
+        displayName: "C#",
+      });
+    } finally {
+      await rm(workdir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves package publish dot paths from the caller cwd before the OpenClaw workdir", async () => {
+    const workspace = await makeTmpWorkdir();
+    const pluginRoot = await makeTmpWorkdir();
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(join(pluginRoot, "dist"), { recursive: true });
+      await writeFile(
+        join(pluginRoot, "package.json"),
+        makeCodePluginPackageJson({
+          name: "@scope/cwd-plugin",
+          displayName: "Cwd Plugin",
+          version: "1.0.0",
+          files: ["dist", "openclaw.plugin.json"],
+        }),
+        "utf8",
+      );
+      await writeFile(
+        join(pluginRoot, "openclaw.plugin.json"),
+        JSON.stringify({ id: "cwd.plugin", configSchema: { type: "object" } }),
+        "utf8",
+      );
+      await writeFile(join(pluginRoot, "dist", "index.js"), "export const demo = true;\n", "utf8");
+
+      process.chdir(pluginRoot);
+
+      await cmdPublishPackage(makeOpts(workspace), ".", {
+        dryRun: true,
+        sourceRepo: "openclaw/cwd-plugin",
+        sourceCommit: "abc123",
+      });
+
+      const output = mockLog.mock.calls.map((call) => String(call[0])).join("\n");
+      expect(output).toContain("Name:      @scope/cwd-plugin");
+      expect(output).toContain("Files:     3");
+    } finally {
+      process.chdir(previousCwd);
+      await rm(pluginRoot, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
     }
   });
 
@@ -1213,6 +1375,48 @@ describe("package commands", () => {
         }),
       ).rejects.toThrow(
         "@scope/demo-plugin requires compiled runtime output for TypeScript entry ./index.ts",
+      );
+      expect(httpMocks.apiRequestForm).not.toHaveBeenCalled();
+    } finally {
+      await rm(workdir, { recursive: true, force: true });
+    }
+  });
+
+  it("explains missing declared runtime extension files", async () => {
+    const workdir = await makeTmpWorkdir();
+    try {
+      const packName = "demo-plugin-1.0.0.tgz";
+      await writeFile(
+        join(workdir, packName),
+        npmPackFixture({
+          "package/package.json": makeCodePluginPackageJson({
+            name: "@scope/demo-plugin",
+            displayName: "Demo Plugin",
+            version: "1.0.0",
+            openclaw: {
+              extensions: ["./index.ts"],
+              runtimeExtensions: ["./dist/index.js"],
+              compat: {
+                pluginApi: ">=2026.3.24-beta.2",
+              },
+              build: {
+                openclawVersion: "2026.3.24-beta.2",
+              },
+            },
+          }),
+          "package/openclaw.plugin.json": JSON.stringify({ id: "demo.plugin" }),
+          "package/index.ts": "export const demo = true;\n",
+        }),
+      );
+
+      await expect(
+        cmdPublishPackage(makeOpts(workdir), packName, {
+          sourceRepo: "openclaw/demo-plugin",
+          sourceCommit: "abc123",
+          sourceRef: "refs/tags/v1.0.0",
+        }),
+      ).rejects.toThrow(
+        "@scope/demo-plugin declares openclaw.runtimeExtensions entry ./dist/index.js, but that file is missing from the package. Build first and publish a local folder or .tgz, or include the runtime file in the GitHub ref.",
       );
       expect(httpMocks.apiRequestForm).not.toHaveBeenCalled();
     } finally {

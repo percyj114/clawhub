@@ -52,6 +52,7 @@ const LEGACY_DOT_DIR = ".clawdhub";
 const DOT_IGNORE = ".clawhubignore";
 const LEGACY_DOT_IGNORE = ".clawdhubignore";
 const MAX_CLAWPACK_BYTES = 120 * 1024 * 1024;
+const PACKAGE_PUBLISH_RETRY_COUNT = 5;
 
 type PackageInspectOptions = {
   version?: string;
@@ -494,7 +495,12 @@ export async function cmdPackPackage(
   options: PackagePackOptions = {},
 ) {
   if (!sourceArg?.trim()) fail("Path required");
-  const sourcePath = resolve(opts.workdir, sourceArg);
+  const resolvedSource = await resolveSourceInput(sourceArg, {
+    workdir: opts.workdir,
+    localWorkdirs: [process.cwd(), opts.workdir],
+  });
+  if (resolvedSource.kind !== "local") fail("Path must be a package folder");
+  const sourcePath = resolvedSource.path;
   const sourceStat = await stat(sourcePath).catch(() => null);
   if (!sourceStat?.isDirectory()) fail("Path must be a package folder");
 
@@ -687,7 +693,13 @@ export async function cmdPublishPackage(
       if (spinner) spinner.text = `Publishing ${plan.payload.name}@${plan.payload.version}`;
       const result = await apiRequestForm(
         registry,
-        { method: "POST", path: ApiRoutes.packages, token: publishToken, form },
+        {
+          method: "POST",
+          path: ApiRoutes.packages,
+          token: publishToken,
+          form,
+          retryCount: PACKAGE_PUBLISH_RETRY_COUNT,
+        },
         ApiV1PackagePublishResponseSchema,
       );
 
@@ -1506,6 +1518,37 @@ async function readJsonFile(path: string) {
   }
 }
 
+function stripMarkdownFrontmatter(content: string) {
+  const normalized = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  if (!normalized.startsWith("---\n")) return normalized;
+  const endIndex = normalized.indexOf("\n---", 4);
+  if (endIndex === -1) return normalized;
+  return normalized.slice(endIndex + 4).replace(/^\n+/, "");
+}
+
+function extractReadmeH1(content: string) {
+  const body = stripMarkdownFrontmatter(content);
+  for (const line of body.split("\n")) {
+    const match = /^#(?!#)\s+(.+?)\s*$/.exec(line.trim());
+    const title = match?.[1]?.replace(/\s+#+$/, "").trim();
+    if (title) return title;
+  }
+  return undefined;
+}
+
+function readReadmeH1FromPackageFiles(files: PackageFile[]) {
+  const readme = files.find((file) => {
+    const path = file.relPath.toLowerCase();
+    return path === "readme.md" || path === "readme.mdx";
+  });
+  if (!readme) return undefined;
+  try {
+    return extractReadmeH1(new TextDecoder().decode(readme.bytes));
+  } catch {
+    return undefined;
+  }
+}
+
 function packageJsonString(value: Record<string, unknown> | null, key: string): string | undefined {
   const candidate = value?.[key];
   return typeof candidate === "string" && candidate.trim() ? candidate.trim() : undefined;
@@ -1592,7 +1635,10 @@ async function preparePackagePublishPlan(
   sourceArg: string,
   options: PackagePublishOptions,
 ): Promise<PackagePublishPlan> {
-  const resolvedSource = await resolveSourceInput(sourceArg, { workdir: opts.workdir });
+  const resolvedSource = await resolveSourceInput(sourceArg, {
+    workdir: opts.workdir,
+    localWorkdirs: [process.cwd(), opts.workdir],
+  });
   const sourceForFetch = applyGitHubSourcePath(resolvedSource, options.sourcePath);
   let folder = sourceForFetch.kind === "local" ? sourceForFetch.path : "";
   let cleanup: (() => Promise<void>) | undefined;
@@ -1677,9 +1723,10 @@ async function preparePackagePublishPlan(
     basename(folder).trim().toLowerCase();
   const displayName =
     options.displayName?.trim() ||
-    packageJsonString(packageJson, "displayName") ||
     packageJsonString(pluginManifest, "name") ||
+    packageJsonString(packageJson, "displayName") ||
     packageJsonString(bundleManifest, "name") ||
+    readReadmeH1FromPackageFiles(filesOnDisk) ||
     titleCase(basename(folder));
   const ownerHandle = options.owner?.trim().replace(/^@+/, "");
   const version =

@@ -23,14 +23,27 @@ request is a skill slug, an official OpenClaw plugin alias, or a package route.
 Skills:
 
 - Canonical page: `/<owner>/<slug>`
+- Security audit page: `/<owner>/<slug>/security-audit`
+- Legacy scanner pages: `/<owner>/<slug>/security/:scanner` redirect to
+  `/<owner>/<slug>/security-audit`
 - API detail: `/api/v1/skills/<slug>`
 
 Plugins:
 
 - Canonical page: `/plugins/@scope/name`
 - Encoded compatibility page: `/plugins/%40scope%2Fname`
-- Security page: `/plugins/@scope/name/security/<scanner>`
-- Encoded security compatibility page: `/plugins/%40scope%2Fname/security/<scanner>`
+- Security audit page: `/plugins/@scope/name/security-audit`
+- Encoded security compatibility page: `/plugins/%40scope%2Fname/security-audit`
+- Legacy scanner pages redirect to the corresponding plugin security audit page.
+
+Publisher profiles:
+
+- Canonical page: `/user/<handle>`
+- Legacy compatibility pages: `/p/<handle>`, `/u/<handle>`, and
+  `/orgs/<handle>` redirect to `/user/<handle>`
+
+Bare `/<handle>` routes are not profile routes. They remain reserved for static
+routes, official OpenClaw extension aliases, and skill slug resolution.
 
 Encoded compatibility routes are npm-style package-name routes. They redirect
 with `308` to the readable scoped route so the address bar shows

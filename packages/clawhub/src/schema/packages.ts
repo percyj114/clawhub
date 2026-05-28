@@ -138,6 +138,36 @@ export const PackageVtAnalysisSchema = type({
 });
 export type PackageVtAnalysis = (typeof PackageVtAnalysisSchema)[inferred];
 
+export const PackageSkillSpectorIssueSchema = type({
+  issueId: "string",
+  category: "string?",
+  pattern: "string?",
+  severity: "string",
+  confidence: "number?",
+  file: "string?",
+  startLine: "number?",
+  endLine: "number?",
+  explanation: "string",
+  remediation: "string?",
+  finding: "string?",
+  codeSnippet: "string?",
+});
+export type PackageSkillSpectorIssue = (typeof PackageSkillSpectorIssueSchema)[inferred];
+
+export const PackageSkillSpectorAnalysisSchema = type({
+  status: "string",
+  score: "number?",
+  severity: "string?",
+  recommendation: "string?",
+  issueCount: "number",
+  issues: PackageSkillSpectorIssueSchema.array(),
+  scannerVersion: "string?",
+  summary: "string?",
+  error: "string?",
+  checkedAt: "number",
+});
+export type PackageSkillSpectorAnalysis = (typeof PackageSkillSpectorAnalysisSchema)[inferred];
+
 export const PackageLlmAnalysisDimensionSchema = type({
   name: "string",
   label: "string",
@@ -265,6 +295,7 @@ export const ApiV1PackageResponseSchema = type({
     capabilities: PackageCapabilitySummarySchema.or("null").optional(),
     verification: PackageVerificationSummarySchema.or("null").optional(),
     artifact: PackageArtifactSummarySchema.or("null").optional(),
+    scanStatus: '"clean"|"suspicious"|"malicious"|"pending"|"not-run"?',
     stats: PackageStatsSchema.optional(),
   }).or("null"),
   owner: type({
@@ -302,6 +333,7 @@ export const ApiV1PackageVersionResponseSchema = type({
     artifact: PackageArtifactSummarySchema.or("null").optional(),
     sha256hash: "string|null?",
     vtAnalysis: PackageVtAnalysisSchema.or("null").optional(),
+    skillSpectorAnalysis: PackageSkillSpectorAnalysisSchema.or("null").optional(),
     llmAnalysis: PackageLlmAnalysisSchema.or("null").optional(),
     clawScanNote: "string|null?",
     clawScanNoteUpdatedAt: "number|null?",
@@ -337,6 +369,33 @@ export const ApiV1PackageArtifactResponseSchema = type({
   }),
 });
 export type ApiV1PackageArtifactResponse = (typeof ApiV1PackageArtifactResponseSchema)[inferred];
+
+export const ApiV1PackageSecurityResponseSchema = type({
+  package: type({
+    name: "string",
+    displayName: "string",
+    family: PackageFamilySchema,
+  }),
+  release: type({
+    releaseId: "string",
+    version: "string",
+    artifactKind: PackageArtifactKindSchema.or("null").optional(),
+    artifactSha256: "string?",
+    npmIntegrity: "string?",
+    npmShasum: "string?",
+    npmTarballName: "string?",
+    createdAt: "number",
+  }),
+  trust: type({
+    scanStatus: '"clean"|"suspicious"|"malicious"|"pending"|"not-run"',
+    moderationState: PackageReleaseModerationStateSchema.or("null").optional(),
+    blockedFromDownload: "boolean",
+    reasons: "string[]",
+    pending: "boolean",
+    stale: "boolean",
+  }),
+});
+export type ApiV1PackageSecurityResponse = (typeof ApiV1PackageSecurityResponseSchema)[inferred];
 
 export const PackageReleaseModerationRequestSchema = type({
   state: PackageReleaseModerationStateSchema,
@@ -554,6 +613,46 @@ export const ApiV1PackageTransferResponseSchema = type({
   isOfficial: "boolean",
 });
 export type ApiV1PackageTransferResponse = (typeof ApiV1PackageTransferResponseSchema)[inferred];
+
+export const PackageRepairNameRequestSchema = type({
+  nextName: "string",
+  retireTarget: "boolean?",
+  owner: "string?",
+  reason: "string",
+  dryRun: "boolean?",
+});
+export type PackageRepairNameRequest = (typeof PackageRepairNameRequestSchema)[inferred];
+
+export const PackageRepairNamePackageSchema = type({
+  packageId: "string",
+  name: "string",
+  runtimeId: "string|null?",
+  ownerUserId: "string",
+  ownerPublisherId: "string|null?",
+  channel: PackageChannelSchema,
+  softDeletedAt: "number|null?",
+});
+export type PackageRepairNamePackage = (typeof PackageRepairNamePackageSchema)[inferred];
+
+export const PackageRepairNameOperationSchema = type({
+  action: '"retire-target"|"rename-source"|"transfer-owner"',
+  packageId: "string?",
+  from: "string?",
+  to: "string?",
+  owner: "string?",
+});
+export type PackageRepairNameOperation = (typeof PackageRepairNameOperationSchema)[inferred];
+
+export const ApiV1PackageRepairNameResponseSchema = type({
+  ok: "true",
+  dryRun: "boolean",
+  source: PackageRepairNamePackageSchema,
+  target: PackageRepairNamePackageSchema.or("null"),
+  retiredName: "string|null?",
+  operations: PackageRepairNameOperationSchema.array(),
+});
+export type ApiV1PackageRepairNameResponse =
+  (typeof ApiV1PackageRepairNameResponseSchema)[inferred];
 
 export const PackageOfficialMigrationUpsertRequestSchema = type({
   bundledPluginId: "string",

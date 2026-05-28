@@ -7,6 +7,7 @@ import {
   ensurePersonalPublisherForUser,
   getActiveUserByHandleOrPersonalPublisher,
 } from "./lib/publishers";
+import { isSkillTransferBlockedByModeration } from "./lib/skillSafety";
 const TRANSFER_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
 
 type TransferDoc = Doc<"skillOwnershipTransfers">;
@@ -183,24 +184,31 @@ export const acceptTransferInternal = internalMutation({
       role: "recipient",
       now,
     });
+    const cancelTransfer = async (message: string) => {
+      await ctx.db.patch(transfer._id, { status: "cancelled" as const, respondedAt: now });
+      return { ok: false as const, error: message };
+    };
 
     const skill = await ctx.db.get(transfer.skillId);
     if (!skill || skill.softDeletedAt) throw new Error("Skill not found");
+    if (isSkillTransferBlockedByModeration(skill)) {
+      return await cancelTransfer("Skill is under moderation");
+    }
+    const requester = await ctx.db.get(transfer.fromUserId);
+    if (!requester || requester.deletedAt || requester.deactivatedAt) {
+      return await cancelTransfer("Transfer is no longer valid");
+    }
     if (skill.ownerUserId !== transfer.fromUserId) {
-      const requester = await ctx.db.get(transfer.fromUserId);
-      if (!requester || requester.deletedAt || requester.deactivatedAt) {
-        await ctx.db.patch(transfer._id, { status: "cancelled", respondedAt: now });
-        throw new Error("Transfer is no longer valid");
-      }
       try {
         await assertCanRequestSkillTransfer(ctx, requester, skill);
       } catch {
-        await ctx.db.patch(transfer._id, { status: "cancelled", respondedAt: now });
-        throw new Error("Transfer is no longer valid");
+        return await cancelTransfer("Transfer is no longer valid");
       }
     }
-
-    const newPublisher = await ensurePersonalPublisherForUser(ctx, newOwner);
+    const newPublisher = await ensurePersonalPublisherForUser(ctx, newOwner, {
+      actorUserId: args.actorUserId,
+      source: "skill.transfer.accept",
+    });
     if (!newPublisher) throw new Error("Failed to resolve publisher for new owner");
 
     await ctx.db.patch(skill._id, {

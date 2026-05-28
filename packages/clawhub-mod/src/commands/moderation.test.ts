@@ -19,7 +19,15 @@ vi.mock("../../../clawhub/src/cli/registry.js", () => registryMocks.moduleFactor
 vi.mock("../../../clawhub/src/http.js", () => httpMocks.moduleFactory());
 vi.mock("../../../clawhub/src/cli/ui.js", () => uiMocks.moduleFactory());
 
-const { cmdBanUser, cmdSetRole, cmdUnbanUser } = await import("./moderation");
+const {
+  cmdBanUser,
+  cmdReclassifyBan,
+  cmdRemediateAutobans,
+  cmdRescanAllSkills,
+  cmdRescanSkill,
+  cmdSetRole,
+  cmdUnbanUser,
+} = await import("./moderation");
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -149,6 +157,254 @@ describe("cmdBanUser", () => {
     await expect(
       cmdBanUser(makeGlobalOpts(), "moonshine", { yes: true, fuzzy: true }, false),
     ).rejects.toThrow(/multiple users matched/i);
+  });
+});
+
+describe("cmdRescanSkill", () => {
+  it("requires --yes when input is disabled", async () => {
+    await expect(cmdRescanSkill(makeGlobalOpts(), "demo", {}, false)).rejects.toThrow(/--yes/i);
+    expect(httpMocks.apiRequest).not.toHaveBeenCalled();
+  });
+
+  it("posts a moderator skill rescan request", async () => {
+    httpMocks.apiRequest.mockResolvedValueOnce({
+      ok: true,
+      slug: "markdown2doc",
+      version: "1.0.4",
+      skillId: "skills:1",
+      skillVersionId: "skillVersions:1",
+      jobId: "securityScanJobs:1",
+      alreadyQueued: false,
+    });
+
+    const result = await cmdRescanSkill(
+      makeGlobalOpts(),
+      "Markdown2Doc",
+      { yes: true, version: "1.0.4" },
+      false,
+    );
+
+    expect(result).toMatchObject({ ok: true, slug: "markdown2doc", version: "1.0.4" });
+    expect(httpMocks.apiRequest).toHaveBeenCalledWith(
+      "https://clawhub.ai",
+      expect.objectContaining({
+        method: "POST",
+        path: "/api/v1/skills/markdown2doc/rescan",
+        token: "tkn",
+        body: { version: "1.0.4" },
+      }),
+      expect.anything(),
+    );
+  });
+});
+
+describe("cmdRescanAllSkills", () => {
+  it("requires --yes for real runs when input is disabled", async () => {
+    await expect(cmdRescanAllSkills(makeGlobalOpts(), {}, false)).rejects.toThrow(/--yes/i);
+    expect(httpMocks.apiRequest).not.toHaveBeenCalled();
+  });
+
+  it("pages dry-runs without polling status", async () => {
+    httpMocks.apiRequest
+      .mockResolvedValueOnce({
+        ok: true,
+        mode: "all-active-latest",
+        queued: 2,
+        alreadyQueued: 0,
+        skipped: 0,
+        jobIds: [],
+        nextCursor: "cursor-2",
+        done: false,
+        sampleSlugs: ["one", "two"],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        mode: "all-active-latest",
+        queued: 1,
+        alreadyQueued: 1,
+        skipped: 0,
+        jobIds: [],
+        nextCursor: null,
+        done: true,
+        sampleSlugs: ["three", "four"],
+      });
+
+    const result = await cmdRescanAllSkills(
+      makeGlobalOpts(),
+      { dryRun: true, batchSize: 2 },
+      false,
+    );
+
+    expect(result).toMatchObject({ ok: true, batches: 2, queued: 3, alreadyQueued: 1 });
+    expect(httpMocks.apiRequest).toHaveBeenNthCalledWith(
+      1,
+      "https://clawhub.ai",
+      expect.objectContaining({
+        method: "POST",
+        path: "/api/v1/skills/-/rescan-batch",
+        body: {
+          mode: "all-active-latest",
+          cursor: null,
+          batchSize: 2,
+          dryRun: true,
+        },
+      }),
+      expect.anything(),
+    );
+    expect(httpMocks.apiRequest).toHaveBeenNthCalledWith(
+      2,
+      "https://clawhub.ai",
+      expect.objectContaining({
+        method: "POST",
+        path: "/api/v1/skills/-/rescan-batch",
+        body: {
+          mode: "all-active-latest",
+          cursor: "cursor-2",
+          batchSize: 2,
+          dryRun: true,
+        },
+      }),
+      expect.anything(),
+    );
+  });
+
+  it("queues a batch and polls until drained", async () => {
+    httpMocks.apiRequest
+      .mockResolvedValueOnce({
+        ok: true,
+        mode: "all-active-latest",
+        queued: 1,
+        alreadyQueued: 0,
+        skipped: 0,
+        jobIds: ["securityScanJobs:1"],
+        nextCursor: null,
+        done: true,
+        sampleSlugs: ["one"],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        total: 1,
+        queued: 0,
+        running: 0,
+        succeeded: 1,
+        failed: 0,
+        missing: 0,
+        terminal: 1,
+        done: true,
+        failedJobIds: [],
+      });
+
+    const result = await cmdRescanAllSkills(
+      makeGlobalOpts(),
+      { yes: true, batchSize: 2, pollInterval: 0 },
+      false,
+    );
+
+    expect(result).toMatchObject({ ok: true, batches: 1, queued: 1, failed: 0 });
+    expect(httpMocks.apiRequest).toHaveBeenNthCalledWith(
+      1,
+      "https://clawhub.ai",
+      expect.objectContaining({
+        method: "POST",
+        path: "/api/v1/skills/-/rescan-batch",
+        token: "tkn",
+        body: {
+          mode: "all-active-latest",
+          cursor: null,
+          batchSize: 2,
+          dryRun: false,
+        },
+      }),
+      expect.anything(),
+    );
+    expect(httpMocks.apiRequest).toHaveBeenNthCalledWith(
+      2,
+      "https://clawhub.ai",
+      expect.objectContaining({
+        method: "POST",
+        path: "/api/v1/skills/-/rescan-batch/status",
+        token: "tkn",
+        body: { jobIds: ["securityScanJobs:1"] },
+      }),
+      expect.anything(),
+    );
+  });
+
+  it("prints human-readable progress and summary by default", async () => {
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      httpMocks.apiRequest
+        .mockResolvedValueOnce({
+          ok: true,
+          mode: "all-active-latest",
+          queued: 1,
+          alreadyQueued: 1,
+          skipped: 1,
+          jobIds: ["securityScanJobs:1"],
+          nextCursor: null,
+          done: true,
+          sampleSlugs: ["one"],
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          total: 1,
+          queued: 0,
+          running: 0,
+          succeeded: 1,
+          failed: 0,
+          missing: 0,
+          terminal: 1,
+          done: true,
+          failedJobIds: [],
+        });
+
+      await cmdRescanAllSkills(
+        makeGlobalOpts(),
+        { yes: true, batchSize: 3, pollInterval: 0 },
+        false,
+      );
+
+      expect(consoleLog).toHaveBeenCalledWith("Batch 1: queued 1, already queued 1, skipped 1.");
+      expect(consoleLog).toHaveBeenCalledWith(
+        "Batch 1 status: 1 succeeded, 0 failed, 0 running, 0 queued.",
+      );
+      expect(consoleLog).toHaveBeenCalledWith(
+        "Bulk rescan finished: 1 batch(es), 1 queued, 1 already queued, 1 skipped, 0 failed.",
+      );
+    } finally {
+      consoleLog.mockRestore();
+    }
+  });
+
+  it("fails when drained batches contain failed jobs", async () => {
+    httpMocks.apiRequest
+      .mockResolvedValueOnce({
+        ok: true,
+        mode: "all-active-latest",
+        queued: 1,
+        alreadyQueued: 0,
+        skipped: 0,
+        jobIds: ["securityScanJobs:1"],
+        nextCursor: null,
+        done: true,
+        sampleSlugs: ["one"],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        total: 1,
+        queued: 0,
+        running: 0,
+        succeeded: 0,
+        failed: 1,
+        missing: 0,
+        terminal: 1,
+        done: true,
+        failedJobIds: ["securityScanJobs:1"],
+      });
+
+    await expect(
+      cmdRescanAllSkills(makeGlobalOpts(), { yes: true, batchSize: 1, pollInterval: 0 }, false),
+    ).rejects.toThrow(/failed job/i);
   });
 });
 
@@ -293,5 +549,225 @@ describe("cmdUnbanUser", () => {
       }),
       expect.anything(),
     );
+  });
+});
+
+describe("cmdRemediateAutobans", () => {
+  it("defaults to dry run and posts no target payload", async () => {
+    httpMocks.apiRequest.mockResolvedValueOnce({
+      ok: true,
+      dryRun: true,
+      scanned: 0,
+      wouldUnban: 0,
+      unbanned: 0,
+      skipped: 0,
+      restoredSkills: 0,
+      restoredPackages: 0,
+      items: [],
+      nextCursor: null,
+      done: true,
+    });
+
+    await cmdRemediateAutobans(makeGlobalOpts(), {}, false);
+
+    expect(httpMocks.apiRequest).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        method: "POST",
+        path: "/api/v1/users/remediate-autobans",
+        body: { dryRun: true },
+      }),
+      expect.anything(),
+    );
+  });
+
+  it("posts apply payload with target, reason, since, limit, and id mode", async () => {
+    httpMocks.apiRequest.mockResolvedValueOnce({
+      ok: true,
+      dryRun: false,
+      scanned: 1,
+      wouldUnban: 0,
+      unbanned: 1,
+      skipped: 0,
+      restoredSkills: 12,
+      restoredPackages: 0,
+      items: [],
+      nextCursor: null,
+      done: true,
+    });
+
+    await cmdRemediateAutobans(
+      makeGlobalOpts(),
+      {
+        apply: true,
+        user: "users:target",
+        id: true,
+        reason: "appeal accepted",
+        since: "2026-05-12",
+        limit: "5",
+      },
+      false,
+    );
+
+    expect(httpMocks.apiRequest).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        method: "POST",
+        path: "/api/v1/users/remediate-autobans",
+        body: {
+          dryRun: false,
+          userId: "users:target",
+          reason: "appeal accepted",
+          since: "2026-05-12",
+          limit: 5,
+        },
+      }),
+      expect.anything(),
+    );
+  });
+
+  it("rejects conflicting apply and dry-run flags", async () => {
+    await expect(
+      cmdRemediateAutobans(makeGlobalOpts(), { apply: true, dryRun: true }, false),
+    ).rejects.toThrow(/either --apply or --dry-run/i);
+    expect(httpMocks.apiRequest).not.toHaveBeenCalled();
+  });
+
+  it("can dry-run autoban remediation across all pages", async () => {
+    httpMocks.apiRequest
+      .mockResolvedValueOnce({
+        ok: true,
+        dryRun: true,
+        scanned: 10,
+        wouldUnban: 9,
+        unbanned: 0,
+        skipped: 1,
+        restoredSkills: 12,
+        restoredPackages: 0,
+        items: [{ handle: "first" }],
+        nextCursor: "cursor-2",
+        done: false,
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        dryRun: true,
+        scanned: 3,
+        wouldUnban: 3,
+        unbanned: 0,
+        skipped: 0,
+        restoredSkills: 4,
+        restoredPackages: 1,
+        items: [{ handle: "second" }],
+        nextCursor: null,
+        done: true,
+      });
+
+    const result = await cmdRemediateAutobans(
+      makeGlobalOpts(),
+      { all: true, limit: "10", json: true },
+      false,
+    );
+
+    expect(httpMocks.apiRequest).toHaveBeenCalledTimes(2);
+    expect(httpMocks.apiRequest.mock.calls[0]?.[1]).toMatchObject({
+      body: { dryRun: true, limit: 10 },
+    });
+    expect(httpMocks.apiRequest.mock.calls[1]?.[1]).toMatchObject({
+      body: { dryRun: true, limit: 10, cursor: "cursor-2" },
+    });
+    expect(result).toMatchObject({
+      scanned: 13,
+      wouldUnban: 12,
+      skipped: 1,
+      restoredSkills: 16,
+      restoredPackages: 1,
+      done: true,
+    });
+  });
+
+  it("rejects combining all pages with a targeted user", async () => {
+    await expect(
+      cmdRemediateAutobans(makeGlobalOpts(), { all: true, user: "demo" }, false),
+    ).rejects.toThrow(/either --all or --user/i);
+    expect(httpMocks.apiRequest).not.toHaveBeenCalled();
+  });
+});
+
+describe("cmdReclassifyBan", () => {
+  it("defaults to dry run and posts handle payload", async () => {
+    httpMocks.apiRequest.mockResolvedValueOnce({
+      ok: true,
+      dryRun: true,
+      userId: "users:target",
+      handle: "hanxueyuan",
+      previousReason: "malware auto-ban",
+      nextReason: "bulk publishing spam",
+      changed: true,
+    });
+
+    await cmdReclassifyBan(
+      makeGlobalOpts(),
+      "hanxueyuan",
+      { reason: "bulk publishing spam" },
+      false,
+    );
+
+    expect(httpMocks.apiRequest).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        method: "POST",
+        path: "/api/v1/users/reclassify-ban",
+        body: { handle: "hanxueyuan", reason: "bulk publishing spam", dryRun: true },
+      }),
+      expect.anything(),
+    );
+  });
+
+  it("posts apply payload with user id when --id is set", async () => {
+    httpMocks.apiRequest.mockResolvedValueOnce({
+      ok: true,
+      dryRun: false,
+      userId: "users:target",
+      handle: null,
+      previousReason: "malware auto-ban",
+      nextReason: "bulk publishing spam",
+      changed: true,
+    });
+
+    await cmdReclassifyBan(
+      makeGlobalOpts(),
+      "users:target",
+      { id: true, apply: true, yes: true, reason: "bulk publishing spam" },
+      false,
+    );
+
+    expect(httpMocks.apiRequest).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        method: "POST",
+        path: "/api/v1/users/reclassify-ban",
+        body: { userId: "users:target", reason: "bulk publishing spam", dryRun: false },
+      }),
+      expect.anything(),
+    );
+  });
+
+  it("requires a reason", async () => {
+    await expect(cmdReclassifyBan(makeGlobalOpts(), "hanxueyuan", {}, false)).rejects.toThrow(
+      /reason/i,
+    );
+    expect(httpMocks.apiRequest).not.toHaveBeenCalled();
+  });
+
+  it("requires --yes for apply when input is disabled", async () => {
+    await expect(
+      cmdReclassifyBan(
+        makeGlobalOpts(),
+        "hanxueyuan",
+        { apply: true, reason: "bulk publishing spam" },
+        false,
+      ),
+    ).rejects.toThrow(/--yes/i);
+    expect(httpMocks.apiRequest).not.toHaveBeenCalled();
   });
 });

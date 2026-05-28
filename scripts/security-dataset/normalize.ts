@@ -1,9 +1,16 @@
 import { createHash } from "node:crypto";
+import { AGENTIC_RISK_CATEGORIES } from "../../convex/lib/securityPrompt.ts";
 
 export type SourceKind = "skill" | "package";
 export type DatasetLabel = "clean" | "suspicious" | "malicious" | "unknown";
 export type DatasetSplit = "train" | "validation" | "test" | "eval_holdout";
-export type ScannerName = "static" | "virustotal" | "llm" | "moderation_consensus";
+export type ScannerName = "static" | "virustotal" | "skillspector" | "llm" | "moderation_consensus";
+export type ClawScanRiskBucket =
+  | "abnormal_behavior_control"
+  | "permission_boundary"
+  | "sensitive_data_protection";
+export type ClawScanFindingStatus = "none" | "note" | "concern";
+export type ClawScanSeverity = "none" | "info" | "low" | "medium" | "high" | "critical";
 
 export type ExportFileInput = {
   path: string;
@@ -43,6 +50,25 @@ export type StaticScanInput = {
   checkedAt: number;
 };
 
+export type SkillSpectorAnalysisInput = {
+  status: string;
+  score: number | null;
+  severity: string | null;
+  recommendation: string | null;
+  issueCount: number;
+  issues: Array<{
+    issueId: string;
+    category?: string | null;
+    severity: string;
+    confidence: number | null;
+    explanation: string;
+  }>;
+  scannerVersion: string | null;
+  summary: string | null;
+  error: string | null;
+  checkedAt: number;
+};
+
 export type LlmAnalysisInput = {
   status: string;
   verdict: string | null;
@@ -56,6 +82,21 @@ export type LlmAnalysisInput = {
   }> | null;
   guidance: string | null;
   findings: string | null;
+  agenticRiskFindings: Array<{
+    categoryId: string;
+    categoryLabel: string;
+    riskBucket: ClawScanRiskBucket;
+    status: ClawScanFindingStatus;
+    severity: string;
+    confidence: "high" | "medium" | "low";
+    evidence: {
+      path: string;
+      snippet: string;
+      explanation: string;
+    } | null;
+    userImpact: string;
+    recommendation: string;
+  }>;
   model: string | null;
   checkedAt: number;
 };
@@ -73,6 +114,7 @@ export type ArtifactExportInput = {
   sourceDocId: string;
   parentDocId: string;
   publicName: string;
+  publicOwnerHandle: string | null;
   publicSlug: string | null;
   version: string;
   artifactSha256: string | null;
@@ -86,6 +128,7 @@ export type ArtifactExportInput = {
   packageExecutesCode: boolean | null;
   sourceRepoHost: string | null;
   vtAnalysis: VtAnalysisInput | null;
+  skillSpectorAnalysis: SkillSpectorAnalysisInput | null;
   staticScan: StaticScanInput | null;
   llmAnalysis: LlmAnalysisInput | null;
   moderationConsensus: ModerationConsensusInput | null;
@@ -98,7 +141,9 @@ export type ArtifactRow = {
   source_doc_id_hash: string;
   parent_doc_id_hash: string;
   public_name: string;
+  public_owner_handle: string | null;
   public_slug: string | null;
+  public_qualified_slug: string | null;
   version: string;
   artifact_sha256: string | null;
   skill_md_content_redacted?: string | null;
@@ -115,6 +160,7 @@ export type ArtifactRow = {
   package_executes_code: boolean | null;
   source_repo_host: string | null;
   has_vt_scan: boolean;
+  has_skillspector_scan: boolean;
   has_static_scan: boolean;
   has_llm_scan: boolean;
 };
@@ -128,10 +174,19 @@ export type ScanResultRow = {
   verdict: string | null;
   confidence: string | null;
   checked_at: number | null;
+  score?: number | null;
+  severity?: string | null;
   reason_codes: string[];
   engine_stats: VtAnalysisInput["engineStats"];
   summary_redacted: string | null;
   raw_status_family: DatasetLabel;
+  issues?: Array<{
+    code: string;
+    category: string | null;
+    severity: string;
+    confidence: number | null;
+    explanation_redacted: string | null;
+  }>;
 };
 
 export type StaticFindingRow = {
@@ -146,10 +201,27 @@ export type StaticFindingRow = {
   evidence_redacted: string;
 };
 
+export type ClawScanFindingRow = {
+  artifact_id: string;
+  finding_id: string;
+  category_id: string;
+  category_label: string;
+  risk_bucket: ClawScanRiskBucket;
+  status: "note" | "concern";
+  severity: ClawScanSeverity;
+  confidence: "high" | "medium" | "low";
+  evidence_path_hash: string | null;
+  evidence_file_ext: string | null;
+  evidence_snippet_redacted: string | null;
+  evidence_explanation_redacted: string | null;
+  user_impact_redacted: string;
+  recommendation_redacted: string;
+};
+
 export type LabelRow = {
   artifact_id: string;
   label: DatasetLabel;
-  label_source: "static_scan" | "virustotal" | "llm_scan" | "moderation_consensus";
+  label_source: "static_scan" | "virustotal" | "skillspector" | "llm_scan" | "moderation_consensus";
   label_confidence: string;
   reason_codes: string[];
   scanner_agreement: number;
@@ -167,6 +239,7 @@ export type NormalizedDatasetRows = {
   artifacts: ArtifactRow[];
   scanResults: ScanResultRow[];
   staticFindings: StaticFindingRow[];
+  clawScanFindings: ClawScanFindingRow[];
   labels: LabelRow[];
   splits: SplitRow[];
 };
@@ -174,6 +247,17 @@ export type NormalizedDatasetRows = {
 const SPLIT_VERSION = "sha256-v1";
 const MAX_REDACTED_TEXT_LENGTH = 240;
 const MAX_REDACTED_SKILL_CONTENT_LENGTH = 120_000;
+const CLAWSCAN_SEVERITIES = new Set<ClawScanSeverity>([
+  "none",
+  "info",
+  "low",
+  "medium",
+  "high",
+  "critical",
+]);
+const AGENTIC_RISK_CATEGORY_LABEL_BY_ID: ReadonlyMap<string, string> = new Map(
+  AGENTIC_RISK_CATEGORIES.map((category) => [category.id, category.label] as const),
+);
 
 const SECRET_PATTERNS: RegExp[] = [
   /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi,
@@ -214,6 +298,7 @@ export function normalizeArtifactExport(inputs: ArtifactExportInput[]): Normaliz
   const artifacts: ArtifactRow[] = [];
   const scanResults: ScanResultRow[] = [];
   const staticFindings: StaticFindingRow[] = [];
+  const clawScanFindings: ClawScanFindingRow[] = [];
   const labels: LabelRow[] = [];
   const splits: SplitRow[] = [];
 
@@ -223,11 +308,12 @@ export function normalizeArtifactExport(inputs: ArtifactExportInput[]): Normaliz
     artifacts.push(artifact);
     scanResults.push(...buildScanResultRows(input, artifactId));
     staticFindings.push(...buildStaticFindingRows(input, artifactId));
+    clawScanFindings.push(...buildClawScanFindingRows(input, artifactId));
     labels.push(...buildLabelRows(input, artifactId));
     splits.push(buildSplitRow(input, artifactId));
   }
 
-  return { artifacts, scanResults, staticFindings, labels, splits };
+  return { artifacts, scanResults, staticFindings, clawScanFindings, labels, splits };
 }
 
 export function buildArtifactId(input: ArtifactExportInput) {
@@ -253,7 +339,9 @@ function buildArtifactRow(input: ArtifactExportInput, artifactId: string): Artif
     source_doc_id_hash: hashString(input.sourceDocId),
     parent_doc_id_hash: hashString(input.parentDocId),
     public_name: input.publicName,
+    public_owner_handle: input.publicOwnerHandle,
     public_slug: input.publicSlug,
+    public_qualified_slug: qualifiedPublicSlug(input),
     version: input.version,
     artifact_sha256: input.artifactSha256,
     ...(input.sourceKind === "skill" && input.skillMdContentRedacted
@@ -272,9 +360,16 @@ function buildArtifactRow(input: ArtifactExportInput, artifactId: string): Artif
     package_executes_code: input.packageExecutesCode,
     source_repo_host: input.sourceRepoHost,
     has_vt_scan: input.vtAnalysis !== null,
+    has_skillspector_scan: input.skillSpectorAnalysis !== null,
     has_static_scan: input.staticScan !== null,
     has_llm_scan: input.llmAnalysis !== null,
   };
+}
+
+function qualifiedPublicSlug(input: ArtifactExportInput) {
+  if (input.sourceKind !== "skill") return null;
+  if (!input.publicOwnerHandle || !input.publicSlug) return null;
+  return `${input.publicOwnerHandle}/${input.publicSlug}`;
 }
 
 function buildScanResultRows(input: ArtifactExportInput, artifactId: string): ScanResultRow[] {
@@ -309,6 +404,30 @@ function buildScanResultRows(input: ArtifactExportInput, artifactId: string): Sc
       reason_codes: [],
       engine_stats: input.vtAnalysis.engineStats,
       summary_redacted: redactText(input.vtAnalysis.analysis),
+      raw_status_family: label,
+    });
+  }
+  if (input.skillSpectorAnalysis) {
+    const label = labelFromSkillSpector(input.skillSpectorAnalysis);
+    rows.push({
+      artifact_id: artifactId,
+      scanner: "skillspector",
+      scanner_version: input.skillSpectorAnalysis.scannerVersion,
+      model: null,
+      status: input.skillSpectorAnalysis.status,
+      verdict: input.skillSpectorAnalysis.recommendation,
+      confidence: null,
+      checked_at: input.skillSpectorAnalysis.checkedAt,
+      score: input.skillSpectorAnalysis.score,
+      severity: input.skillSpectorAnalysis.severity,
+      reason_codes: input.skillSpectorAnalysis.issues
+        .map((issue) => issue.issueId)
+        .sort((a, b) => a.localeCompare(b)),
+      issues: normalizeSkillSpectorIssues(input.skillSpectorAnalysis.issues),
+      engine_stats: null,
+      summary_redacted: redactText(
+        input.skillSpectorAnalysis.summary ?? input.skillSpectorAnalysis.error,
+      ),
       raw_status_family: label,
     });
   }
@@ -367,6 +486,57 @@ function buildStaticFindingRows(
   }));
 }
 
+function normalizeSkillSpectorIssues(issues: SkillSpectorAnalysisInput["issues"]) {
+  return issues
+    .map((issue) => ({
+      code: issue.issueId,
+      category: issue.category ?? null,
+      severity: issue.severity,
+      confidence: issue.confidence ?? null,
+      explanation_redacted: redactText(issue.explanation),
+    }))
+    .sort((left, right) => left.code.localeCompare(right.code));
+}
+
+function buildClawScanFindingRows(
+  input: ArtifactExportInput,
+  artifactId: string,
+): ClawScanFindingRow[] {
+  return (input.llmAnalysis?.agenticRiskFindings ?? [])
+    .filter(
+      (finding): finding is typeof finding & { status: "note" | "concern" } =>
+        finding.status === "note" || finding.status === "concern",
+    )
+    .flatMap((finding, index) => {
+      const evidence = finding.evidence;
+      const categoryLabel = AGENTIC_RISK_CATEGORY_LABEL_BY_ID.get(finding.categoryId);
+      if (!categoryLabel) return [];
+      const severity = normalizeClawScanSeverity(finding.severity);
+      return [
+        {
+          artifact_id: artifactId,
+          finding_id: `${artifactId}:clawscan:${index}:${hashString(
+            `${finding.categoryId}:${finding.riskBucket}:${finding.status}:${severity}:${
+              evidence?.path ?? ""
+            }:${evidence?.snippet ?? ""}:${finding.userImpact}`,
+          ).slice(0, 12)}`,
+          category_id: finding.categoryId,
+          category_label: categoryLabel,
+          risk_bucket: finding.riskBucket,
+          status: finding.status,
+          severity,
+          confidence: finding.confidence,
+          evidence_path_hash: evidence ? hashString(evidence.path) : null,
+          evidence_file_ext: evidence ? fileExtension(evidence.path) : null,
+          evidence_snippet_redacted: redactText(evidence?.snippet),
+          evidence_explanation_redacted: redactText(evidence?.explanation),
+          user_impact_redacted: redactText(finding.userImpact) ?? "",
+          recommendation_redacted: redactText(finding.recommendation) ?? "",
+        },
+      ];
+    });
+}
+
 function buildLabelRows(input: ArtifactExportInput, artifactId: string): LabelRow[] {
   const scannerLabels: DatasetLabel[] = [];
   const rows: LabelRow[] = [];
@@ -394,6 +564,23 @@ function buildLabelRows(input: ArtifactExportInput, artifactId: string): LabelRo
       reason_codes: [],
       scanner_agreement: 0,
       notes_redacted: redactText(input.vtAnalysis.analysis),
+    });
+  }
+  if (input.skillSpectorAnalysis) {
+    const label = labelFromSkillSpector(input.skillSpectorAnalysis);
+    scannerLabels.push(label);
+    rows.push({
+      artifact_id: artifactId,
+      label,
+      label_source: "skillspector",
+      label_confidence: "scanner",
+      reason_codes: input.skillSpectorAnalysis.issues
+        .map((issue) => issue.issueId)
+        .sort((a, b) => a.localeCompare(b)),
+      scanner_agreement: 0,
+      notes_redacted: redactText(
+        input.skillSpectorAnalysis.summary ?? input.skillSpectorAnalysis.error,
+      ),
     });
   }
   if (input.llmAnalysis) {
@@ -469,6 +656,18 @@ function labelFromVirusTotal(analysis: VtAnalysisInput): DatasetLabel {
   return labelFromText(analysis.verdict ?? analysis.status);
 }
 
+function labelFromSkillSpector(analysis: SkillSpectorAnalysisInput): DatasetLabel {
+  if (analysis.status === "error" || analysis.status === "failed") return "unknown";
+  const statusLabel = labelFromText(analysis.status);
+  if (statusLabel !== "unknown") return statusLabel;
+  const recommendation = analysis.recommendation?.toLowerCase() ?? "";
+  if (recommendation.includes("do not install") || recommendation.includes("caution")) {
+    return "suspicious";
+  }
+  if (analysis.issueCount > 0 || (analysis.score ?? 0) > 20) return "suspicious";
+  return "clean";
+}
+
 function labelFromText(value: string | null | undefined): DatasetLabel {
   const normalized = value?.toLowerCase() ?? "";
   if (normalized.includes("malicious") || normalized.includes("malware")) return "malicious";
@@ -486,6 +685,13 @@ function labelFromText(value: string | null | undefined): DatasetLabel {
 function normalizeLabel(value: string): DatasetLabel {
   if (value === "clean" || value === "suspicious" || value === "malicious") return value;
   return labelFromText(value);
+}
+
+function normalizeClawScanSeverity(value: string): ClawScanSeverity {
+  const normalized = value.trim().toLowerCase();
+  return CLAWSCAN_SEVERITIES.has(normalized as ClawScanSeverity)
+    ? (normalized as ClawScanSeverity)
+    : "none";
 }
 
 function countFileExtensions(files: ExportFileInput[]) {

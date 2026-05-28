@@ -169,6 +169,308 @@ describe("SkillDetailPage", () => {
     expect(screen.queryByRole("button", { name: "Compare" })).toBeNull();
   });
 
+  it("does not show a Skill Card tab for publisher-supplied card files", async () => {
+    useQueryMock.mockImplementation((_fn: unknown, args: unknown) => {
+      if (args === "skip") return undefined;
+      return undefined;
+    });
+
+    render(
+      <SkillDetailPage
+        slug="weather"
+        initialData={{
+          result: {
+            skill: {
+              _id: skillId,
+              _creationTime: 0,
+              slug: "weather",
+              displayName: "Weather",
+              summary: "Get current weather.",
+              ownerUserId: ownerId,
+              ownerPublisherId,
+              tags: {},
+              badges: {},
+              stats: {
+                stars: 12,
+                downloads: 34,
+                installsCurrent: 5,
+                installsAllTime: 8,
+                versions: 1,
+                comments: 0,
+              },
+              createdAt: 0,
+              updatedAt: 0,
+            },
+            owner: {
+              _id: ownerPublisherId,
+              _creationTime: 0,
+              kind: "user",
+              handle: "steipete",
+              displayName: "Peter",
+              linkedUserId: ownerId,
+            },
+            latestVersion: {
+              _id: versionId,
+              _creationTime: 0,
+              skillId,
+              version: "1.0.0",
+              fingerprint: "abc",
+              changelog: "Initial release",
+              parsed: { license: "MIT-0", frontmatter: {} },
+              files: [
+                {
+                  path: "SKILL.md",
+                  size: 10,
+                  storageId,
+                  sha256: "abc",
+                  contentType: "text/markdown",
+                },
+                {
+                  path: "skill-card.md",
+                  size: 10,
+                  storageId,
+                  sha256: "def",
+                  contentType: "text/markdown",
+                },
+              ],
+              createdBy: ownerId,
+              createdAt: 0,
+            },
+            forkOf: null,
+            canonical: null,
+          },
+          readme: "# Weather",
+          readmeError: null,
+        }}
+      />,
+    );
+
+    expect(await screen.findByRole("tab", { name: "Files" })).toBeTruthy();
+    expect(screen.queryByRole("tab", { name: "Skill Card" })).toBeNull();
+  });
+
+  it("restores the hash-selected Skill Card tab once the generated card is available", async () => {
+    window.history.replaceState(null, "", "/steipete/weather#skill-card");
+    getReadmeMock.mockResolvedValue({ text: "# Skill Card\n\nGenerated from worker." });
+    useQueryMock.mockImplementation((_fn: unknown, args: unknown) => {
+      if (args === "skip") return undefined;
+      return undefined;
+    });
+
+    const baseInitialData = {
+      result: {
+        skill: {
+          _id: skillId,
+          _creationTime: 0,
+          slug: "weather",
+          displayName: "Weather",
+          summary: "Get current weather.",
+          ownerUserId: ownerId,
+          ownerPublisherId,
+          tags: {},
+          badges: {},
+          stats: {
+            stars: 12,
+            downloads: 34,
+            installsCurrent: 5,
+            installsAllTime: 8,
+            versions: 1,
+            comments: 0,
+          },
+          createdAt: 0,
+          updatedAt: 0,
+        },
+        owner: {
+          _id: ownerPublisherId,
+          _creationTime: 0,
+          kind: "user" as const,
+          handle: "steipete",
+          displayName: "Peter",
+          linkedUserId: ownerId,
+        },
+        latestVersion: {
+          _id: versionId,
+          _creationTime: 0,
+          skillId,
+          version: "1.0.0",
+          fingerprint: "abc",
+          changelog: "Initial release",
+          parsed: { license: "MIT-0" as const, frontmatter: {} },
+          files: [
+            {
+              path: "SKILL.md",
+              size: 10,
+              storageId,
+              sha256: "abc",
+              contentType: "text/markdown",
+            },
+          ],
+          createdBy: ownerId,
+          createdAt: 0,
+        },
+        forkOf: null,
+        canonical: null,
+      },
+      readme: "# Weather",
+      readmeError: null,
+    };
+
+    const { rerender } = render(<SkillDetailPage slug="weather" initialData={baseInitialData} />);
+
+    expect(await screen.findByRole("tab", { name: "Files" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "SKILL.md" }).getAttribute("aria-selected")).toBe(
+      "true",
+    );
+
+    rerender(
+      <SkillDetailPage
+        slug="weather"
+        initialData={{
+          ...baseInitialData,
+          result: {
+            ...baseInitialData.result,
+            latestVersion: {
+              ...baseInitialData.result.latestVersion,
+              files: [
+                ...baseInitialData.result.latestVersion.files,
+                {
+                  path: "skill-card.md",
+                  size: 32,
+                  storageId,
+                  sha256: "def",
+                  contentType: "text/markdown",
+                },
+              ],
+              generatedSkillCard: {
+                path: "skill-card.md",
+                size: 32,
+                sha256: "def",
+                contentType: "text/markdown",
+              },
+            },
+          },
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("tab", { name: "Skill Card" }).getAttribute("aria-selected")).toBe(
+        "true",
+      );
+    });
+    expect(await screen.findByText("Generated from worker.")).toBeTruthy();
+  });
+
+  it("renders related skills from the inferred category with a browse link", async () => {
+    useQueryMock.mockImplementation((_fn: unknown, args: unknown) => {
+      if (args === "skip") return undefined;
+      if (
+        args &&
+        typeof args === "object" &&
+        "keywords" in args &&
+        Array.isArray((args as { keywords?: unknown }).keywords)
+      ) {
+        return {
+          items: [
+            {
+              skill: {
+                _id: "skills:2" as Id<"skills">,
+                _creationTime: 0,
+                slug: "pipeline-builder",
+                displayName: "Pipeline Builder",
+                summary: "Compose agent workflow pipelines.",
+                ownerUserId: ownerId,
+                ownerPublisherId,
+                tags: {},
+                badges: {},
+                stats: {
+                  stars: 4,
+                  downloads: 12,
+                  installsCurrent: 1,
+                  installsAllTime: 3,
+                  versions: 1,
+                  comments: 0,
+                },
+                createdAt: 0,
+                updatedAt: 0,
+              },
+              latestVersion: null,
+              ownerHandle: "steipete",
+              owner: null,
+            },
+          ],
+        };
+      }
+      return undefined;
+    });
+
+    render(
+      <SkillDetailPage
+        slug="workflow-runner"
+        initialData={{
+          result: {
+            skill: {
+              _id: skillId,
+              _creationTime: 0,
+              slug: "workflow-runner",
+              displayName: "Workflow Runner",
+              summary: "Build repeatable agent workflow pipelines.",
+              ownerUserId: ownerId,
+              ownerPublisherId,
+              tags: {},
+              badges: {},
+              stats: {
+                stars: 12,
+                downloads: 34,
+                installsCurrent: 5,
+                installsAllTime: 8,
+                versions: 1,
+                comments: 0,
+              },
+              createdAt: 0,
+              updatedAt: 0,
+            },
+            owner: {
+              _id: ownerPublisherId,
+              _creationTime: 0,
+              kind: "user",
+              handle: "steipete",
+              displayName: "Peter",
+              linkedUserId: ownerId,
+            },
+            latestVersion: {
+              _id: versionId,
+              _creationTime: 0,
+              skillId,
+              version: "1.0.0",
+              fingerprint: "abc",
+              changelog: "Initial release",
+              parsed: { license: "MIT-0", frontmatter: {} },
+              files: [],
+              createdBy: ownerId,
+              createdAt: 0,
+            },
+            forkOf: null,
+            canonical: null,
+          },
+          readme: "# Workflow Runner",
+          readmeError: null,
+        }}
+      />,
+    );
+
+    expect(await screen.findByRole("heading", { name: "Related skills" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "View Workflows skills" }).getAttribute("href")).toBe(
+      "/skills?category=workflows",
+    );
+    expect(screen.getByRole("link", { name: "More in Workflows" }).getAttribute("href")).toBe(
+      "/skills?category=workflows",
+    );
+    expect(screen.getByRole("link", { name: /Pipeline Builder/i })).toBeTruthy();
+    expect(screen.getByText(/Compose agent workflow pipelines\./i)).toBeTruthy();
+    expect(screen.getByText("steipete/pipeline-builder")).toBeTruthy();
+  });
+
   it("renders the install surface above the security scan with visible prompts and commands", async () => {
     useQueryMock.mockImplementation((_fn: unknown, args: unknown) => {
       if (args === "skip") return undefined;
@@ -241,7 +543,8 @@ describe("SkillDetailPage", () => {
     );
 
     await screen.findByRole("heading", { name: "Install" });
-    const securityHeading = screen.getByRole("heading", { name: "Audits" });
+    const sidebarMetadata = document.querySelector('dl[aria-label="Skill metadata"]');
+    expect(sidebarMetadata).toBeTruthy();
 
     expect(screen.getAllByRole("heading", { name: "Install" }).length).toBeGreaterThan(0);
     expect(screen.getAllByText("openclaw skills install weather").length).toBeGreaterThan(0);
@@ -250,10 +553,24 @@ describe("SkillDetailPage", () => {
     expect(screen.getByRole("tab", { name: "CLI" }).getAttribute("aria-selected")).toBe("true");
     expect(screen.getByRole("tab", { name: "Prompt" })).toBeTruthy();
     expect(screen.queryByText(/After install, inspect the skill metadata/i)).toBeNull();
-    expect(securityHeading).toBeTruthy();
-    expect(screen.getByRole("link", { name: /VirusTotal.*Pending/i })).toBeTruthy();
-    expect(screen.getByRole("link", { name: /ClawScan.*Pending/i })).toBeTruthy();
-    expect(screen.getByRole("link", { name: /Static analysis.*Pending/i })).toBeTruthy();
+    expect(screen.getByText("Security audit")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "View Security Audit" }).getAttribute("href")).toBe(
+      "/steipete/weather/security-audit",
+    );
+    const sidebarLabels = Array.from(
+      sidebarMetadata?.querySelectorAll(".sidebar-metadata-label") ?? [],
+      (label) => label.textContent?.trim(),
+    );
+    const securityAuditLabelIndex = sidebarLabels.findIndex((label) =>
+      label?.startsWith("Security audit"),
+    );
+    expect(securityAuditLabelIndex).toBe(sidebarLabels.indexOf("Owner") + 1);
+    expect(
+      screen.getByRole("button", {
+        name: "Security checks across malware telemetry and agentic risk",
+      }),
+    ).toBeTruthy();
+    expect(screen.queryByText("No risk analysis has been recorded yet.")).toBeNull();
     expect(screen.queryByText(/Like a lobster shell, security has layers/i)).toBeNull();
     expect(screen.queryByRole("button", { name: "Rescan" })).toBeNull();
 
@@ -261,9 +578,6 @@ describe("SkillDetailPage", () => {
     const filesTab = screen.getByRole("tab", { name: "Files" });
     expect(
       installHeading.compareDocumentPosition(filesTab) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-    expect(
-      securityHeading.compareDocumentPosition(filesTab) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });
 
@@ -361,11 +675,10 @@ describe("SkillDetailPage", () => {
       />,
     );
 
-    await screen.findByRole("heading", { name: "Audits" });
-    expect(screen.getByText(/reviewed by staff and cleared/i)).toBeTruthy();
-    expect(screen.getByRole("link", { name: /VirusTotal.*Cleared/i })).toBeTruthy();
-    expect(screen.getByRole("link", { name: /ClawScan.*Cleared/i })).toBeTruthy();
-    expect(screen.getByRole("link", { name: /Static analysis.*Cleared/i })).toBeTruthy();
+    await screen.findByText("Security audit");
+    expect(screen.getByText("Cleared")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "View Security Audit" })).toBeTruthy();
+    expect(screen.queryByText(/reviewed by staff and cleared/i)).toBeNull();
     expect(screen.queryByRole("link", { name: /Suspicious/i })).toBeNull();
   });
 
@@ -438,7 +751,9 @@ describe("SkillDetailPage", () => {
       />,
     );
 
-    expect(await screen.findByText("Publish a new version")).toBeTruthy();
+    await screen.findByText("Short summary");
+    expect(screen.queryByText("Publish a new version")).toBeNull();
+    expect(screen.queryByRole("link", { name: "New Version" })).toBeNull();
     expect(screen.queryByText(/request security/i)).toBeNull();
     expect(screen.queryByRole("button", { name: "Rescan" })).toBeNull();
     expect(screen.queryByText(/rescans/i)).toBeNull();
@@ -526,7 +841,9 @@ describe("SkillDetailPage", () => {
     });
 
     render(<SkillDetailPage slug="missing-skill" />);
-    expect(await screen.findByText(/Skill not found/i)).toBeTruthy();
+    expect(
+      await screen.findByRole("heading", { name: /We couldn't find that page/i }),
+    ).toBeTruthy();
   });
 
   it("redirects legacy routes to canonical owner/slug", async () => {
@@ -557,6 +874,63 @@ describe("SkillDetailPage", () => {
     });
 
     render(<SkillDetailPage slug="weather" redirectToCanonical />);
+    expect(screen.getByRole("status", { name: /Loading skill details/i })).toBeTruthy();
+
+    await waitFor(() => {
+      expect(navigateMock).toHaveBeenCalled();
+    });
+    expect(navigateMock).toHaveBeenCalledWith({
+      to: "/$owner/$slug",
+      params: { owner: "steipete", slug: "weather" },
+      replace: true,
+    });
+  });
+
+  it("redirects merged source slugs to the resolved canonical slug", async () => {
+    useQueryMock.mockImplementation((_fn: unknown, args: unknown) => {
+      if (args === "skip") return undefined;
+      if (args && typeof args === "object" && "skillId" in args) return [];
+      if (args && typeof args === "object" && "slug" in args) {
+        return {
+          requestedSlug: "old-weather",
+          resolvedSlug: "weather",
+          skill: {
+            _id: "skills:1",
+            slug: "weather",
+            displayName: "Weather",
+            summary: "Get current weather.",
+            ownerUserId: "users:1",
+            ownerPublisherId: "publishers:steipete",
+            tags: {},
+            badges: {},
+            stats: {
+              stars: 0,
+              downloads: 0,
+              installsCurrent: 0,
+              installsAllTime: 0,
+              versions: 1,
+              comments: 0,
+            },
+            createdAt: 0,
+            updatedAt: 0,
+          },
+          owner: {
+            _id: "publishers:steipete",
+            _creationTime: 0,
+            kind: "user",
+            handle: "steipete",
+            displayName: "Peter",
+            linkedUserId: "users:1",
+          },
+          latestVersion: { _id: "skillVersions:1", version: "1.0.0", parsed: {}, files: [] },
+          forkOf: null,
+          canonical: null,
+        };
+      }
+      return undefined;
+    });
+
+    render(<SkillDetailPage slug="old-weather" canonicalOwner="steipete" />);
     expect(screen.getByRole("status", { name: /Loading skill details/i })).toBeTruthy();
 
     await waitFor(() => {
@@ -756,11 +1130,78 @@ describe("SkillDetailPage", () => {
     expect(routerInvalidateMock).toHaveBeenCalledTimes(2);
   });
 
+  it("renders refreshed starred server state with the synchronized star count", async () => {
+    useAuthStatusMock.mockReturnValue({
+      isAuthenticated: true,
+      isLoading: false,
+      me: { _id: "users:viewer", role: "user" },
+    });
+    useQueryMock.mockImplementation((_fn: unknown, args: unknown) => {
+      if (args === "skip") return undefined;
+      if (args && typeof args === "object" && "skillId" in args && "limit" in args) return [];
+      if (args && typeof args === "object" && "skillId" in args) return true;
+      if (args && typeof args === "object" && "slug" in args) {
+        return {
+          skill: {
+            _id: skillId,
+            _creationTime: 0,
+            slug: "weather",
+            displayName: "Weather",
+            summary: "Get current weather.",
+            ownerUserId: ownerId,
+            ownerPublisherId,
+            tags: {},
+            badges: {},
+            stats: {
+              stars: 1,
+              downloads: 34,
+              installsCurrent: 5,
+              installsAllTime: 8,
+              versions: 1,
+              comments: 0,
+            },
+            createdAt: 0,
+            updatedAt: 0,
+          },
+          owner: {
+            _id: ownerPublisherId,
+            _creationTime: 0,
+            kind: "user",
+            handle: "steipete",
+            displayName: "Peter",
+            linkedUserId: ownerId,
+          },
+          latestVersion: {
+            _id: versionId,
+            _creationTime: 0,
+            skillId,
+            version: "1.0.0",
+            fingerprint: "abc",
+            changelog: "Initial release",
+            parsed: { license: "MIT-0", frontmatter: {} },
+            files: [],
+            createdBy: ownerId,
+            createdAt: 0,
+          },
+          forkOf: null,
+          canonical: null,
+        };
+      }
+      return undefined;
+    });
+
+    render(<SkillDetailPage slug="weather" />);
+
+    expect((await screen.findByRole("button", { name: "Unstar skill" })).textContent).toContain(
+      "1",
+    );
+  });
+
   it("opens report dialog for authenticated users", async () => {
     useAuthStatusMock.mockReturnValue({
       isAuthenticated: true,
       isLoading: false,
-      me: { _id: "users:1", role: "user" },
+      me: { _id: "users:reporter", role: "user" },
     });
     useQueryMock.mockImplementation((_fn: unknown, args: unknown) => {
       if (args === "skip") return undefined;
@@ -858,7 +1299,10 @@ describe("SkillDetailPage", () => {
     render(<SkillDetailPage slug="weather" mode="settings" />);
 
     expect(await screen.findByRole("heading", { name: /Skill settings/i })).toBeTruthy();
-    expect(screen.getByText("Publish a new version")).toBeTruthy();
+    const newVersionLink = screen.getByRole("link", { name: /Update skill files/i });
+    expect(newVersionLink.getAttribute("href")).toBe(
+      "/skills/publish?updateSlug=weather&ownerHandle=steipete",
+    );
     expect(screen.getByText("Rename slug")).toBeTruthy();
     expect(screen.getByText("Merge listing")).toBeTruthy();
   });
@@ -907,6 +1351,7 @@ describe("SkillDetailPage", () => {
 
     render(<SkillDetailPage slug="weather" mode="settings" />);
     expect(await screen.findByRole("heading", { name: /Settings unavailable/i })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: /Update skill files/i })).toBeNull();
   });
 
   it("does not render version tag cards on the simplified public detail surface", async () => {

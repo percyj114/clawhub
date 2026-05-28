@@ -6,10 +6,10 @@ import { api } from "../../convex/_generated/api";
 import type { Doc } from "../../convex/_generated/dataModel";
 import { ArtifactCard } from "../components/artifacts/ArtifactCard";
 import { packageArtifactStatus, skillArtifactStatus } from "../components/artifacts/artifactStatus";
+import { SignInPrompt } from "../components/SignInPrompt";
 import { DashboardSkeleton } from "../components/skeletons/DashboardSkeleton";
 import { buildSkillHref } from "../components/skillDetailUtils";
 import { Button } from "../components/ui/button";
-import { Card } from "../components/ui/card";
 import {
   Select,
   SelectContent,
@@ -158,11 +158,7 @@ export function Dashboard() {
   }
 
   if (me === null) {
-    return (
-      <main className="section">
-        <Card>Sign in to access your dashboard.</Card>
-      </main>
-    );
+    return <SignInPrompt title="Sign in to access your dashboard." />;
   }
 
   const skills = mySkills ?? [];
@@ -170,6 +166,8 @@ export function Dashboard() {
   const isLoading = skillsStatus === "LoadingFirstPage";
   const ownerHandle =
     selectedPublisher?.publisher.handle ?? me.handle ?? me.name ?? me.displayName ?? me._id;
+  const isDashboardEmpty = !isLoading && skills.length === 0 && packages.length === 0;
+
   const publisherSelector =
     publishers && publishers.length > 1 ? (
       <div className="dashboard-publisher-select">
@@ -193,7 +191,7 @@ export function Dashboard() {
     ) : null;
 
   // Welcome state for new users with no content
-  if (!isLoading && skills.length === 0 && packages.length === 0) {
+  if (isDashboardEmpty) {
     return (
       <main className="section">
         <div className="empty-state">
@@ -219,7 +217,6 @@ export function Dashboard() {
                   sort: undefined,
                   dir: undefined,
                   highlighted: undefined,
-                  nonSuspicious: true,
                   view: undefined,
                   focus: undefined,
                 }}

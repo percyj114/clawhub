@@ -12,6 +12,7 @@ const baseArtifact: ArtifactExportInput = {
   sourceDocId: "skillVersionDoc123",
   parentDocId: "skillDoc123",
   publicName: "Suspicious Demo",
+  publicOwnerHandle: "openclaw",
   publicSlug: "suspicious-demo",
   version: "1.0.0",
   artifactSha256: "a".repeat(64),
@@ -47,6 +48,27 @@ const baseArtifact: ArtifactExportInput = {
     engineStats: { malicious: 0, suspicious: 0, harmless: 30 },
     checkedAt: Date.UTC(2026, 3, 29),
   },
+  skillSpectorAnalysis: {
+    status: "suspicious",
+    score: 55,
+    severity: "HIGH",
+    recommendation: "DO_NOT_INSTALL",
+    issueCount: 1,
+    scannerVersion: "skillspector-v2.0.0",
+    summary: "SkillSpector found deceptive metadata.",
+    error: null,
+    checkedAt: Date.UTC(2026, 3, 29),
+    issues: [
+      {
+        issueId: "SDI-1",
+        category: "Sensitive Data Exposure",
+        severity: "HIGH",
+        confidence: 0.98,
+        explanation:
+          "The skill body does not match the declared purpose and mentions token=supersecret123.",
+      },
+    ],
+  },
   staticScan: {
     status: "malicious",
     reasonCodes: ["malicious.install_terminal_payload", "suspicious.dangerous_exec"],
@@ -72,6 +94,49 @@ const baseArtifact: ArtifactExportInput = {
     dimensions: null,
     guidance: null,
     findings: null,
+    agenticRiskFindings: [
+      {
+        categoryId: "ASI04",
+        categoryLabel: "Ignore this label token=supersecret123",
+        riskBucket: "permission_boundary",
+        status: "note",
+        severity: "MEDIUM",
+        confidence: "high",
+        evidence: {
+          path: "SKILL.md",
+          snippet: "Use TOKEN=ghp_abcdefghijklmnopqrstuvwxyz1234567890 for setup",
+          explanation: "The skill documents token use.",
+        },
+        userImpact: "Users should understand the token scope before install.",
+        recommendation: "Use a narrowly scoped token.",
+      },
+      {
+        categoryId: "UNKNOWN token=supersecret123",
+        categoryLabel: "Unknown category token=supersecret123",
+        riskBucket: "permission_boundary",
+        status: "note",
+        severity: "critical",
+        confidence: "high",
+        evidence: {
+          path: "SKILL.md",
+          snippet: "Unknown category should not export.",
+          explanation: "Unknown categories are not part of the public sidecar contract.",
+        },
+        userImpact: "Should not export.",
+        recommendation: "Should not export.",
+      },
+      {
+        categoryId: "ASI05",
+        categoryLabel: "Sensitive data protection",
+        riskBucket: "sensitive_data_protection",
+        status: "none",
+        severity: "none",
+        confidence: "high",
+        evidence: null,
+        userImpact: "",
+        recommendation: "",
+      },
+    ],
     model: "test-model",
     checkedAt: Date.UTC(2026, 3, 29),
   },
@@ -87,7 +152,9 @@ describe("security dataset normalizer", () => {
       artifact_id: `skill:${"a".repeat(64)}`,
       source_kind: "skill",
       source_table: "skillVersions",
+      public_owner_handle: "openclaw",
       public_slug: "suspicious-demo",
+      public_qualified_slug: "openclaw/suspicious-demo",
       skill_md_content_redacted:
         "# Suspicious Demo Use this skill to inspect shell scripts. Contact [REDACTED_SECRET] with [REDACTED_SECRET]",
       created_month: "2026-04",
@@ -96,10 +163,35 @@ describe("security dataset normalizer", () => {
       file_ext_counts: { ".md": 1, ".sh": 1 },
       capability_tags: ["automation", "shell"],
       has_vt_scan: true,
+      has_skillspector_scan: true,
       has_static_scan: true,
       has_llm_scan: true,
     });
-    expect(rows.scanResults.map((row) => row.scanner)).toEqual(["static", "virustotal", "llm"]);
+    expect(rows.scanResults.map((row) => row.scanner)).toEqual([
+      "static",
+      "virustotal",
+      "skillspector",
+      "llm",
+    ]);
+    expect(rows.scanResults.find((row) => row.scanner === "skillspector")).toMatchObject({
+      scanner_version: "skillspector-v2.0.0",
+      status: "suspicious",
+      verdict: "DO_NOT_INSTALL",
+      score: 55,
+      severity: "HIGH",
+      reason_codes: ["SDI-1"],
+      issues: [
+        {
+          code: "SDI-1",
+          category: "Sensitive Data Exposure",
+          severity: "HIGH",
+          confidence: 0.98,
+          explanation_redacted:
+            "The skill body does not match the declared purpose and mentions [REDACTED_SECRET]",
+        },
+      ],
+      raw_status_family: "suspicious",
+    });
     expect(rows.staticFindings[0]).toMatchObject({
       code: "malicious.install_terminal_payload",
       severity: "critical",
@@ -108,6 +200,18 @@ describe("security dataset normalizer", () => {
       line_bucket: "21-50",
     });
     expect(rows.staticFindings[0]?.evidence_redacted).toContain("[REDACTED_SECRET]");
+    expect(rows.clawScanFindings).toHaveLength(1);
+    expect(rows.clawScanFindings[0]).toMatchObject({
+      category_id: "ASI04",
+      category_label: "Agentic Supply Chain Vulnerabilities",
+      risk_bucket: "permission_boundary",
+      status: "note",
+      severity: "medium",
+      confidence: "high",
+      evidence_path_hash: hashString("SKILL.md"),
+      evidence_file_ext: ".md",
+    });
+    expect(rows.clawScanFindings[0]?.evidence_snippet_redacted).toContain("[REDACTED_SECRET]");
     expect(rows.labels.find((row) => row.label_source === "moderation_consensus")).toMatchObject({
       label: "malicious",
       label_confidence: "derived_consensus",

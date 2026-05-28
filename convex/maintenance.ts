@@ -4,8 +4,10 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { ActionCtx } from "./_generated/server";
 import { action, internalAction, internalMutation, internalQuery } from "./functions";
 import { assertRole, requireUserFromAction } from "./lib/access";
+import { extractPackageDigestFields, upsertPackageSearchDigest } from "./lib/packageSearchDigest";
 import { buildSkillSummaryBackfillPatch, type ParsedSkillData } from "./lib/skillBackfill";
 import { deriveSkillCapabilityTags } from "./lib/skillCapabilityTags";
+import { isSkillCardPath } from "./lib/skillCards";
 import {
   computeQualitySignals,
   evaluateQuality,
@@ -15,7 +17,7 @@ import {
 import { hashSkillFiles, isTextFile } from "./lib/skills";
 import { computeIsSuspicious } from "./lib/skillSafety";
 import {
-  extractDigestFields,
+  extractValidatedDigestFields,
   getFirstSearchToken,
   normalizeSkillSearchText,
 } from "./lib/skillSearchDigest";
@@ -496,6 +498,7 @@ type CapabilityBackfillStats = {
   skillsScanned: number;
   skillsPatched: number;
   versionsPatched: number;
+  digestsPatched: number;
   missingVersions: number;
   missingStorageBlob: number;
 };
@@ -520,12 +523,15 @@ export const applySkillCapabilityTagsInternal = internalMutation({
     if (!skill) return { ok: false as const, reason: "missing_skill" as const };
 
     const normalizedTags = [...new Set(args.capabilityTags)];
+    const nextCapabilityTags = normalizedTags.length ? normalizedTags : undefined;
     let versionPatched = false;
     let skillPatched = false;
+    let digestPatched = false;
+    let skillUpdatedAt: number | undefined;
 
     if (JSON.stringify(version.capabilityTags ?? []) !== JSON.stringify(normalizedTags)) {
       await ctx.db.patch(version._id, {
-        capabilityTags: normalizedTags.length ? normalizedTags : undefined,
+        capabilityTags: nextCapabilityTags,
       });
       versionPatched = true;
     }
@@ -534,14 +540,33 @@ export const applySkillCapabilityTagsInternal = internalMutation({
       skill.latestVersionId === version._id &&
       JSON.stringify(skill.capabilityTags ?? []) !== JSON.stringify(normalizedTags)
     ) {
+      skillUpdatedAt = Date.now();
       await ctx.db.patch(skill._id, {
-        capabilityTags: normalizedTags.length ? normalizedTags : undefined,
-        updatedAt: Date.now(),
+        capabilityTags: nextCapabilityTags,
+        updatedAt: skillUpdatedAt,
       });
       skillPatched = true;
+      digestPatched = true;
     }
 
-    return { ok: true as const, versionPatched, skillPatched };
+    if (skill.latestVersionId === version._id) {
+      const digest = await ctx.db
+        .query("skillSearchDigest")
+        .withIndex("by_skill", (q) => q.eq("skillId", skill._id))
+        .unique();
+      if (
+        digest &&
+        JSON.stringify(digest.capabilityTags ?? []) !== JSON.stringify(normalizedTags)
+      ) {
+        await ctx.db.patch(digest._id, {
+          capabilityTags: nextCapabilityTags,
+          updatedAt: skillUpdatedAt ?? skill.updatedAt,
+        });
+        digestPatched = true;
+      }
+    }
+
+    return { ok: true as const, versionPatched, skillPatched, digestPatched };
   },
 });
 
@@ -565,6 +590,7 @@ export async function backfillSkillCapabilityTagsInternalHandler(
     skillsScanned: 0,
     skillsPatched: 0,
     versionsPatched: 0,
+    digestsPatched: 0,
     missingVersions: 0,
     missingStorageBlob: 0,
   };
@@ -643,6 +669,7 @@ export async function backfillSkillCapabilityTagsInternalHandler(
       if (result.ok) {
         if (result.skillPatched) stats.skillsPatched += 1;
         if (result.versionPatched) stats.versionsPatched += 1;
+        if (result.digestPatched) stats.digestsPatched += 1;
       }
     }
 
@@ -709,7 +736,12 @@ type FingerprintBackfillPageItem = {
   versionId: Id<"skillVersions">;
   versionFingerprint?: string;
   files: Array<{ path: string; sha256: string }>;
-  existingEntries: Array<{ id: Id<"skillVersionFingerprints">; fingerprint: string }>;
+  hasGeneratedBundleFingerprint?: boolean;
+  existingEntries: Array<{
+    id: Id<"skillVersionFingerprints">;
+    fingerprint: string;
+    kind?: "source" | "generated-bundle";
+  }>;
 };
 
 type FingerprintBackfillPageResult = {
@@ -765,13 +797,21 @@ export const getSkillFingerprintBackfillPageInternal = internalQuery({
         .withIndex("by_version", (q) => q.eq("versionId", version._id))
         .take(20);
 
-      const normalizedFiles = version.files.map((file) => ({
-        path: file.path,
-        sha256: file.sha256,
-      }));
+      const hasGeneratedBundleFingerprint = existingEntries.some(
+        (entry) => entry.kind === "generated-bundle",
+      );
+      const normalizedFiles = version.files
+        .filter((file) => !hasGeneratedBundleFingerprint || !isSkillCardPath(file.path))
+        .map((file) => ({
+          path: file.path,
+          sha256: file.sha256,
+        }));
+      const sourceFingerprintEntries = existingEntries.filter(
+        (entry) => entry.kind !== "generated-bundle",
+      );
 
-      const hasAnyEntry = existingEntries.length > 0;
-      const entryFingerprints = new Set(existingEntries.map((entry) => entry.fingerprint));
+      const hasAnyEntry = sourceFingerprintEntries.length > 0;
+      const entryFingerprints = new Set(sourceFingerprintEntries.map((entry) => entry.fingerprint));
       const hasFingerprintMismatch =
         typeof version.fingerprint === "string" &&
         hasAnyEntry &&
@@ -786,9 +826,11 @@ export const getSkillFingerprintBackfillPageInternal = internalQuery({
         versionId: version._id,
         versionFingerprint: version.fingerprint ?? undefined,
         files: normalizedFiles,
-        existingEntries: existingEntries.map((entry) => ({
+        hasGeneratedBundleFingerprint,
+        existingEntries: sourceFingerprintEntries.map((entry) => ({
           id: entry._id,
           fingerprint: entry.fingerprint,
+          kind: entry.kind === "source" ? "source" : undefined,
         })),
       });
     }
@@ -825,6 +867,7 @@ export const applySkillFingerprintBackfillPatchInternal = internalMutation({
         skillId: version.skillId,
         versionId: version._id,
         fingerprint: args.fingerprint,
+        kind: "source",
         createdAt: now,
       });
     }
@@ -871,10 +914,17 @@ export async function backfillSkillFingerprintsInternalHandler(
     for (const item of page.items) {
       totals.versionsScanned++;
 
-      const fingerprint = await hashSkillFiles(item.files);
+      const fingerprint = await hashSkillFiles(
+        item.files.filter(
+          (file) => !item.hasGeneratedBundleFingerprint || !isSkillCardPath(file.path),
+        ),
+      );
 
-      const existingFingerprints = new Set(item.existingEntries.map((entry) => entry.fingerprint));
-      const hasAnyEntry = item.existingEntries.length > 0;
+      const sourceEntries = item.existingEntries.filter(
+        (entry) => entry.kind !== "generated-bundle",
+      );
+      const existingFingerprints = new Set(sourceEntries.map((entry) => entry.fingerprint));
+      const hasAnyEntry = sourceEntries.length > 0;
       const entryIsCorrect =
         hasAnyEntry && existingFingerprints.size === 1 && existingFingerprints.has(fingerprint);
       const versionFingerprintIsCorrect = item.versionFingerprint === fingerprint;
@@ -895,7 +945,7 @@ export async function backfillSkillFingerprintsInternalHandler(
         fingerprint,
         patchVersion: shouldPatchVersion,
         replaceEntries: shouldReplaceEntries,
-        existingEntryIds: shouldReplaceEntries ? item.existingEntries.map((entry) => entry.id) : [],
+        existingEntryIds: shouldReplaceEntries ? sourceEntries.map((entry) => entry.id) : [],
       });
     }
 
@@ -2040,7 +2090,7 @@ export const backfillSkillSearchDigestInternal = internalMutation({
         .withIndex("by_skill", (q) => q.eq("skillId", skill._id))
         .unique();
       if (!existing) {
-        await ctx.db.insert("skillSearchDigest", extractDigestFields(skill));
+        await ctx.db.insert("skillSearchDigest", await extractValidatedDigestFields(ctx, skill));
         inserted++;
       }
     }
@@ -2053,6 +2103,42 @@ export const backfillSkillSearchDigestInternal = internalMutation({
     }
 
     return { inserted, isDone, scanned: page.length };
+  },
+});
+
+// Backfill plugin category digest rows for existing active packages.
+// Run once after deploying the schema change:
+//   npx convex run maintenance:backfillPackagePluginCategoryDigestsInternal --prod
+export const backfillPackagePluginCategoryDigestsInternal = internalMutation({
+  args: {
+    cursor: v.optional(v.string()),
+    batchSize: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const batchSize = clampInt(args.batchSize ?? 200, 10, 500);
+    const { page, continueCursor, isDone } = await ctx.db
+      .query("packages")
+      .withIndex("by_active_updated", (q) => q.eq("softDeletedAt", undefined))
+      .paginate({ cursor: args.cursor ?? null, numItems: batchSize });
+
+    let synced = 0;
+    for (const pkg of page) {
+      await upsertPackageSearchDigest(ctx, extractPackageDigestFields(pkg));
+      synced++;
+    }
+
+    if (!isDone) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.maintenance.backfillPackagePluginCategoryDigestsInternal,
+        {
+          cursor: continueCursor,
+          batchSize: args.batchSize,
+        },
+      );
+    }
+
+    return { synced, isDone, scanned: page.length };
   },
 });
 
@@ -2200,12 +2286,25 @@ export const backfillDigestVersionSummary = internalMutation({
 
     let patched = 0;
     for (const digest of page) {
-      if (digest.latestVersionSummary !== undefined) continue;
       const skill = await ctx.db.get(digest.skillId);
-      if (!skill?.latestVersionSummary) continue;
-      await ctx.db.patch(digest._id, {
-        latestVersionSummary: skill.latestVersionSummary,
-      });
+      if (!skill) continue;
+      const fields = await extractValidatedDigestFields(ctx, skill);
+      const patch = {
+        latestVersionId: fields.latestVersionId,
+        latestVersionSkillId: fields.latestVersionSkillId,
+        latestVersionSummary: fields.latestVersionSummary,
+        capabilityTags: fields.capabilityTags,
+      };
+      if (
+        digest.latestVersionId === patch.latestVersionId &&
+        digest.latestVersionSkillId === patch.latestVersionSkillId &&
+        JSON.stringify(digest.latestVersionSummary) ===
+          JSON.stringify(patch.latestVersionSummary) &&
+        JSON.stringify(digest.capabilityTags ?? []) === JSON.stringify(patch.capabilityTags ?? [])
+      ) {
+        continue;
+      }
+      await ctx.db.patch(digest._id, patch);
       patched++;
     }
 

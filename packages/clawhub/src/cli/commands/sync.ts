@@ -167,6 +167,8 @@ export async function cmdSync(opts: GlobalOpts, options: SyncOptions, inputAllow
   }
 
   const tags = options.tags ?? "latest";
+  const failedUploads: Array<{ slug: string; message: string }> = [];
+  let uploaded = 0;
 
   for (const skill of selected) {
     const { publishVersion, changelog } = await resolvePublishMeta(skill, {
@@ -184,15 +186,33 @@ export async function cmdSync(opts: GlobalOpts, options: SyncOptions, inputAllow
       sameRegistryOrigin && sameRegistryOrigin.slug !== skill.slug
         ? `${sameRegistryOrigin.slug}@${sameRegistryOrigin.installedVersion}`
         : undefined;
-    await cmdPublish(opts, skill.folder, {
-      slug: skill.slug,
-      name: skill.displayName,
-      owner: originOwnerHandle,
-      version: publishVersion,
-      changelog,
-      tags,
-      forkOf,
-    });
+    try {
+      await cmdPublish(opts, skill.folder, {
+        slug: skill.slug,
+        name: skill.displayName,
+        owner: originOwnerHandle,
+        version: publishVersion,
+        changelog,
+        tags,
+        forkOf,
+      });
+      uploaded += 1;
+    } catch (error) {
+      failedUploads.push({ slug: skill.slug, message: formatError(error) });
+    }
+  }
+
+  if (failedUploads.length > 0) {
+    printSection(
+      "Failed to upload",
+      formatBulletList(
+        failedUploads.map((failure) => `${failure.slug}: ${failure.message}`),
+        20,
+      ),
+    );
+    outro(`Uploaded ${uploaded} of ${selected.length} skill(s). ${failedUploads.length} failed.`);
+    process.exitCode = 1;
+    return;
   }
 
   outro(`Uploaded ${selected.length} skill(s).`);

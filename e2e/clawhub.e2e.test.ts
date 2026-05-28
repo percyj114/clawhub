@@ -1,7 +1,9 @@
 /* @vitest-environment node */
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer, type IncomingMessage } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -13,6 +15,7 @@ import {
 import { unzipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 import { readGlobalConfig } from "../packages/clawhub/src/config";
+import { hashSkillFiles } from "../packages/clawhub/src/skills";
 import {
   allowLiveMutations,
   buildE2ESkillMarkdown,
@@ -32,6 +35,47 @@ const itIfAdminAndUserTokens =
   (getAdminToken() && getUserToken()) || shouldSeedRoleHelpTokens() ? it : it.skip;
 const itIfLocalRoleHelpMutations =
   allowLiveMutations() && shouldSeedRoleHelpTokens() ? it : it.skip;
+
+async function readRequestBody(req: IncomingMessage) {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+async function spawnCommand(
+  command: string,
+  args: string[],
+  options: { cwd: string; env: NodeJS.ProcessEnv },
+) {
+  return await new Promise<{
+    status: number | null;
+    signal: NodeJS.Signals | null;
+    stdout: string;
+    stderr: string;
+  }>((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on("error", reject);
+    child.on("close", (status, signal) => {
+      resolve({ status, signal, stdout, stderr });
+    });
+  });
+}
 
 describe("clawhub e2e", () => {
   it("prints CLI version via --cli-version", async () => {
@@ -237,6 +281,186 @@ describe("clawhub e2e", () => {
     }
   });
 
+  it("sync continues after a per-skill publish failure", async () => {
+    const publishedSlugs: string[] = [];
+    const server = createServer(async (req, res) => {
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      if (req.method === "GET" && url.pathname === ApiRoutes.whoami) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ user: { handle: "tester" } }));
+        return;
+      }
+      if (req.method === "GET" && url.pathname === ApiRoutes.resolve) {
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Skill not found");
+        return;
+      }
+      if (req.method === "POST" && url.pathname === ApiRoutes.skills) {
+        const body = await readRequestBody(req);
+        const slug = body.includes('"slug":"failed-skill"') ? "failed-skill" : "successful-skill";
+        publishedSlugs.push(slug);
+        if (slug === "failed-skill") {
+          res.writeHead(409, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("Registry rejected failed-skill");
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, skillId: "skill-successful", versionId: "version-1" }));
+        return;
+      }
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("not found");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+    const registry = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const cfg = await makeTempConfig(registry, "test-token");
+    const root = await mkdtemp(join(tmpdir(), "clawhub-e2e-sync-publish-"));
+    const workdir = await mkdtemp(join(tmpdir(), "clawhub-e2e-sync-workdir-"));
+    const stateDir = await mkdtemp(join(tmpdir(), "clawhub-e2e-sync-state-"));
+    try {
+      for (const slug of ["failed-skill", "successful-skill"]) {
+        const skillDir = join(root, slug);
+        await mkdir(skillDir, { recursive: true });
+        await writeFile(join(skillDir, "SKILL.md"), `# ${slug}\n`, "utf8");
+      }
+
+      const result = await spawnCommand(
+        "bun",
+        [
+          "clawhub",
+          "sync",
+          "--all",
+          "--root",
+          root,
+          "--workdir",
+          workdir,
+          "--site",
+          registry,
+          "--registry",
+          registry,
+        ],
+        {
+          cwd: process.cwd(),
+          env: {
+            ...process.env,
+            CLAWHUB_CONFIG_PATH: cfg.path,
+            CLAWHUB_DISABLE_TELEMETRY: "1",
+            CLAWDBOT_STATE_DIR: stateDir,
+            OPENCLAW_STATE_DIR: stateDir,
+          },
+        },
+      );
+
+      expect(result.status).toBe(1);
+      expect(publishedSlugs).toEqual(["failed-skill", "successful-skill"]);
+      expect(result.stdout).toMatch(/Failed to upload/);
+      expect(result.stdout).toMatch(/failed-skill: Registry rejected failed-skill/);
+      expect(result.stdout).toMatch(/Uploaded 1 of 2 skill\(s\)\. 1 failed\./);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(root, { recursive: true, force: true });
+      await rm(workdir, { recursive: true, force: true });
+      await rm(stateDir, { recursive: true, force: true });
+      await rm(cfg.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("update resolves installed bundle fingerprints that include skill-card.md", async () => {
+    let resolvedHash: string | null = null;
+    const server = createServer(async (req, res) => {
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      if (req.method === "GET" && url.pathname === `${ApiRoutes.skills}/demo`) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            skill: {
+              slug: "demo",
+              displayName: "Demo",
+              summary: null,
+              tags: {},
+              stats: {},
+              createdAt: 1,
+              updatedAt: 1,
+            },
+            latestVersion: {
+              version: "1.0.0",
+              createdAt: 1,
+              changelog: "init",
+              license: "MIT-0",
+            },
+            owner: null,
+            moderation: null,
+          }),
+        );
+        return;
+      }
+      if (req.method === "GET" && url.pathname === ApiRoutes.resolve) {
+        resolvedHash = url.searchParams.get("hash");
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            match: { version: "1.0.0" },
+            latestVersion: { version: "1.0.0" },
+          }),
+        );
+        return;
+      }
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("not found");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+    const registry = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const cfg = await makeTempConfig(registry, "test-token");
+    const workdir = await mkdtemp(join(tmpdir(), "clawhub-e2e-bundle-update-"));
+    const skillMd = "# Demo\n";
+    const skillCardMd = "# Skill Card\n";
+    const expectedFingerprint = hashSkillFiles([
+      { relPath: "SKILL.md", bytes: new TextEncoder().encode(skillMd) },
+      { relPath: "skill-card.md", bytes: new TextEncoder().encode(skillCardMd) },
+    ]).fingerprint;
+    try {
+      const skillDir = join(workdir, "skills", "demo");
+      await mkdir(join(workdir, ".clawhub"), { recursive: true });
+      await mkdir(skillDir, { recursive: true });
+      await writeFile(
+        join(workdir, ".clawhub", "lock.json"),
+        `${JSON.stringify({ version: 1, skills: { demo: { version: "1.0.0", installedAt: 1 } } }, null, 2)}\n`,
+        "utf8",
+      );
+      await writeFile(join(skillDir, "SKILL.md"), skillMd, "utf8");
+      await writeFile(join(skillDir, "skill-card.md"), skillCardMd, "utf8");
+
+      const result = await spawnCommand(
+        "bun",
+        [
+          "clawhub",
+          "update",
+          "demo",
+          "--workdir",
+          workdir,
+          "--site",
+          registry,
+          "--registry",
+          registry,
+        ],
+        {
+          cwd: process.cwd(),
+          env: { ...process.env, CLAWHUB_CONFIG_PATH: cfg.path, CLAWHUB_DISABLE_TELEMETRY: "1" },
+        },
+      );
+
+      expect(result.status).toBe(0);
+      expect(resolvedHash).toBe(expectedFingerprint);
+      expect(result.stdout + result.stderr).toMatch(/up to date/i);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(workdir, { recursive: true, force: true });
+      await rm(cfg.dir, { recursive: true, force: true });
+    }
+  });
+
   it("sync dry-run finds skills from clawdbot.json roots", async () => {
     const registry = getRegistry();
     const site = getSite();
@@ -364,6 +588,19 @@ describe("clawhub e2e", () => {
     expect(result.stdout).toMatch(/<source>/);
     expect(result.stdout).toMatch(/--dry-run/);
     expect(result.stdout).toMatch(/--json/);
+  });
+
+  it("skill verify help omits the redundant json flag", async () => {
+    const result = spawnSync("bun", ["clawhub", "skill", "verify", "--help"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(/--version/);
+    expect(result.stdout).toMatch(/--tag/);
+    expect(result.stdout).toMatch(/--card/);
+    expect(result.stdout).not.toMatch(/--json/);
   });
 
   itIfLiveMutations(

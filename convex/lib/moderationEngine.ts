@@ -41,6 +41,7 @@ type LlmRiskSummaryBucket = {
 
 type LlmAnalysis = {
   status?: string;
+  verdict?: string;
   agenticRiskFindings?: LlmRiskFinding[];
   riskSummary?: Record<string, LlmRiskSummaryBucket | undefined>;
 };
@@ -1263,65 +1264,6 @@ function scanManifestFile(path: string, content: string, findings: ModerationFin
   }
 }
 
-function dedupeEvidence(evidence: ModerationFinding[]) {
-  const seen = new Set<string>();
-  const out: ModerationFinding[] = [];
-  for (const item of evidence) {
-    const key = `${item.code}:${item.file}:${item.line}:${item.message}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(item);
-  }
-  return out.slice(0, 40);
-}
-
-function getVtEngineStats(analysis: VirusTotalAnalysis | undefined) {
-  return analysis?.engineStats ?? analysis?.metadata?.stats;
-}
-
-function normalizeVtAnalysisStatus(status: string | undefined) {
-  const normalized = status?.trim().toLowerCase();
-  return normalized === "malicious" || normalized === "suspicious" ? normalized : undefined;
-}
-
-function isVtAiOnlyAnalysis(analysis: VirusTotalAnalysis | undefined) {
-  const scanner = analysis?.scanner?.trim().toLowerCase();
-  const source = analysis?.source?.trim().toLowerCase();
-  return scanner === "code_insight" || source === "palm" || source?.includes("code insight");
-}
-
-function getAuthoritativeVtStatus(analysis: VirusTotalAnalysis | undefined, status?: string) {
-  const stats = getVtEngineStats(analysis);
-  if (stats) {
-    if ((stats.malicious ?? 0) > 0) return "malicious";
-    if ((stats.suspicious ?? 0) > 0) return "suspicious";
-    return undefined;
-  }
-
-  if (isVtAiOnlyAnalysis(analysis)) return undefined;
-
-  const source = analysis?.source?.trim().toLowerCase();
-  if (source === "engines" || source?.startsWith("engines-")) {
-    return normalizeVtAnalysisStatus(status ?? analysis?.status);
-  }
-
-  return undefined;
-}
-
-function addScannerStatusReason(
-  reasonCodes: string[],
-  scanner: "vt" | "llm",
-  status?: string,
-  options: { suppressSuspicious?: boolean } = {},
-) {
-  const normalized = status?.trim().toLowerCase();
-  if (normalized === "malicious") {
-    reasonCodes.push(`malicious.${scanner}_malicious`);
-  } else if (normalized === "suspicious" && !options.suppressSuspicious) {
-    reasonCodes.push(`suspicious.${scanner}_suspicious`);
-  }
-}
-
 function normalizedSeverityRank(severity: string | undefined) {
   switch (severity?.trim().toLowerCase()) {
     case "critical":
@@ -1366,6 +1308,17 @@ function addLlmStatusReason(reasonCodes: string[], status?: string, analysis?: L
   } else {
     reasonCodes.push(REASON_CODES.LLM_REVIEW);
   }
+}
+
+function completedCodexStatus(status?: string, analysis?: LlmAnalysis) {
+  const normalized = status?.trim().toLowerCase();
+  if (normalized === "clean" || normalized === "suspicious" || normalized === "malicious") {
+    return normalized;
+  }
+  const verdict = analysis?.verdict?.trim().toLowerCase();
+  if (verdict === "benign") return "clean";
+  if (verdict === "suspicious" || verdict === "malicious") return verdict;
+  return undefined;
 }
 
 export function runStaticModerationScan(input: StaticScanInput): StaticScanResult {
@@ -1468,22 +1421,18 @@ export function buildModerationSnapshot(params: {
   llmAnalysis?: LlmAnalysis;
   sourceVersionId?: Id<"skillVersions">;
 }): ModerationSnapshot {
-  const staticCodes = (params.staticScan?.reasonCodes ?? []).filter((code) =>
-    code.startsWith("malicious."),
-  );
-  const evidence = [...(params.staticScan?.findings ?? [])];
+  const llmStatus = params.llmStatus ?? params.llmAnalysis?.status;
+  const codexStatus = completedCodexStatus(llmStatus, params.llmAnalysis);
 
-  const reasonCodes = [...staticCodes];
-  const vtStatus = params.vtStatus ?? params.vtAnalysis?.status;
-  addScannerStatusReason(reasonCodes, "vt", getAuthoritativeVtStatus(params.vtAnalysis, vtStatus));
-  addLlmStatusReason(reasonCodes, params.llmStatus, params.llmAnalysis);
+  const reasonCodes: string[] = [];
+  addLlmStatusReason(reasonCodes, codexStatus, params.llmAnalysis);
 
   const normalizedCodes = normalizeReasonCodes(reasonCodes);
   const verdict = verdictFromCodes(normalizedCodes);
   return {
     verdict,
     reasonCodes: normalizedCodes,
-    evidence: dedupeEvidence(evidence),
+    evidence: [],
     summary: summarizeReasonCodes(normalizedCodes),
     engineVersion: MODERATION_ENGINE_VERSION,
     evaluatedAt: Date.now(),

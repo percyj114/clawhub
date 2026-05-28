@@ -183,7 +183,8 @@ export async function cmdSearch(opts: GlobalOpts, query: string, limit?: number)
     spinner.stop();
     for (const entry of result.results) {
       const slug = entry.slug ?? "unknown";
-      const ref = entry.ownerHandle ? `@${entry.ownerHandle}/${slug}` : slug;
+      const ownerHandle = entry.ownerHandle ?? entry.owner?.handle;
+      const ref = ownerHandle ? `@${ownerHandle}/${slug}` : slug;
       const name = entry.displayName ?? slug;
       const version = entry.version ? ` v${entry.version}` : "";
       console.log(`${ref}${version}  ${name}  (${entry.score.toFixed(3)})`);
@@ -240,7 +241,7 @@ export async function cmdInstall(
     if (skillMeta.moderation?.isSuspicious && !force) {
       spinner.stop();
       console.log(
-        `\n⚠️  Warning: "${trimmed}" is flagged as suspicious by VirusTotal Code Insight.\n` +
+        `\n⚠️  Warning: "${trimmed}" is flagged for ClawHub security review.\n` +
           "   This skill may contain risky patterns (crypto keys, external APIs, eval, etc.)\n" +
           "   Review the skill code before use.\n",
       );
@@ -375,7 +376,7 @@ export async function cmdUpdate(
       if (skillMeta.moderation?.isSuspicious && !options.force) {
         spinner.stop();
         console.log(
-          `\n⚠️  Warning: "${entry}" is flagged as suspicious by VirusTotal Code Insight.\n` +
+          `\n⚠️  Warning: "${entry}" is flagged for ClawHub security review.\n` +
             "   This skill may contain risky patterns (crypto keys, external APIs, eval, etc.)\n",
         );
         if (allowPrompt) {

@@ -2,11 +2,60 @@
 
 ## Unreleased
 
+### Fixes
+
+- API/CLI: report Skill Card verification with flattened skill/version metadata, ClawScan verdict fields at `security.*`, and supporting scanner evidence under `security.signals`.
+
+## 0.18.0 - 2026-05-25
+
 ### Changes
+
+- CLI/API: add Skill Card verification surfaces, including `clawhub skill verify <slug>` JSON output and `--card` Markdown retrieval (#2382).
+- Web/API: surface an "API key required" attribute on skills so listings, cards, and detail views show whether a skill needs an LLM API key, with publish-time inference from skill prompts and metadata (#2353) (thanks @momothemage).
 
 ### Fixes
 
+- API: fix `GET /api/v1/skills` pagination so `cursor` advances to the next page instead of repeating the first page for supported non-trending sorts (#2275) (thanks @vyctorbrzezowski, @enerj).
+- Web: block collaborative membership on personal publishers while allowing the linked owner to clean up stale extra membership rows (thanks @vyctorbrzezowski).
+- Security/API: hide owned package/plugin catalog entries, revoke package publish tokens, and restore only matching ban-hidden packages on user unban (thanks @vyctorbrzezowski).
+- API: block public raw skill files when moderation already blocks downloads and reject skill tags that point at another skill's version (thanks @vyctorbrzezowski).
+- Web: stop stale unban restore batches from reactivating skills after the owner is banned again or deactivated (thanks @vyctorbrzezowski).
+- Security/API: reject direct skill owner transfers when the skill is hidden, suspicious, or malicious (thanks @vyctorbrzezowski).
+- Security/API: revalidate package publish actor, owner, and owner publisher active state in the final release insert (thanks @vyctorbrzezowski).
+
+## 0.17.0 - 2026-05-19
+
+- CLI/API: add self-serve org publisher creation with `clawhub publisher create <handle>` and scoped package publish errors that point to the command.
+
+## 0.16.0 - 2026-05-18
+
+### Fixes
+
+- CLI/API: make package publishes robust under parallel same-publisher release jobs by avoiding unnecessary shared publisher writes, retrying transient Convex contention, and labeling contention separately from package validation failures (#2291).
+- Security: move upload ClawScan classification to a GitHub Actions Codex worker, treat VirusTotal as telemetry-only signal, and trust verified `@openclaw/*` plugin packages by default.
+- Security: cancel pending skill ownership transfers before rejecting accept attempts when the requester is inactive or the skill is hidden, removed, or malicious (#2276, #2277) (thanks @vyctorbrzezowski).
+- API/CLI: fix package delete returning 500 for packages with capability tags when no capability search digest row existed yet (#2212) (thanks @momothemage).
+- API: return a clear 400 for `/api/v1/packages/search` without a non-empty `q` instead of treating `search` as a package name (thanks @vyctorbrzezowski).
+- Web/API: keep search results limited to items with match evidence, preserve trust and popularity as tie-breakers, and show `N+` counts without exact count queries (#2206) (thanks @vyctorbrzezowski).
+- Web: preserve `ownerHandle` through legacy skill publish redirects so org admins land in the correct new-version owner context (#2177).
+- Settings: save display name/bio changes even when a legacy personal publisher handle conflict prevents publisher profile sync (#1199).
+- Auth: show a visible error if the GitHub sign-in request fails before the provider redirect starts (#2197).
+- Schema: include `.tsv`, `.conf`, `.properties`, and `.dat` in the exported text-file allowlist and regenerate the committed schema package runtime (#2172, #874) (thanks @alexuser).
+- API: return `400` for invalid known public package filters and invalid skill list sort values, while continuing to ignore unknown query parameters (#2184).
+- API/docs: document v1 plain-text error responses and expose owner metadata in the OpenAPI search result schema (#2187) (thanks @vyctorbrzezowski).
+- Web: rank publisher card preview items by downloads instead of recent publish order (thanks @vyctorbrzezowski).
+- Web: remove the desktop Files tab height cap and make mobile truncation explicit (thanks @vyctorbrzezowski).
 - Web: keep skill/plugin detail tabs at mobile-friendly touch target height.
+
+### Changes
+
+- CLI/API: include skill owner handles in search results so duplicate/common slugs are easier to disambiguate (thanks @vyctorbrzezowski).
+- Web: let skill publishers pick a curated lucide icon for cards and listings (#2174) (thanks @momothemage).
+- Web/API: add keyword-based plugin categories plus API-backed plugin search sorting for recently updated, newest, and name (#2118) (thanks @vyctorbrzezowski).
+- Web: polish the starred skills page with grid/list controls, sorting, and optimistic unstar behavior (#2159) (thanks @vyctorbrzezowski).
+- API/docs: expand the v1 OpenAPI contract with package/plugin catalog endpoints and align documented rate limits with the server constants (#2186) (thanks @vyctorbrzezowski).
+- Admin/Ops: audit profile syncs, self-service account/profile changes, personal publisher syncs, and org trusted-publisher changes so slug and ownership investigations have a complete ledger.
+- Dependencies: update production `@clack/prompts`, `tailwind-merge`, and `yaml` dependencies (#2198).
 
 ## 0.15.0 - 2026-05-12
 

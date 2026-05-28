@@ -24,6 +24,7 @@ describe("UserBadge", () => {
     kind: "org",
     handle: "openclaw",
     displayName: "OpenClaw",
+    official: true,
     image: undefined,
     bio: undefined,
     linkedUserId: undefined,
@@ -41,7 +42,7 @@ describe("UserBadge", () => {
     renderBadge(user);
 
     expect(screen.getByRole("link", { name: "@steipete" }).getAttribute("href")).toBe(
-      "/p/steipete",
+      "/user/steipete",
     );
   });
 
@@ -49,7 +50,7 @@ describe("UserBadge", () => {
     renderBadge(orgPublisher);
 
     expect(screen.getByRole("link", { name: "@openclaw" }).getAttribute("href")).toBe(
-      "/p/openclaw",
+      "/user/openclaw",
     );
   });
 
@@ -68,5 +69,13 @@ describe("UserBadge", () => {
     );
 
     expect(screen.getByText("Acme")).toBeTruthy();
+  });
+
+  it("shows a compact Official badge for official publishers", () => {
+    const { container } = renderBadge(orgPublisher);
+
+    expect(screen.getByLabelText("Official")).toBeTruthy();
+    expect(container.querySelector(".official-badge")).toBeTruthy();
+    expect(container.querySelector(".official-tag")).toBeFalsy();
   });
 });

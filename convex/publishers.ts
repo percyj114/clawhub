@@ -4,12 +4,14 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalMutation, internalQuery, mutation, query } from "./functions";
 import { assertAdmin, getOptionalActiveAuthUserId, requireUser } from "./lib/access";
+import { isOfficialPublisher, toPublicPublisherWithOfficial } from "./lib/officialPublishers";
 import { toPublicPublisher } from "./lib/public";
 import {
   formatReservedPublicOwnerHandleMessage,
   isReservedPublicOwnerHandle,
 } from "./lib/publicRouteReservations";
 import {
+  canAccessPublisherOwnerScope,
   ensurePersonalPublisherForUser,
   getActiveUserByHandleOrPersonalPublisher,
   getPublisherByHandle,
@@ -19,11 +21,17 @@ import {
   isPublisherRoleAllowed,
   normalizePublisherHandle,
 } from "./lib/publishers";
+import { isHandleReservedForAnotherUser } from "./lib/reservedHandles";
 import { readCanonicalStat } from "./lib/skillStats";
 
 const PUBLISHER_HANDLE_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
 const MAX_PUBLIC_PUBLISHER_LIST_LIMIT = 500;
 const PUBLISHER_LIST_PREVIEW_LIMIT = 3;
+const publisherRoleValidator = v.union(
+  v.literal("owner"),
+  v.literal("admin"),
+  v.literal("publisher"),
+);
 
 type PublisherListStats = {
   skills: number;
@@ -44,9 +52,15 @@ type PublisherCatalogItem = {
   kind: "skill" | "plugin";
   displayName: string;
   summary: string | null;
+  // Mirrors `skills.icon` for `kind: "skill"` items so the publisher
+  // profile catalog (`/p/<handle>`) can render the same custom glyph that
+  // `SkillCard` and `SkillListItem` show on `/skills` and `/search`.
+  // Always `null` for plugins in Phase 1.
+  icon: string | null;
   href: string;
   downloads: number;
   stars: number;
+  isOfficial: boolean;
   updatedAt: number;
 };
 
@@ -84,6 +98,12 @@ function validateHandle(rawHandle: string) {
     throw new ConvexError(formatReservedPublicOwnerHandleMessage(handle));
   }
   return handle;
+}
+
+function assertOrgPublisherMembershipManagement(publisher: Doc<"publishers">) {
+  if (publisher.kind !== "org") {
+    throw new ConvexError("Personal publishers do not support member management");
+  }
 }
 
 async function getUserByHandle(ctx: Pick<MutationCtx, "db">, handle: string) {
@@ -161,14 +181,14 @@ async function getPublisherPublishedPreviewRows(
   const [skills, packages] = await Promise.all([
     ctx.db
       .query("skills")
-      .withIndex("by_owner_publisher_active_updated", (q) =>
+      .withIndex("by_owner_publisher_active_downloads", (q) =>
         q.eq("ownerPublisherId", publisherId).eq("softDeletedAt", undefined),
       )
       .order("desc")
       .take(PUBLISHER_LIST_PREVIEW_LIMIT),
     ctx.db
       .query("packages")
-      .withIndex("by_owner_publisher_active_updated", (q) =>
+      .withIndex("by_owner_publisher_active_downloads", (q) =>
         q.eq("ownerPublisherId", publisherId).eq("softDeletedAt", undefined),
       )
       .order("desc")
@@ -250,6 +270,7 @@ function comparePublisherCatalogItems(sort: PublisherCatalogSort) {
 function getPublisherCatalogItems(
   publisher: Doc<"publishers">,
   rows: PublisherPublishedRows,
+  publisherOfficial: boolean,
   sort: PublisherCatalogSort = "downloads",
 ): PublisherCatalogItem[] {
   return [
@@ -258,9 +279,11 @@ function getPublisherCatalogItems(
       kind: "skill" as const,
       displayName: skill.displayName,
       summary: skill.summary ?? null,
+      icon: skill.icon ?? null,
       href: `/${encodeURIComponent(publisher.handle)}/${encodeURIComponent(skill.slug)}`,
       downloads: readCanonicalStat(skill, "downloads"),
       stars: readCanonicalStat(skill, "stars"),
+      isOfficial: publisherOfficial || Boolean(skill.badges?.official),
       updatedAt: skill.updatedAt,
     })),
     ...rows.packages.map((pkg) => ({
@@ -268,9 +291,11 @@ function getPublisherCatalogItems(
       kind: "plugin" as const,
       displayName: pkg.displayName,
       summary: pkg.summary ?? null,
+      icon: null,
       href: buildPluginDetailHref(pkg.name),
       downloads: pkg.stats.downloads,
       stars: pkg.stats.stars,
+      isOfficial: publisherOfficial || pkg.isOfficial,
       updatedAt: pkg.updatedAt,
     })),
   ].sort(comparePublisherCatalogItems(sort));
@@ -286,7 +311,7 @@ async function toPublisherListItem(
     includeStarredCount?: boolean;
   } = {},
 ): Promise<PublisherListItem | null> {
-  const publicPublisher = toPublicPublisher(publisher);
+  const publicPublisher = await toPublicPublisherWithOfficial(ctx, publisher);
   if (!publicPublisher) return null;
   const linkedUser =
     publisher.kind === "user" && publisher.linkedUserId
@@ -387,7 +412,7 @@ async function getUserPublisherAffiliations(
       ) {
         return null;
       }
-      const publicPublisher = toPublicPublisher(publisher);
+      const publicPublisher = await toPublicPublisherWithOfficial(ctx, publisher);
       if (!publicPublisher) return null;
       return {
         publisher: publicPublisher,
@@ -579,7 +604,10 @@ async function migrateLegacyPublisherHandleToOrgWithActor(
     });
   }
 
-  const ensuredPersonalPublisher = await ensurePersonalPublisherForUser(ctx, nextLegacyUser);
+  const ensuredPersonalPublisher = await ensurePersonalPublisherForUser(ctx, nextLegacyUser, {
+    actorUserId: args.actorUserId,
+    source: "publisher.legacy_handle.migrate",
+  });
 
   const packages = await ctx.db
     .query("packages")
@@ -631,6 +659,8 @@ async function ensureOrgPublisherHandleWithActor(
     fallbackUserHandle?: string;
     displayName?: string;
     trusted?: boolean;
+    memberHandle?: string;
+    memberRole?: "owner" | "admin" | "publisher";
   },
 ) {
   const actor = await ctx.db.get(args.actorUserId);
@@ -641,6 +671,14 @@ async function ensureOrgPublisherHandleWithActor(
   const now = Date.now();
   const existingPublisher = await getPublisherByHandle(ctx, handle);
   const existingUser = await getUserByHandle(ctx, handle);
+  const ensureMember = async (publisherId: Id<"publishers">) =>
+    await ensureOrgPublisherMemberWithActor(ctx, {
+      actorUserId: args.actorUserId,
+      publisherId,
+      memberHandle: args.memberHandle,
+      memberRole: args.memberRole,
+      now,
+    });
 
   if (existingPublisher?.kind === "org") {
     await ctx.db.patch(existingPublisher._id, {
@@ -648,16 +686,7 @@ async function ensureOrgPublisherHandleWithActor(
       trustedPublisher: args.trusted ?? existingPublisher.trustedPublisher,
       updatedAt: now,
     });
-    const membership = await getPublisherMembership(ctx, existingPublisher._id, args.actorUserId);
-    if (!membership) {
-      await ctx.db.insert("publisherMembers", {
-        publisherId: existingPublisher._id,
-        userId: args.actorUserId,
-        role: "owner",
-        createdAt: now,
-        updatedAt: now,
-      });
-    }
+    const member = await ensureMember(existingPublisher._id);
     return {
       ok: true as const,
       publisherId: existingPublisher._id,
@@ -665,6 +694,7 @@ async function ensureOrgPublisherHandleWithActor(
       created: false,
       migrated: false,
       trusted: args.trusted ?? existingPublisher.trustedPublisher ?? false,
+      ...(member ? { member } : {}),
     };
   }
 
@@ -681,6 +711,7 @@ async function ensureOrgPublisherHandleWithActor(
         updatedAt: now,
       });
     }
+    const member = await ensureMember(result.orgPublisherId);
     return {
       ok: true as const,
       publisherId: result.orgPublisherId,
@@ -688,7 +719,12 @@ async function ensureOrgPublisherHandleWithActor(
       created: false,
       migrated: true,
       trusted: args.trusted ?? existingPublisher?.trustedPublisher ?? false,
+      ...(member ? { member } : {}),
     };
+  }
+
+  if (!normalizePublisherHandle(args.memberHandle)) {
+    throw new ConvexError("memberHandle required when creating org publisher");
   }
 
   const publisherId = await ctx.db.insert("publishers", {
@@ -699,13 +735,6 @@ async function ensureOrgPublisherHandleWithActor(
     image: undefined,
     linkedUserId: undefined,
     trustedPublisher: args.trusted || undefined,
-    createdAt: now,
-    updatedAt: now,
-  });
-  await ctx.db.insert("publisherMembers", {
-    publisherId,
-    userId: args.actorUserId,
-    role: "owner",
     createdAt: now,
     updatedAt: now,
   });
@@ -720,6 +749,7 @@ async function ensureOrgPublisherHandleWithActor(
     },
     createdAt: now,
   });
+  const member = await ensureMember(publisherId);
   return {
     ok: true as const,
     publisherId,
@@ -727,6 +757,127 @@ async function ensureOrgPublisherHandleWithActor(
     created: true,
     migrated: false,
     trusted: args.trusted ?? false,
+    ...(member ? { member } : {}),
+  };
+}
+
+async function ensureOrgPublisherMemberWithActor(
+  ctx: Pick<MutationCtx, "db">,
+  args: {
+    actorUserId: Id<"users">;
+    publisherId: Id<"publishers">;
+    memberHandle?: string;
+    memberRole?: "owner" | "admin" | "publisher";
+    now: number;
+  },
+) {
+  const memberHandle = normalizePublisherHandle(args.memberHandle);
+  if (!memberHandle) return null;
+  const requestedRole = args.memberRole ?? "owner";
+  const targetUser = await getActiveUserByHandleOrPersonalPublisher(ctx, memberHandle);
+  if (!targetUser) throw new ConvexError(`User "@${memberHandle}" not found`);
+  await ensurePersonalPublisherForUser(ctx, targetUser, {
+    actorUserId: args.actorUserId,
+    source: "publisher.org.ensure.member",
+  });
+  const existing = await getPublisherMembership(ctx, args.publisherId, targetUser._id);
+  const role =
+    existing?.role === "owner" && requestedRole !== "owner" ? existing.role : requestedRole;
+  if (existing) {
+    if (existing.role !== role) {
+      await ctx.db.patch(existing._id, { role, updatedAt: args.now });
+    }
+  } else {
+    await ctx.db.insert("publisherMembers", {
+      publisherId: args.publisherId,
+      userId: targetUser._id,
+      role,
+      createdAt: args.now,
+      updatedAt: args.now,
+    });
+  }
+  await ctx.db.insert("auditLogs", {
+    actorUserId: args.actorUserId,
+    action: "publisher.member.upsert",
+    targetType: "publisher",
+    targetId: args.publisherId,
+    metadata: {
+      memberUserId: targetUser._id,
+      memberHandle: targetUser.handle ?? memberHandle,
+      role,
+      source: "publisher.org.ensure",
+    },
+    createdAt: args.now,
+  });
+  return {
+    userId: targetUser._id,
+    handle: targetUser.handle ?? memberHandle,
+    role,
+  };
+}
+
+async function createOrgPublisherForUser(
+  ctx: MutationCtx,
+  args: {
+    actorUserId: Id<"users">;
+    handle: string;
+    displayName?: string;
+    bio?: string;
+  },
+) {
+  const actor = await ctx.db.get(args.actorUserId);
+  if (!actor || actor.deletedAt || actor.deactivatedAt) throw new ConvexError("Unauthorized");
+
+  const handle = validateHandle(args.handle);
+  const existingPublisher = await getPublisherByHandle(ctx, handle);
+  if (existingPublisher) {
+    if (existingPublisher.kind === "user") {
+      throw new ConvexError(`Handle "@${handle}" is already used by a user or personal publisher`);
+    }
+    throw new ConvexError(`Publisher "@${handle}" already exists`);
+  }
+  const existingUser = await getUserByHandle(ctx, handle);
+  if (existingUser) {
+    throw new ConvexError(`Handle "@${handle}" is already used by a user or personal publisher`);
+  }
+  if (await isHandleReservedForAnotherUser(ctx, handle, args.actorUserId)) {
+    throw new ConvexError(`Handle "@${handle}" is reserved for another user`);
+  }
+
+  const now = Date.now();
+  const publisherId = await ctx.db.insert("publishers", {
+    kind: "org",
+    handle,
+    displayName: args.displayName?.trim() || handle,
+    bio: args.bio?.trim() || undefined,
+    image: undefined,
+    linkedUserId: undefined,
+    trustedPublisher: undefined,
+    createdAt: now,
+    updatedAt: now,
+  });
+  await ctx.db.insert("publisherMembers", {
+    publisherId,
+    userId: args.actorUserId,
+    role: "owner",
+    createdAt: now,
+    updatedAt: now,
+  });
+  await ctx.db.insert("auditLogs", {
+    actorUserId: args.actorUserId,
+    action: "publisher.org.create",
+    targetType: "publisher",
+    targetId: publisherId,
+    metadata: { handle },
+    createdAt: now,
+  });
+
+  return {
+    ok: true as const,
+    publisherId,
+    handle,
+    created: true as const,
+    trusted: false as const,
   };
 }
 
@@ -749,12 +900,33 @@ export const getMemberRoleInternal = internalQuery({
     (await getPublisherMembership(ctx, args.publisherId, args.userId))?.role ?? null,
 });
 
+export const canAccessOwnerScopeInternal = internalQuery({
+  args: {
+    publisherId: v.id("publishers"),
+    userId: v.id("users"),
+    allowedPublisherRoles: v.optional(v.array(publisherRoleValidator)),
+    legacyOwnerUserId: v.optional(v.id("users")),
+  },
+  handler: async (ctx, args) => {
+    const publisher = await ctx.db.get(args.publisherId);
+    return await canAccessPublisherOwnerScope(ctx, {
+      publisher,
+      userId: args.userId,
+      allowedPublisherRoles: args.allowedPublisherRoles,
+      legacyOwnerUserId: args.legacyOwnerUserId,
+    });
+  },
+});
+
 export const ensurePersonalPublisherInternal = internalMutation({
   args: { userId: v.id("users") },
   handler: async (ctx, args) => {
     const user = await ctx.db.get(args.userId);
     if (!user || user.deletedAt || user.deactivatedAt) return null;
-    return await ensurePersonalPublisherForUser(ctx, user);
+    return await ensurePersonalPublisherForUser(ctx, user, {
+      actorUserId: user._id,
+      source: "publisher.ensure_personal_internal",
+    });
   },
 });
 
@@ -771,7 +943,10 @@ export const resolvePublishTargetForUserInternal = internalMutation({
     if (!actor || actor.deletedAt || actor.deactivatedAt) throw new ConvexError("Unauthorized");
     const minimumRole = args.minimumRole ?? "publisher";
     const requestedHandle = normalizePublisherHandle(args.ownerHandle);
-    const personal = await ensurePersonalPublisherForUser(ctx, actor);
+    const personal = await ensurePersonalPublisherForUser(ctx, actor, {
+      actorUserId: actor._id,
+      source: "publisher.resolve_target",
+    });
     if (!personal) throw new ConvexError("Personal publisher not found");
     if (!requestedHandle) {
       return {
@@ -796,6 +971,19 @@ export const resolvePublishTargetForUserInternal = internalMutation({
       throw new ConvexError(
         `Publisher "@${requestedHandle}" not found. Create the "@${requestedHandle}" organization on ClawHub or choose a different owner.`,
       );
+    }
+    if (publisher.kind === "user") {
+      if (publisher.linkedUserId !== actor._id) {
+        throw new ConvexError(
+          `You do not have publish access for "@${requestedHandle}". Ask an owner or admin of "@${requestedHandle}" to add you.`,
+        );
+      }
+      return {
+        publisherId: publisher._id,
+        handle: publisher.handle,
+        kind: publisher.kind,
+        linkedUserId: publisher.linkedUserId,
+      };
     }
     const membership = await getPublisherMembership(ctx, publisher._id, actor._id);
     if (!membership || !isPublisherRoleAllowed(membership.role, [minimumRole])) {
@@ -826,11 +1014,17 @@ export const listMine = query({
     const publishers = await Promise.all(
       memberships.map(async (membership) => {
         const publisher = await ctx.db.get(membership.publisherId);
-        const publicPublisher = toPublicPublisher(publisher);
+        if (publisher?.kind === "user") {
+          const isLinkedPersonal = publisher.linkedUserId === userId;
+          const isLegacyPersonal =
+            !publisher.linkedUserId && user.personalPublisherId === publisher._id;
+          if (!isLinkedPersonal && !isLegacyPersonal) return null;
+        }
+        const publicPublisher = await toPublicPublisherWithOfficial(ctx, publisher);
         if (!publicPublisher) return null;
         return {
           publisher: publicPublisher,
-          role: membership.role,
+          role: publisher?.kind === "user" ? "owner" : membership.role,
         };
       }),
     );
@@ -842,7 +1036,8 @@ export const listMine = query({
         role: Doc<"publisherMembers">["role"];
       } => Boolean(item),
     );
-    const personalPublisher = toPublicPublisher(
+    const personalPublisher = await toPublicPublisherWithOfficial(
+      ctx,
       await getPersonalPublisherForUserOrFallback(ctx, user),
     );
     if (
@@ -918,14 +1113,17 @@ export const listStarredPage = query({
             ownerPublisher && !ownerPublisher.deletedAt && !ownerPublisher.deactivatedAt
               ? ownerPublisher.handle
               : String(skill.ownerUserId);
+          const official = await isOfficialPublisher(ctx, ownerPublisher);
           return {
             _id: skill._id,
             kind: "skill" as const,
             displayName: skill.displayName,
             summary: skill.summary ?? null,
+            icon: skill.icon ?? null,
             href: `/${encodeURIComponent(ownerHandle)}/${encodeURIComponent(skill.slug)}`,
             downloads: readCanonicalStat(skill, "downloads"),
             stars: readCanonicalStat(skill, "stars"),
+            isOfficial: official || Boolean(skill.badges?.official),
             updatedAt: skill.updatedAt,
           };
         }),
@@ -963,6 +1161,7 @@ export const listPublishedPage = query({
     const items = getPublisherCatalogItems(
       publisher,
       await getPublisherPublishedRows(ctx, publisher._id),
+      await isOfficialPublisher(ctx, publisher),
       args.sort ?? "downloads",
     ).filter((item) => !args.kind || item.kind === args.kind);
     const nextOffset = safeOffset + numItems;
@@ -1106,6 +1305,7 @@ export const listMembers = query({
       memberships.map(async (membership) => {
         const user = await ctx.db.get(membership.userId);
         if (!user || user.deletedAt || user.deactivatedAt) return null;
+        const memberPublisher = await getPersonalPublisherForUser(ctx, user._id);
         return {
           role: membership.role,
           user: {
@@ -1113,12 +1313,13 @@ export const listMembers = query({
             handle: user.handle ?? null,
             displayName: user.displayName ?? user.name ?? null,
             image: user.image ?? null,
+            official: await isOfficialPublisher(ctx, memberPublisher),
           },
         };
       }),
     );
     return {
-      publisher: toPublicPublisher(publisher),
+      publisher: await toPublicPublisherWithOfficial(ctx, publisher),
       members: items.filter(Boolean),
     };
   },
@@ -1132,51 +1333,18 @@ export const createOrg = mutation({
   },
   handler: async (ctx, args) => {
     const { user, userId } = await requireUser(ctx);
-    await ensurePersonalPublisherForUser(ctx, user);
-
-    const handle = validateHandle(args.handle);
-    const existingPublisher = await getPublisherByHandle(ctx, handle);
-    if (existingPublisher) throw new ConvexError(`Publisher "@${handle}" already exists`);
-
-    const existingUser = await ctx.db
-      .query("users")
-      .withIndex("handle", (q) => q.eq("handle", handle))
-      .unique();
-    if (existingUser && existingUser._id !== userId) {
-      throw new ConvexError(`Handle "@${handle}" is already claimed`);
-    }
-
-    const now = Date.now();
-    const displayName = args.displayName.trim() || handle;
-    const bio = args.bio?.trim() || undefined;
-    const publisherId = await ctx.db.insert("publishers", {
-      kind: "org",
-      handle,
-      displayName,
-      bio,
-      image: undefined,
-      linkedUserId: undefined,
-      trustedPublisher: false,
-      createdAt: now,
-      updatedAt: now,
-    });
-    await ctx.db.insert("publisherMembers", {
-      publisherId,
-      userId,
-      role: "owner",
-      createdAt: now,
-      updatedAt: now,
-    });
-    await ctx.db.insert("auditLogs", {
+    await ensurePersonalPublisherForUser(ctx, user, {
       actorUserId: userId,
-      action: "publisher.create",
-      targetType: "publisher",
-      targetId: publisherId,
-      metadata: { kind: "org", handle },
-      createdAt: now,
+      source: "publisher.create_org",
+    });
+    const result = await createOrgPublisherForUser(ctx, {
+      actorUserId: userId,
+      handle: args.handle,
+      displayName: args.displayName,
+      bio: args.bio,
     });
     return {
-      publisher: toPublicPublisher(await ctx.db.get(publisherId)),
+      publisher: await toPublicPublisherWithOfficial(ctx, await ctx.db.get(result.publisherId)),
       role: "owner" as const,
     };
   },
@@ -1241,7 +1409,7 @@ export const updateProfile = mutation({
 
     return {
       ok: true as const,
-      publisher: toPublicPublisher(await ctx.db.get(publisher._id)),
+      publisher: await toPublicPublisherWithOfficial(ctx, await ctx.db.get(publisher._id)),
     };
   },
 });
@@ -1268,8 +1436,100 @@ export const ensureOrgPublisherHandleInternal = internalMutation({
     fallbackUserHandle: v.optional(v.string()),
     displayName: v.optional(v.string()),
     trusted: v.optional(v.boolean()),
+    memberHandle: v.optional(v.string()),
+    memberRole: v.optional(v.union(v.literal("owner"), v.literal("admin"), v.literal("publisher"))),
   },
   handler: async (ctx, args) => await ensureOrgPublisherHandleWithActor(ctx, args),
+});
+
+export const removeOrgPublisherMemberInternal = internalMutation({
+  args: {
+    actorUserId: v.id("users"),
+    handle: v.string(),
+    memberHandle: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const actor = await ctx.db.get(args.actorUserId);
+    if (!actor || actor.deletedAt || actor.deactivatedAt) throw new ConvexError("Unauthorized");
+    assertAdmin(actor);
+
+    const handle = normalizePublisherHandle(args.handle);
+    if (!handle || !PUBLISHER_HANDLE_PATTERN.test(handle)) {
+      throw new ConvexError("Handle must be lowercase, url-safe, and 2-40 characters");
+    }
+    const memberHandle = normalizePublisherHandle(args.memberHandle);
+    if (!memberHandle) throw new ConvexError("memberHandle is required");
+
+    const publisher = await getPublisherByHandle(ctx, handle);
+    if (!publisher || publisher.kind !== "org" || publisher.deletedAt || publisher.deactivatedAt) {
+      throw new ConvexError("Publisher not found");
+    }
+
+    const targetUser = await getActiveUserByHandleOrPersonalPublisher(ctx, memberHandle);
+    if (!targetUser) throw new ConvexError(`User "@${memberHandle}" not found`);
+
+    const targetMembership = await getPublisherMembership(ctx, publisher._id, targetUser._id);
+    const member = {
+      userId: targetUser._id,
+      handle: targetUser.handle ?? memberHandle,
+      role: targetMembership?.role ?? ("publisher" as const),
+    };
+    if (!targetMembership) {
+      return {
+        ok: true as const,
+        publisherId: publisher._id,
+        handle,
+        removed: false,
+        member,
+      };
+    }
+
+    if (targetMembership.role === "owner") {
+      const members = await ctx.db
+        .query("publisherMembers")
+        .withIndex("by_publisher", (q) => q.eq("publisherId", publisher._id))
+        .collect();
+      const remainingOwners = members.filter(
+        (publisherMember) =>
+          publisherMember.role === "owner" && publisherMember.userId !== targetUser._id,
+      );
+      if (remainingOwners.length === 0) {
+        throw new ConvexError("Publisher must have at least one owner");
+      }
+    }
+
+    await ctx.db.delete(targetMembership._id);
+    await ctx.db.insert("auditLogs", {
+      actorUserId: args.actorUserId,
+      action: "publisher.member.remove",
+      targetType: "publisher",
+      targetId: publisher._id,
+      metadata: {
+        memberUserId: targetUser._id,
+        memberHandle: targetUser.handle ?? memberHandle,
+        role: targetMembership.role,
+        source: "publisher.org.mod",
+      },
+      createdAt: Date.now(),
+    });
+
+    return {
+      ok: true as const,
+      publisherId: publisher._id,
+      handle,
+      removed: true,
+      member,
+    };
+  },
+});
+
+export const createOrgPublisherForUserInternal = internalMutation({
+  args: {
+    actorUserId: v.id("users"),
+    handle: v.string(),
+    displayName: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => await createOrgPublisherForUser(ctx, args),
 });
 
 export const addMember = mutation({
@@ -1288,6 +1548,7 @@ export const addMember = mutation({
     if (!membership || !isPublisherRoleAllowed(membership.role, ["admin"])) {
       throw new ConvexError("Forbidden");
     }
+    assertOrgPublisherMembershipManagement(publisher);
     if (args.role === "owner" && membership.role !== "owner") {
       throw new ConvexError("Only org owners can promote members to owner");
     }
@@ -1297,7 +1558,10 @@ export const addMember = mutation({
     if (!targetUser) {
       throw new ConvexError(`User "@${handle}" not found`);
     }
-    await ensurePersonalPublisherForUser(ctx, targetUser);
+    await ensurePersonalPublisherForUser(ctx, targetUser, {
+      actorUserId: userId,
+      source: "publisher.member.upsert",
+    });
     const existing = await getPublisherMembership(ctx, publisher._id, targetUser._id);
     const now = Date.now();
     if (existing) {
@@ -1333,15 +1597,39 @@ export const removeMember = mutation({
     userId: v.id("users"),
   },
   handler: async (ctx, args) => {
-    const { userId } = await requireUser(ctx);
+    const { user, userId } = await requireUser(ctx);
     const publisher = await ctx.db.get(args.publisherId);
     if (!publisher || publisher.deletedAt || publisher.deactivatedAt) {
       throw new ConvexError("Publisher not found");
+    }
+    if (publisher.kind === "user") {
+      const actorMembership = await getPublisherMembership(ctx, publisher._id, userId);
+      const isPersonalOwner =
+        publisher.linkedUserId === userId ||
+        (!publisher.linkedUserId &&
+          (user.personalPublisherId === publisher._id || actorMembership?.role === "owner"));
+      if (!isPersonalOwner) throw new ConvexError("Forbidden");
+      const targetMembership = await getPublisherMembership(ctx, publisher._id, args.userId);
+      if (!targetMembership) return { ok: true };
+      if (args.userId === (publisher.linkedUserId ?? userId)) {
+        throw new ConvexError("Personal publisher owner membership cannot be removed");
+      }
+      await ctx.db.delete(targetMembership._id);
+      await ctx.db.insert("auditLogs", {
+        actorUserId: userId,
+        action: "publisher.member.remove",
+        targetType: "publisher",
+        targetId: publisher._id,
+        metadata: { memberUserId: args.userId },
+        createdAt: Date.now(),
+      });
+      return { ok: true };
     }
     const actorMembership = await getPublisherMembership(ctx, publisher._id, userId);
     if (!actorMembership || !isPublisherRoleAllowed(actorMembership.role, ["admin"])) {
       throw new ConvexError("Forbidden");
     }
+    assertOrgPublisherMembershipManagement(publisher);
     const targetMembership = await getPublisherMembership(ctx, publisher._id, args.userId);
     if (!targetMembership) return { ok: true };
     if (targetMembership.role === "owner" && actorMembership.role !== "owner") {
@@ -1382,9 +1670,23 @@ export const setTrustedPublisherInternal = internalMutation({
     const actor = await ctx.db.get(args.actorUserId);
     if (!actor || actor.deletedAt || actor.deactivatedAt) throw new ConvexError("Unauthorized");
     assertAdmin(actor);
+    const publisher = await ctx.db.get(args.publisherId);
+    const now = Date.now();
     await ctx.db.patch(args.publisherId, {
       trustedPublisher: args.trustedPublisher,
-      updatedAt: Date.now(),
+      updatedAt: now,
+    });
+    await ctx.db.insert("auditLogs", {
+      actorUserId: args.actorUserId,
+      action: args.trustedPublisher ? "publisher.trusted.set" : "publisher.trusted.unset",
+      targetType: "publisher",
+      targetId: args.publisherId,
+      metadata: {
+        handle: publisher?.handle ?? null,
+        previousTrustedPublisher: publisher?.trustedPublisher ?? null,
+        trustedPublisher: args.trustedPublisher,
+      },
+      createdAt: now,
     });
   },
 });

@@ -3,9 +3,11 @@ import {
   ApiV1PackageOfficialMigrationListResponseSchema,
   ApiV1PackageOfficialMigrationResponseSchema,
   ApiV1PackageModerationStatusResponseSchema,
+  ApiV1PackageSecurityResponseSchema,
   PackageAppealResolveRequestSchema,
   PackageAppealRequestSchema,
   PackageOfficialMigrationUpsertRequestSchema,
+  PackageRepairNameRequestSchema,
   PackageReportRequestSchema,
   PackageReportTriageRequestSchema,
   PackageReleaseModerationRequestSchema,
@@ -13,6 +15,7 @@ import {
   PackageTransferRequestSchema,
   PackageTrustedPublisherUpsertRequestSchema,
   PublishTokenMintRequestSchema,
+  isPluginCategorySlug,
   parseArk,
   type PackageAppealListStatus,
   type PackageModerationQueueStatus,
@@ -32,13 +35,19 @@ import {
 import { corsHeaders, mergeHeaders } from "../lib/httpHeaders";
 import { applyRateLimit } from "../lib/httpRateLimit";
 import { tryNormalizePackageName } from "../lib/packageRegistry";
-import { getPackageDownloadSecurityBlock } from "../lib/packageSecurity";
+import {
+  getPackageDownloadSecurityBlock,
+  isPackageReleaseTrustStale,
+  getPackageTrustReasons,
+  resolvePackageReleaseScanStatus,
+} from "../lib/packageSecurity";
 import {
   getClawPackSizeError,
   getPublishFileSizeError,
   MAX_CLAWPACK_BYTES,
   MAX_PUBLISH_FILE_BYTES,
 } from "../lib/publishLimits";
+import { getPublicSkillFileAccessBlock, isSkillVersionForSkill } from "../lib/skillFileAccess";
 import { isMacJunkPath, isTextFile } from "../lib/skills";
 import { buildDeterministicPackageZip } from "../lib/skillZip";
 import { generateToken, hashToken } from "../lib/tokens";
@@ -46,12 +55,15 @@ import {
   MAX_RAW_FILE_BYTES,
   getPathSegments,
   json,
+  publicApiOrigin,
   resolveTagsBatch,
   requireApiTokenUserOrResponse,
+  requireAdminOrResponse,
   requirePackagePublishAuthOrResponse,
   safeTextFileResponse,
   softDeleteErrorToResponse,
   formatAuthzMessage,
+  formatUserFacingErrorMessage,
   text,
   toOptionalNumber,
 } from "./shared";
@@ -62,7 +74,6 @@ const apiRefs = api as unknown as {
   };
   skills: {
     listPackageCatalogPage: unknown;
-    searchPackageCatalogPublic: unknown;
     getBySlug: unknown;
     listVersionsPage: unknown;
     getVersionBySkillAndVersion: unknown;
@@ -77,6 +88,7 @@ const internalRefs = internal as unknown as {
     getPackageByNameInternal: unknown;
     getTrustedPublisherByPackageIdInternal: unknown;
     getVersionByNameForViewerInternal: unknown;
+    getVersionSecurityByNameForViewerInternal: unknown;
     publishPackageForUserInternal: unknown;
     publishPackageForTrustedPublisherInternal: unknown;
     setTrustedPublisherForUserInternal: unknown;
@@ -90,7 +102,9 @@ const internalRefs = internal as unknown as {
     recordPackageInstallInternal: unknown;
     softDeletePackageInternal: unknown;
     restorePackageInternal: unknown;
+    repairPackageIdentityInternal: unknown;
     moderatePackageReleaseForUserInternal: unknown;
+    transferPackageOwnerInternal: unknown;
     reportPackageForUserInternal: unknown;
     listPackageReportsInternal: unknown;
     triagePackageReportForUserInternal: unknown;
@@ -108,8 +122,15 @@ const internalRefs = internal as unknown as {
   };
   skills: {
     getSkillBySlugInternal: unknown;
+    searchPackageCatalogForHttpInternal: unknown;
     getVersionByIdInternal: unknown;
     getVersionBySkillAndVersionInternal: unknown;
+  };
+  publishers: {
+    getByHandleInternal: unknown;
+  };
+  securityScan: {
+    requestPackageRescanForUserInternal: unknown;
   };
 };
 
@@ -118,7 +139,7 @@ function packageOperationErrorToResponse(
   headers: HeadersInit,
   fallback = "Package operation failed",
 ) {
-  const message = error instanceof Error ? error.message : fallback;
+  const message = formatUserFacingErrorMessage(error, fallback);
   const lower = message.toLowerCase();
   if (lower.includes("unauthorized"))
     return text(formatAuthzMessage(error, "Unauthorized"), 401, headers);
@@ -126,6 +147,40 @@ function packageOperationErrorToResponse(
     return text(formatAuthzMessage(error, "Forbidden"), 403, headers);
   if (lower.includes("not found")) return text(message, 404, headers);
   return text(message, 400, headers);
+}
+
+async function readOptionalJson(request: Request): Promise<unknown> {
+  const raw = await request.text();
+  if (!raw.trim()) return undefined;
+  return JSON.parse(raw) as unknown;
+}
+
+function optionalStringField(value: unknown, key: string): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const field = (value as Record<string, unknown>)[key];
+  return typeof field === "string" ? field : undefined;
+}
+
+function isTransientConvexContentionMessage(message: string) {
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("optimistic concurrency") ||
+    lower.includes("write conflict") ||
+    (/documents read from or written to the ".+" table changed/.test(lower) &&
+      lower.includes("while this mutation was being run"))
+  );
+}
+
+function packagePublishErrorToResponse(error: unknown, headers: HeadersInit) {
+  const message = formatUserFacingErrorMessage(error, "Publish failed");
+  if (!isTransientConvexContentionMessage(message)) {
+    return text(message, 400, headers);
+  }
+  return text(
+    `Transient ClawHub write contention. Package validation was not the cause; retrying usually succeeds. ${message}`,
+    503,
+    mergeHeaders(headers, { "Retry-After": "1" }),
+  );
 }
 
 async function runQueryRef<T>(ctx: ActionCtx, ref: unknown, args: unknown): Promise<T> {
@@ -161,9 +216,33 @@ function normalizeCapabilityTagSegment(value: string) {
     .replace(/^-+|-+$/g, "");
 }
 
-function getEnabledQueryFlag(params: URLSearchParams, name: string) {
-  const value = params.get(name)?.trim().toLowerCase();
-  return value === "true" || value === "1";
+const PACKAGE_FAMILY_VALUES = ["skill", "code-plugin", "bundle-plugin"] as const;
+const PACKAGE_CHANNEL_VALUES = ["official", "community", "private"] as const;
+
+function invalidQueryParamMessage(name: string) {
+  return `Invalid ${name} query parameter`;
+}
+
+function parseEnumQueryParam<const T extends readonly string[]>(
+  params: URLSearchParams,
+  name: string,
+  allowed: T,
+): { ok: true; value: T[number] | undefined } | { ok: false; message: string } {
+  if (!params.has(name)) return { ok: true, value: undefined };
+  const value = params.get(name)?.trim() ?? "";
+  if ((allowed as readonly string[]).includes(value)) return { ok: true, value };
+  return { ok: false, message: invalidQueryParamMessage(name) };
+}
+
+function parseBooleanQueryParam(
+  params: URLSearchParams,
+  name: string,
+): { ok: true; value: boolean | undefined } | { ok: false; message: string } {
+  if (!params.has(name)) return { ok: true, value: undefined };
+  const value = params.get(name)?.trim().toLowerCase() ?? "";
+  if (value === "true" || value === "1") return { ok: true, value: true };
+  if (value === "false" || value === "0") return { ok: true, value: false };
+  return { ok: false, message: invalidQueryParamMessage(name) };
 }
 
 function getCapabilityTagFromQueryParams(params: URLSearchParams) {
@@ -195,17 +274,36 @@ function getCapabilityTagFromQueryParams(params: URLSearchParams) {
   if (artifactKind === "legacy-zip" || artifactKind === "npm-pack") {
     return `artifact:${artifactKind}`;
   }
-  if (getEnabledQueryFlag(params, "npmMirror")) return "npm-mirror:available";
-  if (getEnabledQueryFlag(params, "requiresBrowser")) return "requires:browser";
-  if (getEnabledQueryFlag(params, "requiresDesktop")) return "requires:desktop";
-  if (getEnabledQueryFlag(params, "requiresNativeDeps")) return "requires:native-deps";
-  if (getEnabledQueryFlag(params, "nativeDeps")) return "requires:native-deps";
-  if (getEnabledQueryFlag(params, "requiresExternalService")) {
+  if (params.has("artifactKind")) return { error: invalidQueryParamMessage("artifactKind") };
+  const npmMirror = parseBooleanQueryParam(params, "npmMirror");
+  if (!npmMirror.ok) return { error: npmMirror.message };
+  if (npmMirror.value) return "npm-mirror:available";
+  const requiresBrowser = parseBooleanQueryParam(params, "requiresBrowser");
+  if (!requiresBrowser.ok) return { error: requiresBrowser.message };
+  if (requiresBrowser.value) return "requires:browser";
+  const requiresDesktop = parseBooleanQueryParam(params, "requiresDesktop");
+  if (!requiresDesktop.ok) return { error: requiresDesktop.message };
+  if (requiresDesktop.value) return "requires:desktop";
+  const requiresNativeDeps = parseBooleanQueryParam(params, "requiresNativeDeps");
+  if (!requiresNativeDeps.ok) return { error: requiresNativeDeps.message };
+  if (requiresNativeDeps.value) return "requires:native-deps";
+  const nativeDeps = parseBooleanQueryParam(params, "nativeDeps");
+  if (!nativeDeps.ok) return { error: nativeDeps.message };
+  if (nativeDeps.value) return "requires:native-deps";
+  const requiresExternalService = parseBooleanQueryParam(params, "requiresExternalService");
+  if (!requiresExternalService.ok) return { error: requiresExternalService.message };
+  if (requiresExternalService.value) {
     return "requires:external-service";
   }
-  if (getEnabledQueryFlag(params, "requiresBinary")) return "requires:binary";
-  if (getEnabledQueryFlag(params, "requiresOsPermission")) return "requires:os-permission";
-  if (getEnabledQueryFlag(params, "environmentDeclared")) return "environment:declared";
+  const requiresBinary = parseBooleanQueryParam(params, "requiresBinary");
+  if (!requiresBinary.ok) return { error: requiresBinary.message };
+  if (requiresBinary.value) return "requires:binary";
+  const requiresOsPermission = parseBooleanQueryParam(params, "requiresOsPermission");
+  if (!requiresOsPermission.ok) return { error: requiresOsPermission.message };
+  if (requiresOsPermission.value) return "requires:os-permission";
+  const environmentDeclared = parseBooleanQueryParam(params, "environmentDeclared");
+  if (!environmentDeclared.ok) return { error: environmentDeclared.message };
+  if (environmentDeclared.value) return "environment:declared";
   return undefined;
 }
 
@@ -280,6 +378,7 @@ type PackageListQueryArgs = {
   highlightedOnly?: boolean;
   executesCode?: boolean;
   capabilityTag?: string;
+  category?: string;
   viewerUserId?: Id<"users">;
   paginationOpts: { cursor: string | null; numItems: number };
 };
@@ -332,10 +431,12 @@ type ReleaseLike = {
   extractedPackageJson?: Doc<"packageReleases">["extractedPackageJson"];
   sha256hash?: string;
   vtAnalysis?: Doc<"packageReleases">["vtAnalysis"];
+  skillSpectorAnalysis?: Doc<"packageReleases">["skillSpectorAnalysis"];
   llmAnalysis?: Doc<"packageReleases">["llmAnalysis"];
   clawScanNote?: string;
   clawScanNoteUpdatedAt?: number;
   staticScan?: Doc<"packageReleases">["staticScan"];
+  manualModeration?: Doc<"packageReleases">["manualModeration"];
   integritySha256?: string;
   artifactKind?: Doc<"packageReleases">["artifactKind"];
   clawpackStorageId?: Doc<"packageReleases">["clawpackStorageId"];
@@ -364,6 +465,20 @@ type PackageTrustedPublisherLike = {
   updatedAt: number;
 };
 
+type AdminRepairPackageLike = Pick<
+  Doc<"packages">,
+  | "_id"
+  | "name"
+  | "normalizedName"
+  | "runtimeId"
+  | "ownerUserId"
+  | "ownerPublisherId"
+  | "channel"
+  | "softDeletedAt"
+>;
+
+type RepairOwnerPublisherLike = Pick<Doc<"publishers">, "_id" | "handle" | "deletedAt">;
+
 function toVisibleRelease(release: ReleaseLike | null) {
   if (!release || ("softDeletedAt" in release && release.softDeletedAt !== undefined)) return null;
   return release;
@@ -380,6 +495,28 @@ function toPublicTrustedPublisher(trustedPublisher: PackageTrustedPublisherLike 
     workflowFilename: trustedPublisher.workflowFilename,
     ...(trustedPublisher.environment ? { environment: trustedPublisher.environment } : {}),
   };
+}
+
+function toRepairPackageSnapshot(pkg: AdminRepairPackageLike) {
+  return {
+    packageId: String(pkg._id),
+    name: pkg.normalizedName || pkg.name,
+    runtimeId: pkg.runtimeId ?? null,
+    ownerUserId: String(pkg.ownerUserId),
+    ownerPublisherId: pkg.ownerPublisherId ? String(pkg.ownerPublisherId) : null,
+    channel: pkg.channel,
+    softDeletedAt: pkg.softDeletedAt ?? null,
+  };
+}
+
+function defaultRetiredPackageName(name: string) {
+  const yyyymmdd = new Date(Date.now()).toISOString().slice(0, 10).replaceAll("-", "");
+  return `${name}-retired-${yyyymmdd}`;
+}
+
+function normalizePublisherHandleInput(value: string | undefined) {
+  const normalized = value?.trim().replace(/^@+/, "").toLowerCase();
+  return normalized || undefined;
 }
 
 function getReleaseSecurityBlock(release: ReleaseLike) {
@@ -413,6 +550,50 @@ function toReleaseArtifact(release: ReleaseLike, packageName?: string) {
   };
 }
 
+function packageReleaseArtifactSha256(release: ReleaseLike) {
+  if (release.artifactKind === "npm-pack") {
+    return release.sha256hash ?? release.clawpackSha256 ?? null;
+  }
+  return release.sha256hash ?? null;
+}
+
+function toPackageReleaseSecurityResponse(params: {
+  pkg: PublicPackageDocLike;
+  release: ReleaseLike;
+}) {
+  const scanStatus = resolvePackageReleaseScanStatus(params.release);
+  const artifactSha256 = packageReleaseArtifactSha256(params.release);
+  const packageBlockedFromDownload = params.pkg.publicDownloadBlocked === true;
+  const reasons = getPackageTrustReasons(params.release, scanStatus);
+  if (packageBlockedFromDownload) reasons.push("package:malicious");
+  return {
+    package: {
+      name: params.pkg.name,
+      displayName: params.pkg.displayName,
+      family: params.pkg.family,
+    },
+    release: {
+      releaseId: params.release._id,
+      version: params.release.version,
+      artifactKind: params.release.artifactKind ?? null,
+      ...(artifactSha256 ? { artifactSha256 } : {}),
+      ...(params.release.npmIntegrity ? { npmIntegrity: params.release.npmIntegrity } : {}),
+      ...(params.release.npmShasum ? { npmShasum: params.release.npmShasum } : {}),
+      ...(params.release.npmTarballName ? { npmTarballName: params.release.npmTarballName } : {}),
+      createdAt: params.release.createdAt,
+    },
+    trust: {
+      scanStatus,
+      moderationState: params.release.manualModeration?.state ?? null,
+      blockedFromDownload:
+        packageBlockedFromDownload || getPackageDownloadSecurityBlock(params.release) !== null,
+      reasons,
+      pending: scanStatus === "pending" || scanStatus === "not-run",
+      stale: isPackageReleaseTrustStale(params.release),
+    },
+  };
+}
+
 function encodePackagePath(name: string) {
   return name
     .split("/")
@@ -422,67 +603,6 @@ function encodePackagePath(name: string) {
         : encodeURIComponent(segment),
     )
     .join("/");
-}
-
-const DEFAULT_PUBLIC_SITE_URL = "https://clawhub.ai";
-
-function normalizeOrigin(value: string | null | undefined) {
-  const trimmed = value?.trim();
-  if (!trimmed) return null;
-  try {
-    return new URL(trimmed).origin;
-  } catch {
-    return null;
-  }
-}
-
-function firstForwardedValue(value: string | null) {
-  return value?.split(",")[0]?.trim() || null;
-}
-
-function isProductionDeployment() {
-  const deployment = process.env.CONVEX_DEPLOYMENT?.trim() ?? "";
-  return deployment.startsWith("prod:") || deployment.includes("production");
-}
-
-function isTrustedForwardedHost(value: string) {
-  try {
-    const hostname = new URL(`https://${value}`).hostname.toLowerCase();
-    return (
-      hostname === "clawhub.ai" ||
-      hostname === "www.clawhub.ai" ||
-      hostname === "localhost" ||
-      hostname === "127.0.0.1" ||
-      hostname === "0.0.0.0"
-    );
-  } catch {
-    return false;
-  }
-}
-
-function publicApiOrigin(request: Request) {
-  const configured = normalizeOrigin(process.env.SITE_URL ?? process.env.VITE_SITE_URL);
-  if (configured) return configured;
-
-  const forwardedHost = firstForwardedValue(request.headers.get("x-forwarded-host"));
-  if (
-    forwardedHost &&
-    !forwardedHost.endsWith(".convex.site") &&
-    isTrustedForwardedHost(forwardedHost)
-  ) {
-    const forwardedProto =
-      firstForwardedValue(request.headers.get("x-forwarded-proto")) ??
-      firstForwardedValue(request.headers.get("x-forwarded-protocol")) ??
-      "https";
-    const proto = forwardedProto === "http" ? "http" : "https";
-    return `${proto}://${forwardedHost}`;
-  }
-
-  const requestUrl = new URL(request.url);
-  if (isProductionDeployment() && requestUrl.hostname.endsWith(".convex.site")) {
-    return DEFAULT_PUBLIC_SITE_URL;
-  }
-  return requestUrl.origin;
 }
 
 function absoluteApiUrl(request: Request, path: string) {
@@ -594,7 +714,11 @@ type CatalogListItem = {
   verificationTier?: string | null;
 };
 
-type CatalogSearchEntry = { score: number; package: CatalogListItem };
+type CatalogSearchEntry = {
+  score: number;
+  rankTier?: number;
+  package: CatalogListItem;
+};
 
 type CatalogSourceCursorState = {
   cursor: string | null;
@@ -613,21 +737,31 @@ type PluginCatalogCursorState = {
   bundlePlugins: CatalogSourceCursorState;
 };
 
-type CatalogPageResult = {
-  page: CatalogListItem[];
+type CatalogPageResult<T> = {
+  page: T[];
   isDone: boolean;
   continueCursor: string;
 };
 
-type CatalogSourceState = {
+type CatalogSourceState<T> = {
   state: CatalogSourceCursorState;
-  page: CatalogPageResult | null;
+  page: CatalogPageResult<T> | null;
   pageCursor: string | null;
   index: number;
 };
 
 const UNIFIED_CATALOG_CURSOR_PREFIX = "pkgcatalog:";
 const PLUGIN_CATALOG_CURSOR_PREFIX = "pkgplugins:";
+const LEGACY_PLUGIN_SEARCH_CURSOR_PREFIX = "pkgpluginsearch:";
+const SKILL_CATALOG_CURSOR_PREFIX = "skillcat:";
+const PACKAGE_PAGE_CURSOR_PREFIX = "pkgpage:";
+const CATALOG_CURSOR_PREFIXES = [
+  UNIFIED_CATALOG_CURSOR_PREFIX,
+  PLUGIN_CATALOG_CURSOR_PREFIX,
+  LEGACY_PLUGIN_SEARCH_CURSOR_PREFIX,
+  SKILL_CATALOG_CURSOR_PREFIX,
+  PACKAGE_PAGE_CURSOR_PREFIX,
+];
 
 function defaultCatalogSourceCursorState(): CatalogSourceCursorState {
   return { cursor: null, offset: 0, pageSize: null, done: false };
@@ -637,10 +771,17 @@ function encodeUnifiedCatalogCursor(state: UnifiedCatalogCursorState) {
   return `${UNIFIED_CATALOG_CURSOR_PREFIX}${JSON.stringify(state)}`;
 }
 
+function isKnownCatalogCursor(raw: string | null | undefined) {
+  return Boolean(raw && CATALOG_CURSOR_PREFIXES.some((prefix) => raw.startsWith(prefix)));
+}
+
 function decodeUnifiedCatalogCursor(raw: string | null | undefined): UnifiedCatalogCursorState {
   if (!raw?.startsWith(UNIFIED_CATALOG_CURSOR_PREFIX)) {
     return {
-      packages: { ...defaultCatalogSourceCursorState(), cursor: raw ?? null },
+      packages: {
+        ...defaultCatalogSourceCursorState(),
+        cursor: isKnownCatalogCursor(raw) ? null : (raw ?? null),
+      },
       skills: defaultCatalogSourceCursorState(),
     };
   }
@@ -672,7 +813,10 @@ function encodePluginCatalogCursor(state: PluginCatalogCursorState) {
   return `${PLUGIN_CATALOG_CURSOR_PREFIX}${JSON.stringify(state)}`;
 }
 
-function decodePluginCatalogCursor(raw: string | null | undefined): PluginCatalogCursorState {
+function decodeMultiPluginCursor(
+  raw: string | null | undefined,
+  prefix: string,
+): PluginCatalogCursorState {
   const normalize = (
     input: Partial<CatalogSourceCursorState> | undefined,
   ): CatalogSourceCursorState => ({
@@ -682,16 +826,17 @@ function decodePluginCatalogCursor(raw: string | null | undefined): PluginCatalo
     done: input?.done === true,
   });
 
-  if (!raw?.startsWith(PLUGIN_CATALOG_CURSOR_PREFIX)) {
+  if (!raw?.startsWith(prefix)) {
     return {
-      codePlugins: { ...defaultCatalogSourceCursorState(), cursor: raw ?? null },
+      codePlugins: {
+        ...defaultCatalogSourceCursorState(),
+        cursor: isKnownCatalogCursor(raw) ? null : (raw ?? null),
+      },
       bundlePlugins: defaultCatalogSourceCursorState(),
     };
   }
   try {
-    const parsed = JSON.parse(
-      raw.slice(PLUGIN_CATALOG_CURSOR_PREFIX.length),
-    ) as Partial<PluginCatalogCursorState>;
+    const parsed = JSON.parse(raw.slice(prefix.length)) as Partial<PluginCatalogCursorState>;
     return {
       codePlugins: normalize(parsed.codePlugins),
       bundlePlugins: normalize(parsed.bundlePlugins),
@@ -704,7 +849,11 @@ function decodePluginCatalogCursor(raw: string | null | undefined): PluginCatalo
   }
 }
 
-function initCatalogSource(state: CatalogSourceCursorState): CatalogSourceState {
+function decodePluginCatalogCursor(raw: string | null | undefined): PluginCatalogCursorState {
+  return decodeMultiPluginCursor(raw, PLUGIN_CATALOG_CURSOR_PREFIX);
+}
+
+function initCatalogSource<T>(state: CatalogSourceCursorState): CatalogSourceState<T> {
   return {
     state: { ...state },
     page: null,
@@ -713,7 +862,7 @@ function initCatalogSource(state: CatalogSourceCursorState): CatalogSourceState 
   };
 }
 
-function finalizeCatalogSource(source: CatalogSourceState): CatalogSourceCursorState {
+function finalizeCatalogSource<T>(source: CatalogSourceState<T>): CatalogSourceCursorState {
   if (!source.page) return source.state;
   if (source.index < source.page.page.length) {
     return {
@@ -731,10 +880,10 @@ function finalizeCatalogSource(source: CatalogSourceState): CatalogSourceCursorS
   };
 }
 
-async function ensureCatalogSourcePage(
-  source: CatalogSourceState,
+async function ensureCatalogSourcePage<T>(
+  source: CatalogSourceState<T>,
   pageSize: number,
-  fetchPage: (cursor: string | null, pageSize: number) => Promise<CatalogPageResult>,
+  fetchPage: (cursor: string | null, pageSize: number) => Promise<CatalogPageResult<T>>,
 ) {
   while (true) {
     if (!source.page) {
@@ -770,10 +919,18 @@ function compareCatalogItems(a: CatalogListItem, b: CatalogListItem) {
 
 function compareCatalogSearchEntries(a: CatalogSearchEntry, b: CatalogSearchEntry) {
   return (
+    (a.rankTier ?? Number.POSITIVE_INFINITY) - (b.rankTier ?? Number.POSITIVE_INFINITY) ||
     b.score - a.score ||
     Number(b.package.isOfficial) - Number(a.package.isOfficial) ||
     compareCatalogItems(a.package, b.package)
   );
+}
+
+function toPublicCatalogSearchEntry(entry: CatalogSearchEntry) {
+  return {
+    score: entry.score,
+    package: entry.package,
+  };
 }
 
 async function searchPackageCatalog(
@@ -787,6 +944,7 @@ async function searchPackageCatalog(
     highlightedOnly?: boolean;
     executesCode?: boolean;
     capabilityTag?: string;
+    category?: string;
     viewerUserId?: Id<"users">;
   },
 ): Promise<CatalogSearchEntry[]> {
@@ -802,6 +960,7 @@ async function searchPackageCatalog(
       highlightedOnly: args.highlightedOnly,
       executesCode: args.executesCode,
       capabilityTag: args.capabilityTag,
+      category: args.category,
       viewerUserId: args.viewerUserId,
     },
   );
@@ -809,10 +968,11 @@ async function searchPackageCatalog(
 
 async function resolveSkillTags(
   ctx: ActionCtx,
+  skillId: Id<"skills">,
   tags: Record<string, Id<"skillVersions">>,
   latestVersion?: SkillVersionLike | null,
 ): Promise<Record<string, string>> {
-  const [resolved] = await resolveTagsBatch(ctx, [tags], [latestVersion]);
+  const [resolved] = await resolveTagsBatch(ctx, [tags], [latestVersion], [skillId]);
   return resolved ?? {};
 }
 
@@ -1055,30 +1215,34 @@ async function listPackages(
   const viewerUserId = await getOptionalViewerUserIdForRequest(ctx, request);
   const limit = Math.max(1, Math.min(toOptionalNumber(url.searchParams.get("limit")) ?? 25, 100));
   const cursor = url.searchParams.get("cursor");
-  const familyRaw = url.searchParams.get("family");
-  const channelRaw = url.searchParams.get("channel")?.trim();
   const capabilityTag = getCapabilityTagFromQueryParams(url.searchParams);
-  const isOfficialRaw = url.searchParams.get("isOfficial");
-  const highlightedOnly =
-    url.searchParams.get("featured") === "true" ||
-    url.searchParams.get("featured") === "1" ||
-    url.searchParams.get("highlightedOnly") === "true" ||
-    url.searchParams.get("highlightedOnly") === "1";
-  const executesCodeRaw = url.searchParams.get("executesCode");
-  const effectiveFamily =
-    family ??
-    (familyRaw === "skill" || familyRaw === "code-plugin" || familyRaw === "bundle-plugin"
-      ? familyRaw
-      : undefined);
+  if (typeof capabilityTag === "object") return text(capabilityTag.error, 400, rate.headers);
+  const familyParam = parseEnumQueryParam(url.searchParams, "family", PACKAGE_FAMILY_VALUES);
+  if (!familyParam.ok) return text(familyParam.message, 400, rate.headers);
+  const channelParam = parseEnumQueryParam(url.searchParams, "channel", PACKAGE_CHANNEL_VALUES);
+  if (!channelParam.ok) return text(channelParam.message, 400, rate.headers);
+  const isOfficial = parseBooleanQueryParam(url.searchParams, "isOfficial");
+  if (!isOfficial.ok) return text(isOfficial.message, 400, rate.headers);
+  const featured = parseBooleanQueryParam(url.searchParams, "featured");
+  if (!featured.ok) return text(featured.message, 400, rate.headers);
+  const highlightedOnlyParam = parseBooleanQueryParam(url.searchParams, "highlightedOnly");
+  if (!highlightedOnlyParam.ok) return text(highlightedOnlyParam.message, 400, rate.headers);
+  const executesCode = parseBooleanQueryParam(url.searchParams, "executesCode");
+  if (!executesCode.ok) return text(executesCode.message, 400, rate.headers);
+  const category = url.searchParams.get("category")?.trim() || undefined;
+  if (category && !isPluginCategorySlug(category)) {
+    return text("Invalid plugin category", 400, rate.headers);
+  }
+  const effectiveFamily = family ?? familyParam.value;
   const includeSkills = options?.includeSkills ?? effectiveFamily === undefined;
-  const channel =
-    channelRaw === "official" || channelRaw === "community" || channelRaw === "private"
-      ? channelRaw
-      : undefined;
-  const isOfficial =
-    isOfficialRaw === "true" ? true : isOfficialRaw === "false" ? false : undefined;
-  const executesCode =
-    executesCodeRaw === "true" ? true : executesCodeRaw === "false" ? false : undefined;
+  const highlightedOnly = featured.value === true || highlightedOnlyParam.value === true;
+  if (category && (effectiveFamily === "skill" || (!effectiveFamily && includeSkills))) {
+    return text(
+      "Plugin category is only supported for plugin package endpoints",
+      400,
+      rate.headers,
+    );
+  }
 
   if (effectiveFamily === "skill") {
     const result = await runQueryRef<{
@@ -1086,10 +1250,10 @@ async function listPackages(
       isDone: boolean;
       continueCursor: string | null;
     }>(ctx, apiRefs.skills.listPackageCatalogPage, {
-      channel,
-      isOfficial,
+      channel: channelParam.value,
+      isOfficial: isOfficial.value,
       highlightedOnly: highlightedOnly || undefined,
-      executesCode,
+      executesCode: executesCode.value,
       capabilityTag,
       paginationOpts: { cursor, numItems: limit },
     });
@@ -1101,8 +1265,12 @@ async function listPackages(
   }
 
   if (!effectiveFamily && includeSkills) {
-    const packageSource = initCatalogSource(decodeUnifiedCatalogCursor(cursor).packages);
-    const skillSource = initCatalogSource(decodeUnifiedCatalogCursor(cursor).skills);
+    const packageSource = initCatalogSource<CatalogListItem>(
+      decodeUnifiedCatalogCursor(cursor).packages,
+    );
+    const skillSource = initCatalogSource<CatalogListItem>(
+      decodeUnifiedCatalogCursor(cursor).skills,
+    );
     const pageSize = limit;
     const items: CatalogListItem[] = [];
 
@@ -1114,11 +1282,12 @@ async function listPackages(
             isDone: boolean;
             continueCursor: string | null;
           }>(ctx, internalRefs.packages.listPageForViewerInternal, {
-            channel,
-            isOfficial,
+            channel: channelParam.value,
+            isOfficial: isOfficial.value,
             highlightedOnly: highlightedOnly || undefined,
-            executesCode,
+            executesCode: executesCode.value,
             capabilityTag,
+            category,
             viewerUserId: viewerUserId ?? undefined,
             paginationOpts: { cursor: pageCursor, numItems },
           });
@@ -1134,10 +1303,10 @@ async function listPackages(
             isDone: boolean;
             continueCursor: string | null;
           }>(ctx, apiRefs.skills.listPackageCatalogPage, {
-            channel,
-            isOfficial,
+            channel: channelParam.value,
+            isOfficial: isOfficial.value,
             highlightedOnly: highlightedOnly || undefined,
-            executesCode,
+            executesCode: executesCode.value,
             capabilityTag,
             paginationOpts: { cursor: pageCursor, numItems },
           });
@@ -1183,8 +1352,8 @@ async function listPackages(
 
   if (!effectiveFamily && options?.pluginFamilies?.length) {
     const decodedCursor = decodePluginCatalogCursor(cursor);
-    const codePluginSource = initCatalogSource(decodedCursor.codePlugins);
-    const bundlePluginSource = initCatalogSource(decodedCursor.bundlePlugins);
+    const codePluginSource = initCatalogSource<CatalogListItem>(decodedCursor.codePlugins);
+    const bundlePluginSource = initCatalogSource<CatalogListItem>(decodedCursor.bundlePlugins);
     const pageSize = limit;
     const items: CatalogListItem[] = [];
     const fetchPluginPage = async (
@@ -1198,11 +1367,12 @@ async function listPackages(
         continueCursor: string | null;
       }>(ctx, internalRefs.packages.listPageForViewerInternal, {
         family: pluginFamily,
-        channel,
-        isOfficial,
+        channel: channelParam.value,
+        isOfficial: isOfficial.value,
         highlightedOnly: highlightedOnly || undefined,
-        executesCode,
+        executesCode: executesCode.value,
         capabilityTag,
+        category,
         viewerUserId: viewerUserId ?? undefined,
         paginationOpts: { cursor: pageCursor, numItems },
       });
@@ -1266,11 +1436,12 @@ async function listPackages(
     continueCursor: string | null;
   }>(ctx, internalRefs.packages.listPageForViewerInternal, {
     family: effectiveFamily,
-    channel,
-    isOfficial,
+    channel: channelParam.value,
+    isOfficial: isOfficial.value,
     highlightedOnly: highlightedOnly || undefined,
-    executesCode,
+    executesCode: executesCode.value,
     capabilityTag,
+    category,
     viewerUserId: viewerUserId ?? undefined,
     paginationOpts: { cursor, numItems: limit },
   } satisfies PackageListQueryArgs);
@@ -1324,7 +1495,7 @@ export async function publishPackageV1Handler(ctx: ActionCtx, request: Request) 
           });
     return json(result, 200, rate.headers);
   } catch (error) {
-    return text(error instanceof Error ? error.message : "Publish failed", 400, rate.headers);
+    return packagePublishErrorToResponse(error, rate.headers);
   }
 }
 
@@ -1615,6 +1786,190 @@ export async function packagesPostRouterV1Handler(ctx: ActionCtx, request: Reque
   if (!packageRoute) return text("Not found", 404);
   const packageName = packageRoute.packageName;
   const packageSegments = packageRoute.rest;
+
+  if (packageSegments[0] === "rescan" && packageSegments.length === 1) {
+    const rate = await applyRateLimit(ctx, request, "write");
+    if (!rate.ok) return rate.response;
+    const auth = await requireApiTokenUserOrResponse(ctx, request, rate.headers);
+    if (!auth.ok) return auth.response;
+
+    try {
+      const body = await readOptionalJson(request);
+      const version = optionalStringField(body, "version");
+      const result = await runMutationRef(
+        ctx,
+        internalRefs.securityScan.requestPackageRescanForUserInternal,
+        {
+          actorUserId: auth.userId,
+          name: packageName,
+          ...(version ? { version } : {}),
+        },
+      );
+      return json(result, 200, rate.headers);
+    } catch (error) {
+      if (error instanceof SyntaxError) return text("Invalid JSON", 400, rate.headers);
+      return packageOperationErrorToResponse(error, rate.headers, "Package rescan failed");
+    }
+  }
+
+  if (packageSegments[0] === "repair-name" && packageSegments.length === 1) {
+    const rate = await applyRateLimit(ctx, request, "write");
+    if (!rate.ok) return rate.response;
+    const auth = await requireApiTokenUserOrResponse(ctx, request, rate.headers);
+    if (!auth.ok) return auth.response;
+    const admin = requireAdminOrResponse(auth.user, rate.headers);
+    if (!admin.ok) return admin.response;
+
+    try {
+      const body = parseArk(
+        PackageRepairNameRequestSchema,
+        await request.json(),
+        "Package name repair payload",
+      ) as {
+        nextName: string;
+        retireTarget?: boolean;
+        owner?: string;
+        reason: string;
+        dryRun?: boolean;
+      };
+      const nextName = tryNormalizePackageName(body.nextName);
+      if (!nextName) {
+        return text(
+          "Target package name must be lowercase and npm-safe (example: @scope/name).",
+          400,
+          rate.headers,
+        );
+      }
+      const reason = body.reason.trim();
+      if (!reason) return text("Repair reason required", 400, rate.headers);
+      const dryRun = body.dryRun !== false;
+      const ownerHandle = normalizePublisherHandleInput(body.owner);
+
+      const source = await runQueryRef<AdminRepairPackageLike | null>(
+        ctx,
+        internalRefs.packages.getPackageByNameInternal,
+        { name: packageName },
+      );
+      if (!source || source.softDeletedAt) return text("Package not found", 404, rate.headers);
+
+      const target = await runQueryRef<AdminRepairPackageLike | null>(
+        ctx,
+        internalRefs.packages.getPackageByNameInternal,
+        { name: nextName },
+      );
+      const targetIsDifferentPackage = Boolean(target && target._id !== source._id);
+      if (targetIsDifferentPackage && target?.softDeletedAt) {
+        return text(
+          `Target package "${nextName}" is held by a soft-deleted package; restore or repair that row first.`,
+          409,
+          rate.headers,
+        );
+      }
+      if (targetIsDifferentPackage && !body.retireTarget) {
+        return text(
+          `Target package "${nextName}" already exists; pass retireTarget.`,
+          409,
+          rate.headers,
+        );
+      }
+
+      const retiredName = targetIsDifferentPackage ? defaultRetiredPackageName(nextName) : null;
+      if (retiredName) {
+        const existingRetiredName = await runQueryRef<AdminRepairPackageLike | null>(
+          ctx,
+          internalRefs.packages.getPackageByNameInternal,
+          { name: retiredName },
+        );
+        if (existingRetiredName && existingRetiredName._id !== target?._id) {
+          return text(`Retired package name "${retiredName}" already exists.`, 409, rate.headers);
+        }
+      }
+
+      const ownerPublisher = ownerHandle
+        ? await runQueryRef<RepairOwnerPublisherLike | null>(
+            ctx,
+            internalRefs.publishers.getByHandleInternal,
+            { handle: ownerHandle },
+          )
+        : null;
+      if (ownerHandle && (!ownerPublisher || ownerPublisher.deletedAt)) {
+        return text(`Publisher "@${ownerHandle}" not found.`, 404, rate.headers);
+      }
+
+      const operations: Array<Record<string, string>> = [];
+      if (targetIsDifferentPackage && target && retiredName) {
+        operations.push({
+          action: "retire-target",
+          packageId: String(target._id),
+          from: target.normalizedName || target.name,
+          to: retiredName,
+        });
+      }
+      if ((source.normalizedName || source.name) !== nextName) {
+        operations.push({
+          action: "rename-source",
+          packageId: String(source._id),
+          from: source.normalizedName || source.name,
+          to: nextName,
+        });
+      }
+      if (ownerHandle && ownerPublisher) {
+        operations.push({
+          action: "transfer-owner",
+          packageId: String(source._id),
+          owner: ownerHandle,
+        });
+      }
+
+      if (!dryRun) {
+        if (targetIsDifferentPackage && retiredName) {
+          await runMutationRef(ctx, internalRefs.packages.repairPackageIdentityInternal, {
+            actorUserId: auth.userId,
+            name: nextName,
+            nextName: retiredName,
+            reason,
+          });
+          await runMutationRef(ctx, internalRefs.packages.softDeletePackageInternal, {
+            userId: auth.userId,
+            name: retiredName,
+          });
+        }
+        if ((source.normalizedName || source.name) !== nextName) {
+          await runMutationRef(ctx, internalRefs.packages.repairPackageIdentityInternal, {
+            actorUserId: auth.userId,
+            name: packageName,
+            nextName,
+            reason,
+          });
+        }
+        if (ownerHandle && ownerPublisher) {
+          await runMutationRef(ctx, internalRefs.packages.transferPackageOwnerInternal, {
+            actorUserId: auth.userId,
+            name: nextName,
+            ownerUserId: source.ownerUserId,
+            ownerPublisherId: ownerPublisher._id,
+            channel: source.channel,
+            reason,
+          });
+        }
+      }
+
+      return json(
+        {
+          ok: true,
+          dryRun,
+          source: toRepairPackageSnapshot(source),
+          target: target ? toRepairPackageSnapshot(target) : null,
+          retiredName,
+          operations,
+        },
+        200,
+        rate.headers,
+      );
+    } catch (error) {
+      return packageOperationErrorToResponse(error, rate.headers, "Package name repair failed");
+    }
+  }
 
   if (
     packageSegments[0] === "versions" &&
@@ -1942,6 +2297,12 @@ async function getSkillDetailForRequest(ctx: ActionCtx, slug: string) {
     skill: SkillPackageDocLike | null;
     latestVersion: SkillVersionLike | null;
     owner: { handle?: string; displayName?: string; image?: string } | null;
+    moderationInfo?: {
+      isPendingScan?: boolean | null;
+      isMalwareBlocked?: boolean | null;
+      isHiddenByMod?: boolean | null;
+      isRemoved?: boolean | null;
+    } | null;
   } | null;
 }
 
@@ -1955,23 +2316,30 @@ async function getSkillVersionForRequest(
   const tagParam = url.searchParams.get("tag")?.trim();
 
   if (versionParam) {
-    return (await runQueryRef(ctx, internalRefs.skills.getVersionBySkillAndVersionInternal, {
-      skillId: skill._id,
-      version: versionParam,
-    })) as SkillVersionLike | null;
+    const version = (await runQueryRef(
+      ctx,
+      internalRefs.skills.getVersionBySkillAndVersionInternal,
+      {
+        skillId: skill._id,
+        version: versionParam,
+      },
+    )) as SkillVersionLike | null;
+    return isSkillVersionForSkill(version, skill._id) ? version : null;
   }
   if (tagParam) {
     const versionId = skill.tags[tagParam];
     if (!versionId) return null;
-    return (await runQueryRef(ctx, internalRefs.skills.getVersionByIdInternal, {
+    const version = (await runQueryRef(ctx, internalRefs.skills.getVersionByIdInternal, {
       versionId,
     })) as SkillVersionLike | null;
+    return isSkillVersionForSkill(version, skill._id) ? version : null;
   }
   const latestVersionId = skill.latestVersionId ?? skill.tags.latest;
   if (!latestVersionId) return null;
-  return (await runQueryRef(ctx, internalRefs.skills.getVersionByIdInternal, {
+  const version = (await runQueryRef(ctx, internalRefs.skills.getVersionByIdInternal, {
     versionId: latestVersionId,
   })) as SkillVersionLike | null;
+  return isSkillVersionForSkill(version, skill._id) ? version : null;
 }
 
 async function searchPackages(
@@ -1985,43 +2353,49 @@ async function searchPackages(
   const url = new URL(request.url);
   const viewerUserId = await getOptionalViewerUserIdForRequest(ctx, request);
   const queryText = url.searchParams.get("q")?.trim() ?? "";
+  if (!queryText) return text("Missing q query parameter", 400, rate.headers);
   const limit = Math.max(1, Math.min(toOptionalNumber(url.searchParams.get("limit")) ?? 20, 100));
-  const familyRaw = url.searchParams.get("family");
-  const channelRaw = url.searchParams.get("channel");
-  const isOfficialRaw = url.searchParams.get("isOfficial");
-  const highlightedOnly =
-    url.searchParams.get("featured") === "true" ||
-    url.searchParams.get("featured") === "1" ||
-    url.searchParams.get("highlightedOnly") === "true" ||
-    url.searchParams.get("highlightedOnly") === "1";
-  const executesCodeRaw = url.searchParams.get("executesCode");
   const capabilityTag = getCapabilityTagFromQueryParams(url.searchParams);
-  const family =
-    familyRaw === "skill" || familyRaw === "code-plugin" || familyRaw === "bundle-plugin"
-      ? familyRaw
-      : undefined;
+  if (typeof capabilityTag === "object") return text(capabilityTag.error, 400, rate.headers);
+  const familyParam = parseEnumQueryParam(url.searchParams, "family", PACKAGE_FAMILY_VALUES);
+  if (!familyParam.ok) return text(familyParam.message, 400, rate.headers);
+  const channelParam = parseEnumQueryParam(url.searchParams, "channel", PACKAGE_CHANNEL_VALUES);
+  if (!channelParam.ok) return text(channelParam.message, 400, rate.headers);
+  const isOfficial = parseBooleanQueryParam(url.searchParams, "isOfficial");
+  if (!isOfficial.ok) return text(isOfficial.message, 400, rate.headers);
+  const featured = parseBooleanQueryParam(url.searchParams, "featured");
+  if (!featured.ok) return text(featured.message, 400, rate.headers);
+  const highlightedOnlyParam = parseBooleanQueryParam(url.searchParams, "highlightedOnly");
+  if (!highlightedOnlyParam.ok) return text(highlightedOnlyParam.message, 400, rate.headers);
+  const executesCode = parseBooleanQueryParam(url.searchParams, "executesCode");
+  if (!executesCode.ok) return text(executesCode.message, 400, rate.headers);
+  const highlightedOnly = featured.value === true || highlightedOnlyParam.value === true;
+  const category = url.searchParams.get("category")?.trim() || undefined;
+  if (category && !isPluginCategorySlug(category)) {
+    return text("Invalid plugin category", 400, rate.headers);
+  }
+  const family = familyParam.value;
   const includeSkills = options?.includeSkills ?? family === undefined;
-  const channel =
-    channelRaw === "official" || channelRaw === "community" || channelRaw === "private"
-      ? channelRaw
-      : undefined;
-  const isOfficial =
-    isOfficialRaw === "true" ? true : isOfficialRaw === "false" ? false : undefined;
-  const executesCode =
-    executesCodeRaw === "true" ? true : executesCodeRaw === "false" ? false : undefined;
+  if (category && (family === "skill" || (!family && includeSkills))) {
+    return text(
+      "Plugin category is only supported for plugin package endpoints",
+      400,
+      rate.headers,
+    );
+  }
 
   let results: CatalogSearchEntry[];
   if (family === "skill") {
     results = await runQueryRef<CatalogSearchEntry[]>(
       ctx,
-      apiRefs.skills.searchPackageCatalogPublic,
+      internalRefs.skills.searchPackageCatalogForHttpInternal,
       {
         query: queryText,
         limit,
-        channel,
-        isOfficial,
+        channel: channelParam.value,
+        isOfficial: isOfficial.value,
         highlightedOnly: highlightedOnly || undefined,
-        executesCode,
+        executesCode: executesCode.value,
         capabilityTag,
       },
     );
@@ -2033,11 +2407,12 @@ async function searchPackages(
             query: queryText,
             limit,
             family: pluginFamily,
-            channel,
-            isOfficial,
+            channel: channelParam.value,
+            isOfficial: isOfficial.value,
             highlightedOnly: highlightedOnly || undefined,
-            executesCode,
+            executesCode: executesCode.value,
             capabilityTag,
+            category,
             viewerUserId: viewerUserId ?? undefined,
           }),
         ),
@@ -2058,11 +2433,12 @@ async function searchPackages(
         query: queryText,
         limit,
         family,
-        channel,
-        isOfficial,
+        channel: channelParam.value,
+        isOfficial: isOfficial.value,
         highlightedOnly: highlightedOnly || undefined,
-        executesCode,
+        executesCode: executesCode.value,
         capabilityTag,
+        category,
         viewerUserId: viewerUserId ?? undefined,
       });
     }
@@ -2071,22 +2447,27 @@ async function searchPackages(
       searchPackageCatalog(ctx, {
         query: queryText,
         limit,
-        channel,
-        isOfficial,
+        channel: channelParam.value,
+        isOfficial: isOfficial.value,
         highlightedOnly: highlightedOnly || undefined,
-        executesCode,
+        executesCode: executesCode.value,
         capabilityTag,
+        category,
         viewerUserId: viewerUserId ?? undefined,
       }),
-      runQueryRef<CatalogSearchEntry[]>(ctx, apiRefs.skills.searchPackageCatalogPublic, {
-        query: queryText,
-        limit,
-        channel,
-        isOfficial,
-        highlightedOnly: highlightedOnly || undefined,
-        executesCode,
-        capabilityTag,
-      }),
+      runQueryRef<CatalogSearchEntry[]>(
+        ctx,
+        internalRefs.skills.searchPackageCatalogForHttpInternal,
+        {
+          query: queryText,
+          limit,
+          channel: channelParam.value,
+          isOfficial: isOfficial.value,
+          highlightedOnly: highlightedOnly || undefined,
+          executesCode: executesCode.value,
+          capabilityTag,
+        },
+      ),
     ]);
     const seen = new Set<string>();
     results = [...packageResults, ...skillResults]
@@ -2099,13 +2480,13 @@ async function searchPackages(
       .sort(compareCatalogSearchEntries)
       .slice(0, limit);
   }
-  return json({ results }, 200, rate.headers);
+  return json({ results: results.map(toPublicCatalogSearchEntry) }, 200, rate.headers);
 }
 
 export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Request) {
   const segments = getPathSegments(request, "/api/v1/packages/");
   if (segments.length === 0) return text("Not found", 404);
-  if (segments[0] === "search" && new URL(request.url).searchParams.has("q")) {
+  if (segments[0] === "search" && segments.length === 1) {
     return await searchPackages(ctx, request, { includeSkills: true });
   }
 
@@ -2249,6 +2630,30 @@ export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Reques
   if (!normalizedPackageName) return text("Package not found", 404, rate.headers);
 
   const viewerUserId = await getOptionalViewerUserIdForRequest(ctx, request);
+  if (
+    packageSegments[0] === "versions" &&
+    packageSegments[1] &&
+    packageSegments[2] === "security" &&
+    packageSegments.length === 3
+  ) {
+    const result = (await runQueryRef(
+      ctx,
+      internalRefs.packages.getVersionSecurityByNameForViewerInternal,
+      {
+        name: normalizedPackageName,
+        version: packageSegments[1],
+        viewerUserId: viewerUserId ?? undefined,
+      },
+    )) as { package: PublicPackageDocLike; version: ReleaseLike } | null;
+    if (!result) return text("Package security not found", 404, rate.headers);
+    const parsed = parseArk(
+      ApiV1PackageSecurityResponseSchema,
+      toPackageReleaseSecurityResponse({ pkg: result.package, release: result.version }),
+      "Package security response",
+    );
+    return json(parsed, 200, rate.headers);
+  }
+
   const detail = (await runQueryRef(ctx, internalRefs.packages.getByNameForViewerInternal, {
     name: normalizedPackageName,
     viewerUserId: viewerUserId ?? undefined,
@@ -2272,7 +2677,12 @@ export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Reques
           skillDetail.skill,
           skillDetail.latestVersion,
           skillDetail.owner,
-          await resolveSkillTags(ctx, skillDetail.skill.tags, skillDetail.latestVersion),
+          await resolveSkillTags(
+            ctx,
+            skillDetail.skill._id,
+            skillDetail.skill.tags,
+            skillDetail.latestVersion,
+          ),
         ),
         200,
         rate.headers,
@@ -2331,7 +2741,7 @@ export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Reques
         items: Array<{ version: string; createdAt: number; changelog: string }>;
         nextCursor: string | null;
       };
-      const tags = await resolveSkillTags(ctx, skillDetail.skill.tags);
+      const tags = await resolveSkillTags(ctx, skillDetail.skill._id, skillDetail.skill.tags);
       return json(
         {
           items: result.items.map((version) => ({
@@ -2430,7 +2840,7 @@ export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Reques
         },
       )) as SkillVersionLike | null;
       if (!version || version.softDeletedAt) return text("Version not found", 404, rate.headers);
-      const tags = await resolveSkillTags(ctx, skillDetail.skill.tags);
+      const tags = await resolveSkillTags(ctx, skillDetail.skill._id, skillDetail.skill.tags);
       return json(
         {
           package: {
@@ -2469,6 +2879,10 @@ export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Reques
       },
     )) as { package: PublicPackageDocLike; version: ReleaseLike } | null;
     if (!result) return text("Version not found", 404, rate.headers);
+    const scanStatus = resolvePackageReleaseScanStatus(result.version);
+    const verification = result.version.verification
+      ? { ...result.version.verification, scanStatus }
+      : null;
     return json(
       {
         package: {
@@ -2489,10 +2903,11 @@ export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Reques
           })),
           compatibility: result.version.compatibility ?? null,
           capabilities: result.version.capabilities ?? null,
-          verification: result.version.verification ?? null,
+          verification,
           artifact: toReleaseArtifact(result.version, result.package.name),
           sha256hash: result.version.sha256hash ?? null,
           vtAnalysis: result.version.vtAnalysis ?? null,
+          skillSpectorAnalysis: result.version.skillSpectorAnalysis ?? null,
           llmAnalysis: result.version.llmAnalysis ?? null,
           clawScanNote: result.version.clawScanNote ?? null,
           clawScanNoteUpdatedAt: result.version.clawScanNoteUpdatedAt ?? null,
@@ -2508,6 +2923,9 @@ export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Reques
     const path = new URL(request.url).searchParams.get("path")?.trim();
     if (!path) return text("Missing path", 400, rate.headers);
     if (skillDetail?.skill) {
+      const moderationBlock = getPublicSkillFileAccessBlock(skillDetail.moderationInfo);
+      if (moderationBlock)
+        return text(moderationBlock.message, moderationBlock.status, rate.headers);
       const version = await getSkillVersionForRequest(ctx, skillDetail.skill, request);
       if (!version || version.softDeletedAt) return text("Version not found", 404, rate.headers);
       const file = resolveSkillFilePath(version, path);
@@ -2791,6 +3209,8 @@ type PublicPackageDocLike = {
   latestReleaseId?: Id<"packageReleases">;
   channel: "official" | "community" | "private";
   isOfficial: boolean;
+  scanStatus?: Doc<"packages">["scanStatus"];
+  publicDownloadBlocked?: boolean;
   runtimeId?: string;
   summary?: string;
   latestVersion?: string | null;

@@ -83,6 +83,7 @@ function createMigrationFixture(params: {
   skillSource?: SkillSourceMode;
   sourcePersonalLinkedUserId?: string | null;
   duplicateGlobalSlug?: boolean;
+  skillOverrides?: Record<string, unknown>;
 }): OrgMigrationFixture {
   const now = Date.now();
   const patchCalls: Array<{ id: string; value: Record<string, unknown> }> = [];
@@ -269,6 +270,7 @@ function createMigrationFixture(params: {
                   comments: 0,
                   versions: 1,
                 },
+                ...params.skillOverrides,
               };
               const unrelatedDuplicateSkill = {
                 ...skill,
@@ -401,6 +403,38 @@ describe("skills.insertVersion owner migration", () => {
     expect(migrationAudits).toHaveLength(0);
   });
 
+  it("rejects migration from a linked personal publisher when ownerUserId is stale", async () => {
+    const fixture = createMigrationFixture({
+      skillSource: "other-personal",
+      sourceMemberships: [
+        {
+          _id: "publisherMembers:orgAdminCaller",
+          publisherId: "publishers:org",
+          userId: "users:caller",
+          role: "admin",
+        },
+      ],
+      skillOverrides: {
+        ownerUserId: "users:caller",
+      },
+    });
+
+    await expect(
+      insertVersionHandler(
+        { db: fixture.db } as never,
+        buildPublishArgs({ migrateOwner: true }) as never,
+      ),
+    ).rejects.toThrow(/Slug is already taken/);
+
+    const skillPatches = fixture.patchCalls.filter((p) => p.id === "skills:1");
+    expect(skillPatches).toHaveLength(0);
+
+    const migrationAudits = fixture.insertCalls.filter(
+      (call) => call.table === "auditLogs" && call.value.action === "skill.ownership.migrate",
+    );
+    expect(migrationAudits).toHaveLength(0);
+  });
+
   it("rejects slug migration when caller is only a 'publisher' (not admin/owner) on the source org", async () => {
     // Regression guard for the privilege-escalation path: a plain publisher-role
     // member of the source org must NOT be able to walk skills out of that org
@@ -513,6 +547,44 @@ describe("skills.insertVersion owner migration", () => {
     const embeddingPatches = fixture.patchCalls.filter((p) => p.id === "skillEmbeddings:1");
     expect(embeddingPatches).toHaveLength(1);
     expect(embeddingPatches[0]?.value).toMatchObject({ ownerId: "users:caller" });
+  });
+
+  it("rejects owner migration for skills still blocked by legacy reason codes", async () => {
+    const fixture = createMigrationFixture({
+      skillSource: "source-org",
+      sourceMemberships: [
+        {
+          _id: "publisherMembers:sourceAdmin",
+          publisherId: "publishers:sourceOrg",
+          userId: "users:caller",
+          role: "admin",
+        },
+        {
+          _id: "publisherMembers:orgAdminCaller",
+          publisherId: "publishers:org",
+          userId: "users:caller",
+          role: "admin",
+        },
+      ],
+      skillOverrides: {
+        moderationReasonCodes: ["malicious.crypto_mining"],
+      },
+    });
+
+    await expect(
+      insertVersionHandler(
+        { db: fixture.db } as never,
+        buildPublishArgs({ migrateOwner: true }) as never,
+      ),
+    ).rejects.toThrow("under moderation");
+
+    const skillPatches = fixture.patchCalls.filter((p) => p.id === "skills:1");
+    expect(skillPatches).toHaveLength(0);
+
+    const migrationAudits = fixture.insertCalls.filter(
+      (call) => call.table === "auditLogs" && call.value.action === "skill.ownership.migrate",
+    );
+    expect(migrationAudits).toHaveLength(0);
   });
 
   it("migrates ownership when caller moves their OWN personal skill into an org they belong to", async () => {
@@ -666,6 +738,24 @@ describe("skills.insertVersion owner migration", () => {
         table: "skills",
       }),
     );
+  });
+
+  it("rejects legacy publisher backfill for skills under moderation", async () => {
+    const fixture = createMigrationFixture({
+      skillSource: "caller-personal",
+      sourceMemberships: [],
+      skillOverrides: {
+        ownerPublisherId: undefined,
+        moderationReason: "scanner.vt.malicious",
+      },
+    });
+
+    await expect(
+      insertVersionHandler({ db: fixture.db } as never, buildPublishArgs() as never),
+    ).rejects.toThrow("under moderation");
+
+    const skillPatches = fixture.patchCalls.filter((p) => p.id === "skills:1");
+    expect(skillPatches).toHaveLength(0);
   });
 
   it("refuses to migrate a skill out of SOMEONE ELSE'S personal publisher even if caller happens to be a member", async () => {

@@ -32,12 +32,24 @@ const CURL_WRITE_OUT_FORMAT = [
 export type HttpRuntime = "node" | "bun";
 
 type RequestArgs =
-  | { method: "GET" | "POST" | "DELETE"; path: string; token?: string; body?: unknown }
-  | { method: "GET" | "POST" | "DELETE"; url: string; token?: string; body?: unknown };
+  | {
+      method: "GET" | "POST" | "DELETE";
+      path: string;
+      token?: string;
+      body?: unknown;
+      retryCount?: number;
+    }
+  | {
+      method: "GET" | "POST" | "DELETE";
+      url: string;
+      token?: string;
+      body?: unknown;
+      retryCount?: number;
+    };
 
 type FormRequestArgs =
-  | { method: "POST"; path: string; token?: string; form: FormData }
-  | { method: "POST"; url: string; token?: string; form: FormData };
+  | { method: "POST"; path: string; token?: string; form: FormData; retryCount?: number }
+  | { method: "POST"; url: string; token?: string; form: FormData; retryCount?: number };
 
 type TextRequestArgs = { path: string; token?: string } | { url: string; token?: string };
 
@@ -174,7 +186,7 @@ export function createHttpClient(options: HttpClientOptions = {}): HttpClient {
         );
       }
       return (await response.json()) as unknown;
-    });
+    }, args.retryCount);
     if (schema) return parseArk(schema, json, "API response");
     return json as T;
   }
@@ -211,7 +223,7 @@ export function createHttpClient(options: HttpClientOptions = {}): HttpClient {
         );
       }
       return (await response.json()) as unknown;
-    });
+    }, args.retryCount);
     if (schema) return parseArk(schema, json, "API response");
     return json as T;
   }
@@ -356,9 +368,12 @@ export async function downloadZip(registry: string, args: DownloadZipArgs) {
 }
 
 function createRetryRunner(deps: Pick<HttpClientDeps, "setTimeoutImpl" | "random" | "now">) {
-  return async function runWithRetries<T>(fn: () => Promise<T>): Promise<T> {
+  return async function runWithRetries<T>(
+    fn: () => Promise<T>,
+    retryCount = RETRY_COUNT,
+  ): Promise<T> {
     return await pRetry(fn, {
-      retries: RETRY_COUNT,
+      retries: retryCount,
       minTimeout: 0,
       maxTimeout: 0,
       factor: 1,
@@ -435,8 +450,9 @@ function throwHttpStatusError(
   now: () => number,
 ): never {
   const rateLimit = parseRateLimitInfo(headers, now);
+  const retryableTransientContention = isTransientConvexContention(text);
   const message = buildHttpErrorMessage(status, text, rateLimit);
-  if (status === 429 || status >= 500) {
+  if (status === 429 || status >= 500 || retryableTransientContention) {
     throw new HttpStatusError(status, message, rateLimit);
   }
   throw new AbortError(message);
@@ -458,9 +474,12 @@ function buildHttpErrorMessage(status: number, text: string, rateLimit: RateLimi
 }
 
 function normalizeHttpErrorBody(status: number, text: string): string {
-  const body = text.trim();
+  const body = cleanUserFacingErrorMessage(text);
   const lowered = body.toLowerCase();
   if (body && lowered !== "unauthorized" && lowered !== "forbidden") {
+    if (isTransientConvexContention(body)) {
+      return `Transient ClawHub write contention. The package artifact passed request validation; retrying usually succeeds. ${body}`;
+    }
     if (status === 404 && lowered === "package not found") {
       return "Package not found or not visible to this account.";
     }
@@ -477,6 +496,35 @@ function normalizeHttpErrorBody(status: number, text: string): string {
   }
   if (body) return body;
   return `HTTP ${status}`;
+}
+
+function cleanUserFacingErrorMessage(message: string) {
+  let cleaned = message
+    .replace(/\[CONVEX[^\]]*\]\s*/g, "")
+    .replace(/\[Request ID:[^\]]*\]\s*/g, "")
+    .replace(/^Server Error Called by client\s*/i, "")
+    .trim();
+
+  for (let i = 0; i < 3; i += 1) {
+    const next = cleaned
+      .replace(/^Error:\s*/i, "")
+      .replace(/^(?:Uncaught\s+)?ConvexError:\s*/i, "")
+      .trim();
+    if (next === cleaned) break;
+    cleaned = next;
+  }
+
+  return cleaned;
+}
+
+function isTransientConvexContention(text: string) {
+  const lowered = text.toLowerCase();
+  return (
+    lowered.includes("optimistic concurrency") ||
+    lowered.includes("write conflict") ||
+    (lowered.includes('documents read from or written to the "') &&
+      lowered.includes("changed while this mutation was being run"))
+  );
 }
 
 function parseRateLimitInfo(headers: HeaderSource, now: () => number): RateLimitInfo {

@@ -51,6 +51,7 @@ export declare const PackageVerificationSummarySchema: import("arktype/internal/
     sourceCommit?: string | undefined;
     sourceTag?: string | undefined;
     hasProvenance?: boolean | undefined;
+    trustedOpenClawPlugin?: boolean | undefined;
     scanStatus?: "clean" | "suspicious" | "malicious" | "pending" | "not-run" | undefined;
 }, {}>;
 export type PackageVerificationSummary = (typeof PackageVerificationSummarySchema)[inferred];
@@ -119,6 +120,47 @@ export declare const PackageVtAnalysisSchema: import("arktype/internal/variants/
     source?: string | undefined;
 }, {}>;
 export type PackageVtAnalysis = (typeof PackageVtAnalysisSchema)[inferred];
+export declare const PackageSkillSpectorIssueSchema: import("arktype/internal/variants/object.ts").ObjectType<{
+    issueId: string;
+    severity: string;
+    explanation: string;
+    category?: string | undefined;
+    pattern?: string | undefined;
+    confidence?: number | undefined;
+    file?: string | undefined;
+    startLine?: number | undefined;
+    endLine?: number | undefined;
+    remediation?: string | undefined;
+    finding?: string | undefined;
+    codeSnippet?: string | undefined;
+}, {}>;
+export type PackageSkillSpectorIssue = (typeof PackageSkillSpectorIssueSchema)[inferred];
+export declare const PackageSkillSpectorAnalysisSchema: import("arktype/internal/variants/object.ts").ObjectType<{
+    status: string;
+    issueCount: number;
+    issues: {
+        issueId: string;
+        severity: string;
+        explanation: string;
+        category?: string | undefined;
+        pattern?: string | undefined;
+        confidence?: number | undefined;
+        file?: string | undefined;
+        startLine?: number | undefined;
+        endLine?: number | undefined;
+        remediation?: string | undefined;
+        finding?: string | undefined;
+        codeSnippet?: string | undefined;
+    }[];
+    checkedAt: number;
+    score?: number | undefined;
+    severity?: string | undefined;
+    recommendation?: string | undefined;
+    scannerVersion?: string | undefined;
+    summary?: string | undefined;
+    error?: string | undefined;
+}, {}>;
+export type PackageSkillSpectorAnalysis = (typeof PackageSkillSpectorAnalysisSchema)[inferred];
 export declare const PackageLlmAnalysisDimensionSchema: import("arktype/internal/variants/object.ts").ObjectType<{
     name: string;
     label: string;
@@ -339,6 +381,7 @@ export declare const ApiV1PackageResponseSchema: import("arktype/internal/varian
             sourceCommit?: string | undefined;
             sourceTag?: string | undefined;
             hasProvenance?: boolean | undefined;
+            trustedOpenClawPlugin?: boolean | undefined;
             scanStatus?: "clean" | "suspicious" | "malicious" | "pending" | "not-run" | undefined;
         } | null | undefined;
         artifact?: {
@@ -357,6 +400,7 @@ export declare const ApiV1PackageResponseSchema: import("arktype/internal/varian
             packageName?: string | undefined;
             version?: string | undefined;
         } | null | undefined;
+        scanStatus?: "clean" | "suspicious" | "malicious" | "pending" | "not-run" | undefined;
         stats?: {
             downloads: number;
             installs: number;
@@ -427,6 +471,7 @@ export declare const ApiV1PackageVersionResponseSchema: import("arktype/internal
             sourceCommit?: string | undefined;
             sourceTag?: string | undefined;
             hasProvenance?: boolean | undefined;
+            trustedOpenClawPlugin?: boolean | undefined;
             scanStatus?: "clean" | "suspicious" | "malicious" | "pending" | "not-run" | undefined;
         } | null | undefined;
         artifact?: {
@@ -452,6 +497,31 @@ export declare const ApiV1PackageVersionResponseSchema: import("arktype/internal
             verdict?: string | undefined;
             analysis?: string | undefined;
             source?: string | undefined;
+        } | null | undefined;
+        skillSpectorAnalysis?: {
+            status: string;
+            issueCount: number;
+            issues: {
+                issueId: string;
+                severity: string;
+                explanation: string;
+                category?: string | undefined;
+                pattern?: string | undefined;
+                confidence?: number | undefined;
+                file?: string | undefined;
+                startLine?: number | undefined;
+                endLine?: number | undefined;
+                remediation?: string | undefined;
+                finding?: string | undefined;
+                codeSnippet?: string | undefined;
+            }[];
+            checkedAt: number;
+            score?: number | undefined;
+            severity?: string | undefined;
+            recommendation?: string | undefined;
+            scannerVersion?: string | undefined;
+            summary?: string | undefined;
+            error?: string | undefined;
         } | null | undefined;
         llmAnalysis?: {
             status: string;
@@ -519,6 +589,32 @@ export declare const ApiV1PackageArtifactResponseSchema: import("arktype/interna
     };
 }, {}>;
 export type ApiV1PackageArtifactResponse = (typeof ApiV1PackageArtifactResponseSchema)[inferred];
+export declare const ApiV1PackageSecurityResponseSchema: import("arktype/internal/variants/object.ts").ObjectType<{
+    package: {
+        name: string;
+        displayName: string;
+        family: "skill" | "code-plugin" | "bundle-plugin";
+    };
+    release: {
+        releaseId: string;
+        version: string;
+        createdAt: number;
+        artifactKind?: "legacy-zip" | "npm-pack" | null | undefined;
+        artifactSha256?: string | undefined;
+        npmIntegrity?: string | undefined;
+        npmShasum?: string | undefined;
+        npmTarballName?: string | undefined;
+    };
+    trust: {
+        scanStatus: "clean" | "suspicious" | "malicious" | "pending" | "not-run";
+        blockedFromDownload: boolean;
+        reasons: string[];
+        pending: boolean;
+        stale: boolean;
+        moderationState?: "approved" | "quarantined" | "revoked" | null | undefined;
+    };
+}, {}>;
+export type ApiV1PackageSecurityResponse = (typeof ApiV1PackageSecurityResponseSchema)[inferred];
 export declare const PackageReleaseModerationRequestSchema: import("arktype/internal/variants/object.ts").ObjectType<{
     state: "approved" | "quarantined" | "revoked";
     reason: string;
@@ -715,6 +811,63 @@ export declare const ApiV1PackageTransferResponseSchema: import("arktype/interna
     ownerPublisherId?: string | undefined;
 }, {}>;
 export type ApiV1PackageTransferResponse = (typeof ApiV1PackageTransferResponseSchema)[inferred];
+export declare const PackageRepairNameRequestSchema: import("arktype/internal/variants/object.ts").ObjectType<{
+    nextName: string;
+    reason: string;
+    retireTarget?: boolean | undefined;
+    owner?: string | undefined;
+    dryRun?: boolean | undefined;
+}, {}>;
+export type PackageRepairNameRequest = (typeof PackageRepairNameRequestSchema)[inferred];
+export declare const PackageRepairNamePackageSchema: import("arktype/internal/variants/object.ts").ObjectType<{
+    packageId: string;
+    name: string;
+    ownerUserId: string;
+    channel: "official" | "community" | "private";
+    runtimeId?: string | null | undefined;
+    ownerPublisherId?: string | null | undefined;
+    softDeletedAt?: number | null | undefined;
+}, {}>;
+export type PackageRepairNamePackage = (typeof PackageRepairNamePackageSchema)[inferred];
+export declare const PackageRepairNameOperationSchema: import("arktype/internal/variants/object.ts").ObjectType<{
+    action: "retire-target" | "rename-source" | "transfer-owner";
+    packageId?: string | undefined;
+    from?: string | undefined;
+    to?: string | undefined;
+    owner?: string | undefined;
+}, {}>;
+export type PackageRepairNameOperation = (typeof PackageRepairNameOperationSchema)[inferred];
+export declare const ApiV1PackageRepairNameResponseSchema: import("arktype/internal/variants/object.ts").ObjectType<{
+    ok: true;
+    dryRun: boolean;
+    source: {
+        packageId: string;
+        name: string;
+        ownerUserId: string;
+        channel: "official" | "community" | "private";
+        runtimeId?: string | null | undefined;
+        ownerPublisherId?: string | null | undefined;
+        softDeletedAt?: number | null | undefined;
+    };
+    target: {
+        packageId: string;
+        name: string;
+        ownerUserId: string;
+        channel: "official" | "community" | "private";
+        runtimeId?: string | null | undefined;
+        ownerPublisherId?: string | null | undefined;
+        softDeletedAt?: number | null | undefined;
+    } | null;
+    operations: {
+        action: "retire-target" | "rename-source" | "transfer-owner";
+        packageId?: string | undefined;
+        from?: string | undefined;
+        to?: string | undefined;
+        owner?: string | undefined;
+    }[];
+    retiredName?: string | null | undefined;
+}, {}>;
+export type ApiV1PackageRepairNameResponse = (typeof ApiV1PackageRepairNameResponseSchema)[inferred];
 export declare const PackageOfficialMigrationUpsertRequestSchema: import("arktype/internal/variants/object.ts").ObjectType<{
     bundledPluginId: string;
     packageName: string;

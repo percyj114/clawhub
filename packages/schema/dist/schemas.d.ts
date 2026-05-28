@@ -157,6 +157,14 @@ export declare const ApiV1UserSearchResponseSchema: import("arktype/internal/var
     }[];
     total: number;
 }, {}>;
+export declare const ApiV1PublisherCreateResponseSchema: import("arktype/internal/variants/object.ts").ObjectType<{
+    ok: true;
+    publisherId: string;
+    handle: string;
+    created: true;
+    trusted: false;
+}, {}>;
+export type ApiV1PublisherCreateResponse = (typeof ApiV1PublisherCreateResponseSchema)[inferred];
 export declare const ApiV1SearchResponseSchema: import("arktype/internal/variants/object.ts").ObjectType<{
     results: {
         score: number;
@@ -166,6 +174,12 @@ export declare const ApiV1SearchResponseSchema: import("arktype/internal/variant
         summary?: string | null | undefined;
         version?: string | null | undefined;
         updatedAt?: number | undefined;
+        ownerHandle?: string | null | undefined;
+        owner?: {
+            handle?: string | null | undefined;
+            displayName?: string | null | undefined;
+            image?: string | null | undefined;
+        } | null | undefined;
     }[];
 }, {}>;
 export declare const ApiV1SkillListResponseSchema: import("arktype/internal/variants/object.ts").ObjectType<{
@@ -351,6 +365,52 @@ export declare const ApiV1SkillAppealResolveResponseSchema: import("arktype/inte
     actionTaken?: "none" | "restore" | undefined;
 }, {}>;
 export type ApiV1SkillAppealResolveResponse = (typeof ApiV1SkillAppealResolveResponseSchema)[inferred];
+export declare const ApiV1SkillRescanResponseSchema: import("arktype/internal/variants/object.ts").ObjectType<{
+    ok: true;
+    slug: string;
+    version: string;
+    skillId: string;
+    skillVersionId: string;
+    jobId: string;
+    alreadyQueued: boolean;
+}, {}>;
+export type ApiV1SkillRescanResponse = (typeof ApiV1SkillRescanResponseSchema)[inferred];
+export declare const ApiV1SkillBulkRescanBatchRequestSchema: import("arktype/internal/variants/object.ts").ObjectType<{
+    mode?: "all-active-latest" | undefined;
+    cursor?: string | null | undefined;
+    batchSize?: number | undefined;
+    dryRun?: boolean | undefined;
+}, {}>;
+export type ApiV1SkillBulkRescanBatchRequest = (typeof ApiV1SkillBulkRescanBatchRequestSchema)[inferred];
+export declare const ApiV1SkillBulkRescanBatchResponseSchema: import("arktype/internal/variants/object.ts").ObjectType<{
+    ok: true;
+    mode: "all-active-latest";
+    queued: number;
+    alreadyQueued: number;
+    skipped: number;
+    jobIds: string[];
+    nextCursor: string | null;
+    done: boolean;
+    sampleSlugs: string[];
+}, {}>;
+export type ApiV1SkillBulkRescanBatchResponse = (typeof ApiV1SkillBulkRescanBatchResponseSchema)[inferred];
+export declare const ApiV1SkillBulkRescanStatusRequestSchema: import("arktype/internal/variants/object.ts").ObjectType<{
+    jobIds: string[];
+}, {}>;
+export type ApiV1SkillBulkRescanStatusRequest = (typeof ApiV1SkillBulkRescanStatusRequestSchema)[inferred];
+export declare const ApiV1SkillBulkRescanStatusResponseSchema: import("arktype/internal/variants/object.ts").ObjectType<{
+    ok: true;
+    total: number;
+    queued: number;
+    running: number;
+    succeeded: number;
+    failed: number;
+    missing: number;
+    terminal: number;
+    done: boolean;
+    failedJobIds: string[];
+}, {}>;
+export type ApiV1SkillBulkRescanStatusResponse = (typeof ApiV1SkillBulkRescanStatusResponseSchema)[inferred];
 export declare const ApiV1SkillVersionListResponseSchema: import("arktype/internal/variants/object.ts").ObjectType<{
     items: {
         version: string;
@@ -393,6 +453,27 @@ export declare const ApiV1SkillResolveResponseSchema: import("arktype/internal/v
     latestVersion: {
         version: string;
     } | null;
+}, {}>;
+export declare const ApiV1SkillVerifyResponseSchema: import("arktype/internal/variants/object.ts").ObjectType<{
+    schema: "clawhub.skill.verify.v1";
+    ok: boolean;
+    decision: "pass" | "fail";
+    reasons: string[];
+    slug: string;
+    displayName: string;
+    pageUrl: string;
+    publisherHandle: string | null;
+    publisherDisplayName: string | null;
+    publisherProfileUrl: string | null;
+    version: string;
+    resolvedFrom: "version" | "tag" | "latest";
+    tag: string | null;
+    createdAt: number;
+    card: unknown;
+    artifact: unknown;
+    provenance: unknown;
+    security: unknown;
+    signature: unknown;
 }, {}>;
 export declare const ApiV1PublishResponseSchema: import("arktype/internal/variants/object.ts").ObjectType<{
     ok: true;
@@ -452,6 +533,28 @@ export declare const ApiV1TransferListResponseSchema: import("arktype/internal/v
 export declare const ApiV1SetRoleResponseSchema: import("arktype/internal/variants/object.ts").ObjectType<{
     ok: true;
     role: "user" | "admin" | "moderator";
+}, {}>;
+export declare const ApiV1ReclassifyBanResponseSchema: import("arktype/internal/variants/object.ts").ObjectType<{
+    ok: true;
+    dryRun: boolean;
+    userId: string;
+    handle: string | null;
+    previousReason: string | null;
+    nextReason: string;
+    changed: boolean;
+}, {}>;
+export declare const ApiV1RemediateAutobansResponseSchema: import("arktype/internal/variants/object.ts").ObjectType<{
+    ok: true;
+    dryRun: boolean;
+    scanned: number;
+    wouldUnban: number;
+    unbanned: number;
+    skipped: number;
+    restoredSkills: number;
+    restoredPackages: number;
+    items: unknown[];
+    nextCursor?: string | null | undefined;
+    done?: boolean | undefined;
 }, {}>;
 export declare const ApiV1StarResponseSchema: import("arktype/internal/variants/object.ts").ObjectType<{
     ok: true;

@@ -13,7 +13,12 @@ import { apiRequest, registryUrl } from "../../../clawhub/src/http.js";
 import {
   ApiRoutes,
   ApiV1BanUserResponseSchema,
+  ApiV1ReclassifyBanResponseSchema,
+  ApiV1RemediateAutobansResponseSchema,
   ApiV1SetRoleResponseSchema,
+  ApiV1SkillBulkRescanBatchResponseSchema,
+  ApiV1SkillBulkRescanStatusResponseSchema,
+  ApiV1SkillRescanResponseSchema,
   ApiV1UnbanUserResponseSchema,
   ApiV1UserSearchResponseSchema,
   parseArk,
@@ -186,9 +191,439 @@ export async function cmdSetRole(
   }
 }
 
+export async function cmdRescanSkill(
+  opts: GlobalOpts,
+  slugArg: string,
+  options: { version?: string; yes?: boolean; json?: boolean },
+  inputAllowed: boolean,
+) {
+  const slug = normalizeSkillSlug(slugArg);
+  const version = options.version?.trim();
+  const allowPrompt = isInteractive() && inputAllowed !== false;
+
+  if (!options.yes) {
+    if (!allowPrompt) fail("Pass --yes (no input)");
+    const target = version ? `${slug}@${version}` : `${slug} latest`;
+    const ok = await promptConfirm(`Queue ClawScan rescan for ${target}? (moderator/admin)`);
+    if (!ok) return undefined;
+  }
+
+  const token = await requireAuthToken();
+  const registry = await getRegistry(opts, { cache: true });
+  const spinner = options.json ? null : createSpinner(`Queueing ClawScan rescan for ${slug}`);
+  try {
+    const result = await apiRequest(
+      registry,
+      {
+        method: "POST",
+        path: `${ApiRoutes.skills}/${encodeURIComponent(slug)}/rescan`,
+        token,
+        body: version ? { version } : {},
+      },
+      ApiV1SkillRescanResponseSchema,
+    );
+    const parsed = parseArk(ApiV1SkillRescanResponseSchema, result, "Skill rescan response");
+    spinner?.succeed(
+      `OK. Queued ClawScan for ${parsed.slug}@${parsed.version} (${parsed.alreadyQueued ? "existing job" : "new job"}).`,
+    );
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(parsed, null, 2)}\n`);
+    }
+    return parsed;
+  } catch (error) {
+    spinner?.fail(formatError(error));
+    throw error;
+  }
+}
+
+export async function cmdRescanAllSkills(
+  opts: GlobalOpts,
+  options: {
+    batchSize?: number;
+    pollInterval?: number;
+    cursor?: string;
+    maxSkills?: number;
+    dryRun?: boolean;
+    yes?: boolean;
+    json?: boolean;
+    failFast?: boolean;
+  },
+  inputAllowed: boolean,
+) {
+  const batchSize = normalizePositiveInt(options.batchSize, 50);
+  const pollIntervalMs = normalizeNonNegativeInt(options.pollInterval, 30) * 1000;
+  const maxSkills =
+    options.maxSkills === undefined ? undefined : normalizePositiveInt(options.maxSkills, 1);
+  const allowPrompt = isInteractive() && inputAllowed !== false;
+
+  if (!options.dryRun && !options.yes) {
+    if (!allowPrompt) fail("Pass --yes (no input)");
+    const ok = await promptConfirm(
+      `Queue bulk ClawScan rescans for active latest skills in batches of ${batchSize}? (admin)`,
+    );
+    if (!ok) return undefined;
+  }
+
+  const token = await requireAuthToken();
+  const registry = await getRegistry(opts, { cache: true });
+  let cursor = options.cursor?.trim() || null;
+  let processed = 0;
+  let batches = 0;
+  let totalQueued = 0;
+  let totalAlreadyQueued = 0;
+  let totalSkipped = 0;
+  let totalFailed = 0;
+
+  while (true) {
+    const remaining = maxSkills === undefined ? batchSize : Math.max(0, maxSkills - processed);
+    if (remaining === 0) break;
+    const effectiveBatchSize = Math.min(batchSize, remaining);
+    const result = await apiRequest(
+      registry,
+      {
+        method: "POST",
+        path: `${ApiRoutes.skills}/-/rescan-batch`,
+        token,
+        body: {
+          mode: "all-active-latest",
+          cursor,
+          batchSize: effectiveBatchSize,
+          dryRun: options.dryRun === true,
+        },
+      },
+      ApiV1SkillBulkRescanBatchResponseSchema,
+    );
+    const batch = parseArk(
+      ApiV1SkillBulkRescanBatchResponseSchema,
+      result,
+      "Bulk skill rescan batch response",
+    );
+    batches += 1;
+    totalQueued += batch.queued;
+    totalAlreadyQueued += batch.alreadyQueued;
+    totalSkipped += batch.skipped;
+    processed += batch.queued + batch.alreadyQueued + batch.skipped;
+    emitBulkRescanProgress(options, {
+      type: "batch",
+      batch: batches,
+      cursor,
+      nextCursor: batch.nextCursor,
+      queued: batch.queued,
+      alreadyQueued: batch.alreadyQueued,
+      skipped: batch.skipped,
+      done: batch.done,
+      sampleSlugs: batch.sampleSlugs,
+    });
+
+    if (!options.dryRun && batch.jobIds.length > 0) {
+      const status = await pollBulkRescanStatus(registry, token, batch.jobIds, {
+        pollIntervalMs,
+        json: options.json,
+        batch: batches,
+      });
+      totalFailed += status.failed;
+      if (status.failed > 0 && options.failFast) {
+        fail(`Bulk rescan batch ${batches} finished with ${status.failed} failed job(s)`);
+      }
+    }
+
+    cursor = batch.nextCursor;
+    if (batch.done || !cursor) break;
+  }
+
+  const summary = {
+    ok: totalFailed === 0,
+    batches,
+    queued: totalQueued,
+    alreadyQueued: totalAlreadyQueued,
+    skipped: totalSkipped,
+    failed: totalFailed,
+    cursor,
+    dryRun: options.dryRun === true,
+  };
+  emitBulkRescanProgress(options, { type: "summary", ...summary });
+  if (totalFailed > 0) fail(`Bulk rescan finished with ${totalFailed} failed job(s)`);
+  return summary;
+}
+
+async function pollBulkRescanStatus(
+  registry: string,
+  token: string,
+  jobIds: string[],
+  options: { pollIntervalMs: number; json?: boolean; batch: number },
+) {
+  while (true) {
+    const result = await apiRequest(
+      registry,
+      {
+        method: "POST",
+        path: `${ApiRoutes.skills}/-/rescan-batch/status`,
+        token,
+        body: { jobIds },
+      },
+      ApiV1SkillBulkRescanStatusResponseSchema,
+    );
+    const status = parseArk(
+      ApiV1SkillBulkRescanStatusResponseSchema,
+      result,
+      "Bulk skill rescan status response",
+    );
+    emitBulkRescanProgress(
+      { json: options.json },
+      { type: "status", batch: options.batch, ...status },
+    );
+    if (status.done) return status;
+    if (options.pollIntervalMs > 0) await sleep(options.pollIntervalMs);
+  }
+}
+
+function emitBulkRescanProgress(options: { json?: boolean }, event: Record<string, unknown>) {
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(event)}\n`);
+    return;
+  }
+
+  if (event.type === "batch") {
+    const nextCursor = typeof event.nextCursor === "string" ? event.nextCursor : null;
+    const suffix = nextCursor ? ` Next cursor: ${nextCursor}.` : "";
+    console.log(
+      `Batch ${readEventNumber(event, "batch")}: queued ${readEventNumber(event, "queued")}, already queued ${readEventNumber(event, "alreadyQueued")}, skipped ${readEventNumber(event, "skipped")}.${suffix}`,
+    );
+    return;
+  }
+
+  if (event.type === "status") {
+    console.log(
+      `Batch ${readEventNumber(event, "batch")} status: ${readEventNumber(event, "succeeded")} succeeded, ${readEventNumber(event, "failed")} failed, ${readEventNumber(event, "running")} running, ${readEventNumber(event, "queued")} queued.`,
+    );
+    return;
+  }
+
+  if (event.type === "summary") {
+    const label = event.dryRun ? "Bulk rescan dry run" : "Bulk rescan";
+    console.log(
+      `${label} finished: ${readEventNumber(event, "batches")} batch(es), ${readEventNumber(event, "queued")} queued, ${readEventNumber(event, "alreadyQueued")} already queued, ${readEventNumber(event, "skipped")} skipped, ${readEventNumber(event, "failed")} failed.`,
+    );
+    if (typeof event.cursor === "string" && event.cursor) {
+      console.log(`Resume cursor: ${event.cursor}`);
+    }
+  }
+}
+
+function readEventNumber(event: Record<string, unknown>, key: string) {
+  const value = event[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizePositiveInt(value: number | undefined, fallback: number) {
+  const normalized = Number.isFinite(value) ? Math.floor(value ?? fallback) : fallback;
+  return Math.max(1, normalized);
+}
+
+function normalizeNonNegativeInt(value: number | undefined, fallback: number) {
+  const normalized = Number.isFinite(value) ? Math.floor(value ?? fallback) : fallback;
+  return Math.max(0, normalized);
+}
+
+export async function cmdReclassifyBan(
+  opts: GlobalOpts,
+  identifierArg: string,
+  options: {
+    apply?: boolean;
+    dryRun?: boolean;
+    yes?: boolean;
+    id?: boolean;
+    fuzzy?: boolean;
+    reason?: string;
+    json?: boolean;
+  },
+  inputAllowed: boolean,
+) {
+  if (options.apply && options.dryRun) fail("Choose either --apply or --dry-run, not both");
+
+  const raw = identifierArg.trim();
+  if (!raw) fail("Handle or user id required");
+
+  const reason = options.reason?.trim();
+  if (!reason) fail("Reason required");
+  if (reason.length > 500) fail("Reason too long (max 500 chars)");
+
+  const dryRun = options.apply !== true;
+  const token = await requireAuthToken();
+  const registry = await getRegistry(opts, { cache: true });
+  const allowPrompt = isInteractive() && inputAllowed !== false;
+  const resolved = await resolveUserIdentifier(
+    registry,
+    token,
+    raw,
+    { id: options.id, fuzzy: options.fuzzy },
+    allowPrompt,
+  );
+  if (!resolved) return undefined;
+
+  if (!dryRun && !options.yes) {
+    if (!allowPrompt) fail("Pass --yes (no input)");
+    const ok = await promptConfirm(
+      `Reclassify ban for ${resolved.label} as "${reason}"? (admin only; no unban/restore)`,
+    );
+    if (!ok) return undefined;
+  }
+
+  const spinner = options.json
+    ? null
+    : createSpinner(
+        `${dryRun ? "Planning" : "Applying"} ban reclassification for ${resolved.label}`,
+      );
+  try {
+    const result = await apiRequest(
+      registry,
+      {
+        method: "POST",
+        path: `${ApiRoutes.users}/reclassify-ban`,
+        token,
+        body: {
+          ...(resolved.userId ? { userId: resolved.userId } : { handle: resolved.handle }),
+          reason,
+          dryRun,
+        },
+      },
+      ApiV1ReclassifyBanResponseSchema,
+    );
+    const parsed = parseArk(ApiV1ReclassifyBanResponseSchema, result, "Reclassify ban response");
+    spinner?.succeed(
+      `${dryRun ? "Dry run" : "Applied"} ban reclassification for ${resolved.label}: ${parsed.previousReason ?? "none"} -> ${parsed.nextReason}${parsed.changed ? "" : " (already set)"}.`,
+    );
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(parsed, null, 2)}\n`);
+    } else if (dryRun) {
+      console.log("Re-run with --apply --yes to write this change.");
+    }
+    return parsed;
+  } catch (error) {
+    spinner?.fail(formatError(error));
+    throw error;
+  }
+}
+
+export async function cmdRemediateAutobans(
+  opts: GlobalOpts,
+  options: {
+    apply?: boolean;
+    dryRun?: boolean;
+    user?: string;
+    id?: boolean;
+    since?: string;
+    limit?: string | number;
+    reason?: string;
+    json?: boolean;
+    all?: boolean;
+    cursor?: string;
+  },
+  inputAllowed: boolean,
+) {
+  if (options.apply && options.dryRun) fail("Choose either --apply or --dry-run, not both");
+
+  const dryRun = options.apply !== true;
+  const target = options.user?.trim();
+  const limit = normalizeOptionalPositiveInt(options.limit);
+  const reason = options.reason?.trim();
+  const since = options.since?.trim();
+  let cursor = options.cursor?.trim() || null;
+
+  if (reason && reason.length > 500) fail("Reason too long (max 500 chars)");
+  if (since && Number.isNaN(Date.parse(since))) fail("Invalid --since date");
+  if (options.all && target) fail("Use either --all or --user, not both");
+
+  void inputAllowed;
+
+  const token = await requireAuthToken();
+  const registry = await getRegistry(opts, { cache: true });
+  const spinner = options.json
+    ? null
+    : createSpinner(`${dryRun ? "Planning" : "Applying"} autoban remediation`);
+
+  try {
+    const pages = [];
+    do {
+      const body: Record<string, unknown> = { dryRun };
+      if (target) {
+        if (options.id) body.userId = target;
+        else body.handle = normalizeHandle(target);
+      }
+      if (reason) body.reason = reason;
+      if (since) body.since = since;
+      if (limit !== undefined) body.limit = limit;
+      if (cursor) body.cursor = cursor;
+
+      const result = await apiRequest(
+        registry,
+        {
+          method: "POST",
+          path: `${ApiRoutes.users}/remediate-autobans`,
+          token,
+          body,
+        },
+        ApiV1RemediateAutobansResponseSchema,
+      );
+      const parsedPage = parseArk(
+        ApiV1RemediateAutobansResponseSchema,
+        result,
+        "Remediate autobans response",
+      );
+      pages.push(parsedPage);
+      cursor = parsedPage.nextCursor ?? null;
+      if (!options.all || parsedPage.done) break;
+    } while (cursor);
+
+    const parsed = {
+      ok: true as const,
+      dryRun,
+      scanned: pages.reduce((sum, page) => sum + page.scanned, 0),
+      wouldUnban: pages.reduce((sum, page) => sum + page.wouldUnban, 0),
+      unbanned: pages.reduce((sum, page) => sum + page.unbanned, 0),
+      skipped: pages.reduce((sum, page) => sum + page.skipped, 0),
+      restoredSkills: pages.reduce((sum, page) => sum + page.restoredSkills, 0),
+      restoredPackages: pages.reduce((sum, page) => sum + page.restoredPackages, 0),
+      items: pages.flatMap((page) => page.items),
+      nextCursor: pages.at(-1)?.nextCursor ?? null,
+      done: pages.at(-1)?.done ?? true,
+    };
+    spinner?.succeed(
+      `${dryRun ? "Dry run" : "Applied"} autoban remediation: scanned ${parsed.scanned}, ${dryRun ? "would unban" : "unbanned"} ${dryRun ? parsed.wouldUnban : parsed.unbanned}, skipped ${parsed.skipped}.`,
+    );
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(parsed, null, 2)}\n`);
+    } else {
+      console.log(
+        `Restores: ${formatRestoredSkills(parsed.restoredSkills)}, ${formatRestoredPackages(parsed.restoredPackages)}.`,
+      );
+      if (!parsed.done && parsed.nextCursor) {
+        console.log(`Next cursor: ${parsed.nextCursor}`);
+      }
+      if (dryRun) console.log("Re-run with --apply to write these changes.");
+    }
+    return parsed;
+  } catch (error) {
+    spinner?.fail(formatError(error));
+    throw error;
+  }
+}
+
 function normalizeHandle(value: string) {
   const trimmed = value.trim();
   return trimmed.startsWith("@") ? trimmed.slice(1).toLowerCase() : trimmed.toLowerCase();
+}
+
+function normalizeSkillSlug(value: string) {
+  const slug = value.trim().toLowerCase();
+  if (!slug) fail("Slug required");
+  if (slug.includes("/") || slug.includes("\\") || slug.includes(".."))
+    fail(`Invalid slug: ${slug}`);
+  return slug;
 }
 
 type ResolvedUser = {
@@ -287,6 +722,13 @@ function normalizeRole(value: string) {
   return fail("Role must be user|moderator|admin");
 }
 
+function normalizeOptionalPositiveInt(value: string | number | undefined) {
+  if (value === undefined || value === null || value === "") return undefined;
+  const parsed = typeof value === "number" ? value : Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 1) fail("Limit must be a positive integer");
+  return Math.floor(parsed);
+}
+
 function formatDeletedSkills(count: number) {
   if (!Number.isFinite(count)) return "deleted skills unknown";
   if (count === 1) return "deleted 1 skill";
@@ -297,4 +739,10 @@ function formatRestoredSkills(count: number | undefined) {
   if (!Number.isFinite(count)) return "restored skills unknown";
   if (count === 1) return "restored 1 skill";
   return `restored ${count} skills`;
+}
+
+function formatRestoredPackages(count: number | undefined) {
+  if (!Number.isFinite(count)) return "restored packages unknown";
+  if (count === 1) return "restored 1 package";
+  return `restored ${count} packages`;
 }

@@ -23,7 +23,9 @@ export const ApiRoutes = {
   bundlePlugins: "/api/v1/bundle-plugins",
   stars: "/api/v1/stars",
   transfers: "/api/v1/transfers",
+  publishers: "/api/v1/publishers",
   souls: "/api/v1/souls",
   users: "/api/v1/users",
   whoami: "/api/v1/whoami",
+  skillsExport: "/api/v1/skills/export",
 } as const;
