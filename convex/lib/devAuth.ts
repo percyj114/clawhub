@@ -3,16 +3,32 @@ type DevAuthEnv = {
   CONVEX_SITE_URL?: string;
   DEV_AUTH_CONVEX_DEPLOYMENT?: string;
   DEV_AUTH_ENABLED?: string;
+  DEV_AUTH_SITE_URL?: string;
 };
 
 export function isLocalDevAuthEnabled(env: DevAuthEnv = process.env) {
   if (env.DEV_AUTH_ENABLED !== "1") return false;
-  const deployment = env.CONVEX_DEPLOYMENT?.trim() || env.DEV_AUTH_CONVEX_DEPLOYMENT?.trim() || "";
-  return isLocalConvexDeployment(deployment) && isLocalhostUrl(env.CONVEX_SITE_URL);
+  const convexDeployment = env.CONVEX_DEPLOYMENT?.trim();
+  const devAuthDeployment = env.DEV_AUTH_CONVEX_DEPLOYMENT?.trim();
+  const deployment = convexDeployment || devAuthDeployment || "";
+
+  if (isLocalConvexDeployment(deployment)) {
+    return isLocalhostUrl(env.CONVEX_SITE_URL);
+  }
+
+  if (isDevConvexDeployment(convexDeployment ?? deployment)) {
+    return isLocalhostUrl(env.DEV_AUTH_SITE_URL);
+  }
+
+  return false;
 }
 
 function isLocalConvexDeployment(deployment: string) {
   return deployment.startsWith("local:") || deployment.startsWith("anonymous:");
+}
+
+function isDevConvexDeployment(deployment: string) {
+  return deployment.startsWith("dev:");
 }
 
 function isLocalhostUrl(value: string | undefined) {

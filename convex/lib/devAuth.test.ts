@@ -41,7 +41,18 @@ describe("isLocalDevAuthEnabled", () => {
     ).toBe(true);
   });
 
-  it("rejects cloud dev deployments even when the dev auth flag is set", () => {
+  it("allows cloud dev deployments with an explicit localhost dev auth site", () => {
+    expect(
+      isLocalDevAuthEnabled({
+        CONVEX_SITE_URL: "https://clever-rabbit-123.convex.cloud",
+        DEV_AUTH_CONVEX_DEPLOYMENT: "dev:clever-rabbit-123",
+        DEV_AUTH_ENABLED: "1",
+        DEV_AUTH_SITE_URL: "http://127.0.0.1:3211",
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects cloud dev deployments without an explicit localhost dev auth site", () => {
     expect(
       isLocalDevAuthEnabled({
         CONVEX_SITE_URL: "http://127.0.0.1:3211",
