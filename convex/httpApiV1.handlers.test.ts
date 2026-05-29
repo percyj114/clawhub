@@ -614,7 +614,7 @@ describe("httpApiV1 handlers", () => {
   it("lists skills defaults to recommended ranking", async () => {
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
       if ("cursor" in args || "numItems" in args) {
-        expect(args.sort).toBe("default");
+        expect(args.sort).toBe("recommended");
         return { page: [], nextCursor: null };
       }
       return null;
@@ -886,15 +886,15 @@ describe("httpApiV1 handlers", () => {
 
   it("lists skills supports sort aliases", async () => {
     const checks: Array<[string, string | null]> = [
-      ["default", "default"],
-      ["recommended", "default"],
+      ["default", "recommended"],
+      ["recommended", "recommended"],
       ["createdAt", "newest"],
       ["created-at", "newest"],
       ["newest", "newest"],
       ["rating", "stars"],
       ["installs", "installs"],
       ["installs-all-time", "installs"],
-      ["unknown", "default"],
+      ["unknown", "recommended"],
       ["trending", null],
     ];
 

@@ -779,7 +779,7 @@ const skillSearchDigest = defineTable({
     "statsInstallsAllTime",
     "updatedAt",
   ])
-  .index("by_active_default_rank", [
+  .index("by_active_recommended_rank", [
     "softDeletedAt",
     "statsStars",
     "statsInstallsAllTime",
@@ -818,7 +818,7 @@ const skillSearchDigest = defineTable({
     "statsInstallsAllTime",
     "updatedAt",
   ])
-  .index("by_nonsuspicious_default_rank", [
+  .index("by_nonsuspicious_recommended_rank", [
     "softDeletedAt",
     "isSuspicious",
     "statsStars",

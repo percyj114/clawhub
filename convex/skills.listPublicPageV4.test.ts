@@ -19,15 +19,15 @@ const listPublicPageV4Handler = (
 )._handler;
 
 describe("skills.listPublicPageV4", () => {
-  it("defines default rank indexes in contract order", () => {
-    expect(getSkillSearchDigestIndexFields("by_active_default_rank")).toEqual([
+  it("defines recommended rank indexes in contract order", () => {
+    expect(getSkillSearchDigestIndexFields("by_active_recommended_rank")).toEqual([
       "softDeletedAt",
       "statsStars",
       "statsInstallsAllTime",
       "statsDownloads",
       "updatedAt",
     ]);
-    expect(getSkillSearchDigestIndexFields("by_nonsuspicious_default_rank")).toEqual([
+    expect(getSkillSearchDigestIndexFields("by_nonsuspicious_recommended_rank")).toEqual([
       "softDeletedAt",
       "isSuspicious",
       "statsStars",
@@ -38,6 +38,7 @@ describe("skills.listPublicPageV4", () => {
   });
 
   it("forces Recommended ranking to descending for stale URLs", () => {
+    expect(__test.resolvePublicListDir("recommended", "asc")).toBe("desc");
     expect(__test.resolvePublicListDir("default", "asc")).toBe("desc");
   });
 
@@ -46,39 +47,39 @@ describe("skills.listPublicPageV4", () => {
     expect(__test.resolvePublicListDir("downloads", "asc")).toBe("asc");
   });
 
-  it("keeps default-rank cursors on the index that created them", () => {
+  it("keeps recommended-rank cursors on the index that created them", () => {
     expect(
-      __test.resolveDefaultPublicListSort({
+      __test.resolveRecommendedPublicListSort({
         decodedCursor: null,
         hasMissingRankStats: false,
       }),
-    ).toBe("default");
+    ).toBe("recommended");
     expect(
-      __test.resolveDefaultPublicListSort({
+      __test.resolveRecommendedPublicListSort({
         decodedCursor: null,
         hasMissingRankStats: true,
       }),
     ).toBe("updated");
     expect(
-      __test.resolveDefaultPublicListSort({
+      __test.resolveRecommendedPublicListSort({
         decodedCursor: [undefined, 123, 456, "skillSearchDigest:updated"],
         hasMissingRankStats: false,
       }),
     ).toBe("updated");
     expect(
-      __test.resolveDefaultPublicListSort({
+      __test.resolveRecommendedPublicListSort({
         decodedCursor: [undefined, false, 123, 456, "skillSearchDigest:nonsuspicious-updated"],
         hasMissingRankStats: false,
       }),
     ).toBe("updated");
     expect(
-      __test.resolveDefaultPublicListSort({
-        decodedCursor: [undefined, 10, 20, 30, 123, 456, "skillSearchDigest:default"],
+      __test.resolveRecommendedPublicListSort({
+        decodedCursor: [undefined, 10, 20, 30, 123, 456, "skillSearchDigest:recommended"],
         hasMissingRankStats: true,
       }),
-    ).toBe("default");
+    ).toBe("recommended");
     expect(
-      __test.resolveDefaultPublicListSort({
+      __test.resolveRecommendedPublicListSort({
         decodedCursor: [
           undefined,
           false,
@@ -87,14 +88,14 @@ describe("skills.listPublicPageV4", () => {
           30,
           123,
           456,
-          "skillSearchDigest:nonsuspicious-default",
+          "skillSearchDigest:nonsuspicious-recommended",
         ],
         hasMissingRankStats: true,
       }),
-    ).toBe("default");
+    ).toBe("recommended");
   });
 
-  it("sorts highlighted default results by stars, installs, downloads, then updatedAt", async () => {
+  it("sorts highlighted recommended results by stars, installs, downloads, then updatedAt", async () => {
     const result = await listPublicPageV4Handler(
       makeHighlightedCtx([
         makeDigest({

@@ -16,7 +16,7 @@ import {
 } from "./-useSkillsBrowseModel";
 
 const BROWSE_SORT_OPTIONS = [
-  { value: "default", label: "Recommended" },
+  { value: "recommended", label: "Recommended" },
   { value: "downloads", label: "Most downloaded" },
   { value: "stars", label: "Most starred" },
   { value: "installs", label: "Most installed" },
@@ -91,12 +91,15 @@ export function SkillsIndex() {
         void navigate({
           search: (prev: SkillsSearchState) => {
             const reusePreviousDir =
-              prev.sort !== undefined && prev.sort !== "default" && prev.sort !== "relevance";
+              prev.sort !== undefined &&
+              prev.sort !== "recommended" &&
+              prev.sort !== "default" &&
+              prev.sort !== "relevance";
             return {
               ...prev,
               sort: nextSort,
               dir:
-                nextSort === "default"
+                nextSort === "recommended" || nextSort === "default"
                   ? undefined
                   : parseDir(reusePreviousDir ? prev.dir : undefined, nextSort),
               featured: undefined,

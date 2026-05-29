@@ -1,5 +1,6 @@
 export const sortKeys = [
   "relevance",
+  "recommended",
   "default",
   "newest",
   "downloads",
@@ -10,13 +11,14 @@ export const sortKeys = [
 ] as const;
 
 export type SortKey = (typeof sortKeys)[number];
-export type ListSortKey = Exclude<SortKey, "relevance" | "default">;
+export type ListSortKey = Exclude<SortKey, "relevance" | "recommended" | "default">;
 export type SortDir = "asc" | "desc";
 
 export function parseSort(value: unknown): SortKey {
-  if (typeof value !== "string") return "default";
+  if (typeof value !== "string") return "recommended";
+  if (value === "default") return "recommended";
   if ((sortKeys as readonly string[]).includes(value)) return value as SortKey;
-  return "default";
+  return "recommended";
 }
 
 export function parseDir(value: unknown, sort: SortKey): SortDir {
@@ -25,5 +27,5 @@ export function parseDir(value: unknown, sort: SortKey): SortDir {
 }
 
 export function toListSort(sort: SortKey): ListSortKey | undefined {
-  return sort === "relevance" || sort === "default" ? undefined : sort;
+  return sort === "relevance" || sort === "recommended" || sort === "default" ? undefined : sort;
 }

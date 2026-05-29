@@ -437,7 +437,7 @@ const NEW_SKILL_RATE_LIMITS = {
 } as const;
 
 const SORT_INDEXES = {
-  default: "by_active_default_rank",
+  recommended: "by_active_recommended_rank",
   newest: "by_active_created",
   updated: "by_active_updated",
   name: "by_active_name",
@@ -448,7 +448,7 @@ const SORT_INDEXES = {
 
 // Compound indexes on skillSearchDigest that filter isSuspicious at the index level.
 const NONSUSPICIOUS_SORT_INDEXES = {
-  default: "by_nonsuspicious_default_rank",
+  recommended: "by_nonsuspicious_recommended_rank",
   newest: "by_nonsuspicious_created",
   updated: "by_nonsuspicious_updated",
   name: "by_nonsuspicious_name",
@@ -3833,6 +3833,7 @@ export const listPublicPageV2 = query({
     sort: v.optional(
       v.union(
         v.literal("default"),
+        v.literal("recommended"),
         v.literal("newest"),
         v.literal("updated"),
         v.literal("downloads"),
@@ -3957,6 +3958,7 @@ export const listPublicPageV4 = query({
     sort: v.optional(
       v.union(
         v.literal("default"),
+        v.literal("recommended"),
         v.literal("newest"),
         v.literal("updated"),
         v.literal("downloads"),
@@ -3974,7 +3976,7 @@ export const listPublicPageV4 = query({
     if (args.capabilityTag && !isKnownSkillCapabilityTag(args.capabilityTag)) {
       return { page: [], hasMore: false, nextCursor: null };
     }
-    const requestedSort = args.sort ?? "default";
+    const requestedSort = normalizePublicListSort(args.sort);
     const dir = resolvePublicListDir(requestedSort, args.dir);
     const numItems = clampInt(args.numItems ?? 25, 1, MAX_PUBLIC_LIST_LIMIT);
     const decodedCursor = args.cursor ? decodeIndexKey(args.cursor) : null;
@@ -3993,10 +3995,10 @@ export const listPublicPageV4 = query({
     }
 
     const sort =
-      requestedSort === "default"
-        ? resolveDefaultPublicListSort({
+      requestedSort === "recommended"
+        ? resolveRecommendedPublicListSort({
             decodedCursor,
-            hasMissingRankStats: await hasMissingDefaultRankStats(
+            hasMissingRankStats: await hasMissingRecommendedRankStats(
               ctx,
               args.nonSuspiciousOnly ?? false,
               decodedCursor,
@@ -4196,6 +4198,7 @@ export const listPublicApiPageV1 = query({
     sort: v.optional(
       v.union(
         v.literal("default"),
+        v.literal("recommended"),
         v.literal("newest"),
         v.literal("updated"),
         v.literal("downloads"),
@@ -4208,15 +4211,15 @@ export const listPublicApiPageV1 = query({
     nonSuspiciousOnly: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
-    const requestedSort = args.sort ?? "default";
+    const requestedSort = normalizePublicListSort(args.sort);
     const dir = resolvePublicListDir(requestedSort, args.dir);
     const numItems = clampInt(args.numItems ?? 25, 1, MAX_PUBLIC_LIST_LIMIT);
     const decodedCursor = args.cursor ? decodeIndexKey(args.cursor) : null;
     const sort =
-      requestedSort === "default"
-        ? resolveDefaultPublicListSort({
+      requestedSort === "recommended"
+        ? resolveRecommendedPublicListSort({
             decodedCursor,
-            hasMissingRankStats: await hasMissingDefaultRankStats(
+            hasMissingRankStats: await hasMissingRecommendedRankStats(
               ctx,
               args.nonSuspiciousOnly ?? false,
               decodedCursor,
@@ -4543,13 +4546,19 @@ export const searchPackageCatalogPublic = query({
 });
 
 type SortKey = keyof typeof SORT_INDEXES;
+type SortKeyInput = SortKey | "default" | undefined;
 
-function resolvePublicListDir(sort: SortKey, dir: "asc" | "desc" | undefined) {
-  if (sort === "default") return "desc";
-  return dir ?? (sort === "name" ? "asc" : "desc");
+function normalizePublicListSort(sort: SortKeyInput): SortKey {
+  return sort === undefined || sort === "default" ? "recommended" : sort;
 }
 
-function resolveDefaultPublicListSort({
+function resolvePublicListDir(sort: SortKeyInput, dir: "asc" | "desc" | undefined) {
+  const normalizedSort = normalizePublicListSort(sort);
+  if (normalizedSort === "recommended") return "desc";
+  return dir ?? (normalizedSort === "name" ? "asc" : "desc");
+}
+
+function resolveRecommendedPublicListSort({
   decodedCursor,
   hasMissingRankStats,
 }: {
@@ -4557,12 +4566,12 @@ function resolveDefaultPublicListSort({
   hasMissingRankStats: boolean;
 }): SortKey {
   if (decodedCursor) {
-    return decodedCursor.length <= 5 ? "updated" : "default";
+    return decodedCursor.length <= 5 ? "updated" : "recommended";
   }
-  return hasMissingRankStats ? "updated" : "default";
+  return hasMissingRankStats ? "updated" : "recommended";
 }
 
-async function hasMissingDefaultRankStats(
+async function hasMissingRecommendedRankStats(
   ctx: Pick<QueryCtx, "db">,
   nonSuspiciousOnly: boolean,
   decodedCursor: IndexKey | null,
@@ -4669,7 +4678,7 @@ async function fetchHighlightedPage(
         return (
           (readDigestRankStat(a, "downloads") - readDigestRankStat(b, "downloads")) * multiplier
         );
-      case "default":
+      case "recommended":
         return (
           (readDigestRankStat(a, "stars") - readDigestRankStat(b, "stars")) * multiplier ||
           (readDigestRankStat(a, "installsAllTime") - readDigestRankStat(b, "installsAllTime")) *
@@ -9497,6 +9506,6 @@ async function findCanonicalSkillForFingerprint(
 }
 
 export const __test = {
-  resolveDefaultPublicListSort,
+  resolveRecommendedPublicListSort,
   resolvePublicListDir,
 };

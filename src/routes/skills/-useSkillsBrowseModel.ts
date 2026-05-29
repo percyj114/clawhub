@@ -80,13 +80,13 @@ export function useSkillsBrowseModel({
   const isOtherCategory = query === "__other__";
   const trimmedQuery = useMemo(() => query.trim(), [query]);
   const hasQuery = !isOtherCategory && trimmedQuery.length > 0;
-  const requestedSort = search.sort;
+  const requestedSort = search.sort === "default" ? "recommended" : search.sort;
   const sort: SortKey =
     requestedSort === "relevance" && !hasQuery
-      ? "default"
-      : requestedSort === "default" && hasQuery
+      ? "recommended"
+      : requestedSort === "recommended" && hasQuery
         ? "relevance"
-        : (requestedSort ?? (hasQuery ? "relevance" : "default"));
+        : (requestedSort ?? (hasQuery ? "relevance" : "recommended"));
   const listSort = toListSort(sort);
   const dir = sort === "relevance" ? "desc" : parseDir(search.dir, sort);
   const searchKey = trimmedQuery
@@ -332,7 +332,10 @@ export function useSkillsBrowseModel({
             return {
               ...prev,
               q: trimmed ? next : undefined,
-              ...(enteringSearch && (prev.sort === "default" || usesStaleImplicitDownloadsDefault)
+              ...(enteringSearch &&
+              (prev.sort === "recommended" ||
+                prev.sort === "default" ||
+                usesStaleImplicitDownloadsDefault)
                 ? { sort: undefined, dir: undefined }
                 : null),
             };
@@ -371,12 +374,15 @@ export function useSkillsBrowseModel({
       void navigate({
         search: (prev) => {
           const reusePreviousDir =
-            prev.sort !== undefined && prev.sort !== "default" && prev.sort !== "relevance";
+            prev.sort !== undefined &&
+            prev.sort !== "recommended" &&
+            prev.sort !== "default" &&
+            prev.sort !== "relevance";
           return {
             ...prev,
             sort: nextSort,
             dir:
-              nextSort === "default"
+              nextSort === "recommended" || nextSort === "default"
                 ? undefined
                 : parseDir(reusePreviousDir ? prev.dir : undefined, nextSort),
           };

@@ -127,13 +127,13 @@ Query params:
 
 - `limit` (optional): integer (1–200)
 - `cursor` (optional): pagination cursor for any non-`trending` sort
-- `sort` (optional): `default` (default, alias: `recommended`), `updated`, `createdAt` (alias: `newest`), `downloads`, `stars` (alias: `rating`), `installsCurrent` (alias: `installs`), `installsAllTime`, `trending`
+- `sort` (optional): `recommended` (default, alias: `default`), `updated`, `createdAt` (alias: `newest`), `downloads`, `stars` (alias: `rating`), `installsCurrent` (alias: `installs`), `installsAllTime`, `trending`
 - `nonSuspiciousOnly` (optional): `true` to hide suspicious (`flagged.suspicious`) skills
 - `nonSuspicious` (optional): legacy alias for `nonSuspiciousOnly`
 
 Notes:
 
-- `default` ranks by stars, then all-time installs, then downloads, then `updatedAt`.
+- `recommended` ranks by stars, then all-time installs, then downloads, then `updatedAt`.
 - `trending` ranks by installs in the last 7 days (telemetry-based).
 - `createdAt` is stable for new-skill crawls; `updated` changes when existing skills are republished.
 - When `nonSuspiciousOnly=true`, cursor-based sorts may return fewer than `limit` items on a page because suspicious skills are filtered after page retrieval.
