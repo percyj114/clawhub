@@ -24,12 +24,16 @@ import {
   ApiV1PackageVersionListResponseSchema,
   ApiV1PackageVersionResponseSchema,
   ApiV1PublishTokenMintResponseSchema,
+  estimatePackageMultipartUploadBytes,
+  getPackageMultipartSizeError,
+  MAX_PACKAGE_MULTIPART_BYTES,
   normalizeClawScanNote,
   normalizeOpenClawExternalPluginCompatibility,
   type PackageArtifactSummary,
   type PackageCapabilitySummary,
   type PackageCompatibility,
   type PackageFamily,
+  type PackagePublishMetadata,
   type PackageTrustedPublisher,
   type PackageVerificationSummary,
   validateOpenClawExternalCodePluginPackageContents,
@@ -175,19 +179,14 @@ type InferredPublishSource = {
   url?: string;
 };
 
-type PackagePublishSource = ReturnType<typeof buildSource>;
-
-type PackagePublishPayload = {
-  name: string;
+type PackagePublishPayload = Omit<
+  PackagePublishMetadata,
+  "bundle" | "family" | "source" | "tags"
+> & {
   displayName: string;
-  ownerHandle?: string;
   family: "code-plugin" | "bundle-plugin";
-  version: string;
-  changelog: string;
-  clawScanNote?: string;
-  manualOverrideReason?: string;
   tags: string[];
-  source?: NonNullable<PackagePublishSource>;
+  source?: NonNullable<PackagePublishMetadata["source"]>;
   bundle?: {
     format?: string;
     hostTargets: string[];
@@ -675,7 +674,7 @@ export async function cmdPublishPackage(
         const blob = new Blob([Buffer.from(plan.clawpackOnDisk.bytes)], {
           type: "application/octet-stream",
         });
-        form.append("tarball", blob, plan.clawpackOnDisk.relPath);
+        form.append("clawpack", blob, plan.clawpackOnDisk.relPath);
       } else {
         let index = 0;
         for (const file of plan.filesOnDisk) {
@@ -686,7 +685,7 @@ export async function cmdPublishPackage(
           const blob = new Blob([Buffer.from(file.bytes)], {
             type: file.contentType ?? "application/octet-stream",
           });
-          form.append("files[]", blob, file.relPath);
+          form.append("files", blob, file.relPath);
         }
       }
 
@@ -1560,6 +1559,25 @@ function assertClawPackSize(size: number, label: string) {
   }
 }
 
+function assertPackageMultipartSize(
+  payloadJson: string,
+  fileFieldName: "files[]" | "tarball",
+  files: PackageFile[],
+) {
+  const bytes = estimatePackageMultipartUploadBytes({
+    payloadJson,
+    fileFieldName,
+    files: files.map((file) => ({
+      name: file.relPath,
+      size: file.bytes.byteLength,
+      type: file.contentType,
+    })),
+  });
+  if (bytes > MAX_PACKAGE_MULTIPART_BYTES) {
+    fail(getPackageMultipartSizeError());
+  }
+}
+
 const REAL_BUNDLE_MANIFESTS = [
   { path: ".codex-plugin/plugin.json", format: "codex" },
   { path: ".claude-plugin/plugin.json", format: "claude" },
@@ -1791,7 +1809,9 @@ async function preparePackagePublishPlan(
       contentType: mime.getType(entry.path) ?? "application/octet-stream",
     }));
   }
-
+  const totalBytes = clawpackOnDisk
+    ? clawpackOnDisk.bytes.byteLength
+    : filesOnDisk.reduce((sum, file) => sum + file.bytes.byteLength, 0);
   const payload: PackagePublishPayload = {
     name,
     displayName,
@@ -1814,6 +1834,16 @@ async function preparePackagePublishPlan(
         }
       : {}),
   };
+  try {
+    assertPackageMultipartSize(
+      JSON.stringify(payload),
+      clawpackOnDisk ? "tarball" : "files[]",
+      clawpackOnDisk ? [clawpackOnDisk] : filesOnDisk,
+    );
+  } catch (error) {
+    await cleanup?.();
+    throw error;
+  }
   const sourceLabel = describePublishSource(sourceForFetch, source, folder);
 
   return {
@@ -1836,9 +1866,7 @@ async function preparePackagePublishPlan(
       version,
       ...(source?.commit ? { commit: source.commit } : {}),
       files: filesOnDisk.length,
-      totalBytes: clawpackOnDisk
-        ? clawpackOnDisk.bytes.byteLength
-        : filesOnDisk.reduce((sum, file) => sum + file.bytes.byteLength, 0),
+      totalBytes,
     },
   };
 }

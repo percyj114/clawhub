@@ -471,6 +471,8 @@ clawhub publisher create opik --display-name "Opik"
 - `.tgz` sources are treated as ClawPack. The CLI uploads the exact npm-pack
   bytes and uses the extracted `package/` contents only for validation and
   metadata prefill.
+- Package publish uploads are capped at 18MB, counting metadata, uploaded bytes,
+  and multipart headers.
 - Code-plugin folders are packed into a ClawPack npm tarball before upload so
   OpenClaw installs can verify the exact artifact. Bundle-plugin folders still
   use the extracted-file publish path.

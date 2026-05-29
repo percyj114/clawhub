@@ -1,5 +1,4 @@
 import {
-  PackagePublishRequestSchema,
   ServerPackagePublishRequestSchema,
   getPackageScopeOwnerMismatch,
   isPluginCategorySlug,
@@ -12,7 +11,6 @@ import {
   type PackageModerationQueueStatus,
   type PackageOfficialMigrationListPhase,
   type PackageOfficialMigrationPhase,
-  type PackagePublishRequest,
   type ServerPackagePublishRequest,
   type PackageVerificationTier,
 } from "clawhub-schema";
@@ -35,7 +33,6 @@ import {
   assertModerator,
   getOptionalActiveAuthUserId,
   requireUser,
-  requireUserFromAction,
 } from "./lib/access";
 import {
   assertArtifactAppealFinalAction,
@@ -337,6 +334,8 @@ type PublicPackageListItem = {
   verificationTier: PackageVerificationTier | null;
 };
 type PackageReleaseScanStatus = ReturnType<typeof resolvePackageReleaseScanStatus>;
+type PackageReleaseArtifactKind = "legacy-zip" | "npm-pack";
+type PackageReleaseModerationState = "approved" | "quarantined" | "revoked";
 type PackageReleaseModerationQueueDoc = Omit<Doc<"packageReleases">, "createdAt"> & {
   createdAt?: number;
 };
@@ -353,9 +352,9 @@ type PackageModerationQueueItem = {
   isOfficial: boolean;
   version: string;
   createdAt: number;
-  artifactKind?: Doc<"packageReleases">["artifactKind"] | null;
+  artifactKind?: PackageReleaseArtifactKind | null;
   scanStatus: PackageReleaseScanStatus;
-  moderationState?: NonNullable<Doc<"packageReleases">["manualModeration"]>["state"] | null;
+  moderationState?: PackageReleaseModerationState | null;
   moderationReason?: string | null;
   sourceRepo?: string | null;
   sourceCommit?: string | null;
@@ -440,9 +439,9 @@ type PackageModerationStatus = {
   latestRelease: {
     releaseId: Id<"packageReleases">;
     version: string;
-    artifactKind?: Doc<"packageReleases">["artifactKind"] | null;
+    artifactKind?: PackageReleaseArtifactKind | null;
     scanStatus: PackageReleaseScanStatus;
-    moderationState?: NonNullable<Doc<"packageReleases">["manualModeration"]>["state"] | null;
+    moderationState?: PackageReleaseModerationState | null;
     moderationReason?: string | null;
     blockedFromDownload: boolean;
     reasons: string[];
@@ -5058,11 +5057,11 @@ async function publishPackageImpl(
   auth: PackagePublishAuthContext,
   rawPayload: unknown,
 ) {
-  const payload = parseArk(
+  const payload = parseArk<ServerPackagePublishRequest>(
     ServerPackagePublishRequestSchema,
     rawPayload,
     "Package publish payload",
-  ) as ServerPackagePublishRequest;
+  );
   if (payload.family === "skill") {
     throw new ConvexError("Skill packages must use the skills publish flow");
   }
@@ -5182,7 +5181,7 @@ async function publishPackageImpl(
   }
 
   const displayName = payload.displayName?.trim() || name;
-  const files = normalizePublishFiles(payload.files as never);
+  const files = normalizePublishFiles(payload.files);
   const oversizedFile = findOversizedPublishFile(files);
   if (oversizedFile) {
     throw new ConvexError(getPublishFileSizeError(oversizedFile.path));
@@ -5475,19 +5474,6 @@ export const publishPackageForTrustedPublisherInternal = internalAction({
       );
     }
     return await publishPackageImpl(ctx, { kind: "github-actions", publishToken }, args.payload);
-  },
-});
-
-export const publishRelease = action({
-  args: { payload: v.any() },
-  handler: async (ctx, args) => {
-    const { userId } = await requireUserFromAction(ctx);
-    const payload = parseArk(
-      PackagePublishRequestSchema,
-      args.payload,
-      "Package publish payload",
-    ) as PackagePublishRequest;
-    return await publishPackageImpl(ctx, { kind: "user", actorUserId: userId }, payload);
   },
 });
 

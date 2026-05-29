@@ -63,7 +63,7 @@ clawhub package publish ./example-plugin
 ## Publish code plugins
 
 For ClawPack publish, create the npm-pack tarball yourself and upload that
-exact `.tgz`:
+exact `.tgz`. Package publish uploads are capped at 18MB:
 
 ```bash
 npm pack

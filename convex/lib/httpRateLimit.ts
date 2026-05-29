@@ -21,12 +21,54 @@ type RateLimitResult = {
   resetAt: number;
 };
 
+type UserRateLimitAuth = {
+  kind?: "user";
+  userId: string;
+  user: Pick<Doc<"users">, "role">;
+};
+
+type TrustedPublishRateLimitAuth = {
+  kind: "trusted-publish";
+  publishTokenId: string;
+};
+
+type RateLimitAuth = UserRateLimitAuth | TrustedPublishRateLimitAuth;
+
+export async function rejectIfMissingAuthAnonymousRateLimited(
+  ctx: ActionCtx,
+  request: Request,
+  kind: keyof typeof RATE_LIMITS,
+): Promise<{ ok: true } | { ok: false; response: Response }> {
+  if (parseBearerToken(request)) return { ok: true };
+
+  const ip = getClientIp(request) ?? "unknown";
+  const status = await getRateLimitStatus(
+    ctx,
+    getAnonymousRateLimitKey(request, kind, ip),
+    RATE_LIMITS[kind].ip,
+  );
+  if (status.allowed) return { ok: true };
+
+  console.info("rate_limit_denied", {
+    kind,
+    auth: false,
+    preAuth: true,
+    userAllowed: null,
+    ipAllowed: false,
+    ipSource: getClientIpSource(request),
+    hasClientIp: ip !== "unknown",
+  });
+  return { ok: false, response: rateLimitResponse(status) };
+}
+
 export async function applyRateLimit(
   ctx: ActionCtx,
   request: Request,
   kind: keyof typeof RATE_LIMITS,
+  options: { auth?: RateLimitAuth | null } = {},
 ): Promise<{ ok: true; headers: HeadersInit } | { ok: false; response: Response }> {
-  const auth = await getOptionalApiTokenUser(ctx, request);
+  const auth =
+    options.auth === undefined ? await getOptionalApiTokenUser(ctx, request) : options.auth;
   const ip = getClientIp(request) ?? "unknown";
   const ipSource = getClientIpSource(request);
   const hasClientIp = ip !== "unknown";
@@ -34,10 +76,10 @@ export async function applyRateLimit(
   // Authenticated requests are enforced and consumed by user bucket only to
   // avoid draining shared IP quota.
   if (auth) {
-    const userLimit = getAuthenticatedRateLimit(kind, auth.user);
+    const userLimit = getAuthenticatedRateLimit(kind, auth);
     const userResult = await checkRateLimit(
       ctx,
-      getAuthenticatedRateLimitKey(auth.userId, kind),
+      getAuthenticatedRateLimitKey(auth, kind),
       userLimit,
     );
     const headers = rateHeaders(userResult);
@@ -45,7 +87,7 @@ export async function applyRateLimit(
       console.info("rate_limit_denied", {
         kind,
         auth: true,
-        admin: auth.user.role === "admin",
+        admin: isAdminRateLimitAuth(auth),
         userAllowed: false,
         ipAllowed: null,
         ipSource,
@@ -53,17 +95,7 @@ export async function applyRateLimit(
       });
       return {
         ok: false,
-        response: new Response("Rate limit exceeded", {
-          status: 429,
-          headers: mergeHeaders(
-            {
-              "Content-Type": "text/plain; charset=utf-8",
-              "Cache-Control": "no-store",
-            },
-            headers,
-            corsHeaders(),
-          ),
-        }),
+        response: rateLimitResponse(userResult),
       };
     }
     return { ok: true, headers };
@@ -88,17 +120,7 @@ export async function applyRateLimit(
     });
     return {
       ok: false,
-      response: new Response("Rate limit exceeded", {
-        status: 429,
-        headers: mergeHeaders(
-          {
-            "Content-Type": "text/plain; charset=utf-8",
-            "Cache-Control": "no-store",
-          },
-          headers,
-          corsHeaders(),
-        ),
-      }),
+      response: rateLimitResponse(ipResult),
     };
   }
 
@@ -111,15 +133,17 @@ function getAnonymousRateLimitKey(request: Request, kind: keyof typeof RATE_LIMI
   return `ip:unknown:download:${getDownloadRateLimitScope(request)}`;
 }
 
-function getAuthenticatedRateLimitKey(userId: string, kind: keyof typeof RATE_LIMITS) {
-  return `user:${userId}:${kind}`;
+function getAuthenticatedRateLimitKey(auth: RateLimitAuth, kind: keyof typeof RATE_LIMITS) {
+  if (auth.kind === "trusted-publish") return `trusted-publish:${auth.publishTokenId}:${kind}`;
+  return `user:${auth.userId}:${kind}`;
 }
 
-function getAuthenticatedRateLimit(
-  kind: keyof typeof RATE_LIMITS,
-  user: Pick<Doc<"users">, "role">,
-) {
-  return user.role === "admin" ? RATE_LIMITS[kind].adminKey : RATE_LIMITS[kind].key;
+function getAuthenticatedRateLimit(kind: keyof typeof RATE_LIMITS, auth: RateLimitAuth) {
+  return isAdminRateLimitAuth(auth) ? RATE_LIMITS[kind].adminKey : RATE_LIMITS[kind].key;
+}
+
+function isAdminRateLimitAuth(auth: RateLimitAuth) {
+  return auth.kind !== "trusted-publish" && auth.user.role === "admin";
 }
 
 export function getClientIp(request: Request) {
@@ -151,11 +175,7 @@ async function checkRateLimit(
   limit: number,
 ): Promise<RateLimitResult> {
   // Step 1: Read-only check to avoid write conflicts on denied requests.
-  const status = (await ctx.runQuery(internal.rateLimits.getRateLimitStatusInternal, {
-    key,
-    limit,
-    windowMs: RATE_LIMIT_WINDOW_MS,
-  })) as RateLimitResult;
+  const status = await getRateLimitStatus(ctx, key, limit);
 
   if (!status.allowed) {
     return status;
@@ -188,6 +208,32 @@ async function checkRateLimit(
     limit: status.limit,
     resetAt: status.resetAt,
   };
+}
+
+async function getRateLimitStatus(
+  ctx: ActionCtx,
+  key: string,
+  limit: number,
+): Promise<RateLimitResult> {
+  return (await ctx.runQuery(internal.rateLimits.getRateLimitStatusInternal, {
+    key,
+    limit,
+    windowMs: RATE_LIMIT_WINDOW_MS,
+  })) as RateLimitResult;
+}
+
+function rateLimitResponse(result: RateLimitResult) {
+  return new Response("Rate limit exceeded", {
+    status: 429,
+    headers: mergeHeaders(
+      {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-store",
+      },
+      rateHeaders(result),
+      corsHeaders(),
+    ),
+  });
 }
 
 function rateHeaders(result: RateLimitResult): HeadersInit {

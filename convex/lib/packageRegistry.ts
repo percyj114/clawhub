@@ -4,6 +4,7 @@ import {
 } from "clawhub-schema";
 import type {
   BundlePublishMetadata,
+  CliPublishFile,
   PackageCapabilitySummary,
   PackageCompatibility,
   PackageVerificationSummary,
@@ -19,13 +20,7 @@ import { getFrontmatterValue, parseFrontmatter, sanitizePath } from "./skills";
 
 const PACKAGE_NAME_PATTERN = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
 
-type PublishFile = {
-  path: string;
-  size: number;
-  storageId: string;
-  sha256: string;
-  contentType?: string;
-};
+type PublishFile = CliPublishFile;
 
 type SourceInfo = {
   kind: "github";
@@ -75,8 +70,12 @@ function normalizeTagSegment(value: string) {
     .replace(/^-+|-+$/g, "");
 }
 
+function isNonEmptyString(value: string | undefined | null): value is string {
+  return Boolean(value);
+}
+
 function uniq(items: Array<string | undefined | null>) {
-  return [...new Set(items.map((item) => item?.trim()).filter(Boolean) as string[])];
+  return [...new Set(items.map((item) => item?.trim()).filter(isNonEmptyString))];
 }
 
 function isRequiredEnvironmentFlag(value: unknown): boolean {
@@ -185,12 +184,11 @@ export function tryNormalizePackageName(name: string) {
 }
 
 export function normalizePublishFiles(files: PublishFile[]) {
-  const normalized = files.map((file) => ({
-    ...file,
-    path: sanitizePath(file.path),
-  }));
-  if (normalized.some((file) => !file.path)) throw new ConvexError("Invalid file paths");
-  return normalized.map((file) => ({ ...file, path: file.path as string }));
+  return files.map((file) => {
+    const path = sanitizePath(file.path);
+    if (!path) throw new ConvexError("Invalid file paths");
+    return { ...file, path };
+  });
 }
 
 export function assertPackageVersion(

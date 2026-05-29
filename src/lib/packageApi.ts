@@ -214,7 +214,7 @@ function resolveAbsoluteBaseUrl(...candidates: Array<string | undefined>) {
   return null;
 }
 
-async function packageApiUrl(path: string) {
+export async function packageApiUrl(path: string) {
   const normalizedPath = normalizeApiPath(path);
   if (typeof window !== "undefined") {
     // In production, Vercel rewrites /api/* to the Convex site, so relative
@@ -244,6 +244,17 @@ async function packageApiUrl(path: string) {
       getRuntimeEnv("VITE_CONVEX_URL"),
     ) ?? getRequiredRuntimeEnv("VITE_CONVEX_URL");
   return new URL(normalizedPath, base);
+}
+
+export function packageApiWriteUrl(path: string) {
+  const base = resolveAbsoluteBaseUrl(
+    getRuntimeEnv("VITE_CONVEX_SITE_URL"),
+    getRuntimeEnv("CONVEX_SITE_URL"),
+  );
+  if (!base) {
+    throw new Error("Missing required environment variable: VITE_CONVEX_SITE_URL");
+  }
+  return new URL(normalizeApiPath(path), base);
 }
 
 export function getPackageDownloadPath(name: string, version?: string | null) {

@@ -1,12 +1,22 @@
-import { describe, expect, it, vi } from "vitest";
+import { getAuthUserId } from "@convex-dev/auth/server";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BLOCKED_API_TOKEN_ACCOUNT_MESSAGE,
   INVALID_API_TOKEN_MESSAGE,
   MISSING_API_TOKEN_MESSAGE,
   getOptionalApiTokenUserId,
   requireApiTokenUser,
+  requirePackagePublishAuth,
 } from "./apiTokenAuth";
 import { hashToken } from "./tokens";
+
+vi.mock("@convex-dev/auth/server", () => ({
+  getAuthUserId: vi.fn(),
+}));
+
+beforeEach(() => {
+  vi.mocked(getAuthUserId).mockReset();
+});
 
 describe("getOptionalApiTokenUserId", () => {
   it("returns null when auth header is missing", async () => {
@@ -154,5 +164,119 @@ describe("requireApiTokenUser", () => {
         new Request("https://example.com", { headers: { authorization: "Bearer token-6" } }),
       ),
     ).rejects.toThrow(BLOCKED_API_TOKEN_ACCOUNT_MESSAGE);
+  });
+});
+
+describe("requirePackagePublishAuth", () => {
+  it("accepts API tokens and touches token usage metadata", async () => {
+    vi.mocked(getAuthUserId).mockResolvedValue(null as never);
+    const tokenId = "apiTokens_5";
+    const userId = "users_api";
+    let tokenHashLookups = 0;
+    const ctx = {
+      runQuery: vi
+        .fn()
+        .mockImplementation(async (_fn, args: { tokenHash?: string; tokenId?: string }) => {
+          if (args.tokenHash) {
+            tokenHashLookups += 1;
+            return tokenHashLookups === 1 ? null : { _id: tokenId, revokedAt: undefined };
+          }
+          if (args.tokenId === tokenId) {
+            return {
+              _id: userId,
+              deletedAt: undefined,
+              deactivatedAt: undefined,
+              role: "user",
+            };
+          }
+          return null;
+        }),
+      runMutation: vi.fn(),
+    };
+
+    const auth = await requirePackagePublishAuth(
+      ctx as never,
+      new Request("https://example.com", {
+        headers: { authorization: "Bearer clh_api_token" },
+      }),
+    );
+
+    expect(auth).toMatchObject({ kind: "user", userId });
+    expect(ctx.runMutation).toHaveBeenCalledWith(expect.anything(), { tokenId });
+  });
+
+  it("accepts a Convex auth session token for browser multipart publishes", async () => {
+    vi.mocked(getAuthUserId).mockResolvedValue("users_session" as never);
+    const ctx = {
+      runQuery: vi
+        .fn()
+        .mockImplementation(async (_fn, args: { tokenHash?: string; userId?: string }) => {
+          if (args.tokenHash) return null;
+          if (args.userId) {
+            return { _id: args.userId, deletedAt: undefined, deactivatedAt: undefined };
+          }
+          return null;
+        }),
+      runMutation: vi.fn(),
+    };
+
+    const auth = await requirePackagePublishAuth(
+      ctx as never,
+      new Request("https://example.com", {
+        headers: { authorization: "Bearer convex-session-token" },
+      }),
+    );
+
+    expect(auth).toMatchObject({ kind: "user", userId: "users_session" });
+  });
+
+  it.each(["deletedAt", "deactivatedAt"] as const)(
+    "rejects Convex auth session tokens for users with %s",
+    async (blockedField) => {
+      vi.mocked(getAuthUserId).mockResolvedValue("users_blocked" as never);
+      const ctx = {
+        runQuery: vi
+          .fn()
+          .mockImplementation(async (_fn, args: { tokenHash?: string; userId?: string }) => {
+            if (args.tokenHash) return null;
+            if (args.userId) {
+              return {
+                _id: args.userId,
+                deletedAt: blockedField === "deletedAt" ? Date.now() : undefined,
+                deactivatedAt: blockedField === "deactivatedAt" ? Date.now() : undefined,
+              };
+            }
+            return null;
+          }),
+        runMutation: vi.fn(),
+      };
+
+      await expect(
+        requirePackagePublishAuth(
+          ctx as never,
+          new Request("https://example.com", {
+            headers: { authorization: "Bearer convex-session-token" },
+          }),
+        ),
+      ).rejects.toThrow();
+      expect(ctx.runMutation).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects an unknown bearer token without a valid session", async () => {
+    vi.mocked(getAuthUserId).mockResolvedValue(null as never);
+    const ctx = {
+      runQuery: vi.fn().mockResolvedValue(null),
+      runMutation: vi.fn(),
+    };
+
+    await expect(
+      requirePackagePublishAuth(
+        ctx as never,
+        new Request("https://example.com", {
+          headers: { authorization: "Bearer bad-token" },
+        }),
+      ),
+    ).rejects.toThrow(INVALID_API_TOKEN_MESSAGE);
   });
 });

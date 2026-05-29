@@ -2,31 +2,20 @@ import { ConvexError } from "convex/values";
 import { internal } from "../_generated/api";
 import type { Doc } from "../_generated/dataModel";
 import type { ActionCtx } from "../_generated/server";
+import { getOptionalActiveAuthUserIdFromAction } from "./access";
 import { hashToken } from "./tokens";
 
 type TokenAuthResult = { user: Doc<"users">; userId: Doc<"users">["_id"] };
+type ApiTokenAuthResult = TokenAuthResult & { apiToken: ApiTokenDoc };
 type ApiTokenDoc = Doc<"apiTokens">;
 type PackagePublishTokenAuthResult = {
   kind: "github-actions";
   publishToken: Doc<"packagePublishTokens">;
 };
-type PackagePublishTokenDoc = Doc<"packagePublishTokens">;
 type UserPackagePublishAuthResult = {
   kind: "user";
   user: Doc<"users">;
   userId: Doc<"users">["_id"];
-};
-
-const internalRefs = internal as unknown as {
-  tokens: {
-    getByHashInternal: unknown;
-    getUserForTokenInternal: unknown;
-    touchInternal: unknown;
-  };
-  packagePublishTokens: {
-    getByHashInternal: unknown;
-    touchInternal: unknown;
-  };
 };
 
 export const MISSING_API_TOKEN_MESSAGE =
@@ -45,29 +34,18 @@ export async function requireApiTokenUser(
   if (!token) throw new ConvexError(MISSING_API_TOKEN_MESSAGE);
 
   const tokenHash = await hashToken(token);
-  const apiToken = (await ctx.runQuery(
-    internalRefs.tokens.getByHashInternal as never,
-    {
-      tokenHash,
-    } as never,
-  )) as ApiTokenDoc | null;
+  const apiToken = await ctx.runQuery(internal.tokens.getByHashInternal, { tokenHash });
   if (!apiToken || apiToken.revokedAt) throw new ConvexError(INVALID_API_TOKEN_MESSAGE);
 
-  const user = (await ctx.runQuery(
-    internalRefs.tokens.getUserForTokenInternal as never,
-    {
-      tokenId: apiToken._id,
-    } as never,
-  )) as Doc<"users"> | null;
+  const user = await ctx.runQuery(internal.tokens.getUserForTokenInternal, {
+    tokenId: apiToken._id,
+  });
   if (!user || user.deletedAt || user.deactivatedAt) {
     throw new ConvexError(BLOCKED_API_TOKEN_ACCOUNT_MESSAGE);
   }
 
   try {
-    await ctx.runMutation(
-      internalRefs.tokens.touchInternal as never,
-      { tokenId: apiToken._id } as never,
-    );
+    await ctx.runMutation(internal.tokens.touchInternal, { tokenId: apiToken._id });
   } catch {
     // Best-effort metadata; auth succeeded and should not fail on write contention.
   }
@@ -85,28 +63,28 @@ export async function getOptionalApiTokenUser(
   ctx: ActionCtx,
   request: Request,
 ): Promise<TokenAuthResult | null> {
+  const auth = await getOptionalApiTokenAuth(ctx, request);
+  return auth ? { user: auth.user, userId: auth.userId } : null;
+}
+
+async function getOptionalApiTokenAuth(
+  ctx: ActionCtx,
+  request: Request,
+): Promise<ApiTokenAuthResult | null> {
   const header = request.headers.get("authorization") ?? request.headers.get("Authorization");
   const token = parseBearerToken(header);
   if (!token) return null;
 
   const tokenHash = await hashToken(token);
-  const apiToken = (await ctx.runQuery(
-    internalRefs.tokens.getByHashInternal as never,
-    {
-      tokenHash,
-    } as never,
-  )) as ApiTokenDoc | null;
+  const apiToken = await ctx.runQuery(internal.tokens.getByHashInternal, { tokenHash });
   if (!apiToken || apiToken.revokedAt) return null;
 
-  const user = (await ctx.runQuery(
-    internalRefs.tokens.getUserForTokenInternal as never,
-    {
-      tokenId: apiToken._id,
-    } as never,
-  )) as Doc<"users"> | null;
+  const user = await ctx.runQuery(internal.tokens.getUserForTokenInternal, {
+    tokenId: apiToken._id,
+  });
   if (!user || user.deletedAt || user.deactivatedAt) return null;
 
-  return { user, userId: user._id };
+  return { user, userId: user._id, apiToken };
 }
 
 export async function requirePackagePublishAuth(
@@ -115,31 +93,45 @@ export async function requirePackagePublishAuth(
 ): Promise<UserPackagePublishAuthResult | PackagePublishTokenAuthResult> {
   const header = request.headers.get("authorization") ?? request.headers.get("Authorization");
   const token = parseBearerToken(header);
-  if (!token) throw new ConvexError(MISSING_API_TOKEN_MESSAGE);
-
-  const tokenHash = await hashToken(token);
-  const publishToken = (await ctx.runQuery(
-    internalRefs.packagePublishTokens.getByHashInternal as never,
-    {
+  if (token) {
+    const tokenHash = await hashToken(token);
+    const publishToken = await ctx.runQuery(internal.packagePublishTokens.getByHashInternal, {
       tokenHash,
-    } as never,
-  )) as PackagePublishTokenDoc | null;
-  if (publishToken && !publishToken.revokedAt && publishToken.expiresAt > Date.now()) {
-    try {
-      await ctx.runMutation(
-        internalRefs.packagePublishTokens.touchInternal as never,
-        {
+    });
+    if (publishToken && !publishToken.revokedAt && publishToken.expiresAt > Date.now()) {
+      try {
+        await ctx.runMutation(internal.packagePublishTokens.touchInternal, {
           tokenId: publishToken._id,
-        } as never,
-      );
-    } catch {
-      // Best-effort metadata; publish auth should not fail on touch contention.
+        });
+      } catch {
+        // Best-effort metadata; publish auth should not fail on touch contention.
+      }
+      return { kind: "github-actions", publishToken };
     }
-    return { kind: "github-actions", publishToken };
+
+    const apiTokenAuth = await getOptionalApiTokenAuth(ctx, request);
+    if (apiTokenAuth) {
+      try {
+        await ctx.runMutation(internal.tokens.touchInternal, {
+          tokenId: apiTokenAuth.apiToken._id,
+        });
+      } catch {
+        // Best-effort metadata; publish auth should not fail on touch contention.
+      }
+      return { kind: "user", user: apiTokenAuth.user, userId: apiTokenAuth.userId };
+    }
   }
 
-  const auth = await requireApiTokenUser(ctx, request);
-  return { kind: "user", user: auth.user, userId: auth.userId };
+  const sessionUserId = await getOptionalActiveAuthUserIdFromAction(ctx);
+  if (sessionUserId) {
+    const user = await ctx.runQuery(internal.users.getByIdInternal, { userId: sessionUserId });
+    if (!user || user.deletedAt || user.deactivatedAt) {
+      throw new ConvexError(BLOCKED_API_TOKEN_ACCOUNT_MESSAGE);
+    }
+    return { kind: "user", user, userId: user._id };
+  }
+
+  throw new ConvexError(token ? INVALID_API_TOKEN_MESSAGE : MISSING_API_TOKEN_MESSAGE);
 }
 
 export function parseBearerToken(header: string | null) {

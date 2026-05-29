@@ -1224,9 +1224,14 @@ Publishes a new version.
 Publishes a code-plugin or bundle-plugin release.
 
 - Requires Bearer token auth.
-- Requires `multipart/form-data` with `payload` JSON + either `files[]` blobs or one `tarball` `.tgz` upload.
+- Requires `multipart/form-data` with `payload` JSON + either `files` blobs or
+  one `clawpack` `.tgz` upload. The `files[]` and `tarball` field names are
+  accepted as aliases.
+- Package multipart uploads are capped at 18MB, counting the `payload` JSON,
+  uploaded bytes, and multipart headers.
 - JSON request bodies are not accepted for package publish.
-- Optional payload field: `ownerHandle`. When present, only admins may publish on behalf of that owner.
+- Optional payload field: `ownerHandle`. When present, the API resolves that
+  publisher server-side and requires the actor to have publisher access.
 
 Validation highlights:
 

@@ -129,10 +129,15 @@ See also: [acceptable-usage.md](./acceptable-usage.md) for the marketplace polic
 - ClawHub must create package artifact metadata from the uploaded multipart
   bytes. Caller-supplied `artifact` metadata is untrusted and must be rejected
   before publish actions run.
-- Package publish accepts either multipart `files[]` uploads or one multipart
-  `tarball` `.tgz` file part, never both in the same request.
+- Package publish accepts either multipart `files` uploads or one multipart
+  `clawpack` `.tgz` file part, never both in the same request. `files[]` and
+  `tarball` remain accepted aliases.
+- Package publish multipart bytes are capped at 18MB so callers get a clear
+  ClawHub validation error before hitting Convex's 20MB HTTP action body cap.
+- Package publish must reject caller-supplied `artifact` metadata while keeping
+  released CLI field names compatible.
 - For tarball uploads, ClawHub stores the uploaded tarball, derives its artifact
-  hashes and npm metadata, and derives package `files[]` from the tarball
+  hashes and npm metadata, and derives package file metadata from the tarball
   contents.
 
 ## Skill moderation pipeline

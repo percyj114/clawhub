@@ -29,6 +29,7 @@ type ArtifactExportPage = {
   continueCursor: string;
   exportMode: "public";
 };
+type OwnerLookupSource = Pick<Doc<"skills">, "ownerPublisherId" | "ownerUserId">;
 
 const SECRET_PATTERNS: RegExp[] = [
   /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi,
@@ -386,10 +387,7 @@ function normalizeLlmAnalysis(analysis: StoredLlmAnalysis) {
   };
 }
 
-async function getPublicOwnerHandle(
-  ctx: QueryCtx,
-  source: Pick<Doc<"skills"> | Doc<"packages">, "ownerPublisherId" | "ownerUserId">,
-) {
+async function getPublicOwnerHandle(ctx: QueryCtx, source: OwnerLookupSource) {
   const owner = await getOwnerPublisher(ctx, {
     ownerPublisherId: source.ownerPublisherId,
     ownerUserId: source.ownerUserId,

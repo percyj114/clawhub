@@ -15,6 +15,7 @@ import {
   fetchPluginCatalog,
   fetchPackages,
   getPackageDownloadPath,
+  packageApiWriteUrl,
   PackageApiError,
 } from "./packageApi";
 
@@ -58,6 +59,20 @@ describe("fetchPackages", () => {
     expect(url.searchParams.get("capabilityTag")).toBe("tools");
     expect(url.searchParams.get("limit")).toBe("12");
     expect(url.searchParams.get("isOfficial")).toBe("true");
+  });
+
+  it("resolves package writes to the configured Convex site on hosted browser deployments", async () => {
+    vi.stubEnv("VITE_CONVEX_SITE_URL", "https://preview-deployment.convex.site");
+    vi.stubGlobal("window", {
+      location: {
+        hostname: "preview-clawhub.vercel.app",
+        origin: "https://preview-clawhub.vercel.app",
+      },
+    });
+
+    expect(packageApiWriteUrl("/api/v1/packages").toString()).toBe(
+      "https://preview-deployment.convex.site/api/v1/packages",
+    );
   });
 
   it("forwards skill family on package listings", async () => {

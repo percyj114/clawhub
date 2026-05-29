@@ -380,7 +380,9 @@ function scannerStatusFromReasonCodes(params: {
   return status === "malicious" || status === "suspicious" ? undefined : status;
 }
 
-function isClawScanMaliciousAnalysis(analysis: Doc<"skillVersions">["llmAnalysis"] | undefined) {
+function isClawScanMaliciousAnalysis(
+  analysis: { status?: string; verdict?: string } | null | undefined,
+) {
   return normalizeAnalysisStatus(analysis?.verdict ?? analysis?.status) === "malicious";
 }
 

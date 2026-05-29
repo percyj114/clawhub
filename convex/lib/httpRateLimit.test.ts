@@ -1,6 +1,11 @@
 /* @vitest-environment node */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { applyRateLimit, getClientIp, RATE_LIMITS } from "./httpRateLimit";
+import {
+  applyRateLimit,
+  getClientIp,
+  RATE_LIMITS,
+  rejectIfMissingAuthAnonymousRateLimited,
+} from "./httpRateLimit";
 
 type MockRateLimitStatus = {
   allowed: boolean;
@@ -12,6 +17,7 @@ type MockRateLimitStatus = {
 type MockRateLimitPlan = {
   ip: MockRateLimitStatus;
   user?: MockRateLimitStatus;
+  trustedPublish?: MockRateLimitStatus;
   tokenValid?: boolean;
   userActive?: boolean;
   userRole?: "admin" | "moderator" | "user" | null;
@@ -36,13 +42,18 @@ function makeRateLimitCtx(plan: MockRateLimitPlan) {
       const key = String(args.key);
       if (key.startsWith("ip:")) return plan.ip;
       if (key.startsWith("user:")) return plan.user;
+      if (key.startsWith("trusted-publish:")) return plan.trustedPublish;
     }
     throw new Error(`Unexpected runQuery args: ${JSON.stringify(args)}`);
   });
 
   const runMutation = vi.fn(async (_fn: unknown, args: Record<string, unknown>) => {
     const key = String(args.key);
-    const source = key.startsWith("user:") ? plan.user : plan.ip;
+    const source = key.startsWith("user:")
+      ? plan.user
+      : key.startsWith("trusted-publish:")
+        ? plan.trustedPublish
+        : plan.ip;
     if (!source) throw new Error(`Missing rate limit source for ${key}`);
     return { allowed: source.allowed, remaining: source.remaining };
   });
@@ -291,6 +302,195 @@ describe("applyRateLimit headers", () => {
     const consumedKeys = runMutation.mock.calls.map(([, args]) => String(args.key));
     expect(consumedKeys.some((key) => key.startsWith("user:"))).toBe(true);
     expect(consumedKeys.some((key) => key.startsWith("ip:"))).toBe(false);
+  });
+
+  it("uses provided session auth instead of looking up bearer token auth", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(3_150_000);
+    const ctx = makeRateLimitCtx({
+      ip: {
+        allowed: false,
+        remaining: 0,
+        limit: RATE_LIMITS.write.ip,
+        resetAt: 3_180_000,
+      },
+      user: {
+        allowed: true,
+        remaining: 42,
+        limit: RATE_LIMITS.write.key,
+        resetAt: 3_180_000,
+      },
+    });
+    const request = new Request("https://example.com", {
+      headers: { "cf-connecting-ip": "203.0.113.1" },
+    });
+
+    const result = await applyRateLimit(ctx, request, "write", {
+      auth: { userId: "users_session", user: { role: "user" } },
+    });
+
+    expect(result.ok).toBe(true);
+    const runQuery = (ctx as unknown as { runQuery: ReturnType<typeof vi.fn> }).runQuery;
+    const queryArgs = runQuery.mock.calls.map(([, args]) => args as Record<string, unknown>);
+    expect(queryArgs).toContainEqual(
+      expect.objectContaining({
+        key: "user:users_session:write",
+        limit: RATE_LIMITS.write.key,
+      }),
+    );
+    expect(queryArgs.some((args) => "tokenHash" in args)).toBe(false);
+    expect(queryArgs.some((args) => String(args.key).startsWith("ip:"))).toBe(false);
+  });
+
+  it("uses trusted publish auth instead of the shared ip bucket", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(3_160_000);
+    const ctx = makeRateLimitCtx({
+      ip: {
+        allowed: false,
+        remaining: 0,
+        limit: RATE_LIMITS.write.ip,
+        resetAt: 3_190_000,
+      },
+      trustedPublish: {
+        allowed: true,
+        remaining: 41,
+        limit: RATE_LIMITS.write.key,
+        resetAt: 3_190_000,
+      },
+    });
+    const request = new Request("https://example.com", {
+      headers: { "cf-connecting-ip": "203.0.113.1" },
+    });
+
+    const result = await applyRateLimit(ctx, request, "write", {
+      auth: { kind: "trusted-publish", publishTokenId: "packagePublishTokens:1" },
+    });
+
+    expect(result.ok).toBe(true);
+    const runQuery = (ctx as unknown as { runQuery: ReturnType<typeof vi.fn> }).runQuery;
+    const queryArgs = runQuery.mock.calls.map(([, args]) => args as Record<string, unknown>);
+    expect(queryArgs).toContainEqual(
+      expect.objectContaining({
+        key: "trusted-publish:packagePublishTokens:1:write",
+        limit: RATE_LIMITS.write.key,
+      }),
+    );
+    expect(queryArgs.some((args) => "tokenHash" in args)).toBe(false);
+    expect(queryArgs.some((args) => String(args.key).startsWith("ip:"))).toBe(false);
+  });
+
+  it("uses the anonymous bucket when auth is explicitly null", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(3_175_000);
+    const ctx = makeRateLimitCtx({
+      ip: {
+        allowed: true,
+        remaining: 19,
+        limit: RATE_LIMITS.write.ip,
+        resetAt: 3_200_000,
+      },
+      user: {
+        allowed: true,
+        remaining: 42,
+        limit: RATE_LIMITS.write.key,
+        resetAt: 3_200_000,
+      },
+    });
+    const request = new Request("https://example.com", {
+      headers: {
+        authorization: "Bearer clh_token",
+        "cf-connecting-ip": "203.0.113.1",
+      },
+    });
+
+    const result = await applyRateLimit(ctx, request, "write", { auth: null });
+
+    expect(result.ok).toBe(true);
+    const runQuery = (ctx as unknown as { runQuery: ReturnType<typeof vi.fn> }).runQuery;
+    const queryArgs = runQuery.mock.calls.map(([, args]) => args as Record<string, unknown>);
+    expect(queryArgs).toContainEqual(
+      expect.objectContaining({
+        key: "ip:203.0.113.1:write",
+        limit: RATE_LIMITS.write.ip,
+      }),
+    );
+    expect(queryArgs.some((args) => "tokenHash" in args)).toBe(false);
+    expect(queryArgs.some((args) => String(args.key).startsWith("user:"))).toBe(false);
+  });
+
+  it("checks anonymous write status without consuming when auth is missing", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(3_190_000);
+    const ctx = makeRateLimitCtx({
+      ip: {
+        allowed: true,
+        remaining: 19,
+        limit: RATE_LIMITS.write.ip,
+        resetAt: 3_220_000,
+      },
+    });
+    const request = new Request("https://example.com", {
+      headers: { "cf-connecting-ip": "203.0.113.1" },
+    });
+
+    const result = await rejectIfMissingAuthAnonymousRateLimited(ctx, request, "write");
+
+    expect(result.ok).toBe(true);
+    const runQuery = (ctx as unknown as { runQuery: ReturnType<typeof vi.fn> }).runQuery;
+    const runMutation = (ctx as unknown as { runMutation: ReturnType<typeof vi.fn> }).runMutation;
+    expect(runQuery.mock.calls.map(([, args]) => args)).toContainEqual(
+      expect.objectContaining({
+        key: "ip:203.0.113.1:write",
+        limit: RATE_LIMITS.write.ip,
+      }),
+    );
+    expect(runMutation).not.toHaveBeenCalled();
+  });
+
+  it("rejects over-limit anonymous write status when auth is missing", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(3_195_000);
+    const ctx = makeRateLimitCtx({
+      ip: {
+        allowed: false,
+        remaining: 0,
+        limit: RATE_LIMITS.write.ip,
+        resetAt: 3_225_000,
+      },
+    });
+    const request = new Request("https://example.com", {
+      headers: { "cf-connecting-ip": "203.0.113.1" },
+    });
+
+    const result = await rejectIfMissingAuthAnonymousRateLimited(ctx, request, "write");
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.response.status).toBe(429);
+    expect(result.response.headers.get("Retry-After")).toBe("30");
+    const runMutation = (ctx as unknown as { runMutation: ReturnType<typeof vi.fn> }).runMutation;
+    expect(runMutation).not.toHaveBeenCalled();
+  });
+
+  it("does not pre-auth reject bearer requests from exhausted shared IPs", async () => {
+    const ctx = makeRateLimitCtx({
+      ip: {
+        allowed: false,
+        remaining: 0,
+        limit: RATE_LIMITS.write.ip,
+        resetAt: 3_225_000,
+      },
+    });
+    const request = new Request("https://example.com", {
+      headers: {
+        authorization: "Bearer clh_token",
+        "cf-connecting-ip": "203.0.113.1",
+      },
+    });
+
+    const result = await rejectIfMissingAuthAnonymousRateLimited(ctx, request, "write");
+
+    expect(result.ok).toBe(true);
+    const runQuery = (ctx as unknown as { runQuery: ReturnType<typeof vi.fn> }).runQuery;
+    const runMutation = (ctx as unknown as { runMutation: ReturnType<typeof vi.fn> }).runMutation;
+    expect(runQuery).not.toHaveBeenCalled();
+    expect(runMutation).not.toHaveBeenCalled();
   });
 
   it("uses the admin bucket for authenticated admin requests", async () => {

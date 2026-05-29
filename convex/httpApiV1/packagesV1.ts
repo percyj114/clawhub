@@ -17,11 +17,12 @@ import {
   PublishTokenMintRequestSchema,
   isPluginCategorySlug,
   parseArk,
+  type PackagePublishMetadata,
   type PackageAppealListStatus,
   type PackageModerationQueueStatus,
   type PackageOfficialMigrationListPhase,
-  type PackagePublishMetadata,
   type PackageReportListStatus,
+  type ServerPackagePublishRequest,
 } from "clawhub-schema";
 import { api, internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
@@ -34,7 +35,7 @@ import {
   verifyGitHubActionsTrustedPublishJwt,
 } from "../lib/githubActionsOidc";
 import { corsHeaders, mergeHeaders } from "../lib/httpHeaders";
-import { applyRateLimit } from "../lib/httpRateLimit";
+import { applyRateLimit, rejectIfMissingAuthAnonymousRateLimited } from "../lib/httpRateLimit";
 import { tryNormalizePackageName } from "../lib/packageRegistry";
 import {
   getPackageDownloadSecurityBlock,
@@ -44,7 +45,9 @@ import {
 } from "../lib/packageSecurity";
 import {
   getClawPackSizeError,
+  getPackageMultipartSizeError,
   getPublishFileSizeError,
+  isPackageMultipartUploadTooLarge,
   MAX_CLAWPACK_BYTES,
   MAX_PUBLISH_FILE_BYTES,
 } from "../lib/publishLimits";
@@ -219,6 +222,13 @@ function normalizeCapabilityTagSegment(value: string) {
 
 const PACKAGE_FAMILY_VALUES = ["skill", "code-plugin", "bundle-plugin"] as const;
 const PACKAGE_CHANNEL_VALUES = ["official", "community", "private"] as const;
+const PACKAGE_PUBLISH_FILE_FIELDS = ["files", "files[]"] as const;
+const PACKAGE_PUBLISH_TARBALL_FIELDS = ["clawpack", "tarball"] as const;
+const PACKAGE_PUBLISH_FORM_FIELDS = new Set([
+  "payload",
+  ...PACKAGE_PUBLISH_FILE_FIELDS,
+  ...PACKAGE_PUBLISH_TARBALL_FIELDS,
+]);
 
 function invalidQueryParamMessage(name: string) {
   return `Invalid ${name} query parameter`;
@@ -1021,32 +1031,16 @@ function skillVersionTags(tags: Record<string, string>, version: string) {
     .map(([tag]) => tag);
 }
 
-type StoredPackagePublishFile = {
-  path: string;
-  size: number;
-  storageId: Id<"_storage">;
-  sha256: string;
-  contentType?: string;
-};
-
-function buildPackagePublishBody(
-  metadata: PackagePublishMetadata,
-  files: StoredPackagePublishFile[],
-) {
-  if (files.length === 0) throw new Error("files required");
-  return { ...metadata, files };
-}
+type StoredPackagePublishFile = ServerPackagePublishRequest["files"][number];
+type PackagePublishTarballArtifact = NonNullable<ServerPackagePublishRequest["artifact"]>;
 
 function inferStoredPackageContentType(path: string) {
   const lower = path.toLowerCase();
   if (lower.endsWith(".json")) return "application/json";
-  if (lower.endsWith(".md") || lower.endsWith(".mdx") || lower.endsWith(".txt")) {
-    return "text/plain; charset=utf-8";
-  }
   if (lower.endsWith(".js") || lower.endsWith(".mjs") || lower.endsWith(".cjs")) {
     return "text/javascript; charset=utf-8";
   }
-  if (lower.endsWith(".ts") || lower.endsWith(".tsx")) return "text/plain; charset=utf-8";
+  if (isTextFile(path)) return "text/plain; charset=utf-8";
   return "application/octet-stream";
 }
 
@@ -1056,7 +1050,10 @@ function bytesToArrayBuffer(bytes: Uint8Array) {
   return copy.buffer;
 }
 
-async function storeClawPackFile(ctx: ActionCtx, entry: { path: string; bytes: Uint8Array }) {
+async function storeClawPackFile(
+  ctx: ActionCtx,
+  entry: { path: string; bytes: Uint8Array },
+): Promise<StoredPackagePublishFile> {
   if (entry.bytes.byteLength > MAX_PUBLISH_FILE_BYTES) {
     throw new Error(getPublishFileSizeError(entry.path));
   }
@@ -1073,88 +1070,127 @@ async function storeClawPackFile(ctx: ActionCtx, entry: { path: string; bytes: U
   };
 }
 
-async function storeClawPackFiles(
+async function storeUploadedPackageFile(
   ctx: ActionCtx,
-  entries: Array<{ path: string; bytes: Uint8Array }>,
-) {
-  return await Promise.all(entries.map((entry) => storeClawPackFile(ctx, entry)));
+  entry: File,
+): Promise<StoredPackagePublishFile> {
+  if (entry.size > MAX_PUBLISH_FILE_BYTES) {
+    throw new Error(getPublishFileSizeError(entry.name));
+  }
+  const buffer = new Uint8Array(await entry.arrayBuffer());
+  const contentType = inferStoredPackageContentType(entry.name);
+  const storageId = await ctx.storage.store(
+    new Blob([bytesToArrayBuffer(buffer)], { type: contentType }),
+  );
+  return {
+    path: entry.name,
+    size: entry.size,
+    storageId,
+    sha256: await sha256Hex(buffer),
+    contentType,
+  };
 }
 
-async function parseMultipartPackagePublish(ctx: ActionCtx, request: Request) {
+function getFileParts(form: FormData, fields: readonly string[], stringPartError: string) {
+  const parts = fields.flatMap((field) => form.getAll(field));
+  if (parts.some((entry) => typeof entry === "string")) {
+    throw new Error(stringPartError);
+  }
+  return parts.filter((entry): entry is File => typeof entry !== "string");
+}
+
+async function parseMultipartPackagePublish(
+  ctx: ActionCtx,
+  request: Request,
+): Promise<ServerPackagePublishRequest> {
   const form = await request.formData();
-  const payloadRaw = form.get("payload");
-  if (!payloadRaw || typeof payloadRaw !== "string") throw new Error("Missing payload");
+  for (const field of form.keys()) {
+    if (!PACKAGE_PUBLISH_FORM_FIELDS.has(field)) {
+      throw new Error(`Unsupported package publish form field: ${field}`);
+    }
+  }
+
+  const payloadParts = form.getAll("payload");
+  const payloadRaw = payloadParts[0];
+  if (payloadParts.length !== 1 || typeof payloadRaw !== "string") {
+    throw new Error("Package publish payload must be one JSON string");
+  }
   const parsedPayload: unknown = JSON.parse(payloadRaw);
-  const parsedMetadata = parseArk(
+  const metadata: PackagePublishMetadata = parseArk(
     PackagePublishMetadataSchema,
     parsedPayload,
     "Package publish payload",
   );
-  const metadata = {
-    name: parsedMetadata.name,
-    displayName: parsedMetadata.displayName ?? undefined,
-    ownerHandle: parsedMetadata.ownerHandle?.trim().replace(/^@+/, "") || undefined,
-    family: parsedMetadata.family,
-    version: parsedMetadata.version,
-    changelog: parsedMetadata.changelog,
-    clawScanNote: parsedMetadata.clawScanNote?.trim() || undefined,
-    manualOverrideReason: parsedMetadata.manualOverrideReason?.trim() || undefined,
-    channel: parsedMetadata.channel ?? undefined,
-    tags: parsedMetadata.tags?.filter(Boolean) ?? undefined,
-    source: parsedMetadata.source ?? undefined,
-    bundle: parsedMetadata.bundle ?? undefined,
-  } satisfies PackagePublishMetadata;
-  const files: StoredPackagePublishFile[] = [];
-  const tarballEntry = form.get("tarball");
-  const fileParts = form.getAll("files[]").filter((entry) => typeof entry !== "string");
 
-  if (tarballEntry && typeof tarballEntry !== "string") {
+  const tarballFiles = getFileParts(
+    form,
+    PACKAGE_PUBLISH_TARBALL_FIELDS,
+    "Package tarball upload must be a file",
+  );
+  if (tarballFiles.length > 1) throw new Error("Upload one package tarball");
+  const tarballEntry = tarballFiles[0];
+  const fileParts = getFileParts(
+    form,
+    PACKAGE_PUBLISH_FILE_FIELDS,
+    "Package publish files[] uploads must be files",
+  );
+
+  if (tarballEntry) {
     if (fileParts.length > 0) {
       throw new Error("Upload either a package tarball or individual files, not both");
     }
     if (tarballEntry.size > MAX_CLAWPACK_BYTES) {
       throw new Error(getClawPackSizeError(tarballEntry.name));
     }
+    if (
+      isPackageMultipartUploadTooLarge({
+        payloadJson: payloadRaw,
+        fileFieldName: "tarball",
+        files: [multipartUploadPart(tarballEntry)],
+      })
+    ) {
+      throw new Error(getPackageMultipartSizeError());
+    }
     const artifactBytes = new Uint8Array(await tarballEntry.arrayBuffer());
     const parsed = await parseClawPack(artifactBytes);
     const artifactBlob = new Blob([artifactBytes], { type: "application/octet-stream" });
     const artifactStorageId = await ctx.storage.store(artifactBlob);
-    const artifact = {
-      kind: "npm-pack" as const,
+    const artifact: PackagePublishTarballArtifact = {
+      kind: "npm-pack",
       storageId: artifactStorageId,
       sha256: parsed.artifactSha256,
       size: artifactBytes.byteLength,
-      format: "tgz" as const,
+      format: "tgz",
       npmIntegrity: parsed.npmIntegrity,
       npmShasum: parsed.npmShasum,
       npmTarballName: parsed.npmTarballName,
       npmUnpackedSize: parsed.unpackedSize,
       npmFileCount: parsed.fileCount,
     };
-    files.push(...(await storeClawPackFiles(ctx, parsed.entries)));
-    return { ...buildPackagePublishBody(metadata, files), artifact };
+    const files = await Promise.all(parsed.entries.map((entry) => storeClawPackFile(ctx, entry)));
+    return { ...metadata, files, artifact };
   }
 
-  for (const entry of fileParts) {
-    if (isMacJunkPath(entry.name)) continue;
-    if (entry.size > MAX_PUBLISH_FILE_BYTES) {
-      throw new Error(getPublishFileSizeError(entry.name));
-    }
-    const buffer = new Uint8Array(await entry.arrayBuffer());
-    const digest = await crypto.subtle.digest("SHA-256", buffer);
-    const sha256 = Array.from(new Uint8Array(digest), (byte) =>
-      byte.toString(16).padStart(2, "0"),
-    ).join("");
-    const storageId = await ctx.storage.store(entry);
-    files.push({
-      path: entry.name,
-      size: entry.size,
-      storageId,
-      sha256,
-      contentType: entry.type || undefined,
-    });
+  if (
+    isPackageMultipartUploadTooLarge({
+      payloadJson: payloadRaw,
+      fileFieldName: "files[]",
+      files: fileParts.map(multipartUploadPart),
+    })
+  ) {
+    throw new Error(getPackageMultipartSizeError());
   }
-  return buildPackagePublishBody(metadata, files);
+
+  const packageFileParts = fileParts.filter((entry) => !isMacJunkPath(entry.name));
+  const files = await Promise.all(
+    packageFileParts.map((entry) => storeUploadedPackageFile(ctx, entry)),
+  );
+  if (files.length === 0) throw new Error("files required");
+  return { ...metadata, files };
+}
+
+function multipartUploadPart(file: File) {
+  return { name: file.name, size: file.size, type: file.type };
 }
 
 async function listPackages(
@@ -1427,11 +1463,24 @@ export async function listBundlePluginsV1Handler(ctx: ActionCtx, request: Reques
 }
 
 export async function publishPackageV1Handler(ctx: ActionCtx, request: Request) {
-  const rate = await applyRateLimit(ctx, request, "write");
-  if (!rate.ok) return rate.response;
+  const preAuthRate = await rejectIfMissingAuthAnonymousRateLimited(ctx, request, "write");
+  if (!preAuthRate.ok) return preAuthRate.response;
 
-  const auth = await requirePackagePublishAuthOrResponse(ctx, request, rate.headers);
-  if (!auth.ok) return auth.response;
+  const auth = await requirePackagePublishAuthOrResponse(ctx, request, {});
+  if (!auth.ok) {
+    const rate = await applyRateLimit(ctx, request, "write", { auth: null });
+    if (!rate.ok) return rate.response;
+    return text(await auth.response.text(), auth.response.status, rate.headers);
+  }
+  const rate = await applyRateLimit(
+    ctx,
+    request,
+    "write",
+    auth.auth.kind === "user"
+      ? { auth: auth.auth }
+      : { auth: { kind: "trusted-publish", publishTokenId: auth.auth.publishToken._id } },
+  );
+  if (!rate.ok) return rate.response;
 
   try {
     const contentType = request.headers.get("content-type") ?? "";

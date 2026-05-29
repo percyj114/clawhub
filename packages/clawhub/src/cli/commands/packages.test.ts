@@ -1,8 +1,8 @@
 /* @vitest-environment node */
 
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync, zipSync } from "fflate";
@@ -68,6 +68,10 @@ async function makeTmpWorkdir() {
   return await mkdtemp(join(tmpdir(), "clawhub-package-"));
 }
 
+async function listClawPackTempDirs() {
+  return new Set((await readdir(tmpdir())).filter((name) => name.startsWith("clawhub-clawpack-")));
+}
+
 function runGit(cwd: string, args: string[]) {
   const result = spawnSync("git", ["-C", cwd, ...args], {
     encoding: "utf8",
@@ -99,21 +103,21 @@ function getPublishPayload() {
 
 function getUploadedFileNames() {
   const form = getPublishForm();
-  return (form.getAll("files[]") as Array<Blob & { name?: string }>)
+  return (form.getAll("files") as Array<Blob & { name?: string }>)
     .map((file) => file.name ?? "")
     .sort();
 }
 
 function getUploadedTarballNames() {
   const form = getPublishForm();
-  return (form.getAll("tarball") as Array<Blob & { name?: string }>)
+  return (form.getAll("clawpack") as Array<Blob & { name?: string }>)
     .map((file) => file.name ?? "")
     .sort();
 }
 
 function getUploadedTarballs() {
   const form = getPublishForm();
-  return form.getAll("tarball") as Array<Blob & { name?: string }>;
+  return form.getAll("clawpack") as Array<Blob & { name?: string }>;
 }
 
 function makeCodePluginPackageJson(overrides: Record<string, unknown>) {
@@ -1034,6 +1038,7 @@ describe("package commands", () => {
         },
       });
       expect(getUploadedTarballNames()).toEqual(["scope-demo-plugin-1.0.0.tgz"]);
+      expect(getUploadedFileNames()).toEqual([]);
       expect(httpMocks.apiRequestForm.mock.calls[0]?.[1]).toEqual(
         expect.objectContaining({ retryCount: 5 }),
       );
@@ -1290,6 +1295,7 @@ describe("package commands", () => {
         },
       });
       expect(getUploadedTarballNames()).toEqual([packName]);
+      expect(getUploadedFileNames()).toEqual([]);
       expect(uiMocks.spinner.succeed).toHaveBeenCalledWith(
         "OK. Published @scope/demo-plugin@1.0.0 (rel_1)",
       );
@@ -1335,6 +1341,42 @@ describe("package commands", () => {
       expect(uiMocks.spinner.succeed).toHaveBeenCalledWith(
         `Packed @scope/demo-plugin@1.0.0 -> ${packPath}`,
       );
+    } finally {
+      await rm(workdir, { recursive: true, force: true });
+    }
+  });
+
+  it("packs local ClawPacks over the multipart publish upload budget", async () => {
+    const workdir = await makeTmpWorkdir();
+    try {
+      const folder = join(workdir, "demo-heavy-plugin");
+      await mkdir(join(folder, "dist"), { recursive: true });
+      await mkdir(join(workdir, "packs"), { recursive: true });
+      await writeFile(
+        join(folder, "package.json"),
+        makeCodePluginPackageJson({
+          name: "demo-heavy-plugin",
+          displayName: "Demo Heavy Plugin",
+          version: "1.0.0",
+        }),
+        "utf8",
+      );
+      await writeFile(
+        join(folder, "openclaw.plugin.json"),
+        JSON.stringify({ id: "demo.heavy.plugin" }),
+        "utf8",
+      );
+      await writeFile(join(folder, "dist", "index.js"), "export const demo = true;\n", "utf8");
+      await writeFile(join(folder, "dist", "model.bin"), randomBytes(19 * 1024 * 1024));
+
+      await cmdPackPackage(makeOpts(workdir), "demo-heavy-plugin", {
+        packDestination: "packs",
+      });
+
+      const packPath = join(workdir, "packs", "demo-heavy-plugin-1.0.0.tgz");
+      const packed = await readFile(packPath);
+      expect(packed.byteLength).toBeGreaterThan(18 * 1024 * 1024);
+      expect(parseClawPack(new Uint8Array(packed)).packageName).toBe("demo-heavy-plugin");
     } finally {
       await rm(workdir, { recursive: true, force: true });
     }
@@ -1804,6 +1846,83 @@ describe("package commands", () => {
     }
   });
 
+  it("rejects package folders over the multipart HTTP body budget", async () => {
+    const workdir = await makeTmpWorkdir();
+    try {
+      const folder = join(workdir, "demo-bundle");
+      await mkdir(join(folder, ".codex-plugin"), { recursive: true });
+      await mkdir(join(folder, "dist"), { recursive: true });
+      await writeFile(
+        join(folder, "package.json"),
+        JSON.stringify({
+          name: "demo-bundle",
+          displayName: "Demo Bundle",
+          version: "0.4.0",
+        }),
+        "utf8",
+      );
+      await writeFile(
+        join(folder, "openclaw.plugin.json"),
+        JSON.stringify({ id: "demo.bundle" }),
+        "utf8",
+      );
+      await writeFile(
+        join(folder, ".codex-plugin", "plugin.json"),
+        JSON.stringify({ name: "Demo Bundle", skills: ["skills"] }),
+        "utf8",
+      );
+      const halfBudgetPlusOne = Math.floor((18 * 1024 * 1024) / 2) + 1;
+      await writeFile(join(folder, "dist", "native-a.node"), new Uint8Array(halfBudgetPlusOne));
+      await writeFile(join(folder, "dist", "native-b.node"), new Uint8Array(halfBudgetPlusOne));
+
+      await expect(
+        cmdPublishPackage(makeOpts(workdir), "demo-bundle", { family: "bundle-plugin" }),
+      ).rejects.toThrow("Package upload exceeds 18MB multipart upload limit");
+      expect(httpMocks.apiRequestForm).not.toHaveBeenCalled();
+    } finally {
+      await rm(workdir, { recursive: true, force: true });
+    }
+  });
+
+  it("cleans generated ClawPack temp dirs after multipart size rejection", async () => {
+    const workdir = await makeTmpWorkdir();
+    const beforeTempDirs = await listClawPackTempDirs();
+    try {
+      const folder = join(workdir, "demo-heavy-plugin");
+      await mkdir(join(folder, "dist"), { recursive: true });
+      await writeFile(
+        join(folder, "package.json"),
+        makeCodePluginPackageJson({
+          name: "demo-heavy-plugin",
+          displayName: "Demo Heavy Plugin",
+          version: "1.0.0",
+          repository: "https://github.com/openclaw/demo-heavy-plugin.git",
+        }),
+        "utf8",
+      );
+      await writeFile(
+        join(folder, "openclaw.plugin.json"),
+        JSON.stringify({ id: "demo.heavy.plugin" }),
+        "utf8",
+      );
+      await writeFile(join(folder, "dist", "index.js"), "export const demo = true;\n", "utf8");
+      await writeFile(join(folder, "dist", "model.bin"), randomBytes(19 * 1024 * 1024));
+
+      await expect(
+        cmdPublishPackage(makeOpts(workdir), "demo-heavy-plugin", {
+          sourceRepo: "openclaw/demo-heavy-plugin",
+          sourceCommit: "abc123",
+        }),
+      ).rejects.toThrow("Package upload exceeds 18MB multipart upload limit");
+      expect(httpMocks.apiRequestForm).not.toHaveBeenCalled();
+
+      const afterTempDirs = await listClawPackTempDirs();
+      expect([...afterTempDirs].filter((name) => !beforeTempDirs.has(name))).toEqual([]);
+    } finally {
+      await rm(workdir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects code-plugin publish without source metadata", async () => {
     const workdir = await makeTmpWorkdir();
     try {
@@ -2106,14 +2225,18 @@ describe("package commands", () => {
       });
       const explicitPayload = getPublishPayload();
       const explicitTarballs = getUploadedTarballNames();
+      const explicitFiles = getUploadedFileNames();
 
       httpMocks.apiRequestForm.mockClear();
       await cmdPublishPackage(makeOpts(workdir), "demo-plugin", {});
       const inferredPayload = getPublishPayload();
       const inferredTarballs = getUploadedTarballNames();
+      const inferredFiles = getUploadedFileNames();
 
       expect(inferredPayload).toEqual(explicitPayload);
       expect(inferredTarballs).toEqual(explicitTarballs);
+      expect(explicitFiles).toEqual([]);
+      expect(inferredFiles).toEqual([]);
       dateSpy.mockRestore();
     } finally {
       await rm(workdir, { recursive: true, force: true });
@@ -2312,6 +2435,7 @@ describe("package commands", () => {
         sourcePath: "plugins/demo",
       });
       expect(getUploadedTarballNames()).toEqual(["scope-demo-plugin-1.0.0.tgz"]);
+      expect(getUploadedFileNames()).toEqual([]);
       expect(getPublishPayload()).toEqual({
         name: "@scope/demo-plugin",
         displayName: "Demo Plugin",
