@@ -1,4 +1,4 @@
-import { createFileRoute, Link, redirect } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
 import { Search } from "lucide-react";
 import { useCallback, useMemo, useRef, useState } from "react";
@@ -15,7 +15,17 @@ import {
   type SkillsSearchState,
 } from "./-useSkillsBrowseModel";
 
-const SORT_OPTIONS = [
+const BROWSE_SORT_OPTIONS = [
+  { value: "default", label: "Recommended" },
+  { value: "downloads", label: "Most downloaded" },
+  { value: "stars", label: "Most starred" },
+  { value: "installs", label: "Most installed" },
+  { value: "updated", label: "Recently updated" },
+  { value: "newest", label: "Newest" },
+  { value: "name", label: "Name" },
+];
+
+const SEARCH_SORT_OPTIONS = [
   { value: "downloads", label: "Most downloaded" },
   { value: "stars", label: "Most starred" },
   { value: "installs", label: "Most installed" },
@@ -48,26 +58,6 @@ export const Route = createFileRoute("/skills/")({
       focus: search.focus === "search" ? "search" : undefined,
     };
   },
-  beforeLoad: ({ search }) => {
-    const hasQuery = Boolean(search.q?.trim());
-    if (hasQuery || search.sort || search.featured || search.highlighted || search.nonSuspicious) {
-      return;
-    }
-    throw redirect({
-      to: "/skills",
-      search: {
-        q: search.q || undefined,
-        sort: "downloads",
-        dir: search.dir || undefined,
-        highlighted: search.highlighted || undefined,
-        featured: search.featured || undefined,
-        nonSuspicious: search.nonSuspicious || undefined,
-        view: search.view || undefined,
-        focus: search.focus || undefined,
-      },
-      replace: true,
-    });
-  },
   component: SkillsIndex,
 });
 
@@ -86,8 +76,8 @@ export function SkillsIndex() {
   });
 
   const sortOptionsWithRelevance = model.hasQuery
-    ? [{ value: "relevance", label: "Relevance" }, ...SORT_OPTIONS]
-    : SORT_OPTIONS;
+    ? [{ value: "relevance", label: "Relevance" }, ...SEARCH_SORT_OPTIONS]
+    : BROWSE_SORT_OPTIONS;
 
   const handleSortChange = useCallback(
     (value: string) => {
@@ -99,13 +89,20 @@ export function SkillsIndex() {
       if (model.featuredOnly) {
         const nextSort = parseSort(value);
         void navigate({
-          search: (prev: SkillsSearchState) => ({
-            ...prev,
-            sort: nextSort,
-            dir: parseDir(prev.dir, nextSort),
-            featured: undefined,
-            highlighted: undefined,
-          }),
+          search: (prev: SkillsSearchState) => {
+            const reusePreviousDir =
+              prev.sort !== undefined && prev.sort !== "default" && prev.sort !== "relevance";
+            return {
+              ...prev,
+              sort: nextSort,
+              dir:
+                nextSort === "default"
+                  ? undefined
+                  : parseDir(reusePreviousDir ? prev.dir : undefined, nextSort),
+              featured: undefined,
+              highlighted: undefined,
+            };
+          },
           replace: true,
         });
         return;

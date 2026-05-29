@@ -80,12 +80,15 @@ export function useSkillsBrowseModel({
   const isOtherCategory = query === "__other__";
   const trimmedQuery = useMemo(() => query.trim(), [query]);
   const hasQuery = !isOtherCategory && trimmedQuery.length > 0;
+  const requestedSort = search.sort;
   const sort: SortKey =
-    search.sort === "relevance" && !hasQuery
-      ? "downloads"
-      : (search.sort ?? (hasQuery ? "relevance" : "downloads"));
+    requestedSort === "relevance" && !hasQuery
+      ? "default"
+      : requestedSort === "default" && hasQuery
+        ? "relevance"
+        : (requestedSort ?? (hasQuery ? "relevance" : "default"));
   const listSort = toListSort(sort);
-  const dir = parseDir(search.dir, sort);
+  const dir = sort === "relevance" ? "desc" : parseDir(search.dir, sort);
   const searchKey = trimmedQuery
     ? `${trimmedQuery}::${featuredOnly ? "1" : "0"}::${nonSuspiciousOnly ? "1" : "0"}::${capabilityTag ?? ""}`
     : "";
@@ -102,7 +105,7 @@ export function useSkillsBrowseModel({
         const result = await convexHttp.query(api.skills.listPublicPageV4, {
           cursor: cursor ?? undefined,
           numItems: pageSize,
-          sort: listSort,
+          ...(listSort ? { sort: listSort } : {}),
           dir,
           highlightedOnly: featuredOnly,
           nonSuspiciousOnly,
@@ -324,16 +327,13 @@ export function useSkillsBrowseModel({
           search: (prev) => {
             const hadQuery = typeof prev.q === "string" && prev.q.trim().length > 0;
             const enteringSearch = Boolean(trimmed) && !hadQuery;
-            const usesImplicitBrowseDefault = prev.sort === "downloads" && prev.dir === undefined;
-
+            const usesStaleImplicitDownloadsDefault =
+              prev.sort === "downloads" && prev.dir === undefined;
             return {
               ...prev,
               q: trimmed ? next : undefined,
-              ...(enteringSearch && usesImplicitBrowseDefault
-                ? {
-                    sort: undefined,
-                    dir: undefined,
-                  }
+              ...(enteringSearch && (prev.sort === "default" || usesStaleImplicitDownloadsDefault)
+                ? { sort: undefined, dir: undefined }
                 : null),
             };
           },
@@ -369,11 +369,18 @@ export function useSkillsBrowseModel({
     (value: string) => {
       const nextSort = parseSort(value);
       void navigate({
-        search: (prev) => ({
-          ...prev,
-          sort: nextSort,
-          dir: parseDir(prev.dir, nextSort),
-        }),
+        search: (prev) => {
+          const reusePreviousDir =
+            prev.sort !== undefined && prev.sort !== "default" && prev.sort !== "relevance";
+          return {
+            ...prev,
+            sort: nextSort,
+            dir:
+              nextSort === "default"
+                ? undefined
+                : parseDir(reusePreviousDir ? prev.dir : undefined, nextSort),
+          };
+        },
         replace: true,
       });
     },

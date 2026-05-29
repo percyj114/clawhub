@@ -57,7 +57,10 @@ const SLUG_TOKEN_BOOST = 1.4;
 const SLUG_PREFIX_BOOST = 0.8;
 const NAME_EXACT_BOOST = 1.1;
 const NAME_PREFIX_BOOST = 0.6;
-const POPULARITY_WEIGHT = 0.08;
+const STAR_POPULARITY_WEIGHT = 0.12;
+const INSTALL_POPULARITY_WEIGHT = 0.04;
+const DOWNLOAD_POPULARITY_WEIGHT = 0.005;
+const MAX_POPULARITY_BOOST = 0.09;
 const FALLBACK_SCAN_LIMIT = 2000;
 const MIN_FALLBACK_SCAN_LIMIT = 100;
 const FALLBACK_RECALL_MULTIPLIER = 2;
@@ -110,16 +113,38 @@ function getLexicalBoost(queryTokens: string[], displayName: string, slug: strin
   return boost;
 }
 
+type PopularityStats = {
+  downloads: number;
+  installsAllTime?: number;
+  stars: number;
+};
+
+function getPopularityBoost(stats: PopularityStats) {
+  const rawBoost =
+    Math.log1p(Math.max(stats.stars, 0)) * STAR_POPULARITY_WEIGHT +
+    Math.log1p(Math.max(stats.installsAllTime ?? 0, 0)) * INSTALL_POPULARITY_WEIGHT +
+    Math.log1p(Math.max(stats.downloads, 0)) * DOWNLOAD_POPULARITY_WEIGHT;
+  return Math.min(rawBoost, MAX_POPULARITY_BOOST);
+}
+
 function scoreSkillResult(
   queryTokens: string[],
   vectorScore: number,
   displayName: string,
   slug: string,
-  downloads: number,
+  stats: PopularityStats,
 ) {
   const lexicalBoost = getLexicalBoost(queryTokens, displayName, slug);
-  const popularityBoost = Math.log1p(Math.max(downloads, 0)) * POPULARITY_WEIGHT;
+  const popularityBoost = getPopularityBoost(stats);
   return vectorScore + lexicalBoost + popularityBoost;
+}
+
+function comparePopularityStats(a: PopularityStats, b: PopularityStats) {
+  return (
+    b.stars - a.stars ||
+    (b.installsAllTime ?? 0) - (a.installsAllTime ?? 0) ||
+    b.downloads - a.downloads
+  );
 }
 
 function mergeUniqueBySkillId(primary: SkillSearchEntry[], fallback: SkillSearchEntry[]) {
@@ -293,12 +318,21 @@ export const searchSkills: ReturnType<typeof action> = action({
             vectorScore,
             entry.skill.displayName,
             entry.skill.slug,
-            entry.skill.stats.downloads,
+            {
+              downloads: entry.skill.stats.downloads,
+              installsAllTime: entry.skill.stats.installsAllTime,
+              stars: entry.skill.stats.stars,
+            },
           ),
         };
       })
       .filter((entry) => entry.skill)
-      .sort((a, b) => b.score - a.score || b.skill.stats.downloads - a.skill.stats.downloads)
+      .sort(
+        (a, b) =>
+          b.score - a.score ||
+          comparePopularityStats(a.skill.stats, b.skill.stats) ||
+          b.skill.updatedAt - a.skill.updatedAt,
+      )
       .slice(0, limit);
   },
 });
@@ -754,12 +788,20 @@ export const searchSouls: ReturnType<typeof action> = action({
             vectorScore,
             entry.soul.displayName,
             entry.soul.slug,
-            entry.soul.stats.downloads,
+            {
+              downloads: entry.soul.stats.downloads,
+              stars: entry.soul.stats.stars,
+            },
           ),
         };
       })
       .filter((entry) => entry.soul)
-      .sort((a, b) => b.score - a.score || b.soul.stats.downloads - a.soul.stats.downloads)
+      .sort(
+        (a, b) =>
+          b.score - a.score ||
+          comparePopularityStats(a.soul.stats, b.soul.stats) ||
+          b.soul.updatedAt - a.soul.updatedAt,
+      )
       .slice(0, limit);
   },
 });
