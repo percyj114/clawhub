@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { Command } from "commander";
 import { getCliBuildLabel, getCliVersion } from "./cli/buildInfo.js";
 import { resolveClawdbotDefaultWorkspace } from "./cli/clawdbotConfig.js";
-import { cmdLoginFlow, cmdLogout, cmdWhoami } from "./cli/commands/auth.js";
+import { cmdLoginFlow, cmdLogout, cmdToken, cmdWhoami } from "./cli/commands/auth.js";
 import {
   cmdDeleteSkill,
   cmdHideSkill,
@@ -217,6 +217,12 @@ registerCommand(program, ["whoami"])
   .action(async () => {
     const opts = await resolveGlobalOpts();
     await cmdWhoami(opts);
+  });
+
+registerCommand(program, ["token"])
+  .description("Print stored API token")
+  .action(async () => {
+    await cmdToken();
   });
 
 const auth = registerCommandGroup(program, ["auth"])

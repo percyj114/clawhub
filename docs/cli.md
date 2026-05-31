@@ -89,6 +89,11 @@ Stores your API token + cached registry URL.
 
 - Verifies the stored token via `/api/v1/whoami`.
 
+### `token`
+
+- Prints the stored API token to stdout.
+- Useful for piping a local login token into CI secret setup commands.
+
 ### `star <slug>` / `unstar <slug>`
 
 - Adds/removes a skill from your highlights.
