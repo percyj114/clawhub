@@ -203,7 +203,7 @@ describe("downloads helpers", () => {
     expect(storageGet).not.toHaveBeenCalled();
   });
 
-  it("blocks explicit downloads of a malicious historical version", async () => {
+  it("blocks explicit downloads of a malicious historical version even when the skill is staff-cleared", async () => {
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
       if (isRateLimitArgs(args)) return okRate();
       if ("slug" in args) {
@@ -215,7 +215,14 @@ describe("downloads helpers", () => {
             tags: {},
             latestVersionId: "skillVersions:2",
           },
-          moderationInfo: null,
+          moderationInfo: {
+            isPendingScan: false,
+            isMalwareBlocked: false,
+            isHiddenByMod: false,
+            isRemoved: false,
+            overrideActive: true,
+            verdict: "clean",
+          },
         };
       }
       if (args.versionId === "skillVersions:2") {
