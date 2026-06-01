@@ -1448,7 +1448,10 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
       version: third,
     })) as PublicSkillVersionResponse | null;
     if (!version) return text("Version not found", 404, rate.headers);
-    const versionAccessBlock = getPublicSkillVersionFileAccessBlock(version);
+    const versionAccessBlock = getPublicSkillVersionFileAccessBlock(
+      version,
+      skillResult.moderationInfo,
+    );
     if (versionAccessBlock) {
       return text(versionAccessBlock.message, versionAccessBlock.status, rate.headers);
     }
@@ -1700,7 +1703,10 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
     if (!version || !isSkillVersionForSkill(version, skillResult.skill._id)) {
       return text("Version not found", 404, rate.headers);
     }
-    const versionAccessBlock = getPublicSkillVersionFileAccessBlock(version);
+    const versionAccessBlock = getPublicSkillVersionFileAccessBlock(
+      version,
+      skillResult.moderationInfo,
+    );
     if (versionAccessBlock) {
       return text(versionAccessBlock.message, versionAccessBlock.status, rate.headers);
     }
@@ -1762,7 +1768,10 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
     if (!version || !isSkillVersionForSkill(version, skillResult.skill._id)) {
       return text("Version not found", 404, rate.headers);
     }
-    const versionAccessBlock = getPublicSkillVersionFileAccessBlock(version);
+    const versionAccessBlock = getPublicSkillVersionFileAccessBlock(
+      version,
+      skillResult.moderationInfo,
+    );
     if (versionAccessBlock) {
       return text(versionAccessBlock.message, versionAccessBlock.status, rate.headers);
     }

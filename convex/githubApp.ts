@@ -483,13 +483,23 @@ export const githubWebhookHttp = httpAction(async (ctx, req) => {
         senderAccountId: senderAccountId ?? "",
         event,
       });
-      const addedRepoIds = Array.isArray(payload.added_repositories)
-        ? payload.added_repositories
+      const addedRepositories = Array.isArray(payload.repositories_added)
+        ? payload.repositories_added
+        : Array.isArray(payload.added_repositories)
+          ? payload.added_repositories
+          : [];
+      const removedRepositories = Array.isArray(payload.repositories_removed)
+        ? payload.repositories_removed
+        : Array.isArray(payload.removed_repositories)
+          ? payload.removed_repositories
+          : [];
+      const addedRepoIds = addedRepositories.length
+        ? addedRepositories
             .map((added) => normalizeOptionalId((added as { id?: unknown }).id))
             .filter((id): id is string => Boolean(id))
         : [];
-      const removedRepoIds = Array.isArray(payload.removed_repositories)
-        ? payload.removed_repositories
+      const removedRepoIds = removedRepositories.length
+        ? removedRepositories
             .map((removed) => normalizeOptionalId((removed as { id?: unknown }).id))
             .filter((id): id is string => Boolean(id))
         : [];

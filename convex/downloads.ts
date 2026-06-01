@@ -79,7 +79,10 @@ export async function downloadZipHandler(
       headers: mergeHeaders(rate.headers, corsHeaders()),
     });
   }
-  const versionAccessBlock = getPublicSkillVersionFileAccessBlock(version);
+  const versionAccessBlock = getPublicSkillVersionFileAccessBlock(
+    version,
+    skillResult.moderationInfo,
+  );
   if (versionAccessBlock) {
     return new Response(versionAccessBlock.message, {
       status: versionAccessBlock.status,

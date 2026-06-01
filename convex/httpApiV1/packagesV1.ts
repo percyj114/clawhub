@@ -2849,7 +2849,10 @@ export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Reques
         },
       )) as SkillVersionLike | null;
       if (!version || version.softDeletedAt) return text("Version not found", 404, rate.headers);
-      const versionAccessBlock = getPublicSkillVersionFileAccessBlock(version);
+      const versionAccessBlock = getPublicSkillVersionFileAccessBlock(
+        version,
+        skillDetail.moderationInfo,
+      );
       if (versionAccessBlock)
         return text(versionAccessBlock.message, versionAccessBlock.status, rate.headers);
       const tags = await resolveSkillTags(ctx, skillDetail.skill._id, skillDetail.skill.tags);
@@ -2938,7 +2941,10 @@ export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Reques
         return text(moderationBlock.message, moderationBlock.status, rate.headers);
       const version = await getSkillVersionForRequest(ctx, skillDetail.skill, request);
       if (!version || version.softDeletedAt) return text("Version not found", 404, rate.headers);
-      const versionAccessBlock = getPublicSkillVersionFileAccessBlock(version);
+      const versionAccessBlock = getPublicSkillVersionFileAccessBlock(
+        version,
+        skillDetail.moderationInfo,
+      );
       if (versionAccessBlock)
         return text(versionAccessBlock.message, versionAccessBlock.status, rate.headers);
       const file = resolveSkillFilePath(version, path);
