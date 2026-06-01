@@ -12,6 +12,12 @@ type SkillFileAccessBlock = {
   message: string;
 };
 
+type SkillVersionSecurityInfo = {
+  vtAnalysis?: { status?: string | null; verdict?: string | null } | null;
+  llmAnalysis?: { status?: string | null; verdict?: string | null } | null;
+  softDeletedAt?: number | null;
+};
+
 export function getPublicSkillFileAccessBlock(
   moderationInfo: SkillFileModerationInfo | null | undefined,
 ): SkillFileAccessBlock | null {
@@ -38,6 +44,29 @@ export function getPublicSkillFileAccessBlock(
   return null;
 }
 
+export function getPublicSkillVersionFileAccessBlock(
+  version: SkillVersionSecurityInfo | null | undefined,
+): SkillFileAccessBlock | null {
+  if (version?.softDeletedAt) {
+    return { status: 410, message: "Version not available" };
+  }
+  if (hasVersionSecurityStatus(version, "malicious")) {
+    return {
+      status: 403,
+      message:
+        "Blocked: this skill version has been flagged as malicious by ClawScan and cannot be served.",
+    };
+  }
+  if (hasVersionSecurityStatus(version, "pending")) {
+    return {
+      status: 423,
+      message:
+        "This skill version is pending a ClawScan security review. Please try again in a few minutes.",
+    };
+  }
+  return null;
+}
+
 export function isSkillVersionForSkill(
   version: { skillId?: Id<"skills"> | string | null } | null | undefined,
   skillId: Id<"skills"> | string,
@@ -56,4 +85,29 @@ export function isPublicSkillVersionAvailableForSkill(
   skillId: Id<"skills"> | string,
 ) {
   return Boolean(version && !version.softDeletedAt && isSkillVersionForSkill(version, skillId));
+}
+
+function hasVersionSecurityStatus(
+  version: SkillVersionSecurityInfo | null | undefined,
+  status: "malicious" | "pending",
+) {
+  if (!version) return false;
+  return [
+    version.vtAnalysis?.verdict,
+    version.vtAnalysis?.status,
+    version.llmAnalysis?.verdict,
+    version.llmAnalysis?.status,
+  ].some((value) => normalizeVersionSecurityStatus(value) === status);
+}
+
+function normalizeVersionSecurityStatus(value: string | null | undefined) {
+  switch (value?.trim().toLowerCase()) {
+    case "malicious":
+      return "malicious";
+    case "pending":
+    case "loading":
+      return "pending";
+    default:
+      return null;
+  }
 }

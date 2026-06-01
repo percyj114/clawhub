@@ -98,6 +98,23 @@ admin must explicitly enable sync for each repository.
 - On failure, repository metadata must preserve the last successful sync commit
   and timestamp.
 
+## Version Security Boundary
+
+Each GitHub sync publish creates an ordinary `skillVersions` row and queues the
+normal security scanners for that exact version. Scanner completion must only
+promote scan outcomes onto the skill-level moderation row when the scanned
+version is still the skill's latest version, so an older async scan result
+cannot overwrite the current latest verdict.
+
+Public artifact access must still enforce the requested version's own scan
+state. Download, card, raw file, and version-detail endpoints must block a
+historical version when that version's stored ClawScan or VirusTotal fields are
+malicious or explicitly pending, even if a newer latest version currently
+leaves the skill active. Static-scan-only findings remain advisory when
+ClawScan/VT do not block the version. Scan and verification endpoints may
+remain readable for blocked versions so users and automation can inspect the
+reason.
+
 ## Required GitHub App Shape
 
 Minimum GitHub App permissions:

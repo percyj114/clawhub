@@ -4,7 +4,11 @@ import { httpAction, internalMutation } from "./functions";
 import { getOptionalApiTokenUserId } from "./lib/apiTokenAuth";
 import { corsHeaders, mergeHeaders } from "./lib/httpHeaders";
 import { applyRateLimit, getClientIp } from "./lib/httpRateLimit";
-import { getPublicSkillFileAccessBlock, isSkillVersionForSkill } from "./lib/skillFileAccess";
+import {
+  getPublicSkillFileAccessBlock,
+  getPublicSkillVersionFileAccessBlock,
+  isSkillVersionForSkill,
+} from "./lib/skillFileAccess";
 import { buildDeterministicZip } from "./lib/skillZip";
 import { hashToken } from "./lib/tokens";
 import { insertStatEvent } from "./skillStatEvents";
@@ -75,9 +79,10 @@ export async function downloadZipHandler(
       headers: mergeHeaders(rate.headers, corsHeaders()),
     });
   }
-  if (version.softDeletedAt) {
-    return new Response("Version not available", {
-      status: 410,
+  const versionAccessBlock = getPublicSkillVersionFileAccessBlock(version);
+  if (versionAccessBlock) {
+    return new Response(versionAccessBlock.message, {
+      status: versionAccessBlock.status,
       headers: mergeHeaders(rate.headers, corsHeaders()),
     });
   }

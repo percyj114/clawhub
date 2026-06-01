@@ -23,7 +23,11 @@ import type {
   LlmRiskSummary,
 } from "../lib/securityPrompt";
 import { selectGeneratedSkillCardFile, sourceSkillVersionFiles } from "../lib/skillCards";
-import { getPublicSkillFileAccessBlock, isSkillVersionForSkill } from "../lib/skillFileAccess";
+import {
+  getPublicSkillFileAccessBlock,
+  getPublicSkillVersionFileAccessBlock,
+  isSkillVersionForSkill,
+} from "../lib/skillFileAccess";
 import {
   buildMergedExportZip,
   type MergedExportManifestEntry,
@@ -1444,7 +1448,10 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
       version: third,
     })) as PublicSkillVersionResponse | null;
     if (!version) return text("Version not found", 404, rate.headers);
-    if (version.softDeletedAt) return text("Version not available", 410, rate.headers);
+    const versionAccessBlock = getPublicSkillVersionFileAccessBlock(version);
+    if (versionAccessBlock) {
+      return text(versionAccessBlock.message, versionAccessBlock.status, rate.headers);
+    }
     const security = buildSkillSecuritySnapshot(version);
 
     return json(
@@ -1693,7 +1700,10 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
     if (!version || !isSkillVersionForSkill(version, skillResult.skill._id)) {
       return text("Version not found", 404, rate.headers);
     }
-    if (version.softDeletedAt) return text("Version not available", 410, rate.headers);
+    const versionAccessBlock = getPublicSkillVersionFileAccessBlock(version);
+    if (versionAccessBlock) {
+      return text(versionAccessBlock.message, versionAccessBlock.status, rate.headers);
+    }
 
     const fingerprintEntries = ((await ctx.runQuery(
       internal.skills.listVersionFingerprintsInternal,
@@ -1752,7 +1762,10 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
     if (!version || !isSkillVersionForSkill(version, skillResult.skill._id)) {
       return text("Version not found", 404, rate.headers);
     }
-    if (version.softDeletedAt) return text("Version not available", 410, rate.headers);
+    const versionAccessBlock = getPublicSkillVersionFileAccessBlock(version);
+    if (versionAccessBlock) {
+      return text(versionAccessBlock.message, versionAccessBlock.status, rate.headers);
+    }
 
     const normalized = path.trim();
     const normalizedLower = normalized.toLowerCase();

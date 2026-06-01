@@ -202,4 +202,69 @@ describe("downloads helpers", () => {
     expect(await response.text()).toBe("Version not found");
     expect(storageGet).not.toHaveBeenCalled();
   });
+
+  it("blocks explicit downloads of a malicious historical version", async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if (isRateLimitArgs(args)) return okRate();
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:1",
+            ownerUserId: "users:1",
+            slug: "demo",
+            tags: {},
+            latestVersionId: "skillVersions:2",
+          },
+          moderationInfo: null,
+        };
+      }
+      if (args.versionId === "skillVersions:2") {
+        return {
+          _id: "skillVersions:2",
+          skillId: "skills:1",
+          version: "1.0.1",
+          createdAt: 4,
+          files: [{ path: "SKILL.md", storageId: "_storage:2" }],
+          softDeletedAt: undefined,
+        };
+      }
+      if (args.version === "1.0.0") {
+        return {
+          _id: "skillVersions:1",
+          skillId: "skills:1",
+          version: "1.0.0",
+          createdAt: 3,
+          files: [{ path: "SKILL.md", storageId: "_storage:1" }],
+          softDeletedAt: undefined,
+          llmAnalysis: {
+            status: "malicious",
+            verdict: "malicious",
+            checkedAt: 5,
+          },
+        };
+      }
+      return null;
+    });
+    const runMutation = vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {
+      if (isRateLimitArgs(args)) return okRate();
+      return null;
+    });
+    const storageGet = vi.fn();
+
+    const response = await downloadZipHandler(
+      {
+        runQuery,
+        runMutation,
+        scheduler: { runAfter: vi.fn() },
+        storage: { get: storageGet },
+      } as unknown as ActionCtx,
+      new Request("https://example.com/api/v1/download?slug=demo&version=1.0.0", {
+        headers: { "cf-connecting-ip": "1.2.3.4" },
+      }),
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.text()).toMatch(/flagged as malicious/);
+    expect(storageGet).not.toHaveBeenCalled();
+  });
 });

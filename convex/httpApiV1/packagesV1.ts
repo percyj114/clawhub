@@ -47,7 +47,11 @@ import {
   MAX_CLAWPACK_BYTES,
   MAX_PUBLISH_FILE_BYTES,
 } from "../lib/publishLimits";
-import { getPublicSkillFileAccessBlock, isSkillVersionForSkill } from "../lib/skillFileAccess";
+import {
+  getPublicSkillFileAccessBlock,
+  getPublicSkillVersionFileAccessBlock,
+  isSkillVersionForSkill,
+} from "../lib/skillFileAccess";
 import { isMacJunkPath, isTextFile } from "../lib/skills";
 import { buildDeterministicPackageZip } from "../lib/skillZip";
 import { generateToken, hashToken } from "../lib/tokens";
@@ -410,6 +414,10 @@ type SkillVersionLike = {
     contentType?: string;
   }>;
   softDeletedAt?: number;
+  sha256hash?: string;
+  vtAnalysis?: Doc<"skillVersions">["vtAnalysis"];
+  llmAnalysis?: Doc<"skillVersions">["llmAnalysis"];
+  staticScan?: Doc<"skillVersions">["staticScan"];
 };
 
 type ReleaseLike = {
@@ -2841,6 +2849,9 @@ export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Reques
         },
       )) as SkillVersionLike | null;
       if (!version || version.softDeletedAt) return text("Version not found", 404, rate.headers);
+      const versionAccessBlock = getPublicSkillVersionFileAccessBlock(version);
+      if (versionAccessBlock)
+        return text(versionAccessBlock.message, versionAccessBlock.status, rate.headers);
       const tags = await resolveSkillTags(ctx, skillDetail.skill._id, skillDetail.skill.tags);
       return json(
         {
@@ -2927,6 +2938,9 @@ export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Reques
         return text(moderationBlock.message, moderationBlock.status, rate.headers);
       const version = await getSkillVersionForRequest(ctx, skillDetail.skill, request);
       if (!version || version.softDeletedAt) return text("Version not found", 404, rate.headers);
+      const versionAccessBlock = getPublicSkillVersionFileAccessBlock(version);
+      if (versionAccessBlock)
+        return text(versionAccessBlock.message, versionAccessBlock.status, rate.headers);
       const file = resolveSkillFilePath(version, path);
       if (!file) return text("File not found", 404, rate.headers);
       if (!("storageId" in file) || !file.storageId)
