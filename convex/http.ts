@@ -2,6 +2,7 @@ import { ApiRoutes, LegacyApiRoutes } from "clawhub-schema";
 import { httpRouter } from "convex/server";
 import { auth } from "./auth";
 import { downloadZip } from "./downloads";
+import { githubWebhookHttp } from "./githubApp";
 import {
   cliPublishHttp,
   cliDeviceCodeHttp,
@@ -283,6 +284,12 @@ http.route({
   pathPrefix: "/api/",
   method: "OPTIONS",
   handler: preflightHandler,
+});
+
+http.route({
+  path: "/api/webhooks/github-app",
+  method: "POST",
+  handler: githubWebhookHttp,
 });
 
 // TODO: remove legacy /api routes after deprecation window.
