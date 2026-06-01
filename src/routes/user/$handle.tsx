@@ -89,6 +89,8 @@ type PublisherMembership = {
 type GitHubRepositoryLink = Doc<"publisherGitHubRepositories"> & {
   sourceLinkCount: number;
 };
+const GITHUB_INSTALL_RETRY_DELAY_MS = 3_000;
+const GITHUB_INSTALL_MAX_RETRIES = 20;
 
 const roleColor: Record<string, "accent" | "default" | "compact"> = {
   owner: "accent",
@@ -156,29 +158,54 @@ function PublisherProfile() {
     canManageGitHubSync && publisher ? { publisherId: publisher._id } : "skip",
   ) as GitHubRepositoryLink[] | undefined;
   const completePublisherInstall = useAction(api.githubApp.completePublisherInstall);
-  const [completionKey, setCompletionKey] = useState("");
 
   useEffect(() => {
-    if (!canManageGitHubSync || completionKey) return;
+    if (!canManageGitHubSync) return undefined;
     const params = new URLSearchParams(window.location.search);
     const state = params.get("state");
     const installationId = params.get("installation_id");
-    if (!state || !installationId) return;
-    const key = `${installationId}:${state}`;
-    setCompletionKey(key);
-    completePublisherInstall({ state, installationId })
-      .then((result) => {
-        toast.success(`Connected ${result.repositories.length} GitHub repositories`);
-        const next = new URL(window.location.href);
-        next.searchParams.delete("state");
-        next.searchParams.delete("installation_id");
-        next.searchParams.delete("setup_action");
-        window.history.replaceState(null, "", `${next.pathname}${next.search}${next.hash}`);
-      })
-      .catch((error: unknown) => {
-        toast.error(getUserFacingConvexError(error, "GitHub App connection failed"));
-      });
-  }, [canManageGitHubSync, completePublisherInstall, completionKey]);
+    if (!state || !installationId) return undefined;
+    let cancelled = false;
+    let attempts = 0;
+    let showedPendingToast = false;
+    let retryTimer: number | undefined;
+
+    const tryCompleteInstall = () => {
+      attempts += 1;
+      completePublisherInstall({ state, installationId })
+        .then((result) => {
+          if (cancelled) return;
+          toast.success(`Connected ${result.repositories.length} GitHub repositories`);
+          const next = new URL(window.location.href);
+          next.searchParams.delete("state");
+          next.searchParams.delete("installation_id");
+          next.searchParams.delete("setup_action");
+          window.history.replaceState(null, "", `${next.pathname}${next.search}${next.hash}`);
+        })
+        .catch((error: unknown) => {
+          if (cancelled) return;
+          const message = getUserFacingConvexError(error, "GitHub App connection failed");
+          const shouldRetry =
+            message.includes("GitHub installation confirmation is still pending") &&
+            attempts < GITHUB_INSTALL_MAX_RETRIES;
+          if (shouldRetry) {
+            if (!showedPendingToast) {
+              toast.error(`${message} Retrying...`);
+              showedPendingToast = true;
+            }
+            retryTimer = window.setTimeout(tryCompleteInstall, GITHUB_INSTALL_RETRY_DELAY_MS);
+            return;
+          }
+          toast.error(message);
+        });
+    };
+
+    tryCompleteInstall();
+    return () => {
+      cancelled = true;
+      if (retryTimer) window.clearTimeout(retryTimer);
+    };
+  }, [canManageGitHubSync, completePublisherInstall]);
 
   if (publisher === undefined) {
     return (
