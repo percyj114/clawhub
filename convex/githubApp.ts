@@ -1,5 +1,5 @@
 import { ConvexError, v } from "convex/values";
-import { unzipSync } from "fflate";
+import { Unzip, UnzipInflate } from "fflate";
 import semver from "semver";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -1889,20 +1889,74 @@ async function fetchGitHubArchiveBytes(repoFullName: string, commit: string, tok
 }
 
 function unzipToEntries(zipBytes: Uint8Array) {
-  const entries = unzipSync(zipBytes);
   const out: ZipEntryMap = {};
-  const rawPaths = Object.keys(entries);
-  if (rawPaths.length > MAX_FILE_COUNT) throw new ConvexError("Repo archive has too many files");
-  let totalBytes = 0;
-  for (const [rawPath, bytes] of Object.entries(entries)) {
-    const normalizedPath = normalizeZipPath(rawPath);
-    if (!normalizedPath) continue;
-    if (isMacJunkPath(normalizedPath)) continue;
-    if (!bytes) continue;
-    if (bytes.byteLength > MAX_SINGLE_FILE_BYTES) continue;
-    totalBytes += bytes.byteLength;
-    if (totalBytes > MAX_UNZIPPED_BYTES) throw new ConvexError("Repo archive is too large");
-    out[normalizedPath] = bytes;
+  let fileCount = 0;
+  let declaredTotalBytes = 0;
+  let inflatedTotalBytes = 0;
+  let pendingError: unknown = null;
+  const unzipper = new Unzip((file) => {
+    if (pendingError) return;
+    const normalizedPath = normalizeZipPath(file.name);
+    if (!normalizedPath || isMacJunkPath(normalizedPath)) return;
+    fileCount += 1;
+    if (fileCount > MAX_FILE_COUNT) {
+      pendingError = new ConvexError("Repo archive has too many files");
+      return;
+    }
+    if (file.originalSize !== undefined) {
+      if (file.originalSize > MAX_SINGLE_FILE_BYTES) return;
+      declaredTotalBytes += file.originalSize;
+      if (declaredTotalBytes > MAX_UNZIPPED_BYTES) {
+        pendingError = new ConvexError("Repo archive is too large");
+        return;
+      }
+    }
+    const chunks: Uint8Array[] = [];
+    let fileBytes = 0;
+    file.ondata = (error, chunk, final) => {
+      if (pendingError) return;
+      if (error) {
+        pendingError = error;
+        return;
+      }
+      const stableChunk = new Uint8Array(chunk);
+      fileBytes += stableChunk.byteLength;
+      inflatedTotalBytes += stableChunk.byteLength;
+      if (fileBytes > MAX_SINGLE_FILE_BYTES) {
+        pendingError = new ConvexError("Repo archive file is too large");
+        file.terminate();
+        return;
+      }
+      if (inflatedTotalBytes > MAX_UNZIPPED_BYTES) {
+        pendingError = new ConvexError("Repo archive is too large");
+        file.terminate();
+        return;
+      }
+      chunks.push(stableChunk);
+      if (final) {
+        out[normalizedPath] = concatUint8Arrays(chunks);
+      }
+    };
+    file.start();
+  });
+  unzipper.register(UnzipInflate);
+  try {
+    unzipper.push(zipBytes, true);
+  } catch (error) {
+    throw pendingError || error;
+  }
+  if (pendingError) throw pendingError;
+  return out;
+}
+
+function concatUint8Arrays(chunks: Uint8Array[]) {
+  if (chunks.length === 1) return chunks[0] ?? new Uint8Array();
+  const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
   }
   return out;
 }

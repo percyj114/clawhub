@@ -169,16 +169,14 @@ function PublisherProfile() {
     completePublisherInstall({ state, installationId })
       .then((result) => {
         toast.success(`Connected ${result.repositories.length} GitHub repositories`);
-      })
-      .catch((error: unknown) => {
-        toast.error(getUserFacingConvexError(error, "GitHub App connection failed"));
-      })
-      .finally(() => {
         const next = new URL(window.location.href);
         next.searchParams.delete("state");
         next.searchParams.delete("installation_id");
         next.searchParams.delete("setup_action");
         window.history.replaceState(null, "", `${next.pathname}${next.search}${next.hash}`);
+      })
+      .catch((error: unknown) => {
+        toast.error(getUserFacingConvexError(error, "GitHub App connection failed"));
       });
   }, [canManageGitHubSync, completePublisherInstall, completionKey]);
 
