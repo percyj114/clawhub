@@ -57,6 +57,7 @@ import { compareRecommendationStats } from "../lib/recommendationScore";
 import {
   getPublicSkillVersionAccessBlock,
   getPublicSkillVersionDownloadBlock,
+  getPublicSkillVersionFileAccessBlock,
   getSkillFileModerationInfoFromSkill,
   isSkillVersionForSkill,
 } from "../lib/skillFileAccess";
@@ -456,6 +457,10 @@ type SkillVersionLike = {
     contentType?: string;
   }>;
   softDeletedAt?: number;
+  sha256hash?: string;
+  vtAnalysis?: Doc<"skillVersions">["vtAnalysis"];
+  llmAnalysis?: Doc<"skillVersions">["llmAnalysis"];
+  staticScan?: Doc<"skillVersions">["staticScan"];
 };
 
 type ReleaseLike = {
@@ -2927,10 +2932,12 @@ async function getUnavailableSkillPackageVersionBlock(
   if (!version || !isSkillVersionForSkill(version, skill._id)) return null;
   if (version.softDeletedAt) return { status: 410, message: "Version not available" };
 
-  return getPublicSkillVersionAccessBlock(
-    getSkillFileModerationInfoFromSkill(skill),
-    version._id,
-    skill.latestVersionId ?? skill.tags?.latest,
+  return (
+    getPublicSkillVersionAccessBlock(
+      getSkillFileModerationInfoFromSkill(skill),
+      version._id,
+      skill.latestVersionId ?? skill.tags?.latest,
+    ) ?? getPublicSkillVersionFileAccessBlock(version)
   );
 }
 
@@ -3495,7 +3502,7 @@ export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Reques
         skillDetail.moderationInfo,
         version._id,
         effectiveLatestVersionId,
-      );
+      ) ?? getPublicSkillVersionFileAccessBlock(version);
       if (moderationBlock)
         return text(moderationBlock.message, moderationBlock.status, rate.headers);
       const tags = await resolveSkillTags(ctx, skillDetail.skill._id, skillDetail.skill.tags);

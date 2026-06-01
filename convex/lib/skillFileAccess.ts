@@ -10,10 +10,15 @@ export type SkillFileModerationInfo = {
 
 type SkillVersionSecuritySource = {
   _id: Id<"skillVersions"> | string;
+  vtAnalysis?: {
+    status?: string | null;
+    verdict?: string | null;
+  } | null;
   llmAnalysis?: {
     status?: string | null;
     verdict?: string | null;
   } | null;
+  softDeletedAt?: number | null;
 };
 
 type SkillModerationSource = {
@@ -37,15 +42,6 @@ function isPendingSkillModerationReason(reason: string | null | undefined) {
     normalized === "scanner.vt.pending" ||
     normalized === "scanner.llm.pending"
   );
-}
-
-function normalizeSkillScanStatus(status: string | null | undefined) {
-  const normalized = status?.trim().toLowerCase();
-  if (normalized === "benign") return "clean";
-  if (normalized === "clean" || normalized === "suspicious" || normalized === "malicious") {
-    return normalized;
-  }
-  return null;
 }
 
 export function getSkillFileModerationInfoFromSkill(
@@ -104,6 +100,12 @@ export function getPublicSkillVersionAccessBlock(
   return moderatedVersionId === versionId ? block : null;
 }
 
+export function getPublicSkillVersionFileAccessBlock(
+  version: Omit<SkillVersionSecuritySource, "_id"> | null | undefined,
+): SkillFileAccessBlock | null {
+  return getVersionSecurityAccessBlock(version, "served");
+}
+
 export function getPublicSkillVersionDownloadBlock(
   moderationInfo: SkillFileModerationInfo | null | undefined,
   version: SkillVersionSecuritySource,
@@ -116,17 +118,30 @@ export function getPublicSkillVersionDownloadBlock(
   );
   if (moderationBlock) return moderationBlock;
 
-  const scanStatus = normalizeSkillScanStatus(
-    version.llmAnalysis?.verdict ?? version.llmAnalysis?.status,
-  );
-  if (scanStatus === "malicious") {
+  return getVersionSecurityAccessBlock(version, "downloaded");
+}
+
+function getVersionSecurityAccessBlock(
+  version: Omit<SkillVersionSecuritySource, "_id"> | null | undefined,
+  action: "downloaded" | "served",
+): SkillFileAccessBlock | null {
+  if (version?.softDeletedAt) {
+    return { status: 410, message: "Version not available" };
+  }
+  if (hasVersionSecurityStatus(version, "malicious")) {
     return {
       status: 403,
       message:
-        "Blocked: this skill version has been flagged as malicious by ClawScan and cannot be downloaded.",
+        `Blocked: this skill version has been flagged as malicious by ClawScan and cannot be ${action}.`,
     };
   }
-
+  if (hasVersionSecurityStatus(version, "pending")) {
+    return {
+      status: 423,
+      message:
+        "This skill version is pending a ClawScan security review. Please try again in a few minutes.",
+    };
+  }
   return null;
 }
 
@@ -148,4 +163,29 @@ export function isPublicSkillVersionAvailableForSkill(
   skillId: Id<"skills"> | string,
 ) {
   return Boolean(version && !version.softDeletedAt && isSkillVersionForSkill(version, skillId));
+}
+
+function hasVersionSecurityStatus(
+  version: Omit<SkillVersionSecuritySource, "_id"> | null | undefined,
+  status: "malicious" | "pending",
+) {
+  if (!version) return false;
+  return [
+    version.vtAnalysis?.verdict,
+    version.vtAnalysis?.status,
+    version.llmAnalysis?.verdict,
+    version.llmAnalysis?.status,
+  ].some((value) => normalizeVersionSecurityStatus(value) === status);
+}
+
+function normalizeVersionSecurityStatus(value: string | null | undefined) {
+  switch (value?.trim().toLowerCase()) {
+    case "malicious":
+      return "malicious";
+    case "pending":
+    case "loading":
+      return "pending";
+    default:
+      return null;
+  }
 }

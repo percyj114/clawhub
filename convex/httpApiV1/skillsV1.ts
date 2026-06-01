@@ -37,6 +37,7 @@ import {
   getPublicSkillFileAccessBlock,
   getPublicSkillVersionAccessBlock,
   getPublicSkillVersionDownloadBlock,
+  getPublicSkillVersionFileAccessBlock,
   getSkillFileModerationInfoFromSkill,
   isSkillVersionForSkill,
 } from "../lib/skillFileAccess";
@@ -1624,10 +1625,12 @@ async function getUnavailableSkillVersionBlock(
   if (!version || !isSkillVersionForSkill(version, skill._id)) return null;
   if (version.softDeletedAt) return { status: 410, message: "Version not available" };
 
-  return getPublicSkillVersionAccessBlock(
-    getSkillFileModerationInfoFromSkill(skill),
-    version._id,
-    skill.latestVersionId ?? skill.tags?.latest,
+  return (
+    getPublicSkillVersionAccessBlock(
+      getSkillFileModerationInfoFromSkill(skill),
+      version._id,
+      skill.latestVersionId ?? skill.tags?.latest,
+    ) ?? getPublicSkillVersionFileAccessBlock(version)
   );
 }
 
@@ -1770,7 +1773,7 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
           result.moderationInfo,
           result.latestVersion._id,
           latestVersionId,
-        )
+        ) ?? getPublicSkillVersionFileAccessBlock(result.latestVersion)
       : getPublicSkillFileAccessBlock(result.moderationInfo);
     const description = descriptionAccessBlock
       ? null
@@ -1961,7 +1964,7 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
       skillResult.moderationInfo,
       version._id,
       effectiveLatestVersionId,
-    );
+    ) ?? getPublicSkillVersionFileAccessBlock(version);
     if (moderationBlock) {
       return text(moderationBlock.message, moderationBlock.status, rate.headers);
     }
