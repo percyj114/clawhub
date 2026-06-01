@@ -67,6 +67,18 @@ should fail cleanly and can be retried after the webhook arrives.
 Repository links created by an installation are disabled by default. A publisher
 admin must explicitly enable sync for each repository.
 
+## UI Rollout Gate
+
+During internal rollout, the ClawHub UI must expose GitHub Sync controls only to
+users who are both:
+
+- owners or admins of the target ClawHub org publisher; and
+- members of the `openclaw` ClawHub publisher.
+
+This gate is intentionally a rollout/discoverability gate, not the durable
+authorization boundary. Backend GitHub sync functions must continue to enforce
+the target publisher admin role themselves.
+
 ## Webhook Trust Boundary
 
 - Verify `X-Hub-Signature-256` for every GitHub webhook.

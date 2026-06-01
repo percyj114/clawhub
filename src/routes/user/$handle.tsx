@@ -93,6 +93,7 @@ type PublisherMembership = {
 type GitHubRepositoryLink = Doc<"publisherGitHubRepositories"> & {
   sourceLinkCount: number;
 };
+const INTERNAL_GITHUB_SYNC_PUBLISHER_HANDLE = "openclaw";
 const GITHUB_INSTALL_RETRY_DELAY_MS = 3_000;
 const GITHUB_INSTALL_MAX_RETRIES = 20;
 
@@ -101,6 +102,25 @@ const roleColor: Record<string, "accent" | "default" | "compact"> = {
   admin: "default",
   publisher: "compact",
 };
+
+export function canManagePublisherGitHubSync(
+  publisher: PublicPublisherListItem | null | undefined,
+  memberships: PublisherMembership[] | undefined,
+) {
+  const canManageViewedOrg =
+    publisher?.kind === "org" &&
+    Boolean(
+      memberships?.some(
+        (entry) =>
+          entry.publisher._id === publisher._id &&
+          (entry.role === "owner" || entry.role === "admin"),
+      ),
+    );
+  const isInternalRolloutUser = Boolean(
+    memberships?.some((entry) => entry.publisher.handle === INTERNAL_GITHUB_SYNC_PUBLISHER_HANDLE),
+  );
+  return canManageViewedOrg && isInternalRolloutUser;
+}
 
 function GitHubIcon({ size = 14 }: { size?: number }) {
   return (
@@ -156,15 +176,7 @@ function PublisherProfile() {
   );
   const publishedItems = (publishedResults ?? []) as PublicPublisherCatalogItem[];
   const starredItems = (starredResults ?? []) as PublicPublisherCatalogItem[];
-  const canManageGitHubSync =
-    publisher?.kind === "org" &&
-    Boolean(
-      myPublishers?.some(
-        (entry) =>
-          entry.publisher._id === publisher._id &&
-          (entry.role === "owner" || entry.role === "admin"),
-      ),
-    );
+  const canManageGitHubSync = canManagePublisherGitHubSync(publisher, myPublishers);
   const githubRepositories = useQuery(
     api.githubApp.listPublisherRepositories,
     canManageGitHubSync && publisher ? { publisherId: publisher._id } : "skip",
