@@ -74,6 +74,40 @@ describe("GitHubSyncPanel", () => {
   });
 });
 
+describe("canManagePublisherGitHubSync", () => {
+  it("allows target org admins who are openclaw members", async () => {
+    const { canManagePublisherGitHubSync } = await import("../routes/user/$handle");
+
+    expect(
+      canManagePublisherGitHubSync(targetOrgPublisher, [
+        { publisher: targetOrgPublisher, role: "admin" },
+        { publisher: openclawPublisher, role: "publisher" },
+      ]),
+    ).toBe(true);
+  });
+
+  it("hides sync from target org admins outside the openclaw rollout", async () => {
+    const { canManagePublisherGitHubSync } = await import("../routes/user/$handle");
+
+    expect(
+      canManagePublisherGitHubSync(targetOrgPublisher, [
+        { publisher: targetOrgPublisher, role: "admin" },
+      ]),
+    ).toBe(false);
+  });
+
+  it("hides sync from openclaw members without target org admin rights", async () => {
+    const { canManagePublisherGitHubSync } = await import("../routes/user/$handle");
+
+    expect(
+      canManagePublisherGitHubSync(targetOrgPublisher, [
+        { publisher: targetOrgPublisher, role: "publisher" },
+        { publisher: openclawPublisher, role: "owner" },
+      ]),
+    ).toBe(false);
+  });
+});
+
 const publisher: PublicPublisherListItem = {
   _id: "publishers:org" as Id<"publishers">,
   _creationTime: 1,
@@ -104,4 +138,18 @@ const repository: Doc<"publisherGitHubRepositories"> & { sourceLinkCount: number
   createdAt: 1,
   updatedAt: 1,
   sourceLinkCount: 2,
+};
+
+const targetOrgPublisher: PublicPublisherListItem = {
+  ...publisher,
+  _id: "publishers:target" as Id<"publishers">,
+  handle: "target-org",
+  displayName: "Target Org",
+};
+
+const openclawPublisher: PublicPublisherListItem = {
+  ...publisher,
+  _id: "publishers:openclaw" as Id<"publishers">,
+  handle: "openclaw",
+  displayName: "OpenClaw",
 };
