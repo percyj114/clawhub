@@ -440,6 +440,7 @@ export const githubWebhookHttp = httpAction(async (ctx, req) => {
   })) as { duplicate: boolean };
   if (dedupe.duplicate) return new Response("Duplicate", { status: 202 });
 
+  const webhookAction = typeof payload.action === "string" ? payload.action : "";
   try {
     if (event === "push") {
       const ref = typeof payload.ref === "string" ? payload.ref : "";
@@ -459,7 +460,6 @@ export const githubWebhookHttp = httpAction(async (ctx, req) => {
         senderAccountId: senderAccountId ?? "",
         event,
       });
-      const webhookAction = typeof payload.action === "string" ? payload.action : "";
       const addedRepoIds = Array.isArray(payload.added_repositories)
         ? payload.added_repositories
             .map((added) => normalizeOptionalId((added as { id?: unknown }).id))
@@ -510,12 +510,20 @@ export const githubWebhookHttp = httpAction(async (ctx, req) => {
         installationId: installationId ?? "",
       });
     } else if (event === "repository") {
-      await ctx.runMutation(internal.githubApp.markRepositoryChangedInternal, {
-        installationId: installationId ?? "",
-        repoId: repoId ?? "",
-        repoFullName: typeof repo?.full_name === "string" ? repo.full_name : "",
-        defaultBranch: typeof repo?.default_branch === "string" ? repo.default_branch : "",
-      });
+      if (webhookAction === "deleted" && repoId) {
+        await ctx.runMutation(internal.githubApp.disableInstallationRepositoriesInternal, {
+          installationId: installationId ?? "",
+          repoIds: [repoId],
+          reason: "repository.deleted",
+        });
+      } else {
+        await ctx.runMutation(internal.githubApp.markRepositoryChangedInternal, {
+          installationId: installationId ?? "",
+          repoId: repoId ?? "",
+          repoFullName: typeof repo?.full_name === "string" ? repo.full_name : "",
+          defaultBranch: typeof repo?.default_branch === "string" ? repo.default_branch : "",
+        });
+      }
     }
   } catch (error) {
     await ctx.runMutation(internal.githubApp.markWebhookDeliveryFailedInternal, {
@@ -1549,6 +1557,8 @@ export const markSourceLinkPublishedInternal = internalMutation({
     fingerprint: v.string(),
   },
   handler: async (ctx, args) => {
+    const link = await ctx.db.get(args.sourceLinkId);
+    if (!link || link.status === "disabled") return { ok: false };
     await ctx.db.patch(args.sourceLinkId, {
       skillId: args.skillId,
       status: "active",
@@ -1558,6 +1568,7 @@ export const markSourceLinkPublishedInternal = internalMutation({
       lastFingerprint: args.fingerprint,
       updatedAt: Date.now(),
     });
+    return { ok: true };
   },
 });
 
@@ -1568,6 +1579,8 @@ export const markSourceLinkUnchangedInternal = internalMutation({
     fingerprint: v.string(),
   },
   handler: async (ctx, args) => {
+    const link = await ctx.db.get(args.sourceLinkId);
+    if (!link || link.status === "disabled") return { ok: false };
     await ctx.db.patch(args.sourceLinkId, {
       status: "active",
       conflictReason: undefined,
@@ -1575,6 +1588,7 @@ export const markSourceLinkUnchangedInternal = internalMutation({
       lastFingerprint: args.fingerprint,
       updatedAt: Date.now(),
     });
+    return { ok: true };
   },
 });
 
@@ -1584,6 +1598,8 @@ export const markSourceLinkConflictInternal = internalMutation({
     reason: v.string(),
   },
   handler: async (ctx, args) => {
+    const link = await ctx.db.get(args.sourceLinkId);
+    if (!link || link.status === "disabled") return;
     await ctx.db.patch(args.sourceLinkId, {
       status: "conflict",
       conflictReason: args.reason.slice(0, 1000),
