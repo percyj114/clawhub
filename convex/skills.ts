@@ -9826,6 +9826,27 @@ async function enforceSourceManagedPublishBoundary(
   );
 }
 
+async function assertSourceSyncCanPublish(
+  ctx: MutationCtx,
+  sourceSync:
+    | {
+        sourceLinkId: Id<"skillSourceLinks">;
+        repositoryId: Id<"publisherGitHubRepositories">;
+        syncJobId?: Id<"githubSkillSyncJobs">;
+      }
+    | undefined,
+) {
+  if (!sourceSync) return;
+  const link = await ctx.db.get(sourceSync.sourceLinkId);
+  if (!link || link.status === "disabled" || link.repositoryId !== sourceSync.repositoryId) {
+    throw new ConvexError("Source link is disabled");
+  }
+  const repo = await ctx.db.get(sourceSync.repositoryId);
+  if (!repo || repo.deletedAt || !repo.enabled) {
+    throw new ConvexError("GitHub repository link is disabled");
+  }
+}
+
 function isMissingSourceLinkTableError(error: unknown) {
   return (
     error instanceof Error &&
@@ -9973,6 +9994,7 @@ export const insertVersion = internalMutation({
     }
 
     const now = Date.now();
+    await assertSourceSyncCanPublish(ctx, args.sourceSync);
 
     let skill = await ctx.db
       .query("skills")
