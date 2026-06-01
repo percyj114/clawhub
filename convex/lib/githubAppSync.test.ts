@@ -19,6 +19,15 @@ describe("github app sync helpers", () => {
     expect(normalizeGitHubRepoFullName("https://github.com/OpenClaw/Skills.git")).toBe(
       "OpenClaw/Skills",
     );
+    expect(normalizeGitHubRepoFullName("git+https://github.com/OpenClaw/Skills.git")).toBe(
+      "OpenClaw/Skills",
+    );
+    expect(normalizeGitHubRepoFullName("git@github.com:OpenClaw/Skills.git")).toBe(
+      "OpenClaw/Skills",
+    );
+    expect(normalizeGitHubRepoFullName("https://www.github.com/OpenClaw/Skills/tree/main")).toBe(
+      "OpenClaw/Skills",
+    );
     expect(normalizeGitHubRepoFullName("not a repo")).toBeNull();
     expect(isPathUnderAnyRoot("skills/demo/SKILL.md", ["skills"])).toBe(true);
     expect(isPathUnderAnyRoot("packages/demo/package.json", ["skills"])).toBe(false);
