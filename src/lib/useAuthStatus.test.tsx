@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAuthStatus } from "./useAuthStatus";
 
 const useConvexAuthMock = vi.fn();
@@ -30,6 +30,10 @@ describe("useAuthStatus", () => {
   beforeEach(() => {
     useConvexAuthMock.mockReset();
     useQueryMock.mockReset();
+    delete process.env.VITE_ENABLE_DEV_AUTH;
+  });
+
+  afterAll(() => {
     if (originalDevAuth === undefined) {
       delete process.env.VITE_ENABLE_DEV_AUTH;
     } else {
