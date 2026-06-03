@@ -2048,6 +2048,53 @@ const downloadDedupes = defineTable({
   .index("by_skill_identity_hour", ["skillId", "identityHash", "hourStart"])
   .index("by_hour", ["hourStart"]);
 
+const downloadMetricTargetKind = v.union(v.literal("skill"), v.literal("package"));
+const downloadMetricIdentityKind = v.union(v.literal("user"), v.literal("ip"));
+
+const downloadMetricDedupes = defineTable({
+  targetKind: downloadMetricTargetKind,
+  targetId: v.string(),
+  identityKind: downloadMetricIdentityKind,
+  identityHash: v.string(),
+  dayStart: v.number(),
+  createdAt: v.number(),
+})
+  .index("by_target_identity_day", [
+    "targetKind",
+    "targetId",
+    "identityKind",
+    "identityHash",
+    "dayStart",
+  ])
+  .index("by_day", ["dayStart"]);
+
+const downloadMetricDailyRollups = defineTable({
+  targetKind: downloadMetricTargetKind,
+  targetId: v.string(),
+  dayStart: v.number(),
+  downloads: v.number(),
+  updatedAt: v.number(),
+})
+  .index("by_target_day", ["targetKind", "targetId", "dayStart"])
+  .index("by_day", ["dayStart"]);
+
+const downloadMetricWeeklySnapshots = defineTable({
+  targetKind: downloadMetricTargetKind,
+  targetId: v.string(),
+  weekStart: v.number(),
+  downloads: v.number(),
+  updatedAt: v.number(),
+})
+  .index("by_target_week", ["targetKind", "targetId", "weekStart"])
+  .index("by_week", ["weekStart"]);
+
+const downloadMetricGlobalWeeklySnapshots = defineTable({
+  weekStart: v.number(),
+  downloads: v.number(),
+  targetCount: v.number(),
+  updatedAt: v.number(),
+}).index("by_week", ["weekStart"]);
+
 const reservedSlugs = defineTable({
   slug: v.string(),
   originalOwnerUserId: v.id("users"),
@@ -2200,6 +2247,10 @@ export default defineSchema({
   rateLimits,
   rateLimitShards,
   downloadDedupes,
+  downloadMetricDedupes,
+  downloadMetricDailyRollups,
+  downloadMetricWeeklySnapshots,
+  downloadMetricGlobalWeeklySnapshots,
   reservedSlugs,
   reservedHandles,
   githubBackupSyncState,

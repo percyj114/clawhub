@@ -86,4 +86,18 @@ crons.interval(
   {},
 );
 
+crons.interval(
+  "download-metric-dedupe-prune",
+  { hours: 24 },
+  internal.downloadMetrics.pruneDownloadMetricDedupesInternal,
+  {},
+);
+
+crons.cron(
+  "download-metric-weekly-snapshots",
+  "0 1 * * 1",
+  internal.downloadMetrics.snapshotPreviousWeekDownloadMetricsInternal,
+  {},
+);
+
 export default crons;
