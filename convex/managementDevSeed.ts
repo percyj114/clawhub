@@ -7,6 +7,7 @@ import type { MutationCtx } from "./_generated/server";
 // dev seed must have run first. All demo rows carry a marker so clearDemo can remove
 // them precisely.
 import { internalMutation } from "./_generated/server";
+import { assertLocalDevSeedAllowed } from "./lib/devSeed";
 
 const DEMO_REPORT_MARKER = "managementDevSeed:report";
 // Hash-like so the dashboard's fingerprint chip reads like real data; still a
@@ -28,25 +29,6 @@ type DuplicateDemoTarget = {
   skill: Doc<"skills">;
   versionId: Id<"skillVersions">;
 };
-
-function assertDevSeedAllowed(): void {
-  const deployment =
-    process.env.CONVEX_DEPLOYMENT?.trim() || process.env.DEV_AUTH_CONVEX_DEPLOYMENT?.trim() || "";
-  if (
-    deployment.startsWith("dev:") ||
-    deployment.startsWith("local:") ||
-    deployment.startsWith("anonymous:")
-  ) {
-    return;
-  }
-  if (
-    !deployment &&
-    (process.env.DEV_AUTH_ENABLED === "1" || process.env.CLAW_HUB_ENABLE_DEV_IMPERSONATION === "1")
-  ) {
-    return;
-  }
-  throw new Error("Management dev seed is disabled outside local/dev deployments");
-}
 
 // Remove previously seeded demo reports + duplicate fingerprints so the seed is
 // idempotent and the dashboard can be reset.
@@ -129,7 +111,7 @@ export const seedManagementQueues = internalMutation({
     reportedSkills: number;
     duplicatePair: number;
   }> => {
-    assertDevSeedAllowed();
+    assertLocalDevSeedAllowed("Management");
     await clearDemo(ctx);
     const now = Date.now();
 
@@ -193,7 +175,7 @@ export const seedManagementQueues = internalMutation({
 export const clearManagementQueues = internalMutation({
   args: {},
   handler: async (ctx): Promise<{ reportsDeleted: number; fingerprintsDeleted: number }> => {
-    assertDevSeedAllowed();
+    assertLocalDevSeedAllowed("Management");
     return clearDemo(ctx);
   },
 });

@@ -55,79 +55,21 @@ import {
 } from "../lib/badges";
 import { getUserFacingConvexError } from "../lib/convexError";
 import { familyLabel } from "../lib/packageLabels";
-import type { PublicPublisher } from "../lib/publicUser";
 import { isAdmin, isModerator } from "../lib/roles";
 import { useAuthStatus } from "../lib/useAuthStatus";
 
 const SKILL_AUDIT_LOG_LIMIT = 10;
 const USER_BAN_REASON_MAX_LENGTH = 500;
 
-type ManagementUserSummary = {
-  _id: Id<"users">;
-  handle?: string | null;
-  name?: string | null;
-  displayName?: string | null;
-};
-
-type ManagementUserListResult = { items: Doc<"users">[]; total: number };
-
-type SkillAuditLogEntry = {
-  _id: Id<"auditLogs">;
-  action: string;
-  metadata?: unknown;
-  createdAt: number;
-  actor: ManagementUserSummary | null;
-};
-
-type ManagementSkillEntry = {
-  skill: Doc<"skills">;
-  latestVersion: Doc<"skillVersions"> | null;
-  owner: Doc<"users"> | null;
-};
-
-type ReportReasonEntry = {
-  reason: string;
-  createdAt: number;
-  reporterHandle: string | null;
-  reporterId: Id<"users">;
-};
-
-type ReportedSkillEntry = ManagementSkillEntry & {
-  reports: ReportReasonEntry[];
-};
-
-type RecentVersionEntry = {
-  version: Doc<"skillVersions">;
-  skill: Doc<"skills"> | null;
-  owner: Doc<"users"> | null;
-};
-
-type DuplicateCandidateEntry = {
-  skill: Doc<"skills">;
-  latestVersion: Doc<"skillVersions"> | null;
-  fingerprint: string | null;
-  matches: Array<{ skill: Doc<"skills">; owner: Doc<"users"> | null }>;
-  owner: Doc<"users"> | null;
-};
-
-type SkillBySlugResult = {
-  skill: Doc<"skills">;
-  latestVersion: Doc<"skillVersions"> | null;
-  owner: Doc<"users"> | null;
-  overrideReviewer: ManagementUserSummary | null;
-  auditLogs: SkillAuditLogEntry[];
-  canonical: {
-    skill: { slug: string; displayName: string };
-    owner: { handle: string | null; userId: Id<"users"> | null };
-  } | null;
-} | null;
-
-type PluginByNameResult = {
-  package: Doc<"packages">;
-  latestRelease: Doc<"packageReleases"> | null;
-  owner: PublicPublisher | null;
-  highlighted: { byUserId: Id<"users">; at: number } | null;
-} | null;
+type ManagementUserListResult = FunctionReturnType<typeof api.users.list>;
+type SkillBySlugResult = FunctionReturnType<typeof api.skills.getBySlugForStaff>;
+type PluginByNameResult = FunctionReturnType<typeof api.packages.getByNameForStaff>;
+type RecentVersionEntry = FunctionReturnType<typeof api.skills.listRecentVersions>[number];
+type ReportedSkillEntry = FunctionReturnType<typeof api.skills.listReportedSkills>[number];
+type DuplicateCandidateEntry = FunctionReturnType<
+  typeof api.skills.listDuplicateCandidates
+>[number];
+type ManagementUserSummary = NonNullable<NonNullable<SkillBySlugResult>["overrideReviewer"]>;
 
 type PublisherAbuseReviewDashboard = FunctionReturnType<
   typeof api.publisherAbuse.listReviewDashboard
@@ -485,12 +427,22 @@ export function Management() {
   const userSummary = userResult
     ? `Showing ${filteredUsers.length} of ${userTotal}`
     : "Loading users…";
-  const selectedOwnerUser = selectedSkill?.owner ?? null;
   const ownerUsers = ownerResult?.items ?? [];
+  const selectedOwnerOption = selectedSkill?.owner?.linkedUserId
+    ? {
+        userId: selectedSkill.owner.linkedUserId,
+        label: `@${selectedSkill.owner.handle ?? selectedSkill.owner.displayName ?? "user"}`,
+      }
+    : null;
+  const ownerUserOptions = ownerUsers.map((user) => ({
+    userId: user._id,
+    label: formatManagementUserLabel(user, user._id),
+  }));
   const ownerOptions =
-    selectedOwnerUser && !ownerUsers.some((user) => user._id === selectedOwnerUser._id)
-      ? [selectedOwnerUser, ...ownerUsers]
-      : ownerUsers;
+    selectedOwnerOption &&
+    !ownerUserOptions.some((option) => option.userId === selectedOwnerOption.userId)
+      ? [selectedOwnerOption, ...ownerUserOptions]
+      : ownerUserOptions;
   const ownerSummary = ownerResult
     ? `Showing ${ownerOptions.length} of ${Math.max(ownerResult.total, ownerOptions.length)}`
     : "Loading owners…";
@@ -864,8 +816,9 @@ export function Management() {
                   const isDeprecated = isSkillDeprecated(skill);
                   const badges = getSkillBadges(skill);
                   const ownerUserId = skill.ownerUserId ?? selectedOwnerUserId;
-                  const ownerHandle = owner?.handle ?? owner?.name ?? "user";
-                  const isOwnerAdmin = owner?.role === "admin";
+                  const ownerHandle = owner?.handle ?? owner?.displayName ?? "user";
+                  const ownerRecord = ownerUsers.find((user) => user._id === ownerUserId);
+                  const isOwnerAdmin = ownerRecord?.role === "admin";
                   const canBanOwner =
                     staff && ownerUserId && ownerUserId !== me?._id && (admin || !isOwnerAdmin);
 
@@ -876,7 +829,7 @@ export function Management() {
                           {skill.displayName}
                         </Link>
                         <div className="section-subtitle m-0">
-                          @{owner?.handle ?? owner?.name ?? "user"} · v
+                          @{owner?.handle ?? owner?.displayName ?? "user"} · v
                           {latestVersion?.version ?? "—"} · updated{" "}
                           {formatTimestamp(skill.updatedAt)} · {moderationStatus}
                           {badges.length ? ` · ${badges.join(", ").toLowerCase()}` : ""}
@@ -1035,8 +988,8 @@ export function Management() {
                                   </SelectTrigger>
                                   <SelectContent>
                                     {ownerOptions.map((user) => (
-                                      <SelectItem key={user._id} value={user._id}>
-                                        @{user.handle ?? user.name ?? "user"}
+                                      <SelectItem key={user.userId} value={user.userId}>
+                                        {user.label}
                                       </SelectItem>
                                     ))}
                                   </SelectContent>

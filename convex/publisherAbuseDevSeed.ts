@@ -6,6 +6,7 @@ import type { MutationCtx } from "./_generated/server";
 // mutation, so deleting several linked demo users through the wrapped builder fails.
 // Demo rows have no real packages/skills, so skipping digest sync is correct here.
 import { internalMutation } from "./_generated/server";
+import { assertLocalDevSeedAllowed } from "./lib/devSeed";
 import {
   computePublisherAbuseRawScore,
   DEFAULT_PUBLISHER_ABUSE_MODEL_CONFIG,
@@ -223,25 +224,6 @@ function demoOwnerKey(index: number): string {
 const DEMO_HANDLES = SEED_PUBLISHERS.map((publisher) => demoHandle(publisher.index));
 const DEMO_OWNER_KEYS = SEED_PUBLISHERS.map((publisher) => demoOwnerKey(publisher.index));
 
-function assertDevSeedAllowed(): void {
-  const deployment =
-    process.env.CONVEX_DEPLOYMENT?.trim() || process.env.DEV_AUTH_CONVEX_DEPLOYMENT?.trim() || "";
-  if (
-    deployment.startsWith("dev:") ||
-    deployment.startsWith("local:") ||
-    deployment.startsWith("anonymous:")
-  ) {
-    return;
-  }
-  if (
-    !deployment &&
-    (process.env.DEV_AUTH_ENABLED === "1" || process.env.CLAW_HUB_ENABLE_DEV_IMPERSONATION === "1")
-  ) {
-    return;
-  }
-  throw new Error("Publisher abuse dev seed is disabled outside local/dev deployments");
-}
-
 type ClearSeedCtx = Pick<MutationCtx, "db">;
 type ClearSeedResult = {
   runs: number;
@@ -255,7 +237,7 @@ type ClearSeedResult = {
 export const seed = internalMutation({
   args: {},
   handler: async (ctx): Promise<{ runId: Id<"publisherAbuseScoreRuns">; inserted: number }> => {
-    assertDevSeedAllowed();
+    assertLocalDevSeedAllowed("Publisher abuse");
     await clearDemoRows(ctx);
 
     const now = Date.now();
@@ -393,7 +375,7 @@ export const seed = internalMutation({
 export const clearSeed = internalMutation({
   args: {},
   handler: async (ctx): Promise<ClearSeedResult> => {
-    assertDevSeedAllowed();
+    assertLocalDevSeedAllowed("Publisher abuse");
     return await clearDemoRows(ctx);
   },
 });
