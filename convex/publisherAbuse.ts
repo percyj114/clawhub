@@ -148,8 +148,8 @@ export const getReviewNominationDetail = query({
     return {
       item,
       latestScoreRun: latestScoreRun ? summarizePublisherAbuseRun(latestScoreRun) : null,
-      scoreHistory: scoreHistory.map(summarizePublisherAbuseScore),
-      events: events.map(summarizePublisherAbuseReviewEvent),
+      scoreHistory,
+      events,
     };
   },
 });
@@ -1103,8 +1103,8 @@ async function summarizePublisherAbuseReviewNomination(
   const openedByRun = await ctx.db.get(nomination.openedByRunId);
 
   return {
-    nomination: summarizePublisherAbuseNomination(nomination),
-    latestScore: score ? summarizePublisherAbuseScore(score) : null,
+    nomination,
+    latestScore: score,
     publisher: publisher ? summarizePublisherForAbuseReview(publisher) : null,
     ownerUser: ownerUser ? summarizeUserForAbuseReview(ownerUser) : null,
     openedByRun: openedByRun ? summarizePublisherAbuseRun(openedByRun) : null,
@@ -1131,92 +1131,17 @@ function comparePublisherAbuseReviewItemsByLastScoredAt(
   return right.nomination._id.localeCompare(left.nomination._id);
 }
 
-function summarizePublisherAbuseNomination(nomination: Doc<"publisherAbuseReviewNominations">) {
-  return {
-    _id: nomination._id,
-    ownerKey: nomination.ownerKey,
-    ownerPublisherId: nomination.ownerPublisherId,
-    ownerUserId: nomination.ownerUserId,
-    handleSnapshot: nomination.handleSnapshot,
-    latestScoreId: nomination.latestScoreId,
-    modelVersion: nomination.modelVersion,
-    label: nomination.label,
-    status: nomination.status,
-    openedAt: nomination.openedAt,
-    openedByRunId: nomination.openedByRunId,
-    lastScoredAt: nomination.lastScoredAt,
-    reviewedByUserId: nomination.reviewedByUserId,
-    reviewedAt: nomination.reviewedAt,
-    notes: nomination.notes,
-    updatedAt: nomination.updatedAt,
-  };
-}
-
-function summarizePublisherAbuseScore(score: Doc<"publisherAbuseScores">) {
-  return {
-    _id: score._id,
-    runId: score.runId,
-    ownerKey: score.ownerKey,
-    ownerPublisherId: score.ownerPublisherId,
-    ownerUserId: score.ownerUserId,
-    handleSnapshot: score.handleSnapshot,
-    modelVersion: score.modelVersion,
-    label: score.label,
-    rank: score.rank,
-    pressure: score.pressure,
-    logPressure: score.logPressure,
-    zScore: score.zScore,
-    publishedSkills: score.publishedSkills,
-    totalInstalls: score.totalInstalls,
-    totalStars: score.totalStars,
-    totalDownloads: score.totalDownloads,
-    installsPerSkill: score.installsPerSkill,
-    starsPerSkill: score.starsPerSkill,
-    downloadsPerSkill: score.downloadsPerSkill,
-    reasonCodes: score.reasonCodes,
-    createdAt: score.createdAt,
-  };
-}
-
 function summarizePublisherAbuseRun(run: Doc<"publisherAbuseScoreRuns">) {
-  return {
-    _id: run._id,
-    modelVersion: run.modelVersion,
-    trigger: run.trigger,
-    status: run.status,
-    phase: run.phase,
-    startedAt: run.startedAt,
-    completedAt: run.completedAt,
-    updatedAt: run.updatedAt,
-    scannedPublishers: run.scannedPublishers,
-    scoredPublishers: run.scoredPublishers,
-    finalizedScores: run.finalizedScores,
-    nominatedPublishers: run.nominatedPublishers,
-    passCount: run.passCount,
-    reviewCount: run.reviewCount,
-    potentialBanCandidateCount: run.potentialBanCandidateCount,
-    meanLogPressure: run.meanLogPressure,
-    stdDevLogPressure: run.stdDevLogPressure,
-    errorMessage: run.errorMessage,
-  };
-}
-
-function summarizePublisherAbuseReviewEvent(event: Doc<"publisherAbuseReviewEvents">) {
-  return {
-    _id: event._id,
-    nominationId: event.nominationId,
-    ownerKey: event.ownerKey,
-    actorUserId: event.actorUserId,
-    runId: event.runId,
-    scoreId: event.scoreId,
-    eventType: event.eventType,
-    previousStatus: event.previousStatus,
-    nextStatus: event.nextStatus,
-    previousLabel: event.previousLabel,
-    nextLabel: event.nextLabel,
-    notes: event.notes,
-    createdAt: event.createdAt,
-  };
+  const {
+    actorUserId: _actorUserId,
+    collectCursor: _collectCursor,
+    finalizeCursor: _finalizeCursor,
+    modelConfig: _modelConfig,
+    sumLogPressure: _sumLogPressure,
+    sumSquaredLogPressure: _sumSquaredLogPressure,
+    ...summary
+  } = run;
+  return summary;
 }
 
 function summarizePublisherForAbuseReview(publisher: Doc<"publishers">) {
