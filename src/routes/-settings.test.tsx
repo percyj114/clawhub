@@ -1,6 +1,8 @@
 /* @vitest-environment jsdom */
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { getFunctionName } from "convex/server";
 import type { ReactNode } from "react";
+import { toast } from "sonner";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../../convex/_generated/api";
 import { Settings } from "./settings";
@@ -8,6 +10,7 @@ import { Settings } from "./settings";
 const useQueryMock = vi.fn();
 const useMutationMock = vi.fn();
 const useAuthActionsMock = vi.fn();
+const useAuthStatusMock = vi.fn();
 const { navigateMock, searchMock } = vi.hoisted(() => ({
   navigateMock: vi.fn(),
   searchMock: vi.fn(() => ({})),
@@ -22,11 +25,22 @@ vi.mock("@convex-dev/auth/react", () => ({
   useAuthActions: () => useAuthActionsMock(),
 }));
 
+vi.mock("../lib/useAuthStatus", () => ({
+  useAuthStatus: () => useAuthStatusMock(),
+}));
+
 vi.mock("@tanstack/react-router", () => ({
   createFileRoute: () => (config: unknown) => config,
   Link: ({ children, to }: { children: ReactNode; to: string }) => <a href={to}>{children}</a>,
   useNavigate: () => navigateMock,
   useSearch: () => searchMock(),
+}));
+
+vi.mock("sonner", () => ({
+  toast: {
+    error: vi.fn(),
+    success: vi.fn(),
+  },
 }));
 
 const signedInUser = {
@@ -75,12 +89,18 @@ function mockSignedInSettings({
   memberships?: Array<typeof orgMembership>;
   members?: typeof orgMembers;
 } = {}) {
+  useAuthStatusMock.mockReturnValue({
+    isAuthenticated: true,
+    isLoading: false,
+    me: signedInUser,
+  });
   searchMock.mockReturnValue(search);
   useQueryMock.mockImplementation((query, args) => {
-    if (query === api.users.me) return signedInUser;
     if (args === "skip") return undefined;
-    if (args && typeof args === "object" && "publisherHandle" in args) return members;
-    if (args && typeof args === "object") return [];
+    const name = getFunctionName(query);
+    if (name === "tokens:listMine") return [];
+    if (name === "publishers:listMine") return memberships;
+    if (name === "publishers:listMembers") return members;
     return memberships;
   });
 }
@@ -91,22 +111,35 @@ describe("Settings", () => {
     useQueryMock.mockReset();
     useMutationMock.mockReset();
     useAuthActionsMock.mockReset();
+    useAuthStatusMock.mockReset();
     navigateMock.mockReset();
     searchMock.mockReset();
     searchMock.mockReturnValue({});
     useMutationMock.mockReturnValue(vi.fn());
+    vi.mocked(toast.error).mockReset();
+    vi.mocked(toast.success).mockReset();
     useAuthActionsMock.mockReturnValue({
       signIn: vi.fn(),
     });
+    useAuthStatusMock.mockReturnValue({
+      isAuthenticated: true,
+      isLoading: false,
+      me: signedInUser,
+    });
   });
 
-  it("skips token loading until auth has resolved", () => {
+  it("shows the settings skeleton until auth has resolved", () => {
+    useAuthStatusMock.mockReturnValue({
+      isAuthenticated: false,
+      isLoading: true,
+      me: undefined,
+    });
     useQueryMock.mockImplementation(() => undefined);
 
     render(<Settings />);
 
-    expect(screen.getByRole("heading", { name: /sign in to access settings/i })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /sign in with github/i })).toBeTruthy();
+    expect(screen.getByLabelText(/loading settings/i)).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: /sign in to access settings/i })).toBeNull();
     expect(useQueryMock.mock.calls.some(([, args]) => args === "skip")).toBe(true);
   });
 
@@ -162,6 +195,37 @@ describe("Settings", () => {
     expect(useQueryMock).toHaveBeenCalledWith(api.publishers.listMembers, {
       publisherHandle: "openclaw",
     });
+  });
+
+  it("shows create organization mutation errors to the user", async () => {
+    const createOrg = vi
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          '[CONVEX M(publishers:createOrg)] [Request ID: test] Server Error Called by client ConvexError: Handle "@romneyda" is already used by a user or personal publisher',
+        ),
+      );
+    mockSignedInSettings({ search: { view: "organizations" }, memberships: [] });
+    useMutationMock.mockReturnValue(createOrg);
+
+    render(<Settings />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Create org" }));
+    fireEvent.change(screen.getByLabelText("Handle"), { target: { value: "romneyda" } });
+    fireEvent.change(screen.getByLabelText("Display name"), {
+      target: { value: "Dallin Romney @ OpenClaw" },
+    });
+    const createOrgButtons = screen.getAllByRole("button", { name: "Create org" });
+    fireEvent.click(createOrgButtons[createOrgButtons.length - 1]);
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toContain(
+        'Handle "@romneyda" is already used by a user or personal publisher',
+      );
+    });
+    expect(toast.error).toHaveBeenCalledWith(
+      'Handle "@romneyda" is already used by a user or personal publisher',
+    );
   });
 
   it("migrates legacy hash settings URLs to focused query params", () => {

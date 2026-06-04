@@ -20,6 +20,10 @@ import {
   publishSkillV1Handler,
   resolveSkillVersionV1Handler,
   searchSkillsV1Handler,
+  skillScanBatchStatusV1Handler,
+  skillScanBatchSubmitV1Handler,
+  skillScanGetRouterV1Handler,
+  skillScanSubmitV1Handler,
   skillSecurityVerdictsV1Handler,
   skillsDeleteRouterV1Handler,
   skillsGetRouterV1Handler,
@@ -34,7 +38,11 @@ import {
 } from "./httpApiV1/soulsV1";
 import { starsDeleteRouterV1Handler, starsPostRouterV1Handler } from "./httpApiV1/starsV1";
 import { transfersGetRouterV1Handler } from "./httpApiV1/transfersV1";
-import { usersListV1Handler, usersPostRouterV1Handler } from "./httpApiV1/usersV1";
+import {
+  banAppealContextV1Handler,
+  usersListV1Handler,
+  usersPostRouterV1Handler,
+} from "./httpApiV1/usersV1";
 import { whoamiV1Handler } from "./httpApiV1/whoamiV1";
 
 export const listPackagesV1Http = httpAction(listPackagesV1Handler);
@@ -57,6 +65,10 @@ export const listSkillsV1Http = httpAction(listSkillsV1Handler);
 export const skillsGetRouterV1Http = httpAction(skillsGetRouterV1Handler);
 export const publishSkillV1Http = httpAction(publishSkillV1Handler);
 export const skillSecurityVerdictsV1Http = httpAction(skillSecurityVerdictsV1Handler);
+export const skillScanSubmitV1Http = httpAction(skillScanSubmitV1Handler);
+export const skillScanGetRouterV1Http = httpAction(skillScanGetRouterV1Handler);
+export const skillScanBatchSubmitV1Http = httpAction(skillScanBatchSubmitV1Handler);
+export const skillScanBatchStatusV1Http = httpAction(skillScanBatchStatusV1Handler);
 export const skillsPostRouterV1Http = httpAction(skillsPostRouterV1Handler);
 export const skillsDeleteRouterV1Http = httpAction(skillsDeleteRouterV1Handler);
 export const exportSkillsV1Http = httpAction(exportSkillsV1Handler);
@@ -74,6 +86,7 @@ export const transfersGetRouterV1Http = httpAction(transfersGetRouterV1Handler);
 export const whoamiV1Http = httpAction(whoamiV1Handler);
 export const usersPostRouterV1Http = httpAction(usersPostRouterV1Handler);
 export const usersListV1Http = httpAction(usersListV1Handler);
+export const banAppealContextV1Http = httpAction(banAppealContextV1Handler);
 
 export const __handlers = {
   listPackagesV1Handler,
@@ -109,4 +122,5 @@ export const __handlers = {
   whoamiV1Handler,
   usersPostRouterV1Handler,
   usersListV1Handler,
+  banAppealContextV1Handler,
 };

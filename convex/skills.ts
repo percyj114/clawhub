@@ -34,7 +34,6 @@ import {
 import { getSkillBadgeMap, getSkillBadgeMaps, isSkillHighlighted } from "./lib/badges";
 import { scheduleNextBatchIfNeeded } from "./lib/batching";
 import { generateChangelogPreview as buildChangelogPreview } from "./lib/changelog";
-import { normalizeClawScanNoteForWrite } from "./lib/clawScanNote";
 import { mergeDepRegistryFinding } from "./lib/depRegistryScan";
 import { embeddingVisibilityFor } from "./lib/embeddingVisibility";
 import {
@@ -638,6 +637,7 @@ const NEW_SKILL_RATE_LIMITS = {
 } as const;
 
 const SORT_INDEXES = {
+  recommended: "by_active_recommended_rank",
   newest: "by_active_created",
   updated: "by_active_updated",
   name: "by_active_name",
@@ -648,6 +648,7 @@ const SORT_INDEXES = {
 
 // Compound indexes on skillSearchDigest that filter isSuspicious at the index level.
 const NONSUSPICIOUS_SORT_INDEXES = {
+  recommended: "by_nonsuspicious_recommended_rank",
   newest: "by_nonsuspicious_created",
   updated: "by_nonsuspicious_updated",
   name: "by_nonsuspicious_name",
@@ -1671,7 +1672,6 @@ type PublicSkillVersion = {
     engineVersion: NonNullable<Doc<"skillVersions">["staticScan"]>["engineVersion"];
     checkedAt: NonNullable<Doc<"skillVersions">["staticScan"]>["checkedAt"];
   };
-  clawScanNote?: string;
   generatedSkillCard?: {
     path: string;
     size: number;
@@ -1685,6 +1685,15 @@ type ManagementSkillEntry = {
   latestVersion: Doc<"skillVersions"> | null;
   owner: Doc<"users"> | null;
 };
+
+function omitLegacyClawScanNoteFields(version: Doc<"skillVersions">) {
+  const {
+    clawScanNote: _legacyClawScanNote,
+    clawScanNoteUpdatedAt: _legacyClawScanNoteUpdatedAt,
+    ...publicVersion
+  } = version;
+  return publicVersion;
+}
 
 type DashboardSkillListItem = {
   _id: Id<"skills">;
@@ -1919,7 +1928,6 @@ function toPublicSkillVersion(
     skillSpectorAnalysis: version.skillSpectorAnalysis,
     llmAnalysis: version.llmAnalysis,
     apiKeyRequired: version.apiKeyRequired,
-    clawScanNote: version.clawScanNote,
     staticScan: version.staticScan
       ? {
           status: version.staticScan.status,
@@ -2011,7 +2019,11 @@ async function buildManagementSkillEntries(ctx: QueryCtx, skills: Doc<"skills">[
         getOwner(skill.ownerUserId),
       ]);
       const badges = badgeMapBySkillId.get(skill._id) ?? {};
-      return { skill: { ...skill, badges }, latestVersion, owner };
+      return {
+        skill: { ...skill, badges },
+        latestVersion: latestVersion ? omitLegacyClawScanNoteFields(latestVersion) : null,
+        owner,
+      };
     }),
   ) satisfies Promise<ManagementSkillEntry[]>;
 }
@@ -2599,7 +2611,7 @@ export const getBySlugForStaff = query({
       staffUserIds.add(skill.manualOverride.reviewerUserId);
     }
     for (const log of rawAuditLogs) {
-      staffUserIds.add(log.actorUserId);
+      if (log.actorUserId) staffUserIds.add(log.actorUserId);
     }
     const publicUsers = await loadPublicUsersById(ctx, [...staffUserIds]);
     const overrideReviewer = skill.manualOverride?.reviewerUserId
@@ -2607,7 +2619,7 @@ export const getBySlugForStaff = query({
       : null;
     const auditLogs: StaffSkillAuditLogEntry[] = rawAuditLogs.map((log) => ({
       ...log,
-      actor: publicUsers.get(log.actorUserId) ?? null,
+      actor: log.actorUserId ? (publicUsers.get(log.actorUserId) ?? null) : null,
     }));
 
     const forkOfSkill = skill.forkOf?.skillId ? await ctx.db.get(skill.forkOf.skillId) : null;
@@ -2630,7 +2642,9 @@ export const getBySlugForStaff = query({
       requestedSlug: resolved.requestedSlug,
       resolvedSlug: resolved.resolvedSlug,
       skill: { ...skill, badges },
-      latestVersion: latestVersion ? { ...latestVersion, generatedSkillCard } : null,
+      latestVersion: latestVersion
+        ? { ...omitLegacyClawScanNoteFields(latestVersion), generatedSkillCard }
+        : null,
       owner,
       overrideReviewer,
       auditLogs,
@@ -4580,6 +4594,8 @@ export const listPublicPageV2 = query({
     paginationOpts: paginationOptsValidator,
     sort: v.optional(
       v.union(
+        v.literal("default"),
+        v.literal("recommended"),
         v.literal("newest"),
         v.literal("updated"),
         v.literal("downloads"),
@@ -4676,6 +4692,7 @@ export const listPublicPageV3 = query({
 type PublicListSort = keyof typeof SORT_INDEXES;
 
 const SORT_INDEX_FIELD_COUNTS: Record<PublicListSort, number> = {
+  recommended: 5,
   newest: 2,
   updated: 2,
   name: 2,
@@ -4685,6 +4702,7 @@ const SORT_INDEX_FIELD_COUNTS: Record<PublicListSort, number> = {
 };
 
 const NONSUSPICIOUS_SORT_INDEX_FIELD_COUNTS: Record<PublicListSort, number> = {
+  recommended: 6,
   newest: 3,
   updated: 3,
   name: 3,
@@ -4794,6 +4812,8 @@ export const listPublicPageV4 = query({
     numItems: v.optional(v.number()),
     sort: v.optional(
       v.union(
+        v.literal("default"),
+        v.literal("recommended"),
         v.literal("newest"),
         v.literal("updated"),
         v.literal("downloads"),
@@ -4819,16 +4839,37 @@ export const listPublicPageV4 = query({
       args.excludeCategoryKeywords ?? [],
     );
     const categorySlug = normalizeRelatedCategorySlug(args.categorySlug);
-    const sort = args.sort ?? "newest";
-    const dir = args.dir ?? (sort === "name" ? "asc" : "desc");
+    const requestedSort = normalizePublicListSort(args.sort);
+    const dir = resolvePublicListDir(requestedSort, args.dir);
     const numItems = clampInt(args.numItems ?? 25, 1, MAX_PUBLIC_LIST_LIMIT);
+    const eqPrefix: IndexKey = args.nonSuspiciousOnly ? [undefined, false] : [undefined];
+    const recommendedIndexName = args.nonSuspiciousOnly
+      ? NONSUSPICIOUS_SORT_INDEXES.recommended
+      : SORT_INDEXES.recommended;
+    const updatedIndexName = args.nonSuspiciousOnly
+      ? NONSUSPICIOUS_SORT_INDEXES.updated
+      : SORT_INDEXES.updated;
+    const recommendedCursor = getPublicListCursorKey({
+      cursor: args.cursor,
+      sort: "recommended",
+      nonSuspiciousOnly: args.nonSuspiciousOnly ?? false,
+      indexName: recommendedIndexName,
+      eqPrefix,
+    });
+    const updatedCursor = getPublicListCursorKey({
+      cursor: args.cursor,
+      sort: "updated",
+      nonSuspiciousOnly: args.nonSuspiciousOnly ?? false,
+      indexName: updatedIndexName,
+      eqPrefix,
+    });
 
     // Highlighted skills use a completely different path: query skillBadges
     // by kind to find highlighted skill IDs, then look up their digests.
     // This avoids scanning thousands of rows in the sort index.
     if (args.highlightedOnly) {
       return fetchHighlightedPage(ctx, {
-        sort,
+        sort: requestedSort,
         dir,
         numItems,
         capabilityTag: args.capabilityTag,
@@ -4839,13 +4880,21 @@ export const listPublicPageV4 = query({
       });
     }
 
+    const sort =
+      requestedSort === "recommended"
+        ? resolveRecommendedPublicListSort({
+            decodedCursor: recommendedCursor ?? updatedCursor,
+            hasMissingRankStats: await hasMissingRecommendedRankStats(
+              ctx,
+              args.nonSuspiciousOnly ?? false,
+              recommendedCursor ?? updatedCursor,
+            ),
+          })
+        : requestedSort;
+
     const indexName = args.nonSuspiciousOnly
       ? NONSUSPICIOUS_SORT_INDEXES[sort]
       : SORT_INDEXES[sort];
-
-    // Equality prefix constrains getPage to active (non-deleted) rows.
-    // Without this, getPage walks the entire index including soft-deleted items.
-    const eqPrefix: IndexKey = args.nonSuspiciousOnly ? [undefined, false] : [undefined];
 
     const decodedCursor = getPublicListCursorKey({
       cursor: args.cursor,
@@ -5329,6 +5378,8 @@ export const listPublicApiPageV1 = query({
     numItems: v.optional(v.number()),
     sort: v.optional(
       v.union(
+        v.literal("default"),
+        v.literal("recommended"),
         v.literal("newest"),
         v.literal("updated"),
         v.literal("downloads"),
@@ -5341,13 +5392,44 @@ export const listPublicApiPageV1 = query({
     nonSuspiciousOnly: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
-    const sort = args.sort ?? "newest";
-    const dir = args.dir ?? (sort === "name" ? "asc" : "desc");
+    const requestedSort = normalizePublicListSort(args.sort);
+    const dir = resolvePublicListDir(requestedSort, args.dir);
     const numItems = clampInt(args.numItems ?? 25, 1, MAX_PUBLIC_LIST_LIMIT);
+    const eqPrefix: IndexKey = args.nonSuspiciousOnly ? [undefined, false] : [undefined];
+    const recommendedIndexName = args.nonSuspiciousOnly
+      ? NONSUSPICIOUS_SORT_INDEXES.recommended
+      : SORT_INDEXES.recommended;
+    const updatedIndexName = args.nonSuspiciousOnly
+      ? NONSUSPICIOUS_SORT_INDEXES.updated
+      : SORT_INDEXES.updated;
+    const recommendedCursor = getPublicListCursorKey({
+      cursor: args.cursor,
+      sort: "recommended",
+      nonSuspiciousOnly: args.nonSuspiciousOnly ?? false,
+      indexName: recommendedIndexName,
+      eqPrefix,
+    });
+    const updatedCursor = getPublicListCursorKey({
+      cursor: args.cursor,
+      sort: "updated",
+      nonSuspiciousOnly: args.nonSuspiciousOnly ?? false,
+      indexName: updatedIndexName,
+      eqPrefix,
+    });
+    const sort =
+      requestedSort === "recommended"
+        ? resolveRecommendedPublicListSort({
+            decodedCursor: recommendedCursor ?? updatedCursor,
+            hasMissingRankStats: await hasMissingRecommendedRankStats(
+              ctx,
+              args.nonSuspiciousOnly ?? false,
+              recommendedCursor ?? updatedCursor,
+            ),
+          })
+        : requestedSort;
     const indexName = args.nonSuspiciousOnly
       ? NONSUSPICIOUS_SORT_INDEXES[sort]
       : SORT_INDEXES[sort];
-    const eqPrefix: IndexKey = args.nonSuspiciousOnly ? [undefined, false] : [undefined];
     const decodedCursor = getPublicListCursorKey({
       cursor: args.cursor,
       sort,
@@ -5768,6 +5850,98 @@ export const searchPackageCatalogForHttpInternal = internalQuery({
 });
 
 type SortKey = keyof typeof SORT_INDEXES;
+type SortKeyInput = SortKey | "default" | undefined;
+
+function normalizePublicListSort(sort: SortKeyInput): SortKey {
+  return sort === undefined || sort === "default" ? "recommended" : sort;
+}
+
+function resolvePublicListDir(sort: SortKeyInput, dir: "asc" | "desc" | undefined) {
+  const normalizedSort = normalizePublicListSort(sort);
+  if (normalizedSort === "recommended") return "desc";
+  return dir ?? (normalizedSort === "name" ? "asc" : "desc");
+}
+
+function resolveRecommendedPublicListSort({
+  decodedCursor,
+  hasMissingRankStats,
+}: {
+  decodedCursor: readonly unknown[] | null;
+  hasMissingRankStats: boolean;
+}): SortKey {
+  if (decodedCursor) {
+    return decodedCursor.length <= 5 ? "updated" : "recommended";
+  }
+  return hasMissingRankStats ? "updated" : "recommended";
+}
+
+async function hasMissingRecommendedRankStats(
+  ctx: Pick<QueryCtx, "db">,
+  nonSuspiciousOnly: boolean,
+  decodedCursor: IndexKey | null,
+) {
+  if (decodedCursor) return false;
+  if (nonSuspiciousOnly) {
+    const [missingStars, missingInstalls, missingDownloads] = await Promise.all([
+      ctx.db
+        .query("skillSearchDigest")
+        .withIndex("by_nonsuspicious_stars", (q) =>
+          q.eq("softDeletedAt", undefined).eq("isSuspicious", false).eq("statsStars", undefined),
+        )
+        .first(),
+      ctx.db
+        .query("skillSearchDigest")
+        .withIndex("by_nonsuspicious_installs", (q) =>
+          q
+            .eq("softDeletedAt", undefined)
+            .eq("isSuspicious", false)
+            .eq("statsInstallsAllTime", undefined),
+        )
+        .first(),
+      ctx.db
+        .query("skillSearchDigest")
+        .withIndex("by_nonsuspicious_downloads", (q) =>
+          q
+            .eq("softDeletedAt", undefined)
+            .eq("isSuspicious", false)
+            .eq("statsDownloads", undefined),
+        )
+        .first(),
+    ]);
+    return Boolean(missingStars || missingInstalls || missingDownloads);
+  }
+
+  const [missingStars, missingInstalls, missingDownloads] = await Promise.all([
+    ctx.db
+      .query("skillSearchDigest")
+      .withIndex("by_active_stats_stars", (q) =>
+        q.eq("softDeletedAt", undefined).eq("statsStars", undefined),
+      )
+      .first(),
+    ctx.db
+      .query("skillSearchDigest")
+      .withIndex("by_active_stats_installs_all_time", (q) =>
+        q.eq("softDeletedAt", undefined).eq("statsInstallsAllTime", undefined),
+      )
+      .first(),
+    ctx.db
+      .query("skillSearchDigest")
+      .withIndex("by_active_stats_downloads", (q) =>
+        q.eq("softDeletedAt", undefined).eq("statsDownloads", undefined),
+      )
+      .first(),
+  ]);
+  return Boolean(missingStars || missingInstalls || missingDownloads);
+}
+
+function readDigestRankStat(
+  digest: Doc<"skillSearchDigest">,
+  field: "downloads" | "stars" | "installsAllTime",
+): number {
+  if (field === "downloads") return digest.statsDownloads ?? digest.stats.downloads ?? 0;
+  if (field === "stars") return digest.statsStars ?? digest.stats.stars ?? 0;
+  return digest.statsInstallsAllTime ?? digest.stats.installsAllTime ?? 0;
+}
 
 /** Fetch highlighted skills via the skillBadges index, then sort in JS. */
 async function fetchHighlightedPage(
@@ -5817,11 +5991,24 @@ async function fetchHighlightedPage(
   digests.sort((a, b) => {
     switch (opts.sort) {
       case "downloads":
-        return ((a.statsDownloads ?? 0) - (b.statsDownloads ?? 0)) * multiplier;
+        return (
+          (readDigestRankStat(a, "downloads") - readDigestRankStat(b, "downloads")) * multiplier
+        );
+      case "recommended":
+        return (
+          (readDigestRankStat(a, "stars") - readDigestRankStat(b, "stars")) * multiplier ||
+          (readDigestRankStat(a, "installsAllTime") - readDigestRankStat(b, "installsAllTime")) *
+            multiplier ||
+          (readDigestRankStat(a, "downloads") - readDigestRankStat(b, "downloads")) * multiplier ||
+          (a.updatedAt - b.updatedAt) * multiplier
+        );
       case "stars":
-        return ((a.statsStars ?? 0) - (b.statsStars ?? 0)) * multiplier;
+        return (readDigestRankStat(a, "stars") - readDigestRankStat(b, "stars")) * multiplier;
       case "installs":
-        return ((a.statsInstallsAllTime ?? 0) - (b.statsInstallsAllTime ?? 0)) * multiplier;
+        return (
+          (readDigestRankStat(a, "installsAllTime") - readDigestRankStat(b, "installsAllTime")) *
+          multiplier
+        );
       case "updated":
         return (a.updatedAt - b.updatedAt) * multiplier;
       case "name":
@@ -6695,8 +6882,7 @@ export const getSkillsWithStaleModerationReasonInternal = internalQuery({
 });
 
 /**
- * Get skills with scanner.vt.pending that need reanalysis.
- * Returns skills regardless of whether they have vtAnalysis cached.
+ * Get skill versions with pending VT cache rows that need reanalysis.
  */
 export const getPendingVTSkillsInternal = internalQuery({
   args: { limit: v.optional(v.number()), cursor: v.optional(v.union(v.string(), v.null())) },
@@ -6704,9 +6890,9 @@ export const getPendingVTSkillsInternal = internalQuery({
     const limit = args.limit ?? 100;
 
     const { page, continueCursor, isDone } = await ctx.db
-      .query("skills")
-      .withIndex("by_moderation", (q) =>
-        q.eq("moderationStatus", "active").eq("moderationReason", "scanner.vt.pending"),
+      .query("skillVersions")
+      .withIndex("by_active_vt_status_created", (q) =>
+        q.eq("softDeletedAt", undefined).eq("vtAnalysis.status", "pending"),
       )
       .paginate({ cursor: args.cursor ?? null, numItems: limit });
 
@@ -6715,18 +6901,20 @@ export const getPendingVTSkillsInternal = internalQuery({
       versionId: Id<"skillVersions">;
       slug: string;
       sha256hash: string;
+      isLatest: boolean;
     }> = [];
 
-    for (const skill of page) {
-      if (!skill.latestVersionId) continue;
-      const version = await ctx.db.get(skill.latestVersionId);
-      if (!version?.sha256hash) continue;
+    for (const version of page) {
+      if (!version.sha256hash) continue;
+      const skill = await ctx.db.get(version.skillId);
+      if (!skill || skill.softDeletedAt) continue;
 
       results.push({
         skillId: skill._id,
         versionId: version._id,
         slug: skill.slug,
         sha256hash: version.sha256hash,
+        isLatest: skill.latestVersionId === version._id,
       });
     }
 
@@ -6897,62 +7085,6 @@ export const backfillSkillStaticScans: ReturnType<typeof action> = action({
     return await ctx.runAction(internal.skills.backfillSkillStaticScansInternal, {
       batchSize: args.batchSize,
     });
-  },
-});
-
-export const updateLatestClawScanNoteAndRequestRescan = mutation({
-  args: {
-    skillId: v.id("skills"),
-    clawScanNote: v.optional(v.string()),
-  },
-  handler: async (ctx, args) => {
-    const { user } = await requireUser(ctx);
-    const skill = await ctx.db.get(args.skillId);
-    if (!skill || skill.softDeletedAt || !skill.latestVersionId) {
-      throw new ConvexError("Skill not found");
-    }
-
-    const version = await ctx.db.get(skill.latestVersionId);
-    if (!version || version.softDeletedAt) throw new ConvexError("Skill version not found");
-
-    await assertCanManageOwnedResource(ctx, {
-      actor: user,
-      ownerUserId: skill.ownerUserId,
-      ownerPublisherId: skill.ownerPublisherId,
-      allowPlatformModerator: true,
-    });
-
-    const now = Date.now();
-    const previousNote = version.clawScanNote?.trim() || undefined;
-    const nextNote = normalizeClawScanNoteForWrite(args.clawScanNote);
-    await ctx.db.patch(version._id, {
-      clawScanNote: nextNote ?? "",
-      clawScanNoteUpdatedAt: now,
-    });
-    await ctx.db.insert("auditLogs", {
-      actorUserId: user._id,
-      action: "skill.clawscan_note.update",
-      targetType: "skillVersion",
-      targetId: version._id,
-      metadata: {
-        skillId: skill._id,
-        slug: skill.slug,
-        version: version.version,
-        hadPreviousNote: Boolean(previousNote),
-        hasNextNote: Boolean(nextNote),
-        previousLength: previousNote?.length ?? 0,
-        nextLength: nextNote?.length ?? 0,
-      },
-      createdAt: now,
-    });
-
-    await ctx.scheduler.runAfter(0, internal.securityScan.enqueueSkillVersionScanInternal, {
-      versionId: version._id,
-      source: "clawscan-note",
-      waitForVtMs: 0,
-    });
-
-    return { ok: true as const, skillVersionId: version._id };
   },
 });
 
@@ -8216,7 +8348,6 @@ export const publishVersion: ReturnType<typeof action> = action({
     icon: v.optional(v.string()),
     version: v.string(),
     changelog: v.string(),
-    clawScanNote: v.optional(v.string()),
     acceptLicenseTerms: v.optional(v.boolean()),
     tags: v.optional(v.array(v.string())),
     forkOf: v.optional(
@@ -10046,7 +10177,6 @@ export const insertVersion = internalMutation({
     icon: v.optional(v.string()),
     version: v.string(),
     changelog: v.string(),
-    clawScanNote: v.optional(v.string()),
     changelogSource: v.optional(v.union(v.literal("auto"), v.literal("user"))),
     sourceProvenance: v.optional(
       v.object({
@@ -10604,15 +10734,12 @@ export const insertVersion = internalMutation({
       throw new ConvexError("Version already exists");
     }
 
-    const clawScanNote = normalizeClawScanNoteForWrite(args.clawScanNote);
-
     const versionId = await ctx.db.insert("skillVersions", {
       skillId: skill._id,
       version: args.version,
       fingerprint: args.fingerprint,
       sourceProvenance: args.sourceProvenance,
       changelog: args.changelog,
-      ...(clawScanNote ? { clawScanNote } : {}),
       changelogSource: args.changelogSource,
       files: args.files,
       parsed: args.parsed,
@@ -11279,3 +11406,9 @@ export const backfillLatestVersionSummaryApiKeyRequiredInternal = internalMutati
     return { scanned, updated, rebuiltSummary, skippedNoLatest, skippedAlreadyMatches };
   },
 });
+
+export const __test = {
+  normalizePublicListSort,
+  resolveRecommendedPublicListSort,
+  resolvePublicListDir,
+};

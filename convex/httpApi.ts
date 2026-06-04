@@ -11,7 +11,7 @@ import type { Id } from "./_generated/dataModel";
 import type { ActionCtx } from "./_generated/server";
 import { httpAction } from "./functions";
 import { ambiguousSkillSlugMessage } from "./httpApiV1/shared";
-import { requireApiTokenUser } from "./lib/apiTokenAuth";
+import { requireApiTokenUser, requirePackagePublishAuth } from "./lib/apiTokenAuth";
 import { corsHeaders, mergeHeaders } from "./lib/httpHeaders";
 import { applyRateLimit } from "./lib/httpRateLimit";
 import { parseBooleanQueryParam, resolveBooleanQueryParam } from "./lib/httpUtils";
@@ -192,11 +192,16 @@ export const cliWhoamiHttp = httpAction(cliWhoamiHandler);
 
 async function cliUploadUrlHandler(ctx: ActionCtx, request: Request) {
   try {
-    const { userId } = await requireApiTokenUser(ctx, request);
-    const uploadUrl = await ctx.runMutation(internal.uploads.generateUploadUrlForUserInternal, {
-      userId,
-    });
-    return json({ uploadUrl });
+    const auth = await requirePackagePublishAuth(ctx, request);
+    const upload =
+      auth.kind === "user"
+        ? await ctx.runMutation(internal.uploads.createPackagePublishUploadForUserInternal, {
+            userId: auth.userId,
+          })
+        : await ctx.runMutation(internal.uploads.createPackagePublishUploadForTokenInternal, {
+            publishTokenId: auth.publishToken._id,
+          });
+    return json(upload);
   } catch (error) {
     return text(formatAuthFailure(error), 401);
   }
@@ -430,7 +435,6 @@ function parsePublishBody(body: unknown) {
     migrateOwner: parsed.migrateOwner === true ? true : undefined,
     version: parsed.version,
     changelog: parsed.changelog,
-    clawScanNote: parsed.clawScanNote?.trim() || undefined,
     acceptLicenseTerms: parsed.acceptLicenseTerms,
     tags,
     source: parsed.source ?? undefined,

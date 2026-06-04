@@ -27,6 +27,7 @@ import { EmptyState } from "../components/EmptyState";
 import { copyText } from "../components/InstallCopyButton";
 import { MarketplaceIcon } from "../components/MarketplaceIcon";
 import { SignInPrompt } from "../components/SignInPrompt";
+import { SettingsSkeleton } from "../components/skeletons/ProtectedPageSkeletons";
 import { Avatar, AvatarFallback, AvatarImage } from "../components/ui/avatar";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -51,7 +52,9 @@ import {
 import { Separator } from "../components/ui/separator";
 import { Textarea } from "../components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "../components/ui/toggle-group";
+import { getUserFacingConvexError } from "../lib/convexError";
 import { useThemeMode } from "../lib/theme";
+import { useAuthStatus } from "../lib/useAuthStatus";
 
 const settingsViews = ["account", "organizations", "tokens", "danger"] as const;
 type SettingsView = (typeof settingsViews)[number];
@@ -139,14 +142,14 @@ const themeToggleItemClass =
   "!h-20 min-w-0 flex-1 flex-col gap-2 !rounded-[var(--r-btn)] border border-[color:var(--line)] bg-[color:var(--surface)] px-3 text-sm font-semibold text-[color:var(--ink-soft)] opacity-70 hover:border-[color:var(--border-ui-hover)] hover:bg-[color:var(--surface-muted)] hover:text-[color:var(--ink)] hover:opacity-100 data-[state=on]:border-[color:var(--accent)] data-[state=on]:!bg-[color:var(--surface-muted)] data-[state=on]:text-[color:var(--ink)] data-[state=on]:opacity-100 sm:!w-28 sm:flex-none";
 
 export function Settings() {
-  const me = useQuery(api.users.me);
+  const { isAuthenticated, isLoading: isAuthLoading, me } = useAuthStatus();
   const updateProfile = useMutation(api.users.updateProfile);
   const deleteAccount = useMutation(api.users.deleteAccount);
   const { mode: themeMode, setMode: setThemeMode } = useThemeMode();
   const tokens = useQuery(api.tokens.listMine, me ? {} : "skip") as Array<ApiToken> | undefined;
   const createToken = useMutation(api.tokens.create);
   const revokeToken = useMutation(api.tokens.revoke);
-  const publisherMemberships = useQuery(api.publishers.listMine) as
+  const publisherMemberships = useQuery(api.publishers.listMine, me ? {} : "skip") as
     | Array<PublisherMembership>
     | undefined;
   const createOrg = useMutation(api.publishers.createOrg);
@@ -159,6 +162,8 @@ export function Settings() {
   const [newToken, setNewToken] = useState<string | null>(null);
   const [orgHandle, setOrgHandle] = useState("");
   const [orgDisplayName, setOrgDisplayName] = useState("");
+  const [createOrgError, setCreateOrgError] = useState<string | null>(null);
+  const [isCreatingOrg, setIsCreatingOrg] = useState(false);
   const [selectedOrgHandle, setSelectedOrgHandle] = useState("");
   const [selectedOrgDisplayName, setSelectedOrgDisplayName] = useState("");
   const [selectedOrgBio, setSelectedOrgBio] = useState("");
@@ -185,7 +190,7 @@ export function Settings() {
   const revokedTokens = (tokens ?? []).filter((token) => token.revokedAt);
   const orgMembers = useQuery(
     api.publishers.listMembers,
-    activeView === "organizations" && selectedOrg
+    activeView === "organizations" && selectedOrg && selectedOrg.role !== "publisher"
       ? { publisherHandle: selectedOrg.publisher.handle }
       : "skip",
   ) as OrgMembersResult | null | undefined;
@@ -215,13 +220,27 @@ export function Settings() {
     setSelectedOrgImage(selectedOrg.publisher.image ?? "");
   }, [selectedOrg]);
 
-  if (!me) {
+  if (isAuthLoading) {
+    return <SettingsSkeleton />;
+  }
+
+  if (!isAuthenticated || !me) {
     return (
       <SignInPrompt
         title="Sign in to access settings"
         description="Manage your profile, organizations, and API access."
       />
     );
+  }
+
+  const activeSectionLoading =
+    (activeView === "organizations" &&
+      (publisherMemberships === undefined ||
+        (selectedOrg && selectedOrg.role !== "publisher" && orgMembers === undefined))) ||
+    (activeView === "tokens" && tokens === undefined);
+
+  if (activeSectionLoading) {
+    return <SettingsSkeleton />;
   }
 
   const accountAvatar = me.image ?? undefined;
@@ -248,16 +267,27 @@ export function Settings() {
   }
 
   async function onCreateOrg() {
-    const result = await createOrg({
-      handle: orgHandle.trim(),
-      displayName: orgDisplayName.trim() || orgHandle.trim(),
-      bio: undefined,
-    });
-    if (result?.publisher?.handle) {
-      setSelectedOrgHandle(result.publisher.handle);
-      setOrgHandle("");
-      setOrgDisplayName("");
-      setCreateOrgDialogOpen(false);
+    setCreateOrgError(null);
+    setIsCreatingOrg(true);
+    try {
+      const result = await createOrg({
+        handle: orgHandle.trim(),
+        displayName: orgDisplayName.trim() || orgHandle.trim(),
+        bio: undefined,
+      });
+      if (result?.publisher?.handle) {
+        setSelectedOrgHandle(result.publisher.handle);
+        setOrgHandle("");
+        setOrgDisplayName("");
+        setCreateOrgDialogOpen(false);
+        toast.success("Organization created");
+      }
+    } catch (error) {
+      const message = getUserFacingConvexError(error, "Organization could not be created.");
+      setCreateOrgError(message);
+      toast.error(message);
+    } finally {
+      setIsCreatingOrg(false);
     }
   }
 
@@ -509,7 +539,13 @@ export function Settings() {
                           ))}
                         </SelectContent>
                       </Select>
-                      <Dialog open={createOrgDialogOpen} onOpenChange={setCreateOrgDialogOpen}>
+                      <Dialog
+                        open={createOrgDialogOpen}
+                        onOpenChange={(open) => {
+                          setCreateOrgDialogOpen(open);
+                          if (open) setCreateOrgError(null);
+                        }}
+                      >
                         <DialogTrigger asChild>
                           <Button variant="outline" type="button" className="h-12 sm:w-auto">
                             <Plus size={16} />
@@ -528,7 +564,10 @@ export function Settings() {
                               <Input
                                 id="settings-org-handle"
                                 value={orgHandle}
-                                onChange={(event) => setOrgHandle(event.target.value)}
+                                onChange={(event) => {
+                                  setOrgHandle(event.target.value);
+                                  setCreateOrgError(null);
+                                }}
                                 placeholder="openclaw"
                               />
                             </Field>
@@ -536,11 +575,22 @@ export function Settings() {
                               <Input
                                 id="settings-org-display-name"
                                 value={orgDisplayName}
-                                onChange={(event) => setOrgDisplayName(event.target.value)}
+                                onChange={(event) => {
+                                  setOrgDisplayName(event.target.value);
+                                  setCreateOrgError(null);
+                                }}
                                 placeholder="OpenClaw"
                               />
                             </Field>
                           </div>
+                          {createOrgError ? (
+                            <p
+                              className="text-sm font-medium text-red-600 dark:text-red-400"
+                              role="alert"
+                            >
+                              {createOrgError}
+                            </p>
+                          ) : null}
                           <DialogFooter>
                             <Button variant="ghost" onClick={() => setCreateOrgDialogOpen(false)}>
                               Cancel
@@ -548,11 +598,11 @@ export function Settings() {
                             <Button
                               variant="primary"
                               type="button"
-                              disabled={!orgHandle.trim()}
+                              disabled={!orgHandle.trim() || isCreatingOrg}
                               onClick={() => void onCreateOrg()}
                             >
                               <Building2 size={16} />
-                              Create org
+                              {isCreatingOrg ? "Creating..." : "Create org"}
                             </Button>
                           </DialogFooter>
                         </DialogContent>
@@ -826,7 +876,13 @@ export function Settings() {
                           </p>
                         </div>
                       </div>
-                      <Dialog open={createOrgDialogOpen} onOpenChange={setCreateOrgDialogOpen}>
+                      <Dialog
+                        open={createOrgDialogOpen}
+                        onOpenChange={(open) => {
+                          setCreateOrgDialogOpen(open);
+                          if (open) setCreateOrgError(null);
+                        }}
+                      >
                         <DialogTrigger asChild>
                           <Button variant="primary" type="button" className="lg:w-auto">
                             <Building2 size={16} />
@@ -845,7 +901,10 @@ export function Settings() {
                               <Input
                                 id="settings-org-handle-empty"
                                 value={orgHandle}
-                                onChange={(event) => setOrgHandle(event.target.value)}
+                                onChange={(event) => {
+                                  setOrgHandle(event.target.value);
+                                  setCreateOrgError(null);
+                                }}
                                 placeholder="openclaw"
                               />
                             </Field>
@@ -853,11 +912,22 @@ export function Settings() {
                               <Input
                                 id="settings-org-display-name-empty"
                                 value={orgDisplayName}
-                                onChange={(event) => setOrgDisplayName(event.target.value)}
+                                onChange={(event) => {
+                                  setOrgDisplayName(event.target.value);
+                                  setCreateOrgError(null);
+                                }}
                                 placeholder="OpenClaw"
                               />
                             </Field>
                           </div>
+                          {createOrgError ? (
+                            <p
+                              className="text-sm font-medium text-red-600 dark:text-red-400"
+                              role="alert"
+                            >
+                              {createOrgError}
+                            </p>
+                          ) : null}
                           <DialogFooter>
                             <Button variant="ghost" onClick={() => setCreateOrgDialogOpen(false)}>
                               Cancel
@@ -865,11 +935,11 @@ export function Settings() {
                             <Button
                               variant="primary"
                               type="button"
-                              disabled={!orgHandle.trim()}
+                              disabled={!orgHandle.trim() || isCreatingOrg}
                               onClick={() => void onCreateOrg()}
                             >
                               <Building2 size={16} />
-                              Create org
+                              {isCreatingOrg ? "Creating..." : "Create org"}
                             </Button>
                           </DialogFooter>
                         </DialogContent>

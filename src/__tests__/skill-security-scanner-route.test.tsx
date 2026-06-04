@@ -132,6 +132,7 @@ describe("skill security audit route", () => {
       ownerHandle: "local",
     });
 
+    expect(screen.getByRole("button", { name: "Download security audit" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Rescan" }));
 
     await waitFor(() =>

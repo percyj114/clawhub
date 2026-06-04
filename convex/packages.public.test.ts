@@ -2,6 +2,7 @@
 
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { MAX_PUBLISH_FILE_BYTES } from "./lib/publishLimits";
 import {
   backfillLatestPackageScanStatusInternal,
   backfillPackageReleaseScansInternal,
@@ -9,12 +10,11 @@ import {
   getPackageReleaseScanBackfillBatchInternal,
   getByName,
   list,
-  publishPackage,
   publishPackageForTrustedPublisherInternal,
   publishPackageForUserInternal,
   listPackageReportsInternal,
   getPackageModerationStatusForUserInternal,
-  getClawScanNoteSettings,
+  getManageContext,
   reportPackageForUserInternal,
   triagePackageReportForUserInternal,
   submitPackageAppealForUserInternal,
@@ -154,7 +154,6 @@ const insertReleaseInternalHandler = (
       family: "skill" | "code-plugin" | "bundle-plugin";
       version: string;
       changelog: string;
-      clawScanNote?: string;
       tags: string[];
       summary: string;
       files: Array<{
@@ -235,14 +234,6 @@ const searchForViewerInternalHandler = (
       viewerUserId?: string;
     },
     Array<{ package: { name: string } }>
-  >
-)._handler;
-const publishPackageHandler = (
-  publishPackage as unknown as WrappedHandler<
-    {
-      payload: unknown;
-    },
-    unknown
   >
 )._handler;
 const publishPackageForUserInternalHandler = (
@@ -344,8 +335,8 @@ const getPackageModerationStatusForUserInternalHandler = (
     }
   >
 )._handler;
-const getClawScanNoteSettingsHandler = (
-  getClawScanNoteSettings as unknown as WrappedHandler<
+const getManageContextHandler = (
+  getManageContext as unknown as WrappedHandler<
     { name: string; candidateNames?: string[] },
     { package: { name: string }; latestRelease: { version: string } } | null
   >
@@ -582,7 +573,7 @@ const revokePackagePublishTokensForPackageBatchInternalHandler = (
 const restoreOwnedPackagesForUnbanBatchInternalHandler = (
   restoreOwnedPackagesForUnbanBatchInternal as unknown as WrappedHandler<
     {
-      actorUserId: string;
+      actorUserId?: string;
       ownerUserId: string;
       bannedAt: number;
       cursor?: string;
@@ -2826,6 +2817,62 @@ describe("packages public queries", () => {
     });
   });
 
+  it("derives missing public verification source paths from legacy release provenance", async () => {
+    const verification = {
+      tier: "source-linked",
+      scope: "artifact-only",
+      sourceRepo: "OpenViking/OpenViking",
+      sourceCommit: "abcdef0123456789abcdef0123456789abcdef01",
+      scanStatus: "clean",
+    };
+    const latestRelease = makeReleaseDoc({
+      verification,
+      source: {
+        kind: "github",
+        repo: "OpenViking/OpenViking",
+        path: "openclaw-plugin",
+      },
+    });
+    const { ctx } = makePackageCtx({
+      pkg: makePackageDoc({
+        name: "@openviking/openclaw-plugin",
+        normalizedName: "@openviking/openclaw-plugin",
+        verification,
+        latestVersionSummary: {
+          version: "1.0.0",
+          verification,
+        },
+      }),
+      latestRelease,
+    });
+
+    await expect(
+      getByNameHandler(ctx, {
+        name: "@openviking/openclaw-plugin",
+      }),
+    ).resolves.toMatchObject({
+      package: {
+        verification: { sourcePath: "openclaw-plugin" },
+      },
+      latestRelease: {
+        verification: { sourcePath: "openclaw-plugin" },
+      },
+    });
+    await expect(
+      getVersionByNameHandler(ctx, {
+        name: "@openviking/openclaw-plugin",
+        version: "1.0.0",
+      }),
+    ).resolves.toMatchObject({
+      package: {
+        verification: { sourcePath: "openclaw-plugin" },
+      },
+      version: {
+        verification: { sourcePath: "openclaw-plugin" },
+      },
+    });
+  });
+
   it("does not mark owner-readable blocked public packages as public download blocked", async () => {
     const { ctx } = makePackageCtx({
       pkg: makePackageDoc({
@@ -4789,7 +4836,6 @@ describe("packages public queries", () => {
       family: "code-plugin",
       version: "1.0.0",
       changelog: "beta",
-      clawScanNote: "This release bundles a native helper but does not fetch remote code.",
       tags: ["beta"],
       summary: "demo",
       files: [],
@@ -4813,7 +4859,6 @@ describe("packages public queries", () => {
       "packageReleases",
       expect.objectContaining({
         distTags: ["beta"],
-        clawScanNote: "This release bundles a native helper but does not fetch remote code.",
         verification: expect.objectContaining({ scanStatus: "suspicious" }),
         staticScan: expect.objectContaining({ status: "suspicious" }),
       }),
@@ -4825,29 +4870,6 @@ describe("packages public queries", () => {
         tags: { beta: "packageReleases:new" },
       }),
     );
-  });
-
-  it("rejects package release clawScanNote values beyond the write-path limit", async () => {
-    const ctx = makeInsertReleaseCtx(makePackageDoc());
-
-    await expect(
-      insertReleaseInternalHandler(ctx, {
-        actorUserId: "users:owner",
-        ownerUserId: "users:owner",
-        name: "demo-plugin",
-        displayName: "Demo Plugin",
-        family: "code-plugin",
-        version: "1.0.0",
-        changelog: "release",
-        clawScanNote: "x".repeat(4001),
-        tags: ["latest"],
-        summary: "demo",
-        files: [],
-        integritySha256: "abc123",
-      }),
-    ).rejects.toThrow("ClawScan note must be at most 4000 characters.");
-
-    expect(ctx.insert).not.toHaveBeenCalledWith("packageReleases", expect.anything());
   });
 
   it("validates package publish payloads inside the action path", async () => {
@@ -4879,6 +4901,175 @@ describe("packages public queries", () => {
         },
       }),
     ).rejects.toThrow("Skill packages must use the skills publish flow");
+  });
+
+  it("keeps raw package publishes behind the per-file size limit", async () => {
+    const ctx = {
+      runQuery: vi
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          _id: "users:owner",
+          githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
+        })
+        .mockResolvedValueOnce({
+          _id: "users:owner",
+          role: "user",
+          githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
+        })
+        .mockResolvedValueOnce(null),
+      runMutation: vi.fn(),
+    };
+
+    await expect(
+      publishPackageForUserInternalHandler(ctx as never, {
+        actorUserId: "users:owner",
+        payload: {
+          name: "demo-plugin",
+          family: "bundle-plugin",
+          version: "1.0.0",
+          changelog: "init",
+          bundle: { hostTargets: ["desktop"] },
+          files: [
+            {
+              path: "assets/viewer-runtime.js",
+              size: MAX_PUBLISH_FILE_BYTES + 1,
+              storageId: "storage:large",
+              sha256: "large",
+            },
+          ],
+        },
+      }),
+    ).rejects.toThrow('File "assets/viewer-runtime.js" exceeds 10MB limit');
+  });
+
+  it("allows large files inside ClawPack npm package artifacts", async () => {
+    const runMutation = vi.fn(async (_ref: unknown, args: Record<string, unknown>) => {
+      if (args.name === "demo-plugin" && args.version === "1.0.0") {
+        return { ok: true, packageId: "packages:demo", releaseId: "releases:demo-1" };
+      }
+      return null;
+    });
+    const ctx = {
+      runQuery: vi
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          _id: "users:owner",
+          githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
+        })
+        .mockResolvedValueOnce({
+          _id: "users:owner",
+          role: "user",
+          githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
+        })
+        .mockResolvedValueOnce(null),
+      runMutation,
+      scheduler: {
+        runAfter: vi.fn(),
+      },
+      storage: {
+        get: vi.fn(async (storageId: string) => {
+          const files = new Map<string, string>([
+            [
+              "storage:package",
+              JSON.stringify({
+                name: "demo-plugin",
+                version: "1.0.0",
+                openclaw: {
+                  extensions: ["./dist/index.js"],
+                  compat: { pluginApi: "^1.0.0" },
+                  build: { openclawVersion: "2026.5.28" },
+                  configSchema: { type: "object", additionalProperties: false },
+                },
+              }),
+            ],
+            ["storage:manifest", JSON.stringify({ id: "demo-plugin" })],
+            ["storage:runtime", "export {};"],
+            ["storage:large", "/* bundled viewer runtime */"],
+          ]);
+          const content = files.get(storageId);
+          return content ? new Blob([content]) : null;
+        }),
+      },
+    };
+
+    await expect(
+      publishPackageForUserInternalHandler(ctx as never, {
+        actorUserId: "users:owner",
+        payload: {
+          name: "demo-plugin",
+          displayName: "Demo Plugin",
+          family: "code-plugin",
+          version: "1.0.0",
+          changelog: "init",
+          source: {
+            kind: "github",
+            url: "https://github.com/openclaw/demo-plugin",
+            repo: "openclaw/demo-plugin",
+            ref: "refs/tags/v1.0.0",
+            commit: "abc123",
+            path: ".",
+            importedAt: Date.now(),
+          },
+          files: [
+            {
+              path: "package.json",
+              size: 1,
+              storageId: "storage:package",
+              sha256: "package",
+              contentType: "application/json",
+            },
+            {
+              path: "openclaw.plugin.json",
+              size: 1,
+              storageId: "storage:manifest",
+              sha256: "manifest",
+              contentType: "application/json",
+            },
+            {
+              path: "dist/index.js",
+              size: 1,
+              storageId: "storage:runtime",
+              sha256: "runtime",
+              contentType: "application/javascript",
+            },
+            {
+              path: "assets/viewer-runtime.js",
+              size: MAX_PUBLISH_FILE_BYTES + 1,
+              storageId: "storage:large",
+              sha256: "large",
+              contentType: "application/javascript",
+            },
+          ],
+          artifact: {
+            kind: "npm-pack",
+            storageId: "storage:clawpack",
+            sha256: "clawpack",
+            size: MAX_PUBLISH_FILE_BYTES + 1,
+            format: "tgz",
+            npmIntegrity: "sha512-test",
+            npmShasum: "shasum",
+            npmTarballName: "demo-plugin-1.0.0.tgz",
+            npmUnpackedSize: MAX_PUBLISH_FILE_BYTES + 1,
+            npmFileCount: 4,
+          },
+        },
+      }),
+    ).resolves.toEqual({ ok: true, packageId: "packages:demo", releaseId: "releases:demo-1" });
+
+    expect(runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        artifactKind: "npm-pack",
+        files: expect.arrayContaining([
+          expect.objectContaining({
+            path: "assets/viewer-runtime.js",
+            size: MAX_PUBLISH_FILE_BYTES + 1,
+          }),
+        ]),
+      }),
+    );
   });
 
   it("rejects trusted publish tokens after trusted publisher rotation or deletion", async () => {
@@ -6202,20 +6393,6 @@ describe("packages public queries", () => {
     expect(result).toEqual([expect.objectContaining({ name: "demo-plugin" })]);
   });
 
-  it("requires auth inside the public publish action", async () => {
-    await expect(
-      publishPackageHandler({ runQuery: vi.fn(), runMutation: vi.fn() } as never, {
-        payload: {
-          name: "demo-plugin",
-          family: "bundle-plugin",
-          version: "1.0.0",
-          changelog: "init",
-          files: [],
-        },
-      }),
-    ).rejects.toThrow("Unauthorized");
-  });
-
   it("records package reports for moderation", async () => {
     const insert = vi.fn(async (table: string) =>
       table === "packageReports" ? "packageReports:1" : "auditLogs:1",
@@ -6853,10 +7030,10 @@ describe("packages public queries", () => {
     expect(insert).not.toHaveBeenCalled();
   });
 
-  it("does not let stale personal-publisher memberships read owner-only scan settings", async () => {
+  it("does not let stale personal-publisher memberships read package manage context", async () => {
     vi.mocked(getAuthUserId).mockResolvedValue("users:stale-member" as never);
 
-    const result = await getClawScanNoteSettingsHandler(
+    const result = await getManageContextHandler(
       {
         db: {
           get: vi.fn(async (id: string) => {
@@ -9023,6 +9200,46 @@ describe("owned package sanction batches", () => {
       }),
     );
     expect(patch).not.toHaveBeenCalledWith("packageReleases:malicious", expect.anything());
+  });
+
+  it("restores appeal-service packages without attributing package audit to the target user", async () => {
+    const { ctx, insert } = makeOwnedPackageBatchCtx({
+      pkg: makePackageDoc({
+        softDeletedAt: 1_000,
+        softDeletedReason: "user.banned",
+        softDeletedByRole: "moderator",
+      }),
+      releases: [
+        makeReleaseDoc({
+          _id: "packageReleases:demo-1",
+          softDeletedAt: 1_000,
+          distTags: ["latest"],
+          version: "1.0.0",
+          changelog: "",
+          compatibility: null,
+          capabilities: null,
+          verification: null,
+        }),
+      ],
+    });
+
+    const result = await restoreOwnedPackagesForUnbanBatchInternalHandler(ctx as never, {
+      ownerUserId: "users:owner",
+      bannedAt: 1_000,
+    });
+
+    expect(result).toMatchObject({ restoredCount: 1, scheduled: false });
+    expect(insert).toHaveBeenCalledWith(
+      "auditLogs",
+      expect.objectContaining({
+        action: "package.undelete",
+        metadata: expect.objectContaining({ source: "service" }),
+      }),
+    );
+    const packageAudit = insert.mock.calls.find(
+      ([table, doc]) => table === "auditLogs" && doc.action === "package.undelete",
+    )?.[1];
+    expect(packageAudit).not.toHaveProperty("actorUserId");
   });
 
   it("restores ban-hidden packages owned through the user's personal publisher", async () => {

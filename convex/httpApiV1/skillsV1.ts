@@ -1,6 +1,11 @@
 import {
+  ApiRoutes,
   ApiV1SkillBulkRescanBatchRequestSchema,
   ApiV1SkillBulkRescanStatusRequestSchema,
+  ApiV1SkillRepairVtPendingRequestSchema,
+  ApiV1SkillScanBatchRequestSchema,
+  ApiV1SkillScanBatchStatusRequestSchema,
+  ApiV1SkillScanSubmitRequestSchema,
   SkillAppealRequestSchema,
   SkillAppealResolveRequestSchema,
   SkillReportTriageRequestSchema,
@@ -24,6 +29,7 @@ import type {
 import { selectGeneratedSkillCardFile, sourceSkillVersionFiles } from "../lib/skillCards";
 import { getPublicSkillFileAccessBlock, isSkillVersionForSkill } from "../lib/skillFileAccess";
 import {
+  buildDeterministicZip,
   buildMergedExportZip,
   type MergedExportManifestEntry,
   validateSlug,
@@ -38,6 +44,7 @@ import {
   getPathSegments,
   json,
   parseJsonPayload,
+  parseMultipartSkillScan,
   parseMultipartPublish,
   parsePublishBody,
   publicApiOrigin,
@@ -289,9 +296,15 @@ type SkillSecuritySnapshot = {
 
 const internalRefs = internal as unknown as {
   securityScan: {
+    createUploadedSkillScanRequestInternal: unknown;
+    createPublishedSkillScanRequestInternal: unknown;
     enqueueBulkSkillRescanBatchForAdminInternal: unknown;
+    getSkillScanRequestForUserInternal: unknown;
     getBulkSkillRescanBatchStatusForAdminInternal: unknown;
     requestSkillRescanForUserInternal: unknown;
+  };
+  vt: {
+    repairPendingSkillVtAnalysis: unknown;
   };
   skills: {
     getSecurityVerdictTargetInternal: unknown;
@@ -310,6 +323,142 @@ async function runQueryRef<T>(ctx: ActionCtx, ref: unknown, args: unknown): Prom
 
 async function runMutationRef<T>(ctx: ActionCtx, ref: unknown, args: unknown): Promise<T> {
   return (await ctx.runMutation(ref as never, args as never)) as T;
+}
+
+async function runActionRef<T>(ctx: ActionCtx, ref: unknown, args: unknown): Promise<T> {
+  return (await ctx.runAction(ref as never, args as never)) as T;
+}
+
+function isMultipartRequest(request: Request) {
+  return (
+    request.headers.get("content-type")?.toLowerCase().includes("multipart/form-data") === true
+  );
+}
+
+async function deleteStoredScanFiles(ctx: ActionCtx, files: Array<{ storageId: Id<"_storage"> }>) {
+  await Promise.allSettled(files.map((file) => ctx.storage.delete(file.storageId)));
+}
+
+function encodeJsonEntry(value: unknown) {
+  return new TextEncoder().encode(`${JSON.stringify(value, null, 2)}\n`);
+}
+
+function encodeTextEntry(value: string) {
+  return new TextEncoder().encode(value);
+}
+
+function scanReportPart(status: Record<string, unknown>, key: string) {
+  const report = status.report;
+  if (!report || typeof report !== "object" || Array.isArray(report)) return null;
+  return (report as Record<string, unknown>)[key] ?? null;
+}
+
+function buildSkillScanReportZip(status: Record<string, unknown>) {
+  const manifest = {
+    scanId: status.scanId,
+    sourceKind: status.sourceKind,
+    update: status.update,
+    status: status.status,
+    artifact: status.artifact ?? null,
+    createdAt: status.createdAt,
+    updatedAt: status.updatedAt,
+    completedAt: status.completedAt ?? null,
+    writtenBack: status.writtenBack === true,
+  };
+  const scanIdText = typeof status.scanId === "string" ? status.scanId : "";
+  const statusText = typeof status.status === "string" ? status.status : "";
+  const readme = [
+    "# ClawHub Scan Report",
+    "",
+    `Scan ID: ${scanIdText}`,
+    `Status: ${statusText}`,
+    "",
+    "This archive uses the ClawHub security-audit export shape:",
+    "",
+    "- manifest.json",
+    "- clawscan.json",
+    "- skillspector.json",
+    "- static-analysis.json",
+    "- virustotal.json",
+    "- README.md",
+    "",
+  ].join("\n");
+
+  return buildDeterministicZip([
+    { path: "manifest.json", bytes: encodeJsonEntry(manifest) },
+    { path: "clawscan.json", bytes: encodeJsonEntry(scanReportPart(status, "clawscan")) },
+    { path: "skillspector.json", bytes: encodeJsonEntry(scanReportPart(status, "skillspector")) },
+    {
+      path: "static-analysis.json",
+      bytes: encodeJsonEntry(scanReportPart(status, "staticAnalysis")),
+    },
+    { path: "virustotal.json", bytes: encodeJsonEntry(scanReportPart(status, "virustotal")) },
+    { path: "README.md", bytes: encodeTextEntry(readme) },
+  ]);
+}
+
+async function handleSkillScanBatchSubmit(ctx: ActionCtx, request: Request, headers: HeadersInit) {
+  const auth = await requireApiTokenUserOrResponse(ctx, request, headers);
+  if (!auth.ok) return auth.response;
+  const admin = requireAdminOrResponse(auth.user, headers);
+  if (!admin.ok) return admin.response;
+  try {
+    const body = parseArk(
+      ApiV1SkillScanBatchRequestSchema,
+      await request.json(),
+      "Skill scan batch payload",
+    ) as {
+      mode?: "all-active-latest";
+      cursor?: string | null;
+      batchSize?: number;
+      dryRun?: boolean;
+    };
+    const result = await runMutationRef(
+      ctx,
+      internalRefs.securityScan.enqueueBulkSkillRescanBatchForAdminInternal,
+      {
+        actorUserId: auth.userId,
+        ...(body.mode ? { mode: body.mode } : {}),
+        cursor: body.cursor ?? null,
+        ...(body.batchSize !== undefined ? { batchSize: body.batchSize } : {}),
+        ...(body.dryRun !== undefined ? { dryRun: body.dryRun } : {}),
+      },
+    );
+    return json(result, 200, headers);
+  } catch (error) {
+    if (error instanceof SyntaxError) return text("Invalid JSON", 400, headers);
+    return text(error instanceof Error ? error.message : "Skill scan batch failed", 400, headers);
+  }
+}
+
+async function handleSkillScanBatchStatus(ctx: ActionCtx, request: Request, headers: HeadersInit) {
+  const auth = await requireApiTokenUserOrResponse(ctx, request, headers);
+  if (!auth.ok) return auth.response;
+  const admin = requireAdminOrResponse(auth.user, headers);
+  if (!admin.ok) return admin.response;
+  try {
+    const body = parseArk(
+      ApiV1SkillScanBatchStatusRequestSchema,
+      await request.json(),
+      "Skill scan batch status payload",
+    ) as { jobIds: string[] };
+    const result = await runQueryRef(
+      ctx,
+      internalRefs.securityScan.getBulkSkillRescanBatchStatusForAdminInternal,
+      {
+        actorUserId: auth.userId,
+        jobIds: body.jobIds,
+      },
+    );
+    return json(result, 200, headers);
+  } catch (error) {
+    if (error instanceof SyntaxError) return text("Invalid JSON", 400, headers);
+    return text(
+      error instanceof Error ? error.message : "Skill scan batch status failed",
+      400,
+      headers,
+    );
+  }
 }
 
 function isDefinitiveSecurityStatus(
@@ -973,6 +1122,127 @@ export async function skillSecurityVerdictsV1Handler(ctx: ActionCtx, request: Re
   return json({ schema: "clawhub.skill.security-verdicts.v1", items }, 200, rate.headers);
 }
 
+export async function skillScanSubmitV1Handler(ctx: ActionCtx, request: Request) {
+  const rate = await applyRateLimit(ctx, request, "write");
+  if (!rate.ok) return rate.response;
+  const auth = await requireApiTokenUserOrResponse(ctx, request, rate.headers);
+  if (!auth.ok) return auth.response;
+
+  try {
+    if (isMultipartRequest(request)) {
+      const multipart = await parseMultipartSkillScan(ctx, request, (payload) => {
+        const parsed = parseArk(
+          ApiV1SkillScanSubmitRequestSchema,
+          payload,
+          "Skill scan payload",
+        ) as {
+          source: { kind: "upload" } | { kind: "published"; slug: string; version?: string };
+          update?: boolean;
+        };
+        if (parsed.source.kind !== "upload") {
+          throw new Error("multipart scan payload must use source.kind=upload");
+        }
+        if (parsed.update === true) {
+          throw new Error("update is not valid for uploaded scans");
+        }
+        return parsed;
+      });
+      const result = await runMutationRef(
+        ctx,
+        internalRefs.securityScan.createUploadedSkillScanRequestInternal,
+        {
+          actorUserId: auth.userId,
+          files: multipart.files,
+        },
+      ).catch(async (error) => {
+        await deleteStoredScanFiles(ctx, multipart.files);
+        throw error;
+      });
+      return json(result, 202, rate.headers);
+    }
+
+    const body = parseArk(
+      ApiV1SkillScanSubmitRequestSchema,
+      await request.json(),
+      "Skill scan payload",
+    ) as {
+      source: { kind: "upload" } | { kind: "published"; slug: string; version?: string };
+      update?: boolean;
+    };
+    if (body.source.kind === "upload") {
+      return text("uploaded scans must use multipart/form-data", 400, rate.headers);
+    }
+    const result = await runMutationRef(
+      ctx,
+      internalRefs.securityScan.createPublishedSkillScanRequestInternal,
+      {
+        actorUserId: auth.userId,
+        slug: body.source.slug,
+        ...(body.source.version ? { version: body.source.version } : {}),
+        update: body.update === true,
+      },
+    );
+    return json(result, 202, rate.headers);
+  } catch (error) {
+    if (error instanceof SyntaxError) return text("Invalid JSON", 400, rate.headers);
+    return text(
+      error instanceof Error ? error.message : "Skill scan submit failed",
+      400,
+      rate.headers,
+    );
+  }
+}
+
+export async function skillScanGetRouterV1Handler(ctx: ActionCtx, request: Request) {
+  const rate = await applyRateLimit(ctx, request, "read");
+  if (!rate.ok) return rate.response;
+  const auth = await requireApiTokenUserOrResponse(ctx, request, rate.headers);
+  if (!auth.ok) return auth.response;
+
+  const segments = getPathSegments(request, `${ApiRoutes.skillScans}/`);
+  const scanId = segments[0];
+  if (!scanId) return text("scanId required", 400, rate.headers);
+
+  try {
+    const status = (await runQueryRef(
+      ctx,
+      internalRefs.securityScan.getSkillScanRequestForUserInternal,
+      {
+        actorUserId: auth.userId,
+        scanId: scanId as Id<"skillScanRequests">,
+      },
+    )) as Record<string, unknown>;
+
+    if (segments.length === 1) return json(status, 200, rate.headers);
+
+    if (segments.length === 2 && segments[1] === "download") {
+      if (status.status !== "succeeded") return text("Scan is not complete", 409, rate.headers);
+      const zip = buildSkillScanReportZip(status);
+      const headers = mergeHeaders(rate.headers, {
+        "Content-Type": "application/zip",
+        "Content-Disposition": `attachment; filename="clawhub-scan-${scanId}.zip"`,
+      });
+      return new Response(zip, { status: 200, headers });
+    }
+
+    return text("Not found", 404, rate.headers);
+  } catch (error) {
+    return text(error instanceof Error ? error.message : "Skill scan failed", 400, rate.headers);
+  }
+}
+
+export async function skillScanBatchSubmitV1Handler(ctx: ActionCtx, request: Request) {
+  const rate = await applyRateLimit(ctx, request, "write");
+  if (!rate.ok) return rate.response;
+  return handleSkillScanBatchSubmit(ctx, request, rate.headers);
+}
+
+export async function skillScanBatchStatusV1Handler(ctx: ActionCtx, request: Request) {
+  const rate = await applyRateLimit(ctx, request, "write");
+  if (!rate.ok) return rate.response;
+  return handleSkillScanBatchStatus(ctx, request, rate.headers);
+}
+
 export async function searchSkillsV1Handler(ctx: ActionCtx, request: Request) {
   const rate = await applyRateLimit(ctx, request, "read");
   if (!rate.ok) return rate.response;
@@ -1055,6 +1325,7 @@ export async function resolveSkillVersionV1Handler(ctx: ActionCtx, request: Requ
 }
 
 type SkillListSort =
+  | "recommended"
   | "createdAt"
   | "updated"
   | "downloads"
@@ -1063,11 +1334,14 @@ type SkillListSort =
   | "installsAllTime"
   | "trending";
 
-type PublicListSort = "newest" | "updated" | "downloads" | "stars" | "installs";
+type PublicListSort = "recommended" | "newest" | "updated" | "downloads" | "stars" | "installs";
 
 function parseListSort(value: string | null): SkillListSort | null {
   if (value === null) return "updated";
-  const normalized = value?.trim().toLowerCase();
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "default" || normalized === "recommended") {
+    return "recommended";
+  }
   if (normalized === "createdat" || normalized === "created-at" || normalized === "newest") {
     return "createdAt";
   }
@@ -1090,6 +1364,7 @@ function parseListSort(value: string | null): SkillListSort | null {
 }
 
 function toPublicListSort(sort: Exclude<SkillListSort, "trending">): PublicListSort {
+  if (sort === "recommended") return "recommended";
   if (sort === "createdAt") return "newest";
   if (sort === "updated") return "updated";
   if (sort === "downloads" || sort === "stars") return sort;
@@ -2268,6 +2543,55 @@ export async function skillsPostRouterV1Handler(ctx: ActionCtx, request: Request
   const segments = getPathSegments(request, "/api/v1/skills/");
   const action = segments[1] ?? "";
   const slug = segments[0]?.trim().toLowerCase() ?? "";
+
+  if (segments[0] === "-" && segments[1] === "repair-vt-pending" && segments.length === 2) {
+    const auth = await requireApiTokenUserOrResponse(ctx, request, rate.headers);
+    if (!auth.ok) return auth.response;
+    const admin = requireAdminOrResponse(auth.user, rate.headers);
+    if (!admin.ok) return admin.response;
+    try {
+      const body = parseArk(
+        ApiV1SkillRepairVtPendingRequestSchema,
+        await request.json(),
+        "Skill VT pending repair payload",
+      ) as {
+        cursor?: string | null;
+        batchSize?: number;
+        concurrency?: number;
+        dryRun?: boolean;
+      };
+      const result = await runActionRef<
+        | {
+            dryRun: boolean;
+            total: number;
+            wouldUpdate: number;
+            updated: number;
+            noResults: number;
+            noDecisiveStats: number;
+            errors: number;
+            done: boolean;
+            cursor: string | null;
+            statusCounts: Record<string, number>;
+            sampleUpdated: Array<{ slug: string; status: string }>;
+          }
+        | { error: string }
+      >(ctx, internalRefs.vt.repairPendingSkillVtAnalysis, {
+        dryRun: body.dryRun !== false,
+        cursor: body.cursor ?? null,
+        ...(body.batchSize !== undefined ? { batchSize: body.batchSize } : {}),
+        ...(body.concurrency !== undefined ? { concurrency: body.concurrency } : {}),
+      });
+      if ("error" in result) return text(result.error, 400, rate.headers);
+      return json({ ok: true, ...result }, 200, rate.headers);
+    } catch (error) {
+      if (error instanceof SyntaxError) return text("Invalid JSON", 400, rate.headers);
+      return text(
+        error instanceof Error ? error.message : "Skill VT pending repair failed",
+        400,
+        rate.headers,
+      );
+    }
+  }
 
   if (segments[0] === "-" && segments[1] === "rescan-batch" && segments.length === 2) {
     const auth = await requireApiTokenUserOrResponse(ctx, request, rate.headers);
