@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   APPEALS_URL,
   CLI_SCAN_DOCS_URL,
+  buildMaliciousArtifactEmail,
   buildBanNotificationEmail,
   buildRestoredAccountEmail,
 } from "./emails";
@@ -85,5 +86,23 @@ describe("moderation notification email copy", () => {
     expect(email.text).toContain("Skill: safe-one");
     expect(email.text).toContain("Plugin: @scope/demo");
     expect(email.text).toContain("Previously revoked API tokens stay revoked.");
+  });
+
+  it("builds malicious artifact copy without account appeal language", () => {
+    const email = buildMaliciousArtifactEmail({
+      handle: "publisher",
+      artifact: { kind: "skill", name: "demo-skill" },
+      version: "1.2.3",
+      trigger: "malicious.llm_malicious",
+    });
+
+    expect(email.subject).toBe("ClawHub blocked a skill version");
+    expect(email.text).toContain("Skill: demo-skill");
+    expect(email.text).toContain("Version: 1.2.3");
+    expect(email.text).toContain("clawhub scan ./my-skill --output clawhub-scan.zip");
+    expect(email.text).toContain("https://docs.openclaw.ai/clawhub/cli#scan-path");
+    expect(email.text).not.toContain(APPEALS_URL);
+    expect(email.html).not.toContain(APPEALS_URL);
+    expect(email.html).not.toContain("appeal this decision");
   });
 });

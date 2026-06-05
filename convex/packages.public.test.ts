@@ -30,6 +30,7 @@ import {
   listPublicPage,
   listPageForViewerInternal,
   listVersions,
+  updateReleaseLlmAnalysisInternal,
   updateReleaseStaticScanInternal,
   applyAccountDeletionToOwnedPackagesBatchInternal,
   applyBanToOwnedPackagesBatchInternal,
@@ -534,6 +535,23 @@ const updateReleaseStaticScanInternalHandler = (
         }>;
         summary: string;
         engineVersion: string;
+        checkedAt: number;
+      };
+    },
+    unknown
+  >
+)._handler;
+const updateReleaseLlmAnalysisInternalHandler = (
+  updateReleaseLlmAnalysisInternal as unknown as WrappedHandler<
+    {
+      releaseId: string;
+      llmAnalysis: {
+        status: string;
+        verdict?: string;
+        confidence?: string;
+        summary?: string;
+        guidance?: string;
+        findings?: string;
         checkedAt: number;
       };
     },
@@ -8422,6 +8440,219 @@ describe("package scan backfill", () => {
     expect(patch).toHaveBeenCalledWith(
       "packageSearchDigest:demo",
       expect.objectContaining({ scanStatus: "pending" }),
+    );
+  });
+
+  it("quarantines a malicious latest plugin release and restores the previous clean latest", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+    const patch = vi.fn().mockResolvedValue(undefined);
+    const previousRelease = makeReleaseDoc({
+      _id: "packageReleases:demo-1",
+      packageId: "packages:demo",
+      version: "1.0.0",
+      distTags: [],
+      verification: { scanStatus: "clean" },
+      createdAt: 1_600_000_000_000,
+    });
+    const candidateRelease = makeReleaseDoc({
+      _id: "packageReleases:demo-2",
+      packageId: "packages:demo",
+      version: "2.0.0",
+      distTags: ["latest"],
+      verification: { scanStatus: "pending" },
+      staticScan: {
+        status: "clean",
+        reasonCodes: [],
+        findings: [],
+        summary: "No static findings.",
+        engineVersion: "test",
+        checkedAt: 1,
+      },
+      createdAt: 1_700_000_000_000,
+    });
+    const pkg = makePackageDoc({
+      _id: "packages:demo",
+      latestReleaseId: "packageReleases:demo-2",
+      tags: { latest: "packageReleases:demo-2" },
+      latestVersionSummary: { version: "2.0.0", verification: { scanStatus: "pending" } },
+      verification: { scanStatus: "pending" },
+      scanStatus: "pending",
+    });
+
+    await updateReleaseLlmAnalysisInternalHandler(
+      {
+        db: {
+          get: vi.fn(async (id: string) => {
+            if (id === "packageReleases:demo-2") return candidateRelease;
+            if (id === "packages:demo") return pkg;
+            return null;
+          }),
+          query: vi.fn((table: string) => {
+            if (table === "packageReleases") {
+              return {
+                withIndex: vi.fn(() => ({
+                  collect: vi.fn().mockResolvedValue([previousRelease, candidateRelease]),
+                })),
+              };
+            }
+            if (table === "packageSearchDigest") {
+              return {
+                withIndex: vi.fn(() => ({
+                  unique: vi.fn().mockResolvedValue({
+                    _id: "packageSearchDigest:demo",
+                    packageId: "packages:demo",
+                    scanStatus: "pending",
+                  }),
+                })),
+              };
+            }
+            if (
+              table === "packageCapabilitySearchDigest" ||
+              table === "packagePluginCategorySearchDigest"
+            ) {
+              return {
+                withIndex: vi.fn(() => ({
+                  collect: vi.fn().mockResolvedValue([]),
+                })),
+              };
+            }
+            throw new Error(`Unexpected query table: ${table}`);
+          }),
+          insert: vi.fn(),
+          patch,
+          replace: vi.fn(),
+          delete: vi.fn(),
+          normalizeId: vi.fn(),
+        },
+      } as never,
+      {
+        releaseId: "packageReleases:demo-2",
+        llmAnalysis: {
+          status: "malicious",
+          verdict: "malicious",
+          confidence: "high",
+          summary: "ClawScan found malicious behavior.",
+          guidance: "Fix locally and rescan.",
+          checkedAt: 1_700_000_000_000,
+        },
+      },
+    );
+
+    expect(patch).toHaveBeenCalledWith(
+      "packageReleases:demo-2",
+      expect.objectContaining({
+        softDeletedAt: 1_700_000_000_000,
+        verification: expect.objectContaining({ scanStatus: "malicious" }),
+      }),
+    );
+    expect(patch).toHaveBeenCalledWith(
+      "packageReleases:demo-1",
+      expect.objectContaining({ distTags: ["latest"] }),
+    );
+    expect(patch).toHaveBeenCalledWith(
+      "packages:demo",
+      expect.objectContaining({
+        latestReleaseId: "packageReleases:demo-1",
+        scanStatus: "clean",
+        tags: { latest: "packageReleases:demo-1" },
+      }),
+    );
+  });
+
+  it("keeps a first malicious plugin release out of public package lists", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+    const patch = vi.fn().mockResolvedValue(undefined);
+    const candidateRelease = makeReleaseDoc({
+      _id: "packageReleases:demo-1",
+      packageId: "packages:demo",
+      version: "1.0.0",
+      distTags: ["latest"],
+      verification: { scanStatus: "pending" },
+      createdAt: 1_700_000_000_000,
+    });
+    const pkg = makePackageDoc({
+      _id: "packages:demo",
+      latestReleaseId: "packageReleases:demo-1",
+      tags: { latest: "packageReleases:demo-1" },
+      latestVersionSummary: { version: "1.0.0", verification: { scanStatus: "pending" } },
+      verification: { scanStatus: "pending" },
+      scanStatus: "pending",
+    });
+
+    await updateReleaseLlmAnalysisInternalHandler(
+      {
+        db: {
+          get: vi.fn(async (id: string) => {
+            if (id === "packageReleases:demo-1") return candidateRelease;
+            if (id === "packages:demo") return pkg;
+            return null;
+          }),
+          query: vi.fn((table: string) => {
+            if (table === "packageReleases") {
+              return {
+                withIndex: vi.fn(() => ({
+                  collect: vi.fn().mockResolvedValue([candidateRelease]),
+                })),
+              };
+            }
+            if (table === "packageSearchDigest") {
+              return {
+                withIndex: vi.fn(() => ({
+                  unique: vi.fn().mockResolvedValue({
+                    _id: "packageSearchDigest:demo",
+                    packageId: "packages:demo",
+                    scanStatus: "pending",
+                  }),
+                })),
+              };
+            }
+            if (
+              table === "packageCapabilitySearchDigest" ||
+              table === "packagePluginCategorySearchDigest"
+            ) {
+              return {
+                withIndex: vi.fn(() => ({
+                  collect: vi.fn().mockResolvedValue([]),
+                })),
+              };
+            }
+            throw new Error(`Unexpected query table: ${table}`);
+          }),
+          insert: vi.fn(),
+          patch,
+          replace: vi.fn(),
+          delete: vi.fn(),
+          normalizeId: vi.fn(),
+        },
+      } as never,
+      {
+        releaseId: "packageReleases:demo-1",
+        llmAnalysis: {
+          status: "malicious",
+          verdict: "malicious",
+          confidence: "high",
+          summary: "ClawScan found malicious behavior.",
+          guidance: "Fix locally and rescan.",
+          checkedAt: 1_700_000_000_000,
+        },
+      },
+    );
+
+    expect(patch).toHaveBeenCalledWith(
+      "packages:demo",
+      expect.objectContaining({
+        latestReleaseId: undefined,
+        latestVersionSummary: undefined,
+        scanStatus: "malicious",
+        tags: {},
+      }),
+    );
+    expect(patch).toHaveBeenCalledWith(
+      "packageSearchDigest:demo",
+      expect.objectContaining({
+        latestVersion: undefined,
+        scanStatus: "malicious",
+      }),
     );
   });
 });

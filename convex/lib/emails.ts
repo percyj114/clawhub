@@ -38,6 +38,13 @@ export type RestoredAccountEmailArgs = {
   restoredListings?: NotificationArtifact[];
 };
 
+export type MaliciousArtifactEmailArgs = {
+  handle?: string;
+  artifact: NotificationArtifact;
+  version?: string;
+  trigger?: string;
+};
+
 type BanReasonSummary = {
   scannerLabel: string | null;
   findingSummary: string;
@@ -292,6 +299,73 @@ export function buildRestoredAccountEmail(args: RestoredAccountEmailArgs) {
 
   return {
     subject: "Your ClawHub account was restored",
+    text: lines.join("\n"),
+    html,
+  };
+}
+
+export function buildMaliciousArtifactEmail(args: MaliciousArtifactEmailArgs) {
+  const artifactKind = args.artifact.kind === "skill" ? "skill" : "plugin";
+  const artifactLabelText = artifactLabel(args.artifact);
+  const findingSummary =
+    args.trigger?.includes("static") === true
+      ? "Static analysis flagged malicious upload patterns."
+      : args.trigger?.includes("virustotal") === true || args.trigger?.includes("vt_") === true
+        ? "VirusTotal telemetry contributed to a malicious upload finding."
+        : "ClawScan classified the uploaded artifact as malicious.";
+  const subject = `ClawHub blocked a ${artifactKind} version`;
+
+  const lines = [
+    greeting(args.handle),
+    "",
+    `ClawHub blocked a ${artifactKind} version after a security scan.`,
+    `Reason: ${findingSummary}`,
+    artifactLabelText,
+  ];
+  if (args.version?.trim()) lines.push(`Version: ${args.version.trim()}`);
+  lines.push(
+    "",
+    "What changed:",
+    "- This version was not made public.",
+    "- Your account can still sign in.",
+    `- You can upload a fixed version of this ${artifactKind}.`,
+    "",
+    "Before trying again, scan a fixed local copy and review the output:",
+    DEFAULT_SCAN_REMEDIATION_COMMAND,
+    `Docs: ${CLI_SCAN_DOCS_URL}`,
+    "",
+    "ClawHub Security",
+  );
+
+  const detailLines = [
+    detailLine("Reason", findingSummary),
+    detailLine(args.artifact.kind === "skill" ? "Skill" : "Plugin", args.artifact.name),
+    ...(args.version?.trim() ? [detailLine("Version", args.version.trim())] : []),
+  ].join("");
+
+  const html = emailShell({
+    title: subject,
+    preheader: `${artifactLabelText} was blocked by ClawHub security scans.`,
+    body: [
+      paragraph(greeting(args.handle)),
+      paragraph(`ClawHub blocked a ${artifactKind} version after a security scan.`),
+      detailLines,
+      sectionHeading("What changed"),
+      bulletList([
+        "This version was not made public.",
+        "Your account can still sign in.",
+        `You can upload a fixed version of this ${artifactKind}.`,
+      ]),
+      sectionHeading("Scan a fixed local copy"),
+      paragraph("Before trying again, scan a fixed local copy and review the output."),
+      commandBlock(DEFAULT_SCAN_REMEDIATION_COMMAND),
+      `<p style="margin:0 0 14px;font-size:15px;line-height:22px;color:#1f2328;">Docs: ${textLink(CLI_SCAN_DOCS_URL, "submit a scan of a local package")}</p>`,
+      paragraph("ClawHub Security"),
+    ].join(""),
+  });
+
+  return {
+    subject,
     text: lines.join("\n"),
     html,
   };

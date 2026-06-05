@@ -5,6 +5,7 @@ import { Resend } from "resend";
 import { internalAction } from "./functions";
 import {
   buildBanNotificationEmail,
+  buildMaliciousArtifactEmail,
   buildRestoredAccountEmail,
   type NotificationArtifact,
 } from "./lib/emails";
@@ -108,6 +109,33 @@ export const sendRestoredAccountNotificationInternal = internalAction({
     });
     return await sendTransactionalEmail({
       idempotencyKey: `account-restored:${args.userId}:${args.restoredAt}`,
+      to: args.to,
+      subject: email.subject,
+      text: email.text,
+      html: email.html,
+    });
+  },
+});
+
+export const sendMaliciousArtifactNotificationInternal = internalAction({
+  args: {
+    userId: v.id("users"),
+    findingAt: v.number(),
+    to: v.string(),
+    handle: v.optional(v.string()),
+    artifact: notificationArtifactValidator,
+    version: v.optional(v.string()),
+    trigger: v.optional(v.string()),
+  },
+  handler: async (_ctx, args) => {
+    const email = buildMaliciousArtifactEmail({
+      handle: args.handle,
+      artifact: args.artifact as NotificationArtifact,
+      version: args.version,
+      trigger: args.trigger,
+    });
+    return await sendTransactionalEmail({
+      idempotencyKey: `malicious-artifact:${args.userId}:${args.findingAt}:${args.artifact.kind}:${args.artifact.name}:${args.version ?? ""}`,
       to: args.to,
       subject: email.subject,
       text: email.text,

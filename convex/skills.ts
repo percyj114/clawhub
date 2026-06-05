@@ -487,7 +487,7 @@ async function patchStructuredModerationFromVersion(
   skill: Doc<"skills">,
   version: Pick<
     Doc<"skillVersions">,
-    "_id" | "staticScan" | "vtAnalysis" | "llmAnalysis" | "sha256hash"
+    "_id" | "version" | "staticScan" | "vtAnalysis" | "llmAnalysis" | "sha256hash"
   >,
 ) {
   const now = Date.now();
@@ -507,11 +507,17 @@ async function patchStructuredModerationFromVersion(
   const shouldPersistClawScanMalwareBlock =
     patch.moderationVerdict === "malicious" && isClawScanMaliciousAnalysis(version.llmAnalysis);
 
+  if (shouldPersistClawScanMalwareBlock) {
+    await scheduleClawScanMaliciousArtifactFinding(ctx, skill, version, patch);
+    await quarantineMaliciousLatestSkillVersion(ctx, skill, version, owner, now, patch);
+    return;
+  }
+
   // A ClawScan-malicious result is itself a security lock. Persist it even
   // when the skill was already hidden by a user or quality hold so a later
   // hold lift cannot restore a latest-version malware verdict.
-  if (shouldPreserveExistingModerationLock(skill) && !shouldPersistClawScanMalwareBlock) {
-    await scheduleClawScanAutobanForMalware(ctx, skill, version, patch);
+  if (shouldPreserveExistingModerationLock(skill)) {
+    await scheduleClawScanMaliciousArtifactFinding(ctx, skill, version, patch);
     return;
   }
 
@@ -519,13 +525,179 @@ async function patchStructuredModerationFromVersion(
   await ctx.db.patch(skill._id, patch);
   await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill);
 
-  await scheduleClawScanAutobanForMalware(ctx, skill, version, patch);
+  await scheduleClawScanMaliciousArtifactFinding(ctx, skill, version, patch);
 }
 
-async function scheduleClawScanAutobanForMalware(
+function latestVersionSummaryFromSkillVersion(
+  version: Pick<
+    Doc<"skillVersions">,
+    "version" | "createdAt" | "changelog" | "changelogSource" | "parsed" | "apiKeyRequired"
+  >,
+): NonNullable<Doc<"skills">["latestVersionSummary"]> {
+  return {
+    version: version.version,
+    createdAt: version.createdAt,
+    changelog: version.changelog,
+    changelogSource: version.changelogSource,
+    clawdis: version.parsed?.clawdis,
+    apiKeyRequired: version.apiKeyRequired,
+  };
+}
+
+function skillSummaryFromSkillVersion(
+  version: Pick<Doc<"skillVersions">, "parsed"> | null | undefined,
+) {
+  return version?.parsed?.frontmatter
+    ? getFrontmatterValue(version.parsed.frontmatter, "description")?.trim() || undefined
+    : undefined;
+}
+
+function skillDisplayNameFromSkillVersion(
+  version: Pick<Doc<"skillVersions">, "parsed"> | null | undefined,
+) {
+  return version?.parsed?.frontmatter
+    ? getFrontmatterValue(version.parsed.frontmatter, "name")?.trim() || undefined
+    : undefined;
+}
+
+function isKnownMaliciousSkillVersion(
+  version: Pick<Doc<"skillVersions">, "_id" | "staticScan" | "vtAnalysis" | "llmAnalysis">,
+) {
+  const patch = buildStructuredModerationPatch({
+    staticScan: version.staticScan,
+    vtAnalysis: version.vtAnalysis,
+    llmAnalysis: version.llmAnalysis,
+    vtStatus: version.vtAnalysis?.status,
+    llmStatus: version.llmAnalysis?.status,
+    sourceVersionId: version._id,
+  });
+  return patch.moderationVerdict === "malicious";
+}
+
+function compareSkillVersionsForRestore(
+  left: Pick<Doc<"skillVersions">, "version" | "createdAt">,
+  right: Pick<Doc<"skillVersions">, "version" | "createdAt">,
+) {
+  const leftValid = semver.valid(left.version);
+  const rightValid = semver.valid(right.version);
+  if (leftValid && rightValid) return semver.rcompare(leftValid, rightValid);
+  if (leftValid) return -1;
+  if (rightValid) return 1;
+  return right.createdAt - left.createdAt;
+}
+
+async function findReplacementLatestSkillVersion(
+  ctx: MutationCtx,
+  skillId: Id<"skills">,
+  quarantinedVersionId: Id<"skillVersions">,
+) {
+  const versions = await ctx.db
+    .query("skillVersions")
+    .withIndex("by_skill", (q) => q.eq("skillId", skillId))
+    .collect();
+  return (
+    versions
+      .filter(
+        (candidate) =>
+          candidate._id !== quarantinedVersionId &&
+          !candidate.softDeletedAt &&
+          !isKnownMaliciousSkillVersion(candidate),
+      )
+      .sort(compareSkillVersionsForRestore)[0] ?? null
+  );
+}
+
+async function clearSkillEmbeddingsLatestVersion(
+  ctx: MutationCtx,
+  skillId: Id<"skills">,
+  now: number,
+) {
+  const embeddings = await listSkillEmbeddingsForSkill(ctx, skillId);
+  for (const embedding of embeddings) {
+    if (
+      !embedding.isLatest &&
+      embedding.visibility === embeddingVisibilityFor(false, embedding.isApproved)
+    ) {
+      continue;
+    }
+    await ctx.db.patch(embedding._id, {
+      isLatest: false,
+      visibility: embeddingVisibilityFor(false, embedding.isApproved),
+      updatedAt: now,
+    });
+  }
+}
+
+async function quarantineMaliciousLatestSkillVersion(
   ctx: MutationCtx,
   skill: Doc<"skills">,
-  version: Pick<Doc<"skillVersions">, "llmAnalysis" | "sha256hash">,
+  version: Pick<Doc<"skillVersions">, "_id">,
+  owner: Doc<"users"> | null | undefined,
+  now: number,
+  maliciousPatch: SkillModerationPatch,
+) {
+  await ctx.db.patch(version._id, { softDeletedAt: now });
+
+  const replacement = await findReplacementLatestSkillVersion(ctx, skill._id, version._id);
+  const nextTags: Record<string, Id<"skillVersions">> = {};
+  for (const [tag, versionId] of Object.entries(skill.tags ?? {})) {
+    if (versionId === version._id || tag === "latest") continue;
+    nextTags[tag] = versionId;
+  }
+  if (replacement) {
+    nextTags.latest = replacement._id;
+  }
+
+  const patch: Partial<Doc<"skills">> = {
+    displayName: replacement
+      ? (skillDisplayNameFromSkillVersion(replacement) ?? skill.displayName)
+      : skill.displayName,
+    summary: replacement ? skillSummaryFromSkillVersion(replacement) : skill.summary,
+    latestVersionId: replacement?._id,
+    latestVersionSummary: replacement
+      ? latestVersionSummaryFromSkillVersion(replacement)
+      : undefined,
+    tags: nextTags,
+    capabilityTags: replacement?.capabilityTags,
+    updatedAt: now,
+  };
+
+  if (!shouldPreserveExistingModerationLock(skill)) {
+    const basePatch = replacement
+      ? buildScannerModerationPatchFromVersion({
+          owner,
+          version: replacement,
+          now,
+        })
+      : maliciousPatch;
+    Object.assign(
+      patch,
+      applySkillManualOverrideToSkillPatch({
+        skill,
+        basePatch,
+        now,
+        stripUpdatedAt: true,
+      }),
+    );
+  }
+
+  const nextSkill = { ...skill, ...patch } as Doc<"skills">;
+  await ctx.db.patch(skill._id, patch);
+  await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill);
+  await adjustUserSkillStatsForSkillChange(ctx, skill, nextSkill);
+
+  if (replacement) {
+    await setSkillEmbeddingsLatestVersion(ctx, skill._id, replacement._id, now);
+  } else {
+    await clearSkillEmbeddingsLatestVersion(ctx, skill._id, now);
+  }
+  await syncSkillSearchDigestForSkillDoc(ctx, nextSkill);
+}
+
+async function scheduleClawScanMaliciousArtifactFinding(
+  ctx: MutationCtx,
+  skill: Doc<"skills">,
+  version: Pick<Doc<"skillVersions">, "llmAnalysis" | "sha256hash" | "version">,
   patch: SkillModerationPatch,
 ) {
   if (
@@ -533,9 +705,11 @@ async function scheduleClawScanAutobanForMalware(
     skill.ownerUserId &&
     isClawScanMaliciousAnalysis(version.llmAnalysis)
   ) {
-    await ctx.scheduler.runAfter(0, internal.users.autobanMalwareAuthorInternal, {
+    await ctx.scheduler.runAfter(0, internal.users.recordMaliciousArtifactFindingInternal, {
       ownerUserId: skill.ownerUserId,
-      slug: skill.slug,
+      artifactKind: "skill",
+      artifactName: skill.slug,
+      version: version.version,
       ...(version.sha256hash ? { sha256hash: version.sha256hash } : {}),
       trigger:
         patch.moderationReasonCodes?.find((code) => code.startsWith("malicious.llm_")) ??
