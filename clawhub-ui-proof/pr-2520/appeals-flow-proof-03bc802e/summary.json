@@ -1,0 +1,32 @@
+{
+  "generatedAt": "2026-06-05T23:05:17.478Z",
+  "mode": "feature",
+  "status": "pass",
+  "provider": "local in-app browser",
+  "scenario": "manual proof: rendered emails and banned-account sign-in copy",
+  "candidate": "worktree 03bc802e",
+  "outputDir": ".artifacts/pr-2520-proof",
+  "lanes": [
+    {
+      "name": "candidate",
+      "ref": "worktree 03bc802e",
+      "status": "pass",
+      "steps": [
+        {
+          "lane": "candidate",
+          "name": "Rendered moderation emails",
+          "slug": "rendered-emails",
+          "status": "pass",
+          "screenshot": "screenshots/rendered-emails.png"
+        },
+        {
+          "lane": "candidate",
+          "name": "Banned-account sign-in copy",
+          "slug": "banned-sign-in",
+          "status": "pass",
+          "screenshot": "screenshots/banned-sign-in.png"
+        }
+      ]
+    }
+  ]
+}
