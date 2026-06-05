@@ -36,6 +36,7 @@ import { familyLabel } from "../../lib/packageLabels";
 import {
   buildPluginDetailHref,
   buildPluginSecurityAuditHref,
+  buildPluginWarningsHref,
   parseScopedPackageName,
 } from "../../lib/pluginRoutes";
 import { buildReadmeAssetBaseUrl } from "../../lib/readmeAssetBaseUrl";
@@ -350,7 +351,9 @@ export function PluginDetailPage({
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const { me } = useAuthStatus();
   const isNestedPluginRoute =
-    pathname.includes("/security/") || pathname.endsWith("/security-audit");
+    pathname.includes("/security/") ||
+    pathname.endsWith("/security-audit") ||
+    pathname.endsWith("/settings");
   const manageCandidateNames = getOpenClawPackageCandidateNames(name);
   const manageLookupName = detail.package?.name ?? manageCandidateNames[0] ?? name;
   const manageContext = useQuery(
@@ -359,6 +362,10 @@ export function PluginDetailPage({
       ? { name: manageLookupName, candidateNames: manageCandidateNames }
       : "skip",
   );
+  const inspectorWarnings = useQuery(
+    api.packages.listPackageInspectorWarningsForManager,
+    manageContext && detail.package ? { name: manageContext.package.name, limit: 100 } : "skip",
+  ) as Array<{ code: string }> | undefined;
   const [activeTab, setActiveTab] = useState<PluginDetailTab>(() => {
     if (typeof window === "undefined") return "readme";
     const hash = window.location.hash.replace("#", "");
@@ -435,6 +442,7 @@ export function PluginDetailPage({
         displayName: pkg.displayName,
       }).toString()}`
     : null;
+  const warningCount = inspectorWarnings?.length ?? 0;
   const capEntries = capabilities
     ? Object.entries(capabilities).filter(
         ([, v]) =>
@@ -710,7 +718,7 @@ export function PluginDetailPage({
                 />
               ) : null}
 
-              {(pkg.latestVersion && !isDownloadBlocked) || newVersionHref ? (
+              {(pkg.latestVersion && !isDownloadBlocked) || newVersionHref || warningCount > 0 ? (
                 <div className="skill-sidebar-actions">
                   {pkg.latestVersion && !isDownloadBlocked ? (
                     <Button asChild variant="outline" className="skill-sidebar-action-button">
@@ -725,6 +733,14 @@ export function PluginDetailPage({
                       <a href={newVersionHref}>
                         <Upload size={14} aria-hidden="true" />
                         New version
+                      </a>
+                    </Button>
+                  ) : null}
+                  {warningCount > 0 ? (
+                    <Button asChild variant="outline" className="skill-sidebar-action-button">
+                      <a href={buildPluginWarningsHref(pkg.name)}>
+                        <AlertTriangle size={14} aria-hidden="true" />
+                        {warningCount === 1 ? "1 warning" : `${warningCount} warnings`}
                       </a>
                     </Button>
                   ) : null}

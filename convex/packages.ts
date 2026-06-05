@@ -32,6 +32,7 @@ import {
   assertAdmin,
   assertModerator,
   getOptionalActiveAuthUserId,
+  requireUserFromAction,
   requireUser,
 } from "./lib/access";
 import {
@@ -254,6 +255,10 @@ const internalRefs = internal as unknown as {
     insertAuditLogInternal: unknown;
     updateReleaseStaticScanInternal: unknown;
     backfillLatestPackageScanStatusInternal: unknown;
+    insertPackageInspectorWarningsInternal: unknown;
+  };
+  packageInspectorNode: {
+    runPackageInspectorForPublishInternal: unknown;
   };
   packagePublishTokens: {
     createInternal: unknown;
@@ -277,6 +282,46 @@ const internalRefs = internal as unknown as {
   vt: {
     scanPackageReleaseWithVirusTotal: unknown;
   };
+};
+
+const packageInspectorWarningInputValidator = v.object({
+  id: v.optional(v.string()),
+  code: v.string(),
+  severity: v.optional(v.string()),
+  level: v.optional(v.string()),
+  issueClass: v.optional(v.string()),
+  compatStatus: v.optional(v.string()),
+  deprecated: v.optional(v.boolean()),
+  message: v.string(),
+  evidence: v.optional(v.array(v.string())),
+  fixture: v.optional(v.string()),
+  decision: v.optional(v.string()),
+});
+
+type PackageInspectorFinding = {
+  id?: string;
+  code: string;
+  severity?: string;
+  level?: string;
+  issueClass?: string;
+  compatStatus?: string;
+  deprecated?: boolean;
+  message: string;
+  evidence?: string[];
+  fixture?: string;
+  decision?: string;
+};
+
+type PackageInspectorPublishResult = {
+  status: "pass" | "fail";
+  summary: {
+    breakageCount: number;
+    warningCount: number;
+    deprecationWarningCount: number;
+    issueCount: number;
+  };
+  breakages: PackageInspectorFinding[];
+  warnings: PackageInspectorFinding[];
 };
 const packageAutobanRemediationInternalRefs = internal as unknown as {
   packages: {
@@ -669,6 +714,8 @@ type DashboardPackageListItem = {
   ownerUserId: Id<"users">;
   ownerPublisherId?: Id<"publishers">;
   latestVersion: string | null;
+  inspectorWarningCount: number;
+  canViewInspectorWarnings: boolean;
   stats: Doc<"packages">["stats"];
   verification: Doc<"packages">["verification"];
   scanStatus: Doc<"packages">["scanStatus"];
@@ -1025,9 +1072,14 @@ function toPublicPackageListItem(digest: PackageDigestLike): PublicPackageListIt
 async function toDashboardPackageListItem(
   ctx: DbReaderCtx,
   pkg: Doc<"packages">,
+  viewerUserId: Id<"users">,
 ): Promise<DashboardPackageListItem | null> {
   if (pkg.softDeletedAt) return null;
   const latestRelease = pkg.latestReleaseId ? await ctx.db.get(pkg.latestReleaseId) : null;
+  const canViewInspectorWarnings = await viewerCanManagePackageOwner(ctx, pkg, viewerUserId);
+  const inspectorWarningCount = canViewInspectorWarnings
+    ? await countPackageInspectorWarnings(ctx, pkg._id)
+    : 0;
   return {
     _id: pkg._id,
     name: pkg.name,
@@ -1041,6 +1093,8 @@ async function toDashboardPackageListItem(
     ownerUserId: pkg.ownerUserId,
     ownerPublisherId: pkg.ownerPublisherId,
     latestVersion: pkg.latestVersionSummary?.version ?? null,
+    inspectorWarningCount,
+    canViewInspectorWarnings,
     stats: pkg.stats,
     verification: pkg.verification,
     scanStatus: pkg.scanStatus,
@@ -1058,6 +1112,14 @@ async function toDashboardPackageListItem(
           }
         : null,
   };
+}
+
+async function countPackageInspectorWarnings(ctx: DbReaderCtx, packageId: Id<"packages">) {
+  const warnings = await ctx.db
+    .query("packageInspectorWarnings")
+    .withIndex("by_package_created", (q) => q.eq("packageId", packageId))
+    .take(101);
+  return warnings.length > 100 ? 100 : warnings.length;
 }
 
 async function listDashboardPackagesForOwnerPublisher(
@@ -1108,7 +1170,9 @@ async function listDashboardPackagesForOwnerPublisher(
   );
   const limited = combined.slice(0, limit);
   return (
-    await Promise.all(limited.map(async (pkg) => await toDashboardPackageListItem(ctx, pkg)))
+    await Promise.all(
+      limited.map(async (pkg) => await toDashboardPackageListItem(ctx, pkg, viewerUserId)),
+    )
   ).filter((pkg): pkg is DashboardPackageListItem => Boolean(pkg));
 }
 
@@ -1155,7 +1219,9 @@ async function listDashboardPackagesForOwnerUser(
   const scoped = await filterPackagesForOwnerUserDashboard(ctx, entries, ownerUserId);
   const filtered = scoped.filter((pkg) => !pkg.softDeletedAt).slice(0, limit);
   return (
-    await Promise.all(filtered.map(async (pkg) => await toDashboardPackageListItem(ctx, pkg)))
+    await Promise.all(
+      filtered.map(async (pkg) => await toDashboardPackageListItem(ctx, pkg, viewerUserId)),
+    )
   ).filter((pkg): pkg is DashboardPackageListItem => Boolean(pkg));
 }
 
@@ -1979,6 +2045,51 @@ export const getManageContext = query({
       package: pkg,
       latestRelease: toPublicPackageRelease(latestRelease),
     };
+  },
+});
+
+export const listPackageInspectorWarningsForManager = query({
+  args: {
+    name: v.string(),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const viewerUserId = await getOptionalActiveAuthUserId(ctx);
+    if (!viewerUserId) return [];
+
+    const pkg = await getPackageByNormalizedName(ctx, normalizePackageName(args.name));
+    if (!pkg || pkg.softDeletedAt || pkg.family === "skill") return [];
+
+    const actor = await ctx.db.get(viewerUserId);
+    if (!actor || actor.deletedAt || actor.deactivatedAt) return [];
+    if (actor.role !== "admin" && actor.role !== "moderator") {
+      const canManage = await viewerCanManagePackageOwner(ctx, pkg, viewerUserId);
+      if (!canManage) return [];
+    }
+
+    const limit = Math.max(1, Math.min(args.limit ?? 50, 100));
+    const warnings = await ctx.db
+      .query("packageInspectorWarnings")
+      .withIndex("by_package_created", (q) => q.eq("packageId", pkg._id))
+      .order("desc")
+      .take(limit);
+
+    return warnings.map((warning) => ({
+      _id: warning._id,
+      packageName: warning.packageName,
+      version: warning.version,
+      code: warning.code,
+      severity: warning.severity,
+      level: warning.level,
+      issueClass: warning.issueClass,
+      compatStatus: warning.compatStatus,
+      deprecated: warning.deprecated,
+      message: warning.message,
+      evidence: warning.evidence ?? [],
+      fixture: warning.fixture,
+      decision: warning.decision,
+      createdAt: warning.createdAt,
+    }));
   },
 });
 
@@ -5104,8 +5215,54 @@ function doesTrustedPublisherMatchPublishToken(
   );
 }
 
+async function runPackageInspectorPublishGate(
+  ctx: Pick<ActionCtx, "runAction">,
+  args: {
+    packageName: string;
+    version: string;
+    files: ReturnType<typeof normalizePublishFiles>;
+  },
+): Promise<PackageInspectorPublishResult> {
+  const result = await runActionRef<PackageInspectorPublishResult>(
+    ctx,
+    internalRefs.packageInspectorNode.runPackageInspectorForPublishInternal,
+    {
+      packageName: args.packageName,
+      version: args.version,
+      files: args.files,
+    },
+  );
+  if (result.status === "fail" || result.summary.breakageCount > 0) {
+    throw new ConvexError(formatPackageInspectorBlockedPublishError(result));
+  }
+  return result;
+}
+
+function formatPackageInspectorBlockedPublishError(result: PackageInspectorPublishResult) {
+  const count = Math.max(result.summary.breakageCount, result.breakages.length, 1);
+  const noun = count === 1 ? "breakage" : "breakages";
+  const details = result.breakages
+    .slice(0, 3)
+    .map((finding) => `${finding.code}: ${finding.message}`)
+    .join("; ");
+  return `Plugin Inspector blocked publish: ${count} ${noun}${details ? `. ${details}` : ""}`;
+}
+
+function packageInspectorWarningDedupeKey(
+  warning: Pick<PackageInspectorFinding, "id" | "code" | "message" | "evidence" | "fixture">,
+) {
+  return JSON.stringify([
+    warning.id ?? "",
+    warning.code,
+    warning.message,
+    warning.fixture ?? "",
+    warning.evidence ?? [],
+  ]);
+}
+
 async function publishPackageImpl(
-  ctx: Parameters<typeof requireGitHubAccountAge>[0] & Pick<ActionCtx, "storage" | "scheduler">,
+  ctx: Parameters<typeof requireGitHubAccountAge>[0] &
+    Pick<ActionCtx, "storage" | "scheduler" | "runAction">,
   auth: PackagePublishAuthContext,
   rawPayload: unknown,
 ) {
@@ -5363,6 +5520,14 @@ async function publishPackageImpl(
     },
     files,
   });
+  const inspectorResult =
+    family === "code-plugin" || family === "bundle-plugin"
+      ? await runPackageInspectorPublishGate(ctx, {
+          packageName: name,
+          version,
+          files,
+        })
+      : null;
   const ownerPublisher = ownerPublisherId
     ? await runQueryRef<Doc<"publishers"> | null>(ctx, internalRefs.publishers.getByIdInternal, {
         publisherId: ownerPublisherId,
@@ -5429,6 +5594,18 @@ async function publishPackageImpl(
     normalizedBundleManifest: family === "bundle-plugin" ? storedBundleManifest : undefined,
     source: effectiveSource,
   });
+
+  if (inspectorResult?.warnings.length) {
+    await runMutationRef(ctx, internalRefs.packages.insertPackageInspectorWarningsInternal, {
+      packageId: publishResult.packageId,
+      releaseId: publishResult.releaseId,
+      ownerUserId,
+      ownerPublisherId,
+      packageName: name,
+      version,
+      warnings: inspectorResult.warnings,
+    });
+  }
 
   if (auth.kind === "github-actions") {
     await runMutationRef(ctx, internalRefs.packagePublishTokens.revokeInternal, {
@@ -5498,6 +5675,16 @@ export const publishPackageForUserInternal = internalAction({
       { kind: "user", actorUserId: args.actorUserId },
       args.payload,
     );
+  },
+});
+
+export const publishRelease: ReturnType<typeof action> = action({
+  args: {
+    payload: v.any(),
+  },
+  handler: async (ctx, args) => {
+    const { userId } = await requireUserFromAction(ctx);
+    return await publishPackageImpl(ctx, { kind: "user", actorUserId: userId }, args.payload);
   },
 });
 
@@ -5949,6 +6136,65 @@ export const repairPackageIdentityInternal = internalMutation({
       name: patch.normalizedName ?? pkg.normalizedName,
       runtimeId: patch.runtimeId ?? pkg.runtimeId,
     };
+  },
+});
+
+export const insertPackageInspectorWarningsInternal = internalMutation({
+  args: {
+    packageId: v.id("packages"),
+    releaseId: v.id("packageReleases"),
+    ownerUserId: v.id("users"),
+    ownerPublisherId: v.optional(v.id("publishers")),
+    packageName: v.string(),
+    version: v.string(),
+    warnings: v.array(packageInspectorWarningInputValidator),
+  },
+  handler: async (ctx, args) => {
+    if (args.warnings.length === 0) return { ok: true as const, inserted: 0 };
+    const existingWarnings = await ctx.db
+      .query("packageInspectorWarnings")
+      .withIndex("by_release", (q) => q.eq("releaseId", args.releaseId))
+      .collect();
+    const existingWarningKeys = new Set(
+      existingWarnings.map((warning) =>
+        packageInspectorWarningDedupeKey({
+          id: warning.inspectorFindingId,
+          code: warning.code,
+          message: warning.message,
+          evidence: warning.evidence,
+          fixture: warning.fixture,
+        }),
+      ),
+    );
+    const now = Date.now();
+    let inserted = 0;
+    for (const warning of args.warnings.slice(0, 100)) {
+      const warningKey = packageInspectorWarningDedupeKey(warning);
+      if (existingWarningKeys.has(warningKey)) continue;
+      await ctx.db.insert("packageInspectorWarnings", {
+        packageId: args.packageId,
+        releaseId: args.releaseId,
+        ownerUserId: args.ownerUserId,
+        ownerPublisherId: args.ownerPublisherId,
+        packageName: args.packageName,
+        version: args.version,
+        code: warning.code,
+        severity: warning.severity,
+        level: warning.level,
+        issueClass: warning.issueClass,
+        compatStatus: warning.compatStatus,
+        deprecated: warning.deprecated,
+        message: warning.message,
+        evidence: warning.evidence,
+        fixture: warning.fixture,
+        decision: warning.decision,
+        inspectorFindingId: warning.id,
+        createdAt: now,
+      });
+      existingWarningKeys.add(warningKey);
+      inserted += 1;
+    }
+    return { ok: true as const, inserted };
   },
 });
 

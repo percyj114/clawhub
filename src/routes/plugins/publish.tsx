@@ -727,7 +727,9 @@ export function PublishPluginRoute() {
                         "Published. Pending security checks and verification before public listing.",
                       );
                     } catch (publishError) {
-                      toast.error(formatPublishError(publishError));
+                      const message = formatPublishError(publishError);
+                      setError(message);
+                      toast.error(message);
                       setStatus(null);
                     } finally {
                       setIsSubmitting(false);

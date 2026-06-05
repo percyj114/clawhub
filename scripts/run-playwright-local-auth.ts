@@ -120,6 +120,24 @@ function readLocalDeployment() {
   return config ? `local:${config.deploymentName}` : null;
 }
 
+function getLocalUrlPort(url: string, label: string) {
+  const parsed = new URL(url);
+  const isLocalhost =
+    parsed.hostname === "127.0.0.1" ||
+    parsed.hostname === "localhost" ||
+    parsed.hostname === "::1" ||
+    parsed.hostname === "[::1]";
+  if (!isLocalhost) {
+    throw new Error(`${label} must be a localhost URL for the local-auth runner: ${url}`);
+  }
+
+  const port = Number(parsed.port);
+  if (!Number.isInteger(port) || port <= 0) {
+    throw new Error(`${label} must include an explicit port: ${url}`);
+  }
+  return port;
+}
+
 function spawnManaged(command: string, args: string[], env: NodeJS.ProcessEnv) {
   const child = spawn(command, args, {
     cwd: process.cwd(),
@@ -362,6 +380,10 @@ async function main() {
       "disable",
       "--codegen",
       "disable",
+      "--local-cloud-port",
+      String(getLocalUrlPort(convexUrl, "Local Convex URL")),
+      "--local-site-port",
+      String(getLocalUrlPort(convexSiteUrl, "Local Convex site URL")),
     ],
     e2eEnv,
   );

@@ -1301,6 +1301,31 @@ const packageReleases = defineTable({
   .index("by_package_version", ["packageId", "version"])
   .index("by_sha256hash", ["sha256hash"]);
 
+const packageInspectorWarnings = defineTable({
+  packageId: v.id("packages"),
+  releaseId: v.id("packageReleases"),
+  ownerUserId: v.id("users"),
+  ownerPublisherId: v.optional(v.id("publishers")),
+  packageName: v.string(),
+  version: v.string(),
+  code: v.string(),
+  severity: v.optional(v.string()),
+  level: v.optional(v.string()),
+  issueClass: v.optional(v.string()),
+  compatStatus: v.optional(v.string()),
+  deprecated: v.optional(v.boolean()),
+  message: v.string(),
+  evidence: v.optional(v.array(v.string())),
+  fixture: v.optional(v.string()),
+  decision: v.optional(v.string()),
+  inspectorFindingId: v.optional(v.string()),
+  createdAt: v.number(),
+})
+  .index("by_package_created", ["packageId", "createdAt"])
+  .index("by_release", ["releaseId"])
+  .index("by_owner_user_created", ["ownerUserId", "createdAt"])
+  .index("by_owner_publisher_created", ["ownerPublisherId", "createdAt"]);
+
 const securityScanJobs = defineTable({
   targetKind: securityScanTargetKindValidator,
   skillVersionId: v.optional(v.id("skillVersions")),
@@ -2398,6 +2423,7 @@ export default defineSchema({
   skillSlugAliases,
   packages,
   packageReleases,
+  packageInspectorWarnings,
   securityScanJobs,
   skillScanRequests,
   skillCardGenerationJobs,

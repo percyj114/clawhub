@@ -17,6 +17,7 @@ const isRateLimitedPackageApiErrorMock = vi.fn(
 );
 const useQueryMock = vi.fn();
 const useAuthStatusMock = vi.fn();
+let pathnameMock = "/plugins/demo-plugin";
 
 type PluginDetailLoaderData = {
   detail: PackageDetailResponse;
@@ -63,10 +64,8 @@ vi.mock("@tanstack/react-router", () => ({
     select,
   }: {
     select?: (state: { location: { pathname: string } }) => string;
-  }) =>
-    select
-      ? select({ location: { pathname: `/plugins/${paramsMock.name}` } })
-      : `/plugins/${paramsMock.name}`,
+  }) => (select ? select({ location: { pathname: pathnameMock } }) : pathnameMock),
+  Outlet: () => <div data-testid="nested-plugin-route" />,
   Link: ({
     children,
     to,
@@ -128,6 +127,7 @@ async function loadRoute() {
 describe("plugin detail route", () => {
   beforeEach(() => {
     paramsMock = { name: "demo-plugin" };
+    pathnameMock = "/plugins/demo-plugin";
     vi.mocked(fetchPackageDetail).mockReset();
     vi.mocked(fetchPackageReadme).mockReset();
     vi.mocked(fetchPackageVersion).mockReset();
@@ -427,6 +427,18 @@ describe("plugin detail route", () => {
     expect(securityAuditLabelIndex).toBeGreaterThan(sidebarLabels.indexOf("Downloads"));
     fireEvent.click(capabilitiesTab);
     expect(screen.getByText("Tags")).toBeTruthy();
+  });
+
+  it("renders the nested settings route for plugin settings paths", async () => {
+    pathnameMock = "/plugins/demo-plugin/settings";
+
+    const route = await loadRoute();
+    const Component = route.__config.component as ComponentType;
+
+    render(<Component />);
+
+    expect(screen.getByTestId("nested-plugin-route")).toBeTruthy();
+    expect(screen.queryByText("Demo Plugin")).toBeNull();
   });
 
   it("does not render owner-only plugin scanner rerun state in the detail security summary", async () => {

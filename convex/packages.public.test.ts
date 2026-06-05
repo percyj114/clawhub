@@ -15,6 +15,8 @@ import {
   listPackageReportsInternal,
   getPackageModerationStatusForUserInternal,
   getManageContext,
+  listPackageInspectorWarningsForManager,
+  insertPackageInspectorWarningsInternal,
   reportPackageForUserInternal,
   triagePackageReportForUserInternal,
   submitPackageAppealForUserInternal,
@@ -271,6 +273,31 @@ function makePackageManifestStorage() {
   };
 }
 
+function makeCleanPackageInspectorResult() {
+  return {
+    status: "pass",
+    summary: {
+      breakageCount: 0,
+      warningCount: 0,
+      deprecationWarningCount: 0,
+      issueCount: 0,
+    },
+    warnings: [],
+    breakages: [],
+  };
+}
+
+function makeEmptyPackageInspectorWarningsQuery() {
+  return {
+    withIndex: vi.fn(() => ({
+      take: vi.fn().mockResolvedValue([]),
+      order: vi.fn(() => ({
+        take: vi.fn().mockResolvedValue([]),
+      })),
+    })),
+  };
+}
+
 const reportPackageForUserInternalHandler = (
   reportPackageForUserInternal as unknown as WrappedHandler<
     {
@@ -339,6 +366,38 @@ const getManageContextHandler = (
   getManageContext as unknown as WrappedHandler<
     { name: string; candidateNames?: string[] },
     { package: { name: string }; latestRelease: { version: string } } | null
+  >
+)._handler;
+const listPackageInspectorWarningsForManagerHandler = (
+  listPackageInspectorWarningsForManager as unknown as WrappedHandler<
+    { name: string; limit?: number },
+    Array<{
+      packageName: string;
+      version: string;
+      code: string;
+      issueClass?: string;
+      message: string;
+    }>
+  >
+)._handler;
+const insertPackageInspectorWarningsInternalHandler = (
+  insertPackageInspectorWarningsInternal as unknown as WrappedHandler<
+    {
+      packageId: string;
+      releaseId: string;
+      ownerUserId: string;
+      ownerPublisherId?: string;
+      packageName: string;
+      version: string;
+      warnings: Array<{
+        id?: string;
+        code: string;
+        message: string;
+        evidence?: string[];
+        fixture?: string;
+      }>;
+    },
+    { ok: true; inserted: number }
   >
 )._handler;
 const submitPackageAppealForUserInternalHandler = (
@@ -4273,6 +4332,7 @@ describe("packages public queries", () => {
           githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
         }),
       runMutation,
+      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
       scheduler: {
         runAfter: vi.fn(),
       },
@@ -5035,6 +5095,7 @@ describe("packages public queries", () => {
         })
         .mockResolvedValueOnce(null),
       runMutation,
+      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
       scheduler: {
         runAfter: vi.fn(),
       },
@@ -5236,6 +5297,7 @@ describe("packages public queries", () => {
         .mockResolvedValueOnce(trustedPublisher)
         .mockResolvedValueOnce(null),
       runMutation,
+      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
       scheduler: {
         runAfter: vi.fn(),
       },
@@ -5316,6 +5378,7 @@ describe("packages public queries", () => {
         .mockResolvedValueOnce(trustedPublisher)
         .mockResolvedValueOnce(null),
       runMutation,
+      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
       scheduler: {
         runAfter: vi.fn(),
       },
@@ -5394,6 +5457,7 @@ describe("packages public queries", () => {
         })
         .mockResolvedValueOnce(null),
       runMutation,
+      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
       scheduler: {
         runAfter: vi.fn(),
       },
@@ -5552,6 +5616,16 @@ describe("packages public queries", () => {
           return content ? new Blob([content]) : null;
         }),
       },
+      runAction: vi.fn(async () => ({
+        status: "pass",
+        summary: {
+          breakageCount: 0,
+          warningCount: 0,
+          deprecationWarningCount: 0,
+          issueCount: 0,
+        },
+        warnings: [],
+      })),
     };
 
     const result = (await publishPackageForUserInternalHandler(ctx as never, {
@@ -5611,6 +5685,332 @@ describe("packages public queries", () => {
       expect.anything(),
       expect.any(Object),
     );
+  });
+
+  it("blocks plugin publishes when plugin inspector reports hard breakages", async () => {
+    const runMutation = vi.fn(async (_ref: unknown, args: unknown) => {
+      if (typeof args === "object" && args !== null && "minimumRole" in args) return null;
+      return args;
+    });
+    const ctx = {
+      runQuery: vi
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          _id: "users:owner",
+          githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
+        })
+        .mockResolvedValueOnce({
+          _id: "users:owner",
+          githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
+        })
+        .mockResolvedValueOnce(null),
+      runMutation,
+      runAction: vi.fn(async () => ({
+        status: "fail",
+        summary: {
+          breakageCount: 1,
+          warningCount: 0,
+          deprecationWarningCount: 0,
+          issueCount: 1,
+        },
+        warnings: [],
+        breakages: [
+          {
+            code: "missing-expected-seam",
+            severity: "P0",
+            message: "missing expected registration registerTool",
+            evidence: ["registerTool"],
+          },
+        ],
+      })),
+      scheduler: {
+        runAfter: vi.fn(),
+      },
+      storage: {
+        get: vi.fn(async (storageId: string) => {
+          const files = new Map<string, string>([
+            [
+              "storage:package",
+              JSON.stringify({
+                name: "demo-plugin",
+                openclaw: {
+                  extensions: ["./dist/index.js"],
+                  compat: { pluginApi: "^1.0.0" },
+                  build: { openclawVersion: "2026.3.14" },
+                  configSchema: { type: "object" },
+                },
+              }),
+            ],
+            ["storage:manifest", JSON.stringify({ id: "demo.plugin" })],
+            ["storage:code", "export const demo = true;\n"],
+          ]);
+          const content = files.get(storageId);
+          return content ? new Blob([content]) : null;
+        }),
+      },
+    };
+
+    await expect(
+      publishPackageForUserInternalHandler(ctx as never, {
+        actorUserId: "users:owner",
+        payload: {
+          name: "demo-plugin",
+          displayName: "Demo Plugin",
+          family: "code-plugin",
+          version: "1.0.0",
+          changelog: "init",
+          source: {
+            kind: "github",
+            url: "https://github.com/openclaw/demo-plugin",
+            repo: "openclaw/demo-plugin",
+            ref: "refs/tags/v1.0.0",
+            commit: "abc123",
+            path: ".",
+            importedAt: Date.now(),
+          },
+          files: [
+            {
+              path: "package.json",
+              size: 1,
+              storageId: "storage:package",
+              sha256: "package",
+              contentType: "application/json",
+            },
+            {
+              path: "openclaw.plugin.json",
+              size: 1,
+              storageId: "storage:manifest",
+              sha256: "manifest",
+              contentType: "application/json",
+            },
+            {
+              path: "dist/index.js",
+              size: 1,
+              storageId: "storage:code",
+              sha256: "code",
+              contentType: "application/javascript",
+            },
+          ],
+        },
+      }),
+    ).rejects.toThrow(/Plugin Inspector blocked publish: 1 breakage/);
+
+    expect(runMutation).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ version: "1.0.0" }),
+    );
+    expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
+  });
+
+  it("stores plugin inspector warnings after successful warning-only publishes", async () => {
+    const runMutation = vi.fn(async (_ref: unknown, args: Record<string, unknown>) => {
+      if ("minimumRole" in args) return null;
+      if ("warnings" in args) return { ok: true, inserted: 1 };
+      return { ok: true, packageId: "packages:demo", releaseId: "packageReleases:demo-1" };
+    });
+    const ctx = {
+      runQuery: vi
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          _id: "users:owner",
+          githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
+        })
+        .mockResolvedValueOnce({
+          _id: "users:owner",
+          githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
+        })
+        .mockResolvedValueOnce(null),
+      runMutation,
+      runAction: vi.fn(async () => ({
+        status: "pass",
+        summary: {
+          breakageCount: 0,
+          warningCount: 1,
+          deprecationWarningCount: 1,
+          issueCount: 1,
+        },
+        warnings: [
+          {
+            id: "demo:legacy-before-agent-start",
+            code: "legacy-before-agent-start",
+            severity: "P2",
+            issueClass: "deprecation-warning",
+            compatStatus: "deprecated",
+            message: "legacy before_agent_start hook is deprecated",
+            evidence: ["src/index.ts:4"],
+          },
+        ],
+      })),
+      scheduler: {
+        runAfter: vi.fn(),
+      },
+      storage: {
+        get: vi.fn(async (storageId: string) => {
+          const files = new Map<string, string>([
+            [
+              "storage:package",
+              JSON.stringify({
+                name: "demo-plugin",
+                openclaw: {
+                  extensions: ["./dist/index.js"],
+                  compat: { pluginApi: "^1.0.0" },
+                  build: { openclawVersion: "2026.3.14" },
+                  configSchema: { type: "object" },
+                },
+              }),
+            ],
+            ["storage:manifest", JSON.stringify({ id: "demo.plugin" })],
+            ["storage:code", "export const demo = true;\n"],
+          ]);
+          const content = files.get(storageId);
+          return content ? new Blob([content]) : null;
+        }),
+      },
+    };
+
+    await publishPackageForUserInternalHandler(ctx as never, {
+      actorUserId: "users:owner",
+      payload: {
+        name: "demo-plugin",
+        displayName: "Demo Plugin",
+        family: "code-plugin",
+        version: "1.0.0",
+        changelog: "init",
+        source: {
+          kind: "github",
+          url: "https://github.com/openclaw/demo-plugin",
+          repo: "openclaw/demo-plugin",
+          ref: "refs/tags/v1.0.0",
+          commit: "abc123",
+          path: ".",
+          importedAt: Date.now(),
+        },
+        files: [
+          {
+            path: "package.json",
+            size: 1,
+            storageId: "storage:package",
+            sha256: "package",
+            contentType: "application/json",
+          },
+          {
+            path: "openclaw.plugin.json",
+            size: 1,
+            storageId: "storage:manifest",
+            sha256: "manifest",
+            contentType: "application/json",
+          },
+          {
+            path: "dist/index.js",
+            size: 1,
+            storageId: "storage:code",
+            sha256: "code",
+            contentType: "application/javascript",
+          },
+        ],
+      },
+    });
+
+    expect(runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        packageId: "packages:demo",
+        releaseId: "packageReleases:demo-1",
+        packageName: "demo-plugin",
+        version: "1.0.0",
+        warnings: [
+          expect.objectContaining({
+            code: "legacy-before-agent-start",
+            issueClass: "deprecation-warning",
+            message: "legacy before_agent_start hook is deprecated",
+          }),
+        ],
+      }),
+    );
+  });
+
+  it("deduplicates plugin inspector warnings when an idempotent publish retry returns an existing release", async () => {
+    const insert = vi.fn();
+    const collect = vi.fn(async () => [
+      {
+        inspectorFindingId: "demo:legacy-before-agent-start",
+        code: "legacy-before-agent-start",
+        message: "legacy before_agent_start hook is deprecated",
+        evidence: ["src/index.ts:4"],
+        fixture: "demo",
+      },
+    ]);
+    const ctx = {
+      db: {
+        get: vi.fn(),
+        query: vi.fn(() => ({
+          withIndex: vi.fn(() => ({
+            collect,
+          })),
+        })),
+        insert,
+        patch: vi.fn(),
+        replace: vi.fn(),
+        delete: vi.fn(),
+        normalizeId: vi.fn((tableName: string, id: string) =>
+          id.startsWith(`${tableName}:`) ? id : null,
+        ),
+      },
+    };
+
+    await expect(
+      insertPackageInspectorWarningsInternalHandler(ctx as never, {
+        packageId: "packages:demo",
+        releaseId: "packageReleases:demo-1",
+        ownerUserId: "users:owner",
+        packageName: "demo-plugin",
+        version: "1.0.0",
+        warnings: [
+          {
+            id: "demo:legacy-before-agent-start",
+            code: "legacy-before-agent-start",
+            message: "legacy before_agent_start hook is deprecated",
+            evidence: ["src/index.ts:4"],
+            fixture: "demo",
+          },
+          {
+            id: "demo:manifest-name-missing",
+            code: "manifest-name-missing",
+            message: "openclaw.plugin.json does not declare a display name",
+            evidence: ["openclaw.plugin.json"],
+            fixture: "demo",
+          },
+        ],
+      }),
+    ).resolves.toEqual({ ok: true, inserted: 1 });
+
+    expect(insert).toHaveBeenCalledTimes(1);
+    expect(insert).toHaveBeenCalledWith(
+      "packageInspectorWarnings",
+      expect.objectContaining({
+        code: "manifest-name-missing",
+        inspectorFindingId: "demo:manifest-name-missing",
+      }),
+    );
+  });
+
+  it("does not list plugin inspector warnings for signed-out viewers", async () => {
+    vi.mocked(getAuthUserId).mockResolvedValue(null);
+    const ctx = {
+      db: {
+        get: vi.fn(),
+        query: vi.fn(),
+      },
+    };
+
+    await expect(
+      listPackageInspectorWarningsForManagerHandler(ctx as never, {
+        name: "demo-plugin",
+      }),
+    ).resolves.toEqual([]);
+    expect(ctx.db.query).not.toHaveBeenCalled();
   });
 
   it("infers owner handle from scoped package names for user package publishes", async () => {
@@ -5744,6 +6144,7 @@ describe("packages public queries", () => {
           githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
         }),
       runMutation,
+      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
       scheduler: {
         runAfter: vi.fn(),
       },
@@ -5799,6 +6200,7 @@ describe("packages public queries", () => {
           linkedUserId: "users:vincent",
         }),
       runMutation,
+      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
       scheduler: {
         runAfter: vi.fn(),
       },
@@ -5859,6 +6261,7 @@ describe("packages public queries", () => {
           githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
         }),
       runMutation,
+      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
       scheduler: {
         runAfter: vi.fn(),
       },
@@ -5908,6 +6311,7 @@ describe("packages public queries", () => {
           githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
         }),
       runMutation,
+      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
       scheduler: {
         runAfter: vi.fn(),
       },
@@ -5950,6 +6354,7 @@ describe("packages public queries", () => {
           githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
         }),
       runMutation,
+      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
       scheduler: {
         runAfter: vi.fn(),
       },
@@ -6096,6 +6501,9 @@ describe("packages public queries", () => {
                 })),
               };
             }
+            if (table === "packageInspectorWarnings") {
+              return makeEmptyPackageInspectorWarningsQuery();
+            }
             throw new Error(`Unexpected table ${table}`);
           }),
         },
@@ -6188,6 +6596,9 @@ describe("packages public queries", () => {
                 })),
               };
             }
+            if (table === "packageInspectorWarnings") {
+              return makeEmptyPackageInspectorWarningsQuery();
+            }
             throw new Error(`Unexpected table ${table}`);
           }),
         },
@@ -6266,6 +6677,9 @@ describe("packages public queries", () => {
                   };
                 }),
               };
+            }
+            if (table === "packageInspectorWarnings") {
+              return makeEmptyPackageInspectorWarningsQuery();
             }
             throw new Error(`Unexpected table ${table}`);
           }),
@@ -6354,6 +6768,9 @@ describe("packages public queries", () => {
                 })),
               };
             }
+            if (table === "packageInspectorWarnings") {
+              return makeEmptyPackageInspectorWarningsQuery();
+            }
             throw new Error(`Unexpected table ${table}`);
           }),
         },
@@ -6406,6 +6823,9 @@ describe("packages public queries", () => {
                   }),
                 })),
               };
+            }
+            if (table === "packageInspectorWarnings") {
+              return makeEmptyPackageInspectorWarningsQuery();
             }
             throw new Error(`Unexpected table ${table}`);
           }),

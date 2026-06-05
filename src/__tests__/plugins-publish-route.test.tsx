@@ -282,6 +282,54 @@ describe("plugins publish route", () => {
     });
   });
 
+  it("shows backend publish failures inline on the upload form", async () => {
+    publishRelease.mockRejectedValueOnce(
+      new Error(
+        "Plugin Inspector blocked publish: 1 breakage. missing expected registration registerTool",
+      ),
+    );
+    renderPublishRoute();
+
+    const packageJson = withRelativePath(
+      new File(
+        [
+          makeCodePluginPackageJson({
+            name: "demo-plugin",
+            displayName: "Demo Plugin",
+            version: "1.2.3",
+            repository: "https://github.com/openclaw/demo-plugin.git",
+          }),
+        ],
+        "package.json",
+        { type: "application/json" },
+      ),
+      "demo-plugin/package.json",
+    );
+    const manifest = withRelativePath(
+      new File(['{"id":"demo.plugin"}'], "openclaw.plugin.json", { type: "application/json" }),
+      "demo-plugin/openclaw.plugin.json",
+    );
+    const dist = withRelativePath(
+      new File(["export const demo = true;\n"], "index.js", { type: "text/javascript" }),
+      "demo-plugin/dist/index.js",
+    );
+
+    fireEvent.change(getFileInput(), { target: { files: [packageJson, manifest, dist] } });
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("demo-plugin")).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByPlaceholderText("Full commit SHA"), {
+      target: { value: "abc123" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Publish plugin" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toContain("Plugin Inspector blocked publish");
+    });
+  });
+
   it("surfaces missing OpenClaw compatibility metadata before publish", async () => {
     renderPublishRoute();
 
