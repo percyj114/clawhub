@@ -271,6 +271,11 @@ See also: [acceptable-usage.md](./acceptable-usage.md) for the marketplace polic
   on the restored user's package audit rows.
   Ban context lookup must tolerate duplicate Convex Auth account rows by
   selecting the currently banned user with matching ban audit evidence.
+- Ban notification emails must be public-safe: include the high-level action
+  reason, affected skill/plugin when known, scanner label when known, the
+  external appeals link, and existing CLI scan docs for scanner-triggered skill
+  bans. They must not expose raw moderator notes, reporter identifiers, internal
+  finding ids, or other staff-only ban reason text.
 - Unban restore batches only restore packages/plugins hidden by the matching
   ban timestamp and must stop if the user has been banned again.
 - Stale unban restore batches must stop if the user was banned again before a

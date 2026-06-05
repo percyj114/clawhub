@@ -9,19 +9,15 @@ import { isLocalDevAuthEnabled } from "./lib/devAuth";
 import { shouldScheduleGitHubProfileSync } from "./lib/githubProfileSync";
 
 export const BANNED_REAUTH_MESSAGE =
-  "This account has been banned and cannot sign in. If you believe this is a mistake, open a GitHub issue: https://github.com/openclaw/clawhub/issues/new.";
+  "This account has been banned and cannot sign in. If you believe this is a mistake, appeal this decision: https://appeals.openclaw.ai/.";
 export const DELETED_ACCOUNT_REAUTH_MESSAGE =
   "This account has been permanently deleted and cannot be restored.";
 
 const REAUTH_BLOCKING_BAN_ACTIONS = new Set(["user.ban", "user.autoban.malware"]);
 const DEV_PERSONAS = new Set(["owner", "user", "admin", "officialOrgMember"]);
 
-function getBannedReauthMessage(reason: string | undefined) {
-  const normalizedReason = reason?.trim();
-  if (!normalizedReason || normalizedReason.toLowerCase() === "malware auto-ban") {
-    return BANNED_REAUTH_MESSAGE;
-  }
-  return `${BANNED_REAUTH_MESSAGE} Reason: ${normalizedReason}`;
+function getBannedReauthMessage(_reason: string | undefined) {
+  return BANNED_REAUTH_MESSAGE;
 }
 
 export async function handleDeletedUserSignIn(

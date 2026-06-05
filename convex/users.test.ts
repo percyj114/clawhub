@@ -23,6 +23,7 @@ const {
   list,
   searchInternal,
   banUserInternal,
+  autobanMalwareAuthorInternal,
   unbanUserForBanAppealServiceInternal,
   reclassifyBanInternal,
   me,
@@ -380,6 +381,7 @@ function makeBanCtx(options: { auditLogs?: Array<Record<string, unknown>> } = {}
   const insert = vi.fn();
   const get = vi.fn();
   const runMutation = vi.fn();
+  const runAfter = vi.fn();
   const auditLogs = options.auditLogs ?? [];
   const apiTokens = [{ _id: "apiTokens:1", revokedAt: undefined }];
   const userComments = [
@@ -417,8 +419,12 @@ function makeBanCtx(options: { auditLogs?: Array<Record<string, unknown>> } = {}
     },
   }));
 
-  const ctx = { db: { patch, insert, get, query, normalizeId: vi.fn() }, runMutation } as never;
-  return { ctx, patch, insert, get, runMutation };
+  const ctx = {
+    db: { patch, insert, get, query, normalizeId: vi.fn() },
+    runMutation,
+    scheduler: { runAfter },
+  } as never;
+  return { ctx, patch, insert, get, runMutation, runAfter };
 }
 
 function makeBanAppealContextCtx(options: {
@@ -2208,6 +2214,54 @@ describe("users.banUserInternal", () => {
     );
   });
 
+  it("schedules a public-safe ban notification email when the target has email", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+    const { ctx, get, runMutation, runAfter } = makeBanCtx();
+
+    get.mockImplementation(async (id: string) => {
+      if (id === "users:actor") return { _id: "users:actor", role: "moderator" };
+      if (id === "users:target") {
+        return {
+          _id: "users:target",
+          role: "user",
+          handle: "target-user",
+          email: "target@example.com",
+        };
+      }
+      if (id === "souls:1") return { _id: "souls:1", stats: { comments: 3 } };
+      return null;
+    });
+
+    runMutation
+      .mockResolvedValueOnce({ hiddenCount: 2, scheduled: false })
+      .mockResolvedValueOnce({ deletedCount: 0, revokedTokenCount: 0, scheduled: false })
+      .mockResolvedValueOnce(undefined);
+
+    const handler = (
+      banUserInternal as unknown as {
+        _handler: (
+          ctx: unknown,
+          args: { actorUserId: string; targetUserId: string; reason?: string },
+        ) => Promise<unknown>;
+      }
+    )._handler;
+
+    await handler(ctx, {
+      actorUserId: "users:actor",
+      targetUserId: "users:target",
+      reason: "rate limit triggered by automated CLI publishing",
+    });
+
+    expect(runAfter).toHaveBeenCalledWith(0, expect.anything(), {
+      userId: "users:target",
+      bannedAt: 1_700_000_000_000,
+      to: "target@example.com",
+      handle: "target-user",
+      source: "manual",
+      reason: "rate limit triggered by automated CLI publishing",
+    });
+  });
+
   it("re-ban of already banned user still cleans lingering comments", async () => {
     vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
     const { ctx, get, patch, runMutation } = makeBanCtx();
@@ -2262,6 +2316,66 @@ describe("users.banUserInternal", () => {
   });
 });
 
+describe("users.autobanMalwareAuthorInternal", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("schedules a malicious skill notification with trigger context", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+    const { ctx, get, runMutation, runAfter } = makeBanCtx();
+
+    get.mockImplementation(async (id: string) => {
+      if (id === "users:target") {
+        return {
+          _id: "users:target",
+          role: "user",
+          handle: "target-user",
+          email: "target@example.com",
+        };
+      }
+      if (id === "souls:1") return { _id: "souls:1", stats: { comments: 3 } };
+      return null;
+    });
+    runMutation
+      .mockResolvedValueOnce({ hiddenCount: 1, scheduled: false })
+      .mockResolvedValueOnce({ deletedCount: 0, revokedTokenCount: 0, scheduled: false })
+      .mockResolvedValueOnce(undefined);
+
+    const handler = (
+      autobanMalwareAuthorInternal as unknown as {
+        _handler: (
+          ctx: unknown,
+          args: {
+            ownerUserId: string;
+            sha256hash?: string;
+            slug: string;
+            trigger?: string;
+          },
+        ) => Promise<unknown>;
+      }
+    )._handler;
+
+    await handler(ctx, {
+      ownerUserId: "users:target",
+      sha256hash: "abc123",
+      slug: "gingiris-launch",
+      trigger: "malicious.llm_malicious",
+    });
+
+    expect(runAfter).toHaveBeenCalledWith(0, expect.anything(), {
+      userId: "users:target",
+      bannedAt: 1_700_000_000_000,
+      to: "target@example.com",
+      handle: "target-user",
+      source: "autoban",
+      reason: "malicious.llm_malicious",
+      trigger: "malicious.llm_malicious",
+      artifact: { kind: "skill", name: "gingiris-launch" },
+    });
+  });
+});
+
 describe("users.unbanUserForBanAppealServiceInternal", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -2269,7 +2383,7 @@ describe("users.unbanUserForBanAppealServiceInternal", () => {
 
   it("restores ban-hidden skills and packages for accepted appeals", async () => {
     vi.spyOn(Date, "now").mockReturnValue(1_700_000_100_000);
-    const { ctx, get, patch, insert, runMutation } = makeBanCtx({
+    const { ctx, get, patch, insert, runMutation, runAfter } = makeBanCtx({
       auditLogs: [
         {
           _id: "auditLogs:ban",
@@ -2285,6 +2399,8 @@ describe("users.unbanUserForBanAppealServiceInternal", () => {
         return {
           _id: "users:target",
           role: "user",
+          handle: "target-user",
+          email: "target@example.com",
           deletedAt: 1_700_000_000_000,
           deactivatedAt: undefined,
           banReason: "malware auto-ban",
@@ -2343,6 +2459,13 @@ describe("users.unbanUserForBanAppealServiceInternal", () => {
         }),
       }),
     );
+    expect(runAfter).toHaveBeenCalledWith(0, expect.anything(), {
+      userId: "users:target",
+      restoredAt: 1_700_000_100_000,
+      to: "target@example.com",
+      handle: "target-user",
+      restoredListings: undefined,
+    });
     expect(result).toEqual({
       ok: true,
       alreadyUnbanned: false,

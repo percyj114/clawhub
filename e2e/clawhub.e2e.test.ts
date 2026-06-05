@@ -139,6 +139,106 @@ describe("clawhub e2e", () => {
     }
   });
 
+  it("cli scan uploads a local folder to the canonical scan route", async () => {
+    let submittedBody = "";
+    let submittedAuthorization = "";
+    const server = createServer(async (req, res) => {
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      if (req.method === "POST" && url.pathname === ApiRoutes.skillScans) {
+        submittedAuthorization = req.headers.authorization ?? "";
+        submittedBody = await readRequestBody(req);
+        res.writeHead(202, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            ok: true,
+            scanId: "scan_123",
+            jobId: "job_123",
+            status: "queued",
+            sourceKind: "upload",
+            update: false,
+          }),
+        );
+        return;
+      }
+      if (req.method === "GET" && url.pathname === `${ApiRoutes.skillScans}/scan_123`) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            ok: true,
+            scanId: "scan_123",
+            jobId: "job_123",
+            status: "succeeded",
+            sourceKind: "upload",
+            update: false,
+            writtenBack: false,
+            artifact: { slug: "local-skill", displayName: "Local Skill", version: "0.0.0" },
+            report: {
+              clawscan: {
+                verdict: "clean",
+                confidence: "high",
+                summary: "Local scan completed.",
+                guidance: "No changes needed.",
+              },
+              skillspector: { status: "clean", issueCount: 0, issues: [] },
+              staticAnalysis: { status: "clean", reasonCodes: [], findings: [] },
+              virustotal: null,
+            },
+            createdAt: 1_700_000_000_000,
+            updatedAt: 1_700_000_100_000,
+            completedAt: 1_700_000_100_000,
+          }),
+        );
+        return;
+      }
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("not found");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+    const registry = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const cfg = await makeTempConfig(registry, "test-token");
+    const workdir = await mkdtemp(join(tmpdir(), "clawhub-e2e-scan-"));
+    try {
+      const skillDir = join(workdir, "my-skill");
+      await mkdir(skillDir, { recursive: true });
+      await writeFile(join(skillDir, "SKILL.md"), "# Local Skill\n", "utf8");
+
+      const result = await spawnCommand(
+        "bun",
+        [
+          "clawhub",
+          "scan",
+          "./my-skill",
+          "--workdir",
+          workdir,
+          "--site",
+          registry,
+          "--registry",
+          registry,
+        ],
+        {
+          cwd: process.cwd(),
+          env: {
+            ...process.env,
+            CLAWHUB_CONFIG_PATH: cfg.path,
+            CLAWHUB_DISABLE_TELEMETRY: "1",
+          },
+        },
+      );
+
+      expect(result.status).toBe(0);
+      expect(submittedAuthorization).toBe("Bearer test-token");
+      expect(submittedBody).toContain('"source":{"kind":"upload"}');
+      expect(submittedBody).toContain("SKILL.md");
+      expect(result.stdout).toContain("ClawHub Scan Report");
+      expect(result.stdout).toContain("Local scan completed.");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(workdir, { recursive: true, force: true });
+      await rm(cfg.dir, { recursive: true, force: true });
+    }
+  });
+
   it("assumes a logged-in user (whoami succeeds)", async () => {
     const registry = getRegistry();
     const site = getSite();

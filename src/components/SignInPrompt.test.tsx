@@ -2,12 +2,13 @@
 
 import { fireEvent, render, screen } from "@testing-library/react";
 import { Star } from "lucide-react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SignInPrompt } from "./SignInPrompt";
 
 const signInMock = vi.fn();
 const clearAuthErrorMock = vi.fn();
 const setAuthErrorMock = vi.fn();
+let authErrorMock: string | null = null;
 
 vi.mock("@convex-dev/auth/react", () => ({
   useAuthActions: () => ({
@@ -18,15 +19,25 @@ vi.mock("@convex-dev/auth/react", () => ({
 vi.mock("../lib/useAuthError", () => ({
   clearAuthError: () => clearAuthErrorMock(),
   setAuthError: (message: string) => setAuthErrorMock(message),
+  useAuthError: () => ({ error: authErrorMock, clear: clearAuthErrorMock }),
 }));
 
 vi.mock("../lib/authErrorMessage", () => ({
+  ACCOUNT_APPEAL_LINK_TEXT: "appeal this decision",
+  ACCOUNT_APPEAL_URL: "https://appeals.openclaw.ai/",
   CLAWHUB_ACCOUNT_ISSUE_LINK_TEXT: "open a GitHub issue",
   CLAWHUB_ACCOUNT_ISSUE_URL: "https://github.com/openclaw/clawhub/issues/new",
   getUserFacingAuthError: (_error: unknown, fallback: string) => fallback,
 }));
 
 describe("SignInPrompt", () => {
+  beforeEach(() => {
+    authErrorMock = null;
+    clearAuthErrorMock.mockReset();
+    setAuthErrorMock.mockReset();
+    signInMock.mockReset();
+  });
+
   it("renders title and description", () => {
     render(<SignInPrompt title="Sign in to test" description="Test description" />);
     expect(screen.getByRole("heading", { name: "Sign in to test" })).toBeTruthy();
@@ -58,16 +69,29 @@ describe("SignInPrompt", () => {
     expect(onDismissError).toHaveBeenCalledTimes(1);
   });
 
-  it("links account issue guidance in auth errors", () => {
+  it("links appeal guidance in banned-account auth errors", () => {
     render(
       <SignInPrompt
         title="Sign in"
-        error="Sign in failed. Please open a GitHub issue if you believe this is a mistake."
+        error="This ClawHub account is not in good standing and cannot sign in. Please appeal this decision if you believe this is a mistake."
       />,
     );
 
-    const link = screen.getByRole("link", { name: "open a GitHub issue" });
-    expect(link.getAttribute("href")).toBe("https://github.com/openclaw/clawhub/issues/new");
+    const link = screen.getByRole("link", { name: "appeal this decision" });
+    expect(link.getAttribute("href")).toBe("https://appeals.openclaw.ai/");
+  });
+
+  it("shows global banned-account auth errors inline", () => {
+    authErrorMock =
+      "This ClawHub account is not in good standing and cannot sign in. Please appeal this decision if you believe this is a mistake.";
+
+    render(<SignInPrompt title="Sign in" />);
+
+    const link = screen.getByRole("link", { name: "appeal this decision" });
+    expect(link.getAttribute("href")).toBe("https://appeals.openclaw.ai/");
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(clearAuthErrorMock).toHaveBeenCalledTimes(1);
   });
 
   it("does not render dismiss button when onDismissError is missing", () => {

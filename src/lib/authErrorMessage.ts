@@ -2,8 +2,10 @@ import { getUserFacingConvexError } from "./convexError";
 
 export const CLAWHUB_ACCOUNT_ISSUE_URL = "https://github.com/openclaw/clawhub/issues/new";
 export const CLAWHUB_ACCOUNT_ISSUE_LINK_TEXT = "open a GitHub issue";
+export const ACCOUNT_APPEAL_URL = "https://appeals.openclaw.ai/";
+export const ACCOUNT_APPEAL_LINK_TEXT = "appeal this decision";
 
-export const BANNED_SIGN_IN_MESSAGE = `This ClawHub account is not in good standing and cannot sign in. Please ${CLAWHUB_ACCOUNT_ISSUE_LINK_TEXT} if you believe this is a mistake.`;
+export const BANNED_SIGN_IN_MESSAGE = `This ClawHub account is not in good standing and cannot sign in. Please ${ACCOUNT_APPEAL_LINK_TEXT} if you believe this is a mistake.`;
 export const DELETED_SIGN_IN_MESSAGE =
   "This ClawHub account was permanently deleted and cannot sign in again.";
 export const ACCESS_DENIED_SIGN_IN_MESSAGE = `Sign in was denied. Please try signing in with GitHub again. If this keeps happening, please ${CLAWHUB_ACCOUNT_ISSUE_LINK_TEXT}.`;

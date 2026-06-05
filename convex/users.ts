@@ -50,6 +50,54 @@ const autobanPackageScanScopeValidator = v.optional(
 );
 type AutobanPackageScanScope = "ownerUserId" | "personalPublisher";
 
+type BanEmailTarget = Pick<Doc<"users">, "_id" | "email" | "handle">;
+
+async function scheduleBanNotificationEmail(
+  ctx: Pick<MutationCtx, "scheduler">,
+  args: {
+    target: BanEmailTarget;
+    bannedAt: number;
+    source: "manual" | "autoban";
+    reason?: string;
+    trigger?: string;
+    artifact?: { kind: "skill" | "plugin"; name: string };
+  },
+) {
+  const to = args.target.email?.trim();
+  if (!to) return;
+
+  await ctx.scheduler.runAfter(0, internal.emailsNode.sendBanNotificationInternal, {
+    userId: args.target._id,
+    bannedAt: args.bannedAt,
+    to,
+    handle: args.target.handle,
+    source: args.source,
+    reason: args.reason,
+    trigger: args.trigger,
+    artifact: args.artifact,
+  });
+}
+
+async function scheduleRestoredAccountNotificationEmail(
+  ctx: Pick<MutationCtx, "scheduler">,
+  args: {
+    target: BanEmailTarget;
+    restoredAt: number;
+    restoredListings?: Array<{ kind: "skill" | "plugin"; name: string }>;
+  },
+) {
+  const to = args.target.email?.trim();
+  if (!to) return;
+
+  await ctx.scheduler.runAfter(0, internal.emailsNode.sendRestoredAccountNotificationInternal, {
+    userId: args.target._id,
+    restoredAt: args.restoredAt,
+    to,
+    handle: args.target.handle,
+    restoredListings: args.restoredListings,
+  });
+}
+
 async function getAutobanPersonalPublisherId(
   ctx: Pick<QueryCtx | MutationCtx, "db">,
   owner: Pick<Doc<"users">, "_id" | "personalPublisherId"> | null | undefined,
@@ -1916,6 +1964,13 @@ async function banUserWithActor(
     createdAt: now,
   });
 
+  await scheduleBanNotificationEmail(ctx, {
+    target,
+    bannedAt: now,
+    source: "manual",
+    reason,
+  });
+
   return {
     ok: true as const,
     alreadyBanned: false,
@@ -1992,6 +2047,11 @@ async function unbanUserForBanAppealService(
       reviewerDiscordId: args.reviewerDiscordId,
     },
     createdAt: now,
+  });
+
+  await scheduleRestoredAccountNotificationEmail(ctx, {
+    target,
+    restoredAt: now,
   });
 
   return {
@@ -2071,6 +2131,11 @@ async function unbanUserWithActor(
       scheduledPackages,
     },
     createdAt: now,
+  });
+
+  await scheduleRestoredAccountNotificationEmail(ctx, {
+    target,
+    restoredAt: now,
   });
 
   return {
@@ -2464,6 +2529,16 @@ export const autobanMalwareAuthorInternal = internalMutation({
       targetId: args.ownerUserId,
       metadata,
       createdAt: now,
+    });
+
+    const trigger = args.trigger?.trim() || "scanner.malicious";
+    await scheduleBanNotificationEmail(ctx, {
+      target,
+      bannedAt: now,
+      source: "autoban",
+      reason: trigger,
+      trigger,
+      artifact: { kind: "skill", name: args.slug },
     });
 
     console.warn(

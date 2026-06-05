@@ -1,6 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import { LockKeyhole } from "lucide-react";
 import type { ReactNode } from "react";
+import { useAuthError } from "../lib/useAuthError";
 import { AuthErrorMessage } from "./AuthErrorMessage";
 import { SignInButton } from "./SignInButton";
 
@@ -33,6 +34,12 @@ export function SignInPrompt({
   onDismissError,
   className,
 }: SignInPromptProps) {
+  const { error: globalAuthError, clear: clearGlobalAuthError } = useAuthError();
+  const visibleError = error ?? globalAuthError;
+  const dismissVisibleError = error
+    ? onDismissError
+    : (onDismissError ?? (globalAuthError ? clearGlobalAuthError : undefined));
+
   const defaultAction = (
     <SignInButton
       size="sm"
@@ -74,16 +81,16 @@ export function SignInPrompt({
                 {description}
               </p>
             ) : null}
-            {error ? (
+            {visibleError ? (
               <p
                 className="mt-3 rounded-[var(--radius-sm)] border border-red-300/40 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-500/30 dark:bg-red-950/50 dark:text-red-300"
                 role="alert"
               >
-                <AuthErrorMessage message={error} />{" "}
-                {onDismissError ? (
+                <AuthErrorMessage message={visibleError} />{" "}
+                {dismissVisibleError ? (
                   <button
                     type="button"
-                    onClick={onDismissError}
+                    onClick={dismissVisibleError}
                     aria-label="Dismiss"
                     className="cursor-pointer border-none bg-transparent px-0.5 text-inherit"
                   >
