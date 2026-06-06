@@ -1,5 +1,5 @@
 ---
-summary: "CLI reference: commands, flags, config, lockfile, sync behavior."
+summary: "CLI reference: commands, flags, config, lockfile, and sync behavior."
 read_when:
   - Using the ClawHub CLI
   - Debugging install, update, publish, or sync
@@ -712,10 +712,15 @@ Notes:
   - `--bump patch|minor|major` (default: patch)
   - `--changelog <text>` (non-interactive)
   - `--tags a,b,c` (default: latest)
-  - `--concurrency <n>` (default: 4)
+  - `--concurrency <n>`
   - `--source-repo <repo>`, `--source-commit <sha>`, `--source-ref <ref>` for GitHub provenance
 
-Telemetry:
+`sync` does not report install telemetry.
 
-- Sent during `sync` when logged in, unless `CLAWHUB_DISABLE_TELEMETRY=1` (legacy `CLAWDHUB_DISABLE_TELEMETRY=1`).
+### Install telemetry
+
+- Sent after `clawhub install <slug>` when logged in, unless
+  `CLAWHUB_DISABLE_TELEMETRY=1` is set.
+- Reporting is best-effort. Install commands do not fail if telemetry is
+  unavailable.
 - Details: `docs/telemetry.md`.

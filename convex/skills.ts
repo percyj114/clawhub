@@ -4859,7 +4859,7 @@ export const listPublicPageV3 = query({
 type PublicListSort = keyof typeof SORT_INDEXES;
 
 const SORT_INDEX_FIELD_COUNTS: Record<PublicListSort, number> = {
-  recommended: 5,
+  recommended: 4,
   newest: 2,
   updated: 2,
   name: 2,
@@ -4869,7 +4869,7 @@ const SORT_INDEX_FIELD_COUNTS: Record<PublicListSort, number> = {
 };
 
 const NONSUSPICIOUS_SORT_INDEX_FIELD_COUNTS: Record<PublicListSort, number> = {
-  recommended: 6,
+  recommended: 5,
   newest: 3,
   updated: 3,
   name: 3,
@@ -6059,20 +6059,11 @@ async function hasMissingRecommendedRankStats(
 ) {
   if (decodedCursor) return false;
   if (nonSuspiciousOnly) {
-    const [missingStars, missingInstalls, missingDownloads] = await Promise.all([
+    const [missingStars, missingDownloads] = await Promise.all([
       ctx.db
         .query("skillSearchDigest")
         .withIndex("by_nonsuspicious_stars", (q) =>
           q.eq("softDeletedAt", undefined).eq("isSuspicious", false).eq("statsStars", undefined),
-        )
-        .first(),
-      ctx.db
-        .query("skillSearchDigest")
-        .withIndex("by_nonsuspicious_installs", (q) =>
-          q
-            .eq("softDeletedAt", undefined)
-            .eq("isSuspicious", false)
-            .eq("statsInstallsAllTime", undefined),
         )
         .first(),
       ctx.db
@@ -6085,20 +6076,14 @@ async function hasMissingRecommendedRankStats(
         )
         .first(),
     ]);
-    return Boolean(missingStars || missingInstalls || missingDownloads);
+    return Boolean(missingStars || missingDownloads);
   }
 
-  const [missingStars, missingInstalls, missingDownloads] = await Promise.all([
+  const [missingStars, missingDownloads] = await Promise.all([
     ctx.db
       .query("skillSearchDigest")
       .withIndex("by_active_stats_stars", (q) =>
         q.eq("softDeletedAt", undefined).eq("statsStars", undefined),
-      )
-      .first(),
-    ctx.db
-      .query("skillSearchDigest")
-      .withIndex("by_active_stats_installs_all_time", (q) =>
-        q.eq("softDeletedAt", undefined).eq("statsInstallsAllTime", undefined),
       )
       .first(),
     ctx.db
@@ -6108,7 +6093,7 @@ async function hasMissingRecommendedRankStats(
       )
       .first(),
   ]);
-  return Boolean(missingStars || missingInstalls || missingDownloads);
+  return Boolean(missingStars || missingDownloads);
 }
 
 function readDigestRankStat(
@@ -6174,8 +6159,6 @@ async function fetchHighlightedPage(
       case "recommended":
         return (
           (readDigestRankStat(a, "stars") - readDigestRankStat(b, "stars")) * multiplier ||
-          (readDigestRankStat(a, "installsAllTime") - readDigestRankStat(b, "installsAllTime")) *
-            multiplier ||
           (readDigestRankStat(a, "downloads") - readDigestRankStat(b, "downloads")) * multiplier ||
           (a.updatedAt - b.updatedAt) * multiplier
         );

@@ -1,9 +1,10 @@
 import {
   ApiCliSkillDeleteResponseSchema,
   ApiCliTelemetrySyncResponseSchema,
+  CliTelemetryInstallRequestSchema,
+  CliTelemetrySyncRequestSchema,
   CliPublishRequestSchema,
   CliSkillDeleteRequestSchema,
-  CliTelemetrySyncRequestSchema,
   parseArk,
 } from "clawhub-schema";
 import { api, internal } from "./_generated/api";
@@ -237,17 +238,13 @@ async function cliTelemetryInstallHandler(ctx: ActionCtx, request: Request) {
 
   try {
     const { userId } = await requireApiTokenUser(ctx, request);
-    const args = parseArk(CliTelemetrySyncRequestSchema, body, "Telemetry payload");
-    await ctx.runMutation(internal.telemetry.reportCliSyncInternal, {
+    const args = parseArk(CliTelemetryInstallRequestSchema, body, "Install telemetry payload");
+    await ctx.runMutation(internal.telemetry.reportCliInstallInternal, {
       userId,
-      roots: args.roots.map((root) => ({
-        rootId: root.rootId,
-        label: root.label,
-        skills: root.skills.map((skill) => ({
-          slug: skill.slug,
-          version: skill.version ?? undefined,
-        })),
-      })),
+      slug: args.slug,
+      version: args.version,
+      rootId: args.rootId,
+      rootLabel: args.rootLabel,
     });
     const ok = parseArk(ApiCliTelemetrySyncResponseSchema, { ok: true }, "Telemetry response");
     return json(ok);
@@ -258,9 +255,29 @@ async function cliTelemetryInstallHandler(ctx: ActionCtx, request: Request) {
   }
 }
 
-const cliTelemetrySyncHandler = cliTelemetryInstallHandler;
 export const cliTelemetryInstallHttp = httpAction(cliTelemetryInstallHandler);
-export const cliTelemetrySyncHttp = httpAction(cliTelemetryInstallHandler);
+
+async function cliTelemetrySyncHandler(ctx: ActionCtx, request: Request) {
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return text("Invalid JSON", 400);
+  }
+
+  try {
+    await requireApiTokenUser(ctx, request);
+    parseArk(CliTelemetrySyncRequestSchema, body, "Sync telemetry payload");
+    const ok = parseArk(ApiCliTelemetrySyncResponseSchema, { ok: true }, "Telemetry response");
+    return json(ok);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Telemetry failed";
+    if (message.toLowerCase().includes("unauthorized")) return text(formatAuthFailure(error), 401);
+    return text(message, 400);
+  }
+}
+
+export const cliTelemetrySyncHttp = httpAction(cliTelemetrySyncHandler);
 
 async function cliDeviceCodeHandler(ctx: ActionCtx, request: Request) {
   if (request.method !== "POST") return text("Method not allowed", 405);
