@@ -1,6 +1,5 @@
 export const APPEALS_URL = "https://appeals.openclaw.ai/";
-export const CLI_SCAN_DOCS_URL = "https://docs.openclaw.ai/clawhub/cli#scan-path";
-export const DEFAULT_SCAN_REMEDIATION_COMMAND = "clawhub scan ./my-skill --output clawhub-scan.zip";
+export const MODERATION_GUIDELINES_URL = "https://docs.openclaw.ai/clawhub/moderation";
 export const MALICIOUS_REJECTION_ACCOUNT_WARNING =
   "Repeated malicious rejections may lead to account disablement.";
 
@@ -171,6 +170,12 @@ function commandBlock(command: string) {
   return `<pre style="margin:8px 0 14px;padding:10px 12px;background:#f6f8fa;border:1px solid #d8dee4;border-radius:6px;white-space:pre-wrap;color:#1f2328;font-family:ui-monospace,SFMono-Regular,Consolas,'Liberation Mono',monospace;font-size:13px;line-height:20px;"><code>${escapeHtml(command)}</code></pre>`;
 }
 
+function buildScanDownloadCommand(args: MaliciousArtifactEmailArgs) {
+  const version = args.version?.trim() || "<version>";
+  const kindFlag = args.artifact.kind === "plugin" ? " --kind plugin" : "";
+  return `clawhub scan download ${args.artifact.name} --version ${version}${kindFlag}`;
+}
+
 export function buildBanNotificationEmail(args: BanNotificationEmailArgs): TransactionalEmail {
   const summary = summarizeBanReason(args);
   const artifact = args.artifact ?? null;
@@ -277,6 +282,7 @@ export function buildRestoredAccountEmail(args: RestoredAccountEmailArgs) {
 export function buildMaliciousArtifactEmail(args: MaliciousArtifactEmailArgs) {
   const artifactKind = args.artifact.kind === "skill" ? "skill" : "plugin";
   const artifactLabelText = artifactLabel(args.artifact);
+  const scanDownloadCommand = buildScanDownloadCommand(args);
   const findingSummary =
     args.trigger?.includes("static") === true
       ? "Static analysis flagged malicious upload patterns."
@@ -301,9 +307,10 @@ export function buildMaliciousArtifactEmail(args: MaliciousArtifactEmailArgs) {
     `- You can upload a fixed version of this ${artifactKind}.`,
     `- ${MALICIOUS_REJECTION_ACCOUNT_WARNING}`,
     "",
-    "Before trying again, scan a fixed local copy and review the output:",
-    DEFAULT_SCAN_REMEDIATION_COMMAND,
-    `Docs: ${CLI_SCAN_DOCS_URL}`,
+    "Download the scan results for the blocked submitted version:",
+    scanDownloadCommand,
+    `Docs: ${MODERATION_GUIDELINES_URL}`,
+    `Increment the version number before uploading the fixed ${artifactKind}.`,
     "",
     "ClawHub Security",
   );
@@ -328,10 +335,11 @@ export function buildMaliciousArtifactEmail(args: MaliciousArtifactEmailArgs) {
         `You can upload a fixed version of this ${artifactKind}.`,
         MALICIOUS_REJECTION_ACCOUNT_WARNING,
       ]),
-      sectionHeading("Scan a fixed local copy"),
-      paragraph("Before trying again, scan a fixed local copy and review the output."),
-      commandBlock(DEFAULT_SCAN_REMEDIATION_COMMAND),
-      `<p style="margin:0 0 14px;font-size:15px;line-height:22px;color:#1f2328;">Docs: ${textLink(CLI_SCAN_DOCS_URL, "submit a scan of a local package")}</p>`,
+      sectionHeading("Review the blocked-version scan results"),
+      paragraph("Download the scan results for the blocked submitted version."),
+      commandBlock(scanDownloadCommand),
+      paragraph(`Increment the version number before uploading the fixed ${artifactKind}.`),
+      `<p style="margin:0 0 14px;font-size:15px;line-height:22px;color:#1f2328;">Docs: ${textLink(MODERATION_GUIDELINES_URL, "moderation and account safety")}</p>`,
       paragraph("ClawHub Security"),
     ].join(""),
   });

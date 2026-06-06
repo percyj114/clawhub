@@ -82,9 +82,11 @@ starts failing after account action, sign in to the web UI to review account
 state. If sign-in or normal CLI access is blocked by a ban or disabled account,
 use the [ClawHub appeal form](https://appeals.openclaw.ai/) for recovery review.
 
-If a scanner-triggered email names a skill or plugin version as malicious, run
-`clawhub scan ./my-skill --output report.zip` on a fixed local copy, review the
-scan output, and upload a fixed version when it passes locally.
+If a scanner-triggered email names a skill or plugin version as malicious,
+download the stored scan results for the blocked submitted version:
+`clawhub scan download <slug> --version <version>`. For plugins, add
+`--kind plugin`. Review the scan output, fix the listing, increment the version
+number, and upload the fixed version.
 
 ## Publisher guidance
 

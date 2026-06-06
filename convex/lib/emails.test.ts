@@ -95,12 +95,28 @@ describe("moderation notification email copy", () => {
     expect(email.subject).toBe("ClawHub blocked a skill version");
     expect(email.text).toContain("Skill: demo-skill");
     expect(email.text).toContain("Version: 1.2.3");
-    expect(email.text).toContain("clawhub scan ./my-skill --output clawhub-scan.zip");
-    expect(email.text).toContain("https://docs.openclaw.ai/clawhub/cli#scan-path");
+    expect(email.text).toContain("clawhub scan download demo-skill --version 1.2.3");
+    expect(email.text).toContain("Increment the version number before uploading the fixed skill.");
+    expect(email.text).toContain("https://docs.openclaw.ai/clawhub/moderation");
+    expect(email.text).not.toContain("clawhub scan ./my-skill --output clawhub-scan.zip");
+    expect(email.text).not.toContain("fixed local copy");
     expect(email.text).toContain("Repeated malicious rejections may lead to account disablement");
     expect(email.html).toContain("Repeated malicious rejections may lead to account disablement");
     expect(email.text).not.toContain(APPEALS_URL);
     expect(email.html).not.toContain(APPEALS_URL);
     expect(email.html).not.toContain("appeal this decision");
+  });
+
+  it("builds plugin scan download copy with an explicit artifact kind", () => {
+    const email = buildMaliciousArtifactEmail({
+      handle: "publisher",
+      artifact: { kind: "plugin", name: "@scope/demo" },
+      version: "2.0.0",
+      trigger: "malicious.static",
+    });
+
+    expect(email.text).toContain("Plugin: @scope/demo");
+    expect(email.text).toContain("clawhub scan download @scope/demo --version 2.0.0 --kind plugin");
+    expect(email.text).toContain("Increment the version number before uploading the fixed plugin.");
   });
 });

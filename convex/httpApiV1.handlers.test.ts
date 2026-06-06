@@ -257,6 +257,76 @@ beforeEach(() => {
 });
 
 describe("httpApiV1 handlers", () => {
+  it("rejects local scan upload submissions with scan-download guidance", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:owner",
+      user: { _id: "users:owner", role: "user" },
+    } as never);
+    const runMutation = vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {
+      if (isRateLimitArgs(args)) return okRate();
+      throw new Error(`unexpected mutation ${JSON.stringify(args)}`);
+    });
+    const response = await __handlers.skillScanSubmitV1Handler(
+      makeCtx({ runMutation }),
+      new Request("https://example.com/api/v1/skills/-/scan", {
+        method: "POST",
+        body: JSON.stringify({ source: { kind: "upload" } }),
+      }),
+    );
+
+    expect(response.status).toBe(410);
+    expect(await response.text()).toContain("clawhub scan download <slug> --version <version>");
+  });
+
+  it("downloads stored scan reports for submitted skill versions", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:owner",
+      user: { _id: "users:owner", role: "user" },
+    } as never);
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if (isRateLimitArgs(args)) return okRate();
+      expect(args).toMatchObject({
+        actorUserId: "users:owner",
+        kind: "skill",
+        name: "demo-skill",
+        version: "1.2.3",
+      });
+      return {
+        ok: true,
+        scanId: "skill:demo-skill:1.2.3",
+        status: "succeeded",
+        sourceKind: "published",
+        update: false,
+        writtenBack: true,
+        artifact: {
+          kind: "skill",
+          slug: "demo-skill",
+          version: "1.2.3",
+        },
+        report: {
+          clawscan: { status: "malicious", checkedAt: 1 },
+          skillspector: null,
+          staticAnalysis: null,
+          virustotal: null,
+        },
+        createdAt: 1,
+        updatedAt: 1,
+        completedAt: 1,
+      };
+    });
+    const response = await __handlers.skillScanGetRouterV1Handler(
+      makeCtx({ runQuery }),
+      new Request("https://example.com/api/v1/skills/-/scan/download/demo-skill?version=1.2.3"),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toBe("application/zip");
+    expect(response.headers.get("Content-Disposition")).toBe(
+      'attachment; filename="clawhub-scan-demo-skill-1.2.3.zip"',
+    );
+    expect((await response.arrayBuffer()).byteLength).toBeGreaterThan(0);
+  });
+
   it("search returns empty results for blank query", async () => {
     const runAction = vi.fn();
     const runMutation = vi.fn().mockResolvedValue(okRate());

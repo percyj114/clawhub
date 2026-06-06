@@ -10859,7 +10859,9 @@ export const insertVersion = internalMutation({
       .withIndex("by_skill_version", (q) => q.eq("skillId", skill._id).eq("version", args.version))
       .unique();
     if (existingVersion) {
-      throw new ConvexError("Version already exists");
+      throw new ConvexError(
+        `Version ${args.version} already exists. Increment the version number and try again.`,
+      );
     }
 
     const versionId = await ctx.db.insert("skillVersions", {

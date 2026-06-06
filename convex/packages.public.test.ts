@@ -4886,7 +4886,7 @@ describe("packages public queries", () => {
         files: [],
         integritySha256: "abc123",
       }),
-    ).rejects.toThrow("Version 1.0.0 already exists");
+    ).rejects.toThrow("Version 1.0.0 already exists. Increment the version number and try again.");
   });
 
   it("treats matching workflow duplicate package releases as idempotent", async () => {

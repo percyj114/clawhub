@@ -6246,7 +6246,9 @@ export const insertReleaseInternal = internalMutation({
             releaseId: releaseExists._id,
           };
         }
-        throw new ConvexError(`Version ${nextVersionLabel} already exists`);
+        throw new ConvexError(
+          `Version ${nextVersionLabel} already exists. Increment the version number and try again.`,
+        );
       }
     }
     const priorReleases = existing
