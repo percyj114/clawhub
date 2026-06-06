@@ -1607,6 +1607,13 @@ describe("users profile audit logs", () => {
           }),
         };
       }
+      if (table === "authAccounts" || table === "authSessions") {
+        return {
+          withIndex: () => ({
+            collect: vi.fn(async () => []),
+          }),
+        };
+      }
       throw new Error(`Unexpected table ${table}`);
     }) as never);
 
