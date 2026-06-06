@@ -5440,6 +5440,7 @@ type PublicSkillCatalogItem = {
   capabilityTags: string[];
   executesCode: false;
   verificationTier: null;
+  stats: { downloads: number; installs: number; stars: number; versions: number };
 };
 
 type SkillCatalogCursorState = {
@@ -5533,6 +5534,12 @@ async function toPublicSkillCatalogItem(
     capabilityTags: digest.capabilityTags ?? [],
     executesCode: false,
     verificationTier: null,
+    stats: {
+      downloads: readDigestRankStat(digest, "downloads"),
+      installs: readDigestRankStat(digest, "installsAllTime"),
+      stars: readDigestRankStat(digest, "stars"),
+      versions: digest.stats.versions,
+    },
   };
 }
 
@@ -5626,6 +5633,7 @@ export const listPackageCatalogPage = query({
     highlightedOnly: v.optional(v.boolean()),
     executesCode: v.optional(v.boolean()),
     capabilityTag: v.optional(v.string()),
+    sort: v.optional(v.union(v.literal("updated"), v.literal("downloads"))),
     paginationOpts: paginationOptsValidator,
   },
   handler: async (ctx, args) => {
@@ -5663,9 +5671,11 @@ export const listPackageCatalogPage = query({
       if (effectivePageSize <= 0) break;
       remainingScanBudget -= effectivePageSize;
       const pageCursor = cursor;
+      const indexName =
+        args.sort === "downloads" ? "by_active_stats_downloads" : "by_active_updated";
       const page = await paginator(ctx.db, schema)
         .query("skillSearchDigest")
-        .withIndex("by_active_updated", (q) => q.eq("softDeletedAt", undefined))
+        .withIndex(indexName, (q) => q.eq("softDeletedAt", undefined))
         .order("desc")
         .paginate({ cursor: pageCursor, numItems: effectivePageSize });
 
