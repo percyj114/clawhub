@@ -440,7 +440,7 @@ Notes:
 - `ok` is `true` only when the selected version has a generated Skill Card, is not malware-blocked by moderation, and ClawScan verification is clean.
 - Skill identity, publisher identity, and selected version metadata are top-level envelope fields (`slug`, `displayName`, `publisherHandle`, `version`, `resolvedFrom`, `tag`, `createdAt`) so shell automation can read them without unpacking nested wrappers.
 - `security` is the top-level ClawScan/security verdict. Automation should key off `ok`, `decision`, `reasons`, and `security.status`.
-- `security.signals` contains supporting scanner evidence such as `staticScan`, `virusTotal`, `skillSpector`, and `dependencyRegistry`.
+- `security.signals` contains supporting scanner evidence such as `staticScan`, `virusTotal`, and `skillSpector`.
 - `provenance` is `server-resolved-github-import` only when ClawHub resolved and stored a GitHub repo/ref/commit/path during publish or import; otherwise it is `unavailable`.
 
 ### `POST /api/v1/skills/-/security-verdicts`
@@ -493,8 +493,7 @@ Response:
         "signals": {
           "staticScan": { "status": "clean", "reasonCodes": [] },
           "virusTotal": null,
-          "skillSpector": null,
-          "dependencyRegistry": null
+          "skillSpector": null
         }
       }
     },

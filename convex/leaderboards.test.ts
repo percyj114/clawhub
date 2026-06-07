@@ -4,6 +4,7 @@ import {
   rebuildTrendingLeaderboardAction,
   rebuildTrendingLeaderboardInternal,
 } from "./leaderboards";
+import { takeTopNonSuspiciousTrendingEntries } from "./lib/leaderboards";
 
 const mutationHandler = (
   rebuildTrendingLeaderboardInternal as unknown as {
@@ -77,5 +78,61 @@ describe("leaderboards.rebuildTrendingLeaderboardInternal", () => {
       expect.objectContaining({ cursor: null, limit: 1000 }),
     );
     expect(runMutation).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("takeTopNonSuspiciousTrendingEntries", () => {
+  it("includes skills only flagged by retired dependency registry evidence", async () => {
+    const get = vi.fn(async (id: string) => {
+      if (id === "skills:retired-only") {
+        return {
+          _id: id,
+          softDeletedAt: undefined,
+          moderationStatus: "hidden",
+          moderationReason: "scanner.aggregate.suspicious",
+          moderationVerdict: "suspicious",
+          moderationFlags: ["flagged.suspicious"],
+          moderationReasonCodes: ["suspicious.dep_not_found_on_registry"],
+          moderationEvidence: [
+            {
+              code: "suspicious.dep_not_found_on_registry",
+              severity: "critical",
+              file: "Dependency manifests",
+              line: 1,
+              message: "missing dependency",
+              evidence: "legacy dependency registry evidence",
+            },
+          ],
+          moderationSummary: "Detected: suspicious.dep_not_found_on_registry",
+        };
+      }
+      if (id === "skills:active-suspicious") {
+        return {
+          _id: id,
+          softDeletedAt: undefined,
+          moderationStatus: "active",
+          moderationReason: "scanner.aggregate.suspicious",
+          moderationVerdict: "suspicious",
+          moderationFlags: ["flagged.suspicious"],
+          moderationReasonCodes: ["suspicious.dynamic_code_execution"],
+          moderationEvidence: [],
+          moderationSummary: "Detected: suspicious.dynamic_code_execution",
+        };
+      }
+      return null;
+    });
+
+    const result = await takeTopNonSuspiciousTrendingEntries(
+      { db: { get } } as never,
+      [
+        { skillId: "skills:active-suspicious" as never, score: 100, installs: 100, downloads: 0 },
+        { skillId: "skills:retired-only" as never, score: 90, installs: 90, downloads: 0 },
+      ],
+      1,
+    );
+
+    expect(result).toEqual([
+      { skillId: "skills:retired-only", score: 90, installs: 90, downloads: 0 },
+    ]);
   });
 });

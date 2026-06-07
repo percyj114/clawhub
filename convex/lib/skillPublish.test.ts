@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { internal } from "../_generated/api";
 import { publishVersionForUser, __test } from "./skillPublish";
 
 describe("skillPublish", () => {
@@ -197,5 +198,97 @@ description: Expert guidance for sushi-rolls.
 
     expect(signals.bodyWords).toBeGreaterThanOrEqual(45);
     expect(quality.decision).toBe("pass");
+  });
+
+  it("schedules only active scan jobs from the skill publish flow", async () => {
+    const previousOpenAiKey = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const skillMarkdown = `---
+description: Demo skill for scheduler tests.
+---
+# Demo Skill
+This skill documents a small workflow for testing publish scan scheduling.
+`;
+    const publishResult = {
+      skillId: "skills:1",
+      versionId: "skillVersions:1",
+      embeddingId: "skillEmbeddings:1",
+    };
+    const runQuery = vi.fn(async (_ref: unknown, args: Record<string, unknown>) => {
+      if ("slug" in args) return null;
+      if ("userId" in args) {
+        return {
+          _id: "users:1",
+          _creationTime: 1,
+          createdAt: 1,
+          handle: "alice",
+        };
+      }
+      return null;
+    });
+    const runMutation = vi.fn(async (_ref: unknown, args: Record<string, unknown>) => {
+      if ("slug" in args) return publishResult;
+      return { ok: true };
+    });
+    const runAfter = vi.fn(async () => {});
+
+    try {
+      await publishVersionForUser(
+        {
+          runQuery,
+          runMutation,
+          scheduler: { runAfter },
+          storage: {
+            get: vi.fn(async () => new Blob([skillMarkdown])),
+          },
+        } as never,
+        "users:1" as never,
+        {
+          slug: "demo",
+          displayName: "Demo",
+          version: "1.0.0",
+          changelog: "Initial release",
+          files: [
+            {
+              path: "SKILL.md",
+              size: skillMarkdown.length,
+              storageId: "_storage:skill" as never,
+              sha256: "a".repeat(64),
+              contentType: "text/markdown",
+            },
+          ],
+        },
+        {
+          bypassGitHubAccountAge: true,
+          bypassQualityGate: true,
+          skipBackup: true,
+          skipWebhook: true,
+        },
+      );
+    } finally {
+      warn.mockRestore();
+      if (previousOpenAiKey === undefined) {
+        delete process.env.OPENAI_API_KEY;
+      } else {
+        process.env.OPENAI_API_KEY = previousOpenAiKey;
+      }
+    }
+
+    expect(runMutation).toHaveBeenCalledWith(internal.skills.insertVersion, expect.any(Object));
+    expect(runMutation).toHaveBeenCalledWith(
+      internal.securityScan.enqueueSkillVersionScanInternal,
+      {
+        versionId: "skillVersions:1",
+        source: "publish",
+      },
+    );
+    expect(runAfter).toHaveBeenCalledTimes(2);
+    expect(runAfter).toHaveBeenCalledWith(0, internal.vt.scanWithVirusTotal, {
+      versionId: "skillVersions:1",
+    });
+    expect(runAfter).toHaveBeenCalledWith(0, internal.llmEval.evaluateApiKeyRequirement, {
+      versionId: "skillVersions:1",
+    });
   });
 });

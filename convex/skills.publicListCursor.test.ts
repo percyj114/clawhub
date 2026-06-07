@@ -20,7 +20,9 @@ vi.mock("convex-helpers/server/pagination", async () => {
 const pagination = await import("convex-helpers/server/pagination");
 const {
   listAuditPage,
+  listHighlightedPublic,
   listPublicApiPageV1,
+  listPublicPageV3,
   listPublicPageV4,
   listPublicTrendingPage,
   listRelatedByCategory,
@@ -69,6 +71,12 @@ const listPublicPageV4Handler = (
 const listPublicApiPageV1Handler = (
   listPublicApiPageV1 as unknown as WrappedHandler<PublicListArgs, PublicApiListResult>
 )._handler;
+const listPublicPageV3Handler = (
+  listPublicPageV3 as unknown as WrappedHandler<
+    { paginationOpts: { cursor: string | null; numItems: number } } & PublicListArgs,
+    { page: unknown[]; isDone: boolean; continueCursor: string }
+  >
+)._handler;
 const listRelatedByCategoryHandler = (
   listRelatedByCategory as unknown as WrappedHandler<
     { skillId: string; categorySlug?: string; keywords: string[]; limit?: number },
@@ -86,6 +94,9 @@ const listAuditPageHandler = (
     { paginationOpts: { cursor: string | null; numItems: number } },
     PublicListResult
   >
+)._handler;
+const listHighlightedPublicHandler = (
+  listHighlightedPublic as unknown as WrappedHandler<{ limit?: number }, PublicListResult["page"]>
 )._handler;
 
 function makeSearchDigest(overrides: Record<string, unknown> = {}) {
@@ -130,6 +141,48 @@ function makeSearchDigest(overrides: Record<string, unknown> = {}) {
     createdAt: 1,
     updatedAt: 2,
     ...overrides,
+  };
+}
+
+function makeRetiredScannerOnlyDigest() {
+  return makeSearchDigest({
+    moderationStatus: "hidden",
+    moderationReason: "scanner.aggregate.suspicious",
+    moderationFlags: ["flagged.suspicious"],
+    isSuspicious: true,
+  });
+}
+
+function makeRetiredScannerOnlySkill() {
+  const digest = makeRetiredScannerOnlyDigest();
+  return {
+    ...digest,
+    _id: digest.skillId,
+    _creationTime: digest.createdAt,
+    moderationVerdict: "suspicious",
+    moderationReasonCodes: ["suspicious.dep_not_found_on_registry"],
+    moderationSummary: "Detected: suspicious.dep_not_found_on_registry",
+  };
+}
+
+function makeActiveSuspiciousDigest() {
+  return makeSearchDigest({
+    moderationStatus: "active",
+    moderationReason: "scanner.aggregate.suspicious",
+    moderationFlags: ["flagged.suspicious"],
+    isSuspicious: true,
+  });
+}
+
+function makeActiveSuspiciousSkill() {
+  const digest = makeActiveSuspiciousDigest();
+  return {
+    ...digest,
+    _id: digest.skillId,
+    _creationTime: digest.createdAt,
+    moderationVerdict: "suspicious",
+    moderationReasonCodes: ["suspicious.dynamic_code_execution"],
+    moderationSummary: "Detected: suspicious.dynamic_code_execution",
   };
 }
 
@@ -193,7 +246,7 @@ describe("public skill list deterministic cursors", () => {
     });
   });
 
-  it("falls back to the non-suspicious updated index while default rank stats are missing", async () => {
+  it("uses the non-suspicious updated index for safe lists while default rank stats are missing", async () => {
     const { ctx, withIndex } = makeMissingRecommendedRankStatsCtx();
 
     await listPublicApiPageV1Handler(ctx, {
@@ -207,12 +260,519 @@ describe("public skill list deterministic cursors", () => {
       "by_nonsuspicious_installs",
       "by_nonsuspicious_downloads",
     ]);
-    expect(getPageMock).toHaveBeenCalledTimes(1);
+    expect(getPageMock).toHaveBeenCalledTimes(2);
     expect(getPageMock.mock.calls[0]?.[1]).toMatchObject({
+      index: "by_nonsuspicious_updated",
+      startIndexKey: [undefined, true],
+      endIndexKey: [undefined, true],
+      startInclusive: true,
+    });
+    expect(getPageMock.mock.calls[1]?.[1]).toMatchObject({
       index: "by_nonsuspicious_updated",
       startIndexKey: [undefined, false],
       endIndexKey: [undefined, false],
       startInclusive: true,
+    });
+  });
+
+  it("applies retired scanner scrub before returning V4 list digest entries", async () => {
+    const digest = makeRetiredScannerOnlyDigest();
+    const skill = makeRetiredScannerOnlySkill();
+    getPageMock.mockResolvedValue({ page: [digest], hasMore: false, indexKeys: [] });
+    const get = vi.fn(async (id: string) => (id === "skills:demo" ? skill : null));
+
+    const result = await listPublicPageV4Handler(
+      { db: { get } },
+      { numItems: 10, sort: "updated" },
+    );
+
+    expect(result.page).toHaveLength(1);
+    expect(result.page[0]).toMatchObject({
+      skill: {
+        slug: "demo",
+        isSuspicious: false,
+      },
+    });
+    expect(get).toHaveBeenCalledWith("skills:demo");
+  });
+
+  it("includes retired scanner-only rows in V4 safe lists after runtime scrub", async () => {
+    const digest = makeRetiredScannerOnlyDigest();
+    const skill = makeRetiredScannerOnlySkill();
+    getPageMock.mockResolvedValue({
+      page: [digest],
+      hasMore: false,
+      indexKeys: [[undefined, 2, "skillSearchDigest:demo"]],
+    });
+    const get = vi.fn(async (id: string) => (id === "skills:demo" ? skill : null));
+
+    const result = await listPublicPageV4Handler(
+      { db: { get } },
+      { numItems: 10, sort: "updated", nonSuspiciousOnly: true },
+    );
+
+    expect(getPageMock.mock.calls[0]?.[1]).toMatchObject({
+      index: "by_nonsuspicious_updated",
+      startIndexKey: [undefined, true],
+      endIndexKey: [undefined, true],
+    });
+    expect(getPageMock.mock.calls[1]?.[1]).toMatchObject({
+      index: "by_nonsuspicious_updated",
+      startIndexKey: [undefined, false],
+      endIndexKey: [undefined, false],
+    });
+    expect(result.page).toHaveLength(1);
+    expect(result.page[0]).toMatchObject({
+      skill: {
+        slug: "demo",
+        isSuspicious: false,
+      },
+    });
+  });
+
+  it("merges retired scanner-only rows into V4 safe lists by the requested sort", async () => {
+    const retiredDigest = makeRetiredScannerOnlyDigest();
+    const retiredSkill = makeRetiredScannerOnlySkill();
+    const cleanDigest = makeSearchDigest({
+      _id: "skillSearchDigest:clean",
+      skillId: "skills:clean",
+      slug: "clean",
+      displayName: "Clean",
+      latestVersionId: "skillVersions:clean",
+      latestVersionSkillId: "skills:clean",
+      updatedAt: 4,
+    });
+    const cleanSkill = {
+      ...cleanDigest,
+      _id: cleanDigest.skillId,
+      _creationTime: cleanDigest.createdAt,
+      moderationVerdict: "clean",
+      moderationReasonCodes: [],
+      moderationSummary: "No suspicious patterns detected.",
+    };
+    getPageMock.mockImplementation(async (_ctx: unknown, opts: { startIndexKey: unknown[] }) => {
+      if (opts.startIndexKey[1] === true) {
+        return {
+          page: [retiredDigest],
+          hasMore: false,
+          indexKeys: [[undefined, true, 2, "skillSearchDigest:demo"]],
+        };
+      }
+      return {
+        page: [cleanDigest],
+        hasMore: false,
+        indexKeys: [[undefined, false, 4, "skillSearchDigest:clean"]],
+      };
+    });
+    const get = vi.fn(async (id: string) => {
+      if (id === "skills:demo") return retiredSkill;
+      if (id === "skills:clean") return cleanSkill;
+      return null;
+    });
+
+    const result = await listPublicPageV4Handler(
+      { db: { get } },
+      { numItems: 10, sort: "updated", nonSuspiciousOnly: true },
+    );
+
+    expect(result.page.map((entry) => (entry as { skill: { slug: string } }).skill.slug)).toEqual([
+      "clean",
+      "demo",
+    ]);
+    expect(result.nextCursor).toBeNull();
+  });
+
+  it("keeps both V4 safe-list partitions in the next cursor", async () => {
+    const retiredDigest = makeRetiredScannerOnlyDigest();
+    const retiredSkill = makeRetiredScannerOnlySkill();
+    const cleanDigest = makeSearchDigest({
+      _id: "skillSearchDigest:clean",
+      skillId: "skills:clean",
+      slug: "clean",
+      displayName: "Clean",
+      latestVersionId: "skillVersions:clean",
+      latestVersionSkillId: "skills:clean",
+      updatedAt: 4,
+    });
+    const cleanSkill = {
+      ...cleanDigest,
+      _id: cleanDigest.skillId,
+      _creationTime: cleanDigest.createdAt,
+      moderationVerdict: "clean",
+      moderationReasonCodes: [],
+      moderationSummary: "No suspicious patterns detected.",
+    };
+    getPageMock.mockImplementation(async (_ctx: unknown, opts: { startIndexKey: unknown[] }) => {
+      const partition = opts.startIndexKey[1];
+      const isAfterCleanCursor = opts.startIndexKey.length > 2 && partition === false;
+      if (partition === true) {
+        return {
+          page: [retiredDigest],
+          hasMore: false,
+          indexKeys: [[undefined, true, 3, "skillSearchDigest:demo"]],
+        };
+      }
+      if (isAfterCleanCursor) {
+        return { page: [], hasMore: false, indexKeys: [] };
+      }
+      return {
+        page: [cleanDigest],
+        hasMore: false,
+        indexKeys: [[undefined, false, 4, "skillSearchDigest:clean"]],
+      };
+    });
+    const get = vi.fn(async (id: string) => {
+      if (id === "skills:demo") return retiredSkill;
+      if (id === "skills:clean") return cleanSkill;
+      return null;
+    });
+
+    const firstPage = await listPublicPageV4Handler(
+      { db: { get } },
+      { numItems: 1, sort: "updated", nonSuspiciousOnly: true },
+    );
+    const secondPage = await listPublicPageV4Handler(
+      { db: { get } },
+      {
+        cursor: firstPage.nextCursor ?? undefined,
+        numItems: 1,
+        sort: "updated",
+        nonSuspiciousOnly: true,
+      },
+    );
+
+    expect(
+      firstPage.page.map((entry) => (entry as { skill: { slug: string } }).skill.slug),
+    ).toEqual(["clean"]);
+    expect(firstPage.nextCursor).toEqual(expect.stringContaining('"v":2'));
+    expect(
+      secondPage.page.map((entry) => (entry as { skill: { slug: string } }).skill.slug),
+    ).toEqual(["demo"]);
+    expect(secondPage.nextCursor).toBeNull();
+  });
+
+  it("filters active suspicious rows from V4 safe lists after hydration", async () => {
+    const digest = makeActiveSuspiciousDigest();
+    const skill = makeActiveSuspiciousSkill();
+    getPageMock.mockResolvedValue({
+      page: [digest],
+      hasMore: false,
+      indexKeys: [[undefined, 2, "skillSearchDigest:demo"]],
+    });
+    const get = vi.fn(async (id: string) => (id === "skills:demo" ? skill : null));
+
+    const result = await listPublicPageV4Handler(
+      { db: { get } },
+      { numItems: 10, sort: "updated", nonSuspiciousOnly: true },
+    );
+
+    expect(result.page).toEqual([]);
+  });
+
+  it("uses the indexed non-suspicious partition for V4 safe lists", async () => {
+    const cleanDigest = makeSearchDigest({
+      _id: "skillSearchDigest:clean",
+      skillId: "skills:clean",
+      slug: "clean",
+      displayName: "Clean",
+      latestVersionId: "skillVersions:clean",
+      latestVersionSkillId: "skills:clean",
+    });
+    getPageMock.mockImplementation(
+      async (_ctx: unknown, opts: { index: string; startIndexKey: unknown[] }) => {
+        if (opts.startIndexKey[1] === true) {
+          return { page: [], hasMore: false, indexKeys: [] };
+        }
+        if (opts.index === "by_nonsuspicious_updated") {
+          return {
+            page: [cleanDigest],
+            hasMore: false,
+            indexKeys: [[undefined, false, 4, "skillSearchDigest:clean"]],
+          };
+        }
+        return {
+          page: [makeActiveSuspiciousDigest()],
+          hasMore: true,
+          indexKeys: [[undefined, 5, "skillSearchDigest:demo"]],
+        };
+      },
+    );
+
+    const result = await listPublicPageV4Handler(
+      { db: { get: vi.fn(async () => null) } },
+      { numItems: 1, sort: "updated", nonSuspiciousOnly: true },
+    );
+
+    expect(getPageMock.mock.calls[0]?.[1]).toMatchObject({
+      index: "by_nonsuspicious_updated",
+      startIndexKey: [undefined, true],
+      endIndexKey: [undefined, true],
+    });
+    expect(getPageMock.mock.calls[1]?.[1]).toMatchObject({
+      index: "by_nonsuspicious_updated",
+      startIndexKey: [undefined, false],
+      endIndexKey: [undefined, false],
+    });
+    expect(result.page).toHaveLength(1);
+    expect(result.page[0]).toMatchObject({
+      skill: {
+        slug: "clean",
+      },
+    });
+  });
+
+  it("applies retired scanner scrub before returning V3 list digest entries", async () => {
+    const digest = makeRetiredScannerOnlyDigest();
+    const skill = makeRetiredScannerOnlySkill();
+    const get = vi.fn(async (id: string) => (id === "skills:demo" ? skill : null));
+    const paginate = vi.fn().mockResolvedValue({
+      page: [digest],
+      isDone: true,
+      continueCursor: "",
+    });
+    const order = vi.fn(() => ({ paginate }));
+    const withIndex = vi.fn((_index: string, builder: (q: TestEqBuilder) => unknown) => {
+      builder(new TestEqBuilder());
+      return { order };
+    });
+    const query = vi.fn((table: string) => {
+      if (table !== "skillSearchDigest") throw new Error(`unexpected table ${table}`);
+      return { withIndex };
+    });
+
+    const result = await listPublicPageV3Handler(
+      { db: { get, query } },
+      {
+        paginationOpts: { cursor: null, numItems: 10 },
+        sort: "updated",
+      },
+    );
+
+    expect(result.page).toHaveLength(1);
+    expect(result.page[0]).toMatchObject({
+      skill: {
+        slug: "demo",
+        isSuspicious: false,
+      },
+    });
+    expect(get).toHaveBeenCalledWith("skills:demo");
+  });
+
+  it("uses the indexed non-suspicious partition for V3 safe lists", async () => {
+    const cleanDigest = makeSearchDigest({
+      _id: "skillSearchDigest:clean",
+      skillId: "skills:clean",
+      slug: "clean",
+      displayName: "Clean",
+      latestVersionId: "skillVersions:clean",
+      latestVersionSkillId: "skills:clean",
+    });
+    getPageMock.mockImplementation(
+      async (_ctx: unknown, opts: { index: string; startIndexKey: unknown[] }) => {
+        if (opts.startIndexKey[1] === true) {
+          return { page: [], hasMore: false, indexKeys: [] };
+        }
+        if (opts.index === "by_nonsuspicious_updated") {
+          return {
+            page: [cleanDigest],
+            hasMore: false,
+            indexKeys: [[undefined, false, 4, "skillSearchDigest:clean"]],
+          };
+        }
+        return {
+          page: [makeActiveSuspiciousDigest()],
+          hasMore: true,
+          indexKeys: [[undefined, 5, "skillSearchDigest:demo"]],
+        };
+      },
+    );
+
+    const result = await listPublicPageV3Handler(
+      { db: { get: vi.fn(async () => null) } },
+      {
+        paginationOpts: { cursor: null, numItems: 1 },
+        sort: "updated",
+        nonSuspiciousOnly: true,
+      },
+    );
+
+    expect(result).toMatchObject({
+      isDone: true,
+      continueCursor: "",
+    });
+    expect(getPageMock).toHaveBeenCalledTimes(2);
+    expect(getPageMock.mock.calls[0]?.[1]).toMatchObject({
+      index: "by_nonsuspicious_updated",
+      startIndexKey: [undefined, true],
+      endIndexKey: [undefined, true],
+    });
+    expect(getPageMock.mock.calls[1]?.[1]).toMatchObject({
+      index: "by_nonsuspicious_updated",
+      startIndexKey: [undefined, false],
+      endIndexKey: [undefined, false],
+    });
+    expect(result.page).toHaveLength(1);
+    expect(result.page[0]).toMatchObject({
+      skill: {
+        slug: "clean",
+      },
+    });
+  });
+
+  it("applies retired scanner scrub before returning API list digest entries", async () => {
+    const digest = makeRetiredScannerOnlyDigest();
+    const skill = makeRetiredScannerOnlySkill();
+    getPageMock.mockResolvedValue({
+      page: [digest],
+      hasMore: false,
+      indexKeys: [[undefined, 2, "skillSearchDigest:demo"]],
+    });
+    const get = vi.fn(async (id: string) => (id === "skills:demo" ? skill : null));
+
+    const result = await listPublicApiPageV1Handler(
+      { db: { get } },
+      { numItems: 10, sort: "updated" },
+    );
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]).toMatchObject({
+      skill: {
+        slug: "demo",
+      },
+    });
+    expect(get).toHaveBeenCalledWith("skills:demo");
+  });
+
+  it("includes retired scanner-only rows in API safe lists after runtime scrub", async () => {
+    const digest = makeRetiredScannerOnlyDigest();
+    const skill = makeRetiredScannerOnlySkill();
+    getPageMock.mockResolvedValue({
+      page: [digest],
+      hasMore: false,
+      indexKeys: [[undefined, 2, "skillSearchDigest:demo"]],
+    });
+    const get = vi.fn(async (id: string) => (id === "skills:demo" ? skill : null));
+
+    const result = await listPublicApiPageV1Handler(
+      { db: { get } },
+      { numItems: 10, sort: "updated", nonSuspiciousOnly: true },
+    );
+
+    expect(getPageMock.mock.calls[0]?.[1]).toMatchObject({
+      index: "by_nonsuspicious_updated",
+      startIndexKey: [undefined, true],
+      endIndexKey: [undefined, true],
+    });
+    expect(getPageMock.mock.calls[1]?.[1]).toMatchObject({
+      index: "by_nonsuspicious_updated",
+      startIndexKey: [undefined, false],
+      endIndexKey: [undefined, false],
+    });
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]).toMatchObject({
+      skill: {
+        slug: "demo",
+      },
+    });
+  });
+
+  it("uses the indexed non-suspicious partition for API safe lists", async () => {
+    const cleanDigest = makeSearchDigest({
+      _id: "skillSearchDigest:clean",
+      skillId: "skills:clean",
+      slug: "clean",
+      displayName: "Clean",
+      latestVersionId: "skillVersions:clean",
+      latestVersionSkillId: "skills:clean",
+    });
+    getPageMock.mockImplementation(
+      async (_ctx: unknown, opts: { index: string; startIndexKey: unknown[] }) => {
+        if (opts.startIndexKey[1] === true) {
+          return { page: [], hasMore: false, indexKeys: [] };
+        }
+        if (opts.index === "by_nonsuspicious_updated") {
+          return {
+            page: [cleanDigest],
+            hasMore: false,
+            indexKeys: [[undefined, false, 4, "skillSearchDigest:clean"]],
+          };
+        }
+        return {
+          page: [makeActiveSuspiciousDigest()],
+          hasMore: true,
+          indexKeys: [[undefined, 5, "skillSearchDigest:demo"]],
+        };
+      },
+    );
+
+    const result = await listPublicApiPageV1Handler(
+      { db: { get: vi.fn(async () => null) } },
+      { numItems: 1, sort: "updated", nonSuspiciousOnly: true },
+    );
+
+    expect(getPageMock.mock.calls[0]?.[1]).toMatchObject({
+      index: "by_nonsuspicious_updated",
+      startIndexKey: [undefined, true],
+      endIndexKey: [undefined, true],
+    });
+    expect(getPageMock.mock.calls[1]?.[1]).toMatchObject({
+      index: "by_nonsuspicious_updated",
+      startIndexKey: [undefined, false],
+      endIndexKey: [undefined, false],
+    });
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]).toMatchObject({
+      skill: {
+        slug: "clean",
+      },
+    });
+  });
+
+  it("keeps retired scanner-only highlighted skills visible on the public home list", async () => {
+    const skill = {
+      ...makeRetiredScannerOnlySkill(),
+      ownerPublisherId: "publishers:owner",
+    };
+    const publisher = {
+      _id: "publishers:owner",
+      _creationTime: 1,
+      kind: "user",
+      handle: "owner",
+      displayName: "Owner",
+      image: undefined,
+      bio: undefined,
+      linkedUserId: "users:owner",
+      deletedAt: undefined,
+      deactivatedAt: undefined,
+    };
+    const get = vi.fn(async (id: string) => {
+      if (id === "skills:demo") return skill;
+      if (id === "publishers:owner") return publisher;
+      if (id === "skillVersions:1") return null;
+      return null;
+    });
+    const take = vi.fn(async () => [
+      { _id: "skillBadges:demo", skillId: "skills:demo", kind: "highlighted", awardedAt: 2 },
+    ]);
+    const order = vi.fn(() => ({ take }));
+    const withIndex = vi.fn((_index: string, builder: (q: TestEqBuilder) => unknown) => {
+      builder(new TestEqBuilder());
+      return { order };
+    });
+    const query = vi.fn((table: string) => {
+      if (table !== "skillBadges") throw new Error(`unexpected table ${table}`);
+      return { withIndex };
+    });
+
+    const result = await listHighlightedPublicHandler({ db: { get, query } }, { limit: 10 });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      skill: {
+        slug: "demo",
+        isSuspicious: false,
+      },
+      ownerHandle: "owner",
     });
   });
 
@@ -581,6 +1141,119 @@ describe("public skill list deterministic cursors", () => {
     });
   });
 
+  it("includes retired scanner-only rows in safe trending lists after runtime scrub", async () => {
+    const digest = makeRetiredScannerOnlyDigest();
+    const skill = makeRetiredScannerOnlySkill();
+    const get = vi.fn(async (id: string) => (id === "skills:demo" ? skill : null));
+    const first = vi.fn(async () => ({ items: [{ skillId: "skills:demo" }] }));
+    const order = vi.fn(() => ({ first }));
+    const eq = vi.fn((field: string, value: unknown) => {
+      if (field === "kind" && value !== "trending") {
+        return {
+          order: () => ({
+            first: async () => ({ items: [] }),
+          }),
+        };
+      }
+      return { order };
+    });
+    const withIndex = vi.fn((_index: string, builder: (q: { eq: typeof eq }) => unknown) =>
+      builder({ eq }),
+    );
+    const query = vi.fn((table: string) => {
+      if (table === "skillLeaderboards") return { withIndex };
+      if (table === "skillSearchDigest") {
+        return {
+          withIndex: () => ({
+            unique: async () => digest,
+          }),
+        };
+      }
+      throw new Error(`unexpected table ${table}`);
+    });
+
+    const result = await listPublicTrendingPageHandler(
+      { db: { get, query } },
+      { limit: 10, nonSuspiciousOnly: true },
+    );
+
+    expect(eq).toHaveBeenCalledWith("kind", "trending_non_suspicious");
+    expect(eq).toHaveBeenCalledWith("kind", "trending");
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]).toMatchObject({
+      skill: {
+        slug: "demo",
+        isSuspicious: false,
+      },
+    });
+  });
+
+  it("uses the safe trending leaderboard before full leaderboard filtering", async () => {
+    const safeDigest = makeSearchDigest({
+      _id: "skillSearchDigest:safe",
+      skillId: "skills:safe",
+      slug: "safe",
+      displayName: "Safe",
+      latestVersionId: "skillVersions:safe",
+      latestVersionSkillId: "skills:safe",
+    });
+    const suspiciousDigest = makeActiveSuspiciousDigest();
+    const digests = new Map([
+      ["skills:safe", safeDigest],
+      ["skills:demo", suspiciousDigest],
+    ]);
+    const leaderboards = new Map([
+      [
+        "trending_non_suspicious",
+        { items: [{ skillId: "skills:safe", score: 90, installs: 90, downloads: 0 }] },
+      ],
+      [
+        "trending",
+        { items: [{ skillId: "skills:demo", score: 100, installs: 100, downloads: 0 }] },
+      ],
+    ]);
+    const eq = vi.fn((field: string, value: unknown) => {
+      if (field === "kind") {
+        return {
+          order: () => ({
+            first: async () => leaderboards.get(String(value)) ?? null,
+          }),
+        };
+      }
+      if (field === "skillId") {
+        return {
+          unique: async () => digests.get(String(value)) ?? null,
+        };
+      }
+      throw new Error(`unexpected eq ${field}`);
+    });
+    const withIndex = vi.fn((_index: string, builder: (q: { eq: typeof eq }) => unknown) =>
+      builder({ eq }),
+    );
+    const query = vi.fn((table: string) => {
+      if (table === "skillLeaderboards" || table === "skillSearchDigest") {
+        return { withIndex };
+      }
+      throw new Error(`unexpected table ${table}`);
+    });
+    const get = vi.fn(async () => null);
+
+    const result = await listPublicTrendingPageHandler(
+      { db: { get, query } },
+      { limit: 10, nonSuspiciousOnly: true },
+    );
+
+    expect(eq).toHaveBeenCalledWith("kind", "trending_non_suspicious");
+    expect(eq).toHaveBeenCalledWith("kind", "trending");
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]).toMatchObject({
+      skill: {
+        slug: "safe",
+        isSuspicious: false,
+      },
+    });
+  });
+
   it("drops audit latest versions that resolve to another skill", async () => {
     const digest = makeSearchDigest({
       latestVersionId: "skillVersions:other",
@@ -723,11 +1396,14 @@ describe("skills.listRelatedByCategory", () => {
       return { withIndex };
     });
 
-    const result = await listRelatedByCategoryHandler({ db: { query } } as never, {
-      skillId: "skills:current",
-      keywords: ["workflow"],
-      limit: 2,
-    });
+    const result = await listRelatedByCategoryHandler(
+      { db: { get: vi.fn(async () => null), query } } as never,
+      {
+        skillId: "skills:current",
+        keywords: ["workflow"],
+        limit: 2,
+      },
+    );
 
     expect(withIndex).toHaveBeenCalledWith("by_active_stats_downloads", expect.any(Function));
     expect(eq).toHaveBeenCalledWith("softDeletedAt", undefined);
@@ -792,12 +1468,15 @@ describe("skills.listRelatedByCategory", () => {
       return { withIndex };
     });
 
-    const result = await listRelatedByCategoryHandler({ db: { query } } as never, {
-      skillId: "skills:current",
-      categorySlug: "dev-tools",
-      keywords: ["dev", "debug", "lint", "test", "build"],
-      limit: 3,
-    });
+    const result = await listRelatedByCategoryHandler(
+      { db: { get: vi.fn(async () => null), query } } as never,
+      {
+        skillId: "skills:current",
+        categorySlug: "dev-tools",
+        keywords: ["dev", "debug", "lint", "test", "build"],
+        limit: 3,
+      },
+    );
 
     expect(result.items.map((entry) => entry.skill.slug)).toEqual([
       "developer-utils",

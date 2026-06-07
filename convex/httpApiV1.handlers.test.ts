@@ -2417,6 +2417,360 @@ describe("httpApiV1 handlers", () => {
     expect(json.moderation.evidence[0].evidence).toBe("eval(payload)");
   });
 
+  it("get moderation keeps quality hold when scrubbing retired dependency registry codes", async () => {
+    vi.mocked(getOptionalApiTokenUserId).mockResolvedValue("users:owner" as never);
+    let slugCalls = 0;
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("userId" in args) {
+        return { _id: "users:owner", role: "user" };
+      }
+      if ("slug" in args) {
+        slugCalls += 1;
+        if (slugCalls === 1) {
+          return {
+            _id: "skills:1",
+            slug: "demo",
+            ownerUserId: "users:owner",
+            moderationStatus: "hidden",
+            moderationReason: "quality.low",
+            moderationFlags: ["flagged.suspicious"],
+            moderationVerdict: "suspicious",
+            moderationReasonCodes: ["suspicious.dep_not_found_on_registry"],
+            moderationSummary: "Quality hold",
+            moderationEngineVersion: "v2.0.0",
+            moderationEvaluatedAt: 5,
+            moderationEvidence: [
+              {
+                code: "suspicious.dep_not_found_on_registry",
+                severity: "warn",
+                file: "package.json",
+                line: 3,
+                message: "Dependency was not found on the registry.",
+                evidence: "left-padx",
+              },
+            ],
+          };
+        }
+
+        return null;
+      }
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/skills/demo/moderation"),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.moderation).toMatchObject({
+      isSuspicious: true,
+      isMalwareBlocked: false,
+      verdict: "suspicious",
+      reasonCodes: [],
+      summary: "Quality hold",
+      evidence: [],
+      legacyReason: "quality.low",
+    });
+  });
+
+  it("get moderation scrubs retired dependency registry evidence for owner hidden skill", async () => {
+    vi.mocked(getOptionalApiTokenUserId).mockResolvedValue("users:owner" as never);
+    let slugCalls = 0;
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("userId" in args) {
+        return { _id: "users:owner", role: "user" };
+      }
+      if ("slug" in args) {
+        slugCalls += 1;
+        if (slugCalls === 1) {
+          return {
+            _id: "skills:1",
+            slug: "demo",
+            ownerUserId: "users:owner",
+            moderationStatus: "hidden",
+            moderationReason: "scanner.aggregate.suspicious",
+            moderationFlags: ["flagged.suspicious"],
+            moderationVerdict: "suspicious",
+            moderationReasonCodes: ["suspicious.dep_not_found_on_registry"],
+            moderationSummary: "Detected: suspicious.dep_not_found_on_registry",
+            moderationEngineVersion: "v2.0.0",
+            moderationEvaluatedAt: 5,
+            moderationEvidence: [
+              {
+                code: "suspicious.dep_not_found_on_registry",
+                severity: "warn",
+                file: "package.json",
+                line: 3,
+                message: "Dependency was not found on the registry.",
+                evidence: "left-padx",
+              },
+            ],
+          };
+        }
+
+        return null;
+      }
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/skills/demo/moderation"),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.moderation).toMatchObject({
+      isSuspicious: false,
+      isMalwareBlocked: false,
+      verdict: "clean",
+      reasonCodes: [],
+      summary: "No suspicious patterns detected.",
+      evidence: [],
+      legacyReason: null,
+    });
+  });
+
+  it("get moderation scrubs retired dependency registry evidence-only hidden skill", async () => {
+    vi.mocked(getOptionalApiTokenUserId).mockResolvedValue("users:owner" as never);
+    let slugCalls = 0;
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("userId" in args) {
+        return { _id: "users:owner", role: "user" };
+      }
+      if ("slug" in args) {
+        slugCalls += 1;
+        if (slugCalls === 1) {
+          return {
+            _id: "skills:1",
+            slug: "demo",
+            ownerUserId: "users:owner",
+            moderationStatus: "hidden",
+            moderationReason: "scanner.aggregate.suspicious",
+            moderationFlags: ["flagged.suspicious"],
+            moderationVerdict: "suspicious",
+            moderationReasonCodes: [],
+            moderationSummary: "Detected: suspicious.dep_not_found_on_registry",
+            moderationEngineVersion: "v2.0.0",
+            moderationEvaluatedAt: 5,
+            moderationEvidence: [
+              {
+                code: "suspicious.dep_not_found_on_registry",
+                severity: "warn",
+                file: "package.json",
+                line: 3,
+                message: "Dependency was not found on the registry.",
+                evidence: "left-padx",
+              },
+            ],
+          };
+        }
+
+        return null;
+      }
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/skills/demo/moderation"),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.moderation).toMatchObject({
+      isSuspicious: false,
+      isMalwareBlocked: false,
+      verdict: "clean",
+      reasonCodes: [],
+      summary: "No suspicious patterns detected.",
+      evidence: [],
+      legacyReason: null,
+    });
+  });
+
+  it("get moderation preserves hidden rows when retired dependency registry rows have no moderation reason", async () => {
+    vi.mocked(getOptionalApiTokenUserId).mockResolvedValue("users:owner" as never);
+    let slugCalls = 0;
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("userId" in args) {
+        return { _id: "users:owner", role: "user" };
+      }
+      if ("slug" in args) {
+        slugCalls += 1;
+        if (slugCalls === 1) {
+          return {
+            _id: "skills:1",
+            slug: "demo",
+            ownerUserId: "users:owner",
+            moderationStatus: "hidden",
+            moderationReason: undefined,
+            moderationFlags: ["flagged.suspicious"],
+            moderationVerdict: "suspicious",
+            moderationReasonCodes: ["suspicious.dep_not_found_on_registry"],
+            moderationSummary: "Legacy hidden lock",
+            moderationEngineVersion: "v2.0.0",
+            moderationEvaluatedAt: 5,
+            moderationEvidence: [
+              {
+                code: "suspicious.dep_not_found_on_registry",
+                severity: "warn",
+                file: "package.json",
+                line: 3,
+                message: "Dependency was not found on the registry.",
+                evidence: "left-padx",
+              },
+            ],
+          };
+        }
+
+        return null;
+      }
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/skills/demo/moderation"),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.moderation).toMatchObject({
+      isSuspicious: true,
+      isMalwareBlocked: false,
+      verdict: "suspicious",
+      reasonCodes: [],
+      summary: "Legacy hidden lock",
+      evidence: [],
+      legacyReason: null,
+    });
+  });
+
+  it("get moderation preserves scanner-specific suspicious reasons after scrubbing retired evidence", async () => {
+    vi.mocked(getOptionalApiTokenUserId).mockResolvedValue("users:owner" as never);
+    let slugCalls = 0;
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("userId" in args) {
+        return { _id: "users:owner", role: "user" };
+      }
+      if ("slug" in args) {
+        slugCalls += 1;
+        if (slugCalls === 1) {
+          return {
+            _id: "skills:1",
+            slug: "demo",
+            ownerUserId: "users:owner",
+            moderationStatus: "hidden",
+            moderationReason: "scanner.vt.suspicious",
+            moderationFlags: ["flagged.suspicious"],
+            moderationVerdict: "suspicious",
+            moderationReasonCodes: ["suspicious.dep_not_found_on_registry"],
+            moderationSummary: "Detected: suspicious.dep_not_found_on_registry",
+            moderationEngineVersion: "v2.0.0",
+            moderationEvaluatedAt: 5,
+            moderationEvidence: [
+              {
+                code: "suspicious.dep_not_found_on_registry",
+                severity: "warn",
+                file: "package.json",
+                line: 3,
+                message: "Dependency was not found on the registry.",
+                evidence: "left-padx",
+              },
+            ],
+          };
+        }
+
+        return null;
+      }
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/skills/demo/moderation"),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.moderation).toMatchObject({
+      isSuspicious: true,
+      isMalwareBlocked: false,
+      verdict: "suspicious",
+      reasonCodes: [],
+      summary: "Detected: scanner.vt.suspicious",
+      evidence: [],
+      legacyReason: "scanner.vt.suspicious",
+    });
+  });
+
+  it("get moderation preserves malware block when scrubbing retired dependency registry codes", async () => {
+    vi.mocked(getOptionalApiTokenUserId).mockResolvedValue("users:owner" as never);
+    let slugCalls = 0;
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("userId" in args) {
+        return { _id: "users:owner", role: "user" };
+      }
+      if ("slug" in args) {
+        slugCalls += 1;
+        if (slugCalls === 1) {
+          return {
+            _id: "skills:1",
+            slug: "demo",
+            ownerUserId: "users:owner",
+            moderationStatus: "hidden",
+            moderationReason: "scanner.vt.malicious",
+            moderationFlags: undefined,
+            moderationVerdict: undefined,
+            moderationReasonCodes: ["suspicious.dep_not_found_on_registry"],
+            moderationSummary: "Detected: suspicious.dep_not_found_on_registry",
+            moderationEngineVersion: "v2.0.0",
+            moderationEvaluatedAt: 5,
+            moderationEvidence: [
+              {
+                code: "suspicious.dep_not_found_on_registry",
+                severity: "warn",
+                file: "package.json",
+                line: 3,
+                message: "Dependency was not found on the registry.",
+                evidence: "left-padx",
+              },
+            ],
+          };
+        }
+
+        return null;
+      }
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/skills/demo/moderation"),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.moderation).toMatchObject({
+      isSuspicious: false,
+      isMalwareBlocked: true,
+      verdict: "malicious",
+      reasonCodes: [],
+      summary: "Detected: malicious scanner verdict",
+      evidence: [],
+      legacyReason: "scanner.vt.malicious",
+    });
+  });
+
   it("get moderation returns 404 for clean public skill", async () => {
     let slugCalls = 0;
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
@@ -3920,10 +4274,19 @@ describe("httpApiV1 handlers", () => {
       changelog: "c",
       files: [{ path: "SKILL.md", size: 5, storageId: "storage:1", sha256: "source-sha" }],
       staticScan: {
-        status: "clean",
+        status: "suspicious",
         reasonCodes: [],
-        findings: [],
-        summary: "Static scan clean.",
+        findings: [
+          {
+            code: "suspicious.dep_not_found_on_registry",
+            severity: "critical",
+            file: "Dependency manifests",
+            line: 1,
+            message: "missing dependency",
+            evidence: "legacy dependency registry evidence",
+          },
+        ],
+        summary: "Detected: suspicious.dep_not_found_on_registry",
         engineVersion: "static-v1",
         checkedAt: 2,
       },
@@ -3995,7 +4358,7 @@ describe("httpApiV1 handlers", () => {
           requestedVersion: "1.0.0",
           version: "1.0.0",
           createdAt: 1,
-          checkedAt: 4,
+          checkedAt: 3,
           skillUrl: "https://example.com/acme/demo",
           securityAuditUrl: "https://example.com/acme/demo/security-audit?version=1.0.0",
           security: {
@@ -4004,8 +4367,12 @@ describe("httpApiV1 handlers", () => {
             rawStatus: "clean",
             verdict: "clean",
             signals: {
-              staticScan: { status: "clean", rawStatus: "clean" },
-              dependencyRegistry: { status: "clean", rawStatus: "clean" },
+              staticScan: {
+                status: "clean",
+                rawStatus: "clean",
+                reasonCodes: [],
+                summary: "No suspicious patterns detected.",
+              },
             },
           },
         },
@@ -4014,7 +4381,7 @@ describe("httpApiV1 handlers", () => {
     expect(json.items[0].card).toBeUndefined();
     expect(json.items[0].artifact).toBeUndefined();
     expect(json.items[0].security.signals.staticScan.findings).toBeUndefined();
-    expect(json.items[0].security.signals.dependencyRegistry.notFoundPackages).toBeUndefined();
+    expect(json.items[0].security.signals.dependencyRegistry).toBeUndefined();
     expect(runQuery.mock.calls.map(([, args]) => args)).toContainEqual({
       slug: "demo",
       version: "1.0.0",
@@ -4371,10 +4738,19 @@ describe("httpApiV1 handlers", () => {
         importedAt: 10,
       },
       staticScan: {
-        status: "clean",
+        status: "suspicious",
         reasonCodes: [],
-        findings: [],
-        summary: "Static scan clean.",
+        findings: [
+          {
+            code: "suspicious.dep_not_found_on_registry",
+            severity: "critical",
+            file: "Dependency manifests",
+            line: 1,
+            message: "missing dependency",
+            evidence: "legacy dependency registry evidence",
+          },
+        ],
+        summary: "Detected: suspicious.dep_not_found_on_registry",
         engineVersion: "static-v1",
         checkedAt: 2,
       },
@@ -4508,10 +4884,15 @@ describe("httpApiV1 handlers", () => {
             recommendation: "INSTALL",
             issueCount: 0,
           },
-          dependencyRegistry: { status: "clean" },
         },
       },
       signature: { status: "unsigned" },
+    });
+    expect(json.security.signals.staticScan).toMatchObject({
+      status: "clean",
+      rawStatus: "clean",
+      reasonCodes: [],
+      summary: "No suspicious patterns detected.",
     });
     expect(json.skill).toBeUndefined();
     expect(json.publisher).toBeUndefined();
@@ -4667,7 +5048,7 @@ describe("httpApiV1 handlers", () => {
     expect(json.security).toMatchObject({ status: "clean", passed: true });
   });
 
-  it("passes verification when static and dependency findings are advisory but ClawScan is clean", async () => {
+  it("scrubs retired dependency registry findings from verification signals", async () => {
     const internalVersion = {
       _id: "skillVersions:1",
       skillId: "skills:1",
@@ -4682,9 +5063,9 @@ describe("httpApiV1 handlers", () => {
       parsed: {},
       staticScan: {
         status: "malicious",
-        reasonCodes: ["suspicious.external_api"],
+        reasonCodes: ["suspicious.dep_not_found_on_registry"],
         findings: [],
-        summary: "Static advisory warning.",
+        summary: "Detected: suspicious.dep_not_found_on_registry",
         engineVersion: "static-v1",
         checkedAt: 2,
       },
@@ -4695,7 +5076,7 @@ describe("httpApiV1 handlers", () => {
         checkedAt: 3,
       },
       depRegistryAnalysis: {
-        status: "malicious",
+        status: "suspicious",
         results: [],
         notFoundPackages: ["left-pad"],
         unresolvedPackages: [],
@@ -4749,10 +5130,109 @@ describe("httpApiV1 handlers", () => {
       rawStatus: "clean",
       verdict: "benign",
       signals: {
-        staticScan: { status: "malicious", rawStatus: "malicious" },
-        dependencyRegistry: { status: "malicious", rawStatus: "malicious" },
+        staticScan: {
+          status: "clean",
+          rawStatus: "clean",
+          reasonCodes: [],
+          summary: "No suspicious patterns detected.",
+        },
       },
     });
+    expect(json.security.signals.dependencyRegistry).toBeUndefined();
+  });
+
+  it("passes verification when active static findings are advisory but ClawScan is clean", async () => {
+    const internalVersion = {
+      _id: "skillVersions:1",
+      skillId: "skills:1",
+      version: "1.0.0",
+      createdAt: 1,
+      changelog: "c",
+      fingerprint: "source-fingerprint",
+      files: [
+        { path: "SKILL.md", size: 5, storageId: "storage:1", sha256: "source-sha" },
+        { path: "skill-card.md", size: 12, storageId: "storage:card", sha256: "card-sha" },
+      ],
+      parsed: {},
+      staticScan: {
+        status: "suspicious",
+        reasonCodes: ["suspicious.dynamic_code_execution"],
+        findings: [
+          {
+            code: "suspicious.dynamic_code_execution",
+            severity: "critical",
+            file: "SKILL.md",
+            line: 1,
+            message: "Dynamic code execution",
+            evidence: "eval(...)",
+          },
+        ],
+        summary: "Detected: suspicious.dynamic_code_execution",
+        engineVersion: "static-v1",
+        checkedAt: 2,
+      },
+      llmAnalysis: {
+        status: "clean",
+        verdict: "benign",
+        summary: "ClawScan clean.",
+        checkedAt: 3,
+      },
+      softDeletedAt: undefined,
+    };
+    const generatedBundleFingerprint = await buildBundleFingerprint(internalVersion.files);
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("slug" in args) {
+        return {
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+            displayName: "Demo",
+            summary: "s",
+            tags: {},
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+            latestVersionId: "skillVersions:1",
+          },
+          latestVersion: { _id: "skillVersions:1", version: "1.0.0" },
+          owner: null,
+        };
+      }
+      if ("skillVersionId" in args) {
+        return [
+          { fingerprint: generatedBundleFingerprint, kind: "generated-bundle", createdAt: 4 },
+        ];
+      }
+      if ("versionId" in args) return internalVersion;
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation, storage: { get: vi.fn() } }),
+      new Request("https://example.com/api/v1/skills/demo/verify"),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.ok).toBe(true);
+    expect(json.decision).toBe("pass");
+    expect(json.reasons).toEqual([]);
+    expect(json.security).toMatchObject({
+      status: "clean",
+      passed: true,
+      rawStatus: "clean",
+      verdict: "benign",
+      signals: {
+        staticScan: {
+          status: "suspicious",
+          rawStatus: "suspicious",
+          reasonCodes: ["suspicious.dynamic_code_execution"],
+          summary: "Detected: suspicious.dynamic_code_execution",
+        },
+      },
+    });
+    expect(json.security.signals.dependencyRegistry).toBeUndefined();
   });
 
   it("returns ok false when verification has no card or clean scan result", async () => {

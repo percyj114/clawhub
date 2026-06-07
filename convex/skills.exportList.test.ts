@@ -75,7 +75,10 @@ describe("skills.listByDateRange export list", () => {
       indexKeys: [[undefined, 2]],
     });
 
-    const result = await listByDateRangeHandler({ db: {} }, { startDate: 1, endDate: 5 });
+    const result = await listByDateRangeHandler(
+      { db: { get: vi.fn(async () => null) } },
+      { startDate: 1, endDate: 5 },
+    );
 
     expect(result.page.map((item) => item.slug)).toEqual(["exportable"]);
     expect(getPageMock).toHaveBeenCalledWith(
@@ -87,6 +90,64 @@ describe("skills.listByDateRange export list", () => {
         endIndexKey: [undefined, 1],
       }),
     );
+  });
+
+  it("exports rows hidden only by retired dependency registry moderation", async () => {
+    getPageMock.mockResolvedValue({
+      page: [
+        digest({
+          skillId: "skills:retired-only",
+          slug: "retired-only",
+          moderationStatus: "hidden",
+          moderationReason: "scanner.aggregate.suspicious",
+          moderationFlags: ["flagged.suspicious"],
+          isSuspicious: true,
+        }),
+        digest({
+          skillId: "skills:malicious",
+          slug: "malicious",
+          moderationStatus: "hidden",
+          moderationReason: "scanner.llm.malicious",
+          moderationFlags: ["blocked.malware"],
+          isSuspicious: true,
+        }),
+      ],
+      hasMore: false,
+      indexKeys: [[undefined, 2]],
+    });
+    const get = vi.fn(async (id: string) => {
+      if (id === "skills:retired-only") {
+        return {
+          moderationStatus: "hidden",
+          moderationReason: "scanner.aggregate.suspicious",
+          moderationReasonCodes: ["suspicious.dep_not_found_on_registry"],
+          moderationSummary: "Detected: suspicious.dep_not_found_on_registry",
+          moderationVerdict: "suspicious",
+          moderationFlags: ["flagged.suspicious"],
+          isSuspicious: true,
+          softDeletedAt: undefined,
+        };
+      }
+      if (id === "skills:malicious") {
+        return {
+          moderationStatus: "hidden",
+          moderationReason: "scanner.llm.malicious",
+          moderationReasonCodes: ["suspicious.dep_not_found_on_registry"],
+          moderationSummary: "Detected: suspicious.dep_not_found_on_registry",
+          moderationVerdict: "malicious",
+          moderationFlags: ["blocked.malware"],
+          isSuspicious: true,
+          softDeletedAt: undefined,
+        };
+      }
+      return null;
+    });
+
+    const result = await listByDateRangeHandler({ db: { get } }, { startDate: 1, endDate: 5 });
+
+    expect(result.page.map((item) => item.slug)).toEqual(["retired-only"]);
+    expect(get).toHaveBeenCalledWith("skills:retired-only");
+    expect(get).toHaveBeenCalledWith("skills:malicious");
   });
 
   it("caps requested export list pages at 250 rows", async () => {

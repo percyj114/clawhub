@@ -12,7 +12,17 @@ export type ModerationFinding = {
   evidence: string;
 };
 
+export type StaticScanSnapshot = {
+  status: ScannerModerationVerdict;
+  reasonCodes: string[];
+  findings: ModerationFinding[];
+  summary: string;
+  engineVersion: string;
+  checkedAt: number;
+};
+
 export const MODERATION_ENGINE_VERSION = "v2.4.24";
+export const RETIRED_DEP_REGISTRY_REASON_CODE = "suspicious.dep_not_found_on_registry" as const;
 
 export const REASON_CODES = {
   LLM_REVIEW: "review.llm_review",
@@ -45,7 +55,6 @@ export const REASON_CODES = {
   MALICIOUS_INSTALL_PROMPT: "malicious.install_terminal_payload",
   KNOWN_BLOCKED_SIGNATURE: "malicious.known_blocked_signature",
   STEALTH_BROWSER_ABUSE: "malicious.stealth_browser_abuse",
-  DEP_NOT_FOUND: "suspicious.dep_not_found_on_registry",
 } as const;
 
 const MALICIOUS_CODES = new Set<string>([
@@ -63,6 +72,76 @@ export function isExternallyClearableSuspiciousCode(code: string) {
 
 export function normalizeReasonCodes(codes: string[]) {
   return Array.from(new Set(codes.filter(Boolean))).sort((a, b) => a.localeCompare(b));
+}
+
+export function stripRetiredDependencyRegistryReasonCodes(codes: string[]) {
+  return codes.filter((code) => code !== RETIRED_DEP_REGISTRY_REASON_CODE);
+}
+
+export function isScannerMaliciousReason(reason: string | undefined) {
+  return Boolean(reason?.startsWith("scanner.") && reason.endsWith(".malicious"));
+}
+
+export function isScannerSuspiciousReason(reason: string | undefined) {
+  return Boolean(reason?.startsWith("scanner.") && reason.endsWith(".suspicious"));
+}
+
+export function isRetainedScannerSuspiciousReason(reason: string | undefined) {
+  return isScannerSuspiciousReason(reason) && reason !== "scanner.aggregate.suspicious";
+}
+
+export function verdictFromCodesWithScannerReason(params: {
+  reasonCodes: string[];
+  scannerReason?: string;
+  isMalwareBlocked?: boolean;
+}): ScannerModerationVerdict {
+  if (params.isMalwareBlocked) return "malicious";
+  const verdict = verdictFromCodes(params.reasonCodes);
+  if (verdict !== "clean") return verdict;
+  return isRetainedScannerSuspiciousReason(params.scannerReason) ? "suspicious" : "clean";
+}
+
+export function summarizeReasonCodesWithScannerReason(params: {
+  reasonCodes: string[];
+  scannerReason?: string;
+  isMalwareBlocked?: boolean;
+}) {
+  if (params.isMalwareBlocked && params.reasonCodes.length === 0) {
+    return "Detected: malicious scanner verdict";
+  }
+  if (params.reasonCodes.length === 0 && isRetainedScannerSuspiciousReason(params.scannerReason)) {
+    return `Detected: ${params.scannerReason}`;
+  }
+  return summarizeReasonCodes(params.reasonCodes);
+}
+
+export function hasRetiredDependencyRegistryStaticScan(
+  staticScan: StaticScanSnapshot | undefined,
+): staticScan is StaticScanSnapshot {
+  return Boolean(
+    staticScan &&
+    (staticScan.reasonCodes.includes(RETIRED_DEP_REGISTRY_REASON_CODE) ||
+      staticScan.findings.some((finding) => finding.code === RETIRED_DEP_REGISTRY_REASON_CODE)),
+  );
+}
+
+export function stripRetiredDependencyRegistryStaticScan(
+  staticScan: StaticScanSnapshot | undefined,
+): StaticScanSnapshot | undefined {
+  if (!hasRetiredDependencyRegistryStaticScan(staticScan)) return staticScan;
+
+  const reasonCodes = stripRetiredDependencyRegistryReasonCodes(staticScan.reasonCodes);
+  const findings = staticScan.findings.filter(
+    (finding) => finding.code !== RETIRED_DEP_REGISTRY_REASON_CODE,
+  );
+
+  return {
+    ...staticScan,
+    status: verdictFromCodes(reasonCodes),
+    reasonCodes,
+    findings,
+    summary: summarizeReasonCodes(reasonCodes),
+  };
 }
 
 export function summarizeReasonCodes(codes: string[]) {

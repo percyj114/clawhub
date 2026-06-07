@@ -4,9 +4,21 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { action, internalMutation, internalQuery, mutation } from "./functions";
 import { assertAdmin, assertModerator, requireUser } from "./lib/access";
+import {
+  isRetainedScannerSuspiciousReason,
+  isScannerMaliciousReason,
+  legacyFlagsFromVerdict,
+  RETIRED_DEP_REGISTRY_REASON_CODE,
+  stripRetiredDependencyRegistryReasonCodes,
+  stripRetiredDependencyRegistryStaticScan,
+  summarizeReasonCodes,
+  summarizeReasonCodesWithScannerReason,
+  verdictFromCodesWithScannerReason,
+} from "./lib/moderationReasonCodes";
 import { normalizePackageName } from "./lib/packageRegistry";
 import { assertCanManageOwnedResource } from "./lib/publishers";
 import { sourceSkillVersionFiles } from "./lib/skillCards";
+import { computeIsSuspicious } from "./lib/skillSafety";
 
 const DEFAULT_VT_WAIT_MS = 10 * 60 * 1000;
 const DEFAULT_LEASE_MS = 60 * 60 * 1000;
@@ -54,6 +66,113 @@ type JobTarget = {
   scanRequest?: Doc<"skillScanRequests">;
   missing?: true;
 };
+
+function scrubVersionForRetiredDependencyRegistryScan(
+  version: Doc<"skillVersions">,
+): Doc<"skillVersions"> {
+  const {
+    depRegistryAnalysis: _depRegistryAnalysis,
+    depRegistryScanStatus: _depRegistryScanStatus,
+    ...versionWithoutRetiredFields
+  } = version;
+  return {
+    ...versionWithoutRetiredFields,
+    staticScan: stripRetiredDependencyRegistryStaticScan(version.staticScan),
+  };
+}
+
+function isScannerModerationReason(reason: string | undefined) {
+  return reason?.startsWith("scanner.") === true;
+}
+
+function scannerModerationReasonFromVerdict(
+  verdict: Doc<"skills">["moderationVerdict"],
+  reasonCodes: readonly string[],
+) {
+  if (verdict === "clean" && reasonCodes.some((code) => code.startsWith("review."))) {
+    return "scanner.llm.review";
+  }
+  if (verdict === "malicious") return "scanner.aggregate.malicious";
+  if (verdict === "suspicious") return "scanner.aggregate.suspicious";
+  return "scanner.aggregate.clean";
+}
+
+function scrubSkillForRetiredDependencyRegistryScan(
+  skill: Doc<"skills"> | null | undefined,
+): Doc<"skills"> | null | undefined {
+  if (!skill) return skill;
+
+  const rawReasonCodes = skill.moderationReasonCodes ?? [];
+  const rawEvidence = skill.moderationEvidence ?? [];
+  const reasonCodes = stripRetiredDependencyRegistryReasonCodes(rawReasonCodes);
+  const moderationEvidence = rawEvidence.filter(
+    (finding) => finding.code !== RETIRED_DEP_REGISTRY_REASON_CODE,
+  );
+  const hadRetiredModeration =
+    reasonCodes.length !== rawReasonCodes.length ||
+    moderationEvidence.length !== rawEvidence.length;
+  if (!hadRetiredModeration) return skill;
+
+  const moderationSummaryPatch: Partial<Pick<Doc<"skills">, "moderationSummary">> =
+    skill.moderationSummary?.includes(RETIRED_DEP_REGISTRY_REASON_CODE) === true
+      ? {
+          moderationSummary: reasonCodes.length ? summarizeReasonCodes(reasonCodes) : undefined,
+        }
+      : {};
+  const basePatch: Partial<Doc<"skills">> = {
+    moderationReasonCodes: reasonCodes.length ? reasonCodes : undefined,
+    moderationEvidence: moderationEvidence.length ? moderationEvidence : undefined,
+    ...moderationSummaryPatch,
+  };
+  if (skill.moderationStatus === "removed" || !isScannerModerationReason(skill.moderationReason)) {
+    return { ...skill, ...basePatch };
+  }
+
+  const rawIsMalwareBlocked =
+    skill.moderationVerdict === "malicious" ||
+    skill.moderationFlags?.includes("blocked.malware") === true ||
+    isScannerMaliciousReason(skill.moderationReason);
+  const moderationVerdict = verdictFromCodesWithScannerReason({
+    reasonCodes,
+    scannerReason: skill.moderationReason,
+    isMalwareBlocked: rawIsMalwareBlocked,
+  });
+  const moderationFlags: Doc<"skills">["moderationFlags"] = rawIsMalwareBlocked
+    ? ["blocked.malware"]
+    : moderationVerdict === "clean" && reasonCodes.some((code) => code.startsWith("review."))
+      ? ["flagged.review"]
+      : legacyFlagsFromVerdict(moderationVerdict);
+  const moderationReason =
+    rawIsMalwareBlocked &&
+    skill.moderationReason?.startsWith("scanner.") &&
+    skill.moderationReason.endsWith(".malicious")
+      ? skill.moderationReason
+      : moderationVerdict === "suspicious" &&
+          reasonCodes.length === 0 &&
+          isRetainedScannerSuspiciousReason(skill.moderationReason)
+        ? skill.moderationReason
+        : scannerModerationReasonFromVerdict(moderationVerdict, reasonCodes);
+  const moderationStatus =
+    rawIsMalwareBlocked || moderationVerdict === "malicious" ? "hidden" : "active";
+  const moderationSummary = summarizeReasonCodesWithScannerReason({
+    reasonCodes,
+    scannerReason: skill.moderationReason,
+    isMalwareBlocked: rawIsMalwareBlocked,
+  });
+  return {
+    ...skill,
+    ...basePatch,
+    moderationVerdict,
+    moderationFlags,
+    moderationSummary,
+    moderationReason,
+    moderationStatus,
+    isSuspicious: computeIsSuspicious({
+      moderationFlags,
+      moderationReason,
+    }),
+  };
+}
 
 type ExistingLlmAnalysis = {
   status?: string;
@@ -785,7 +904,7 @@ function skillScanReportFromRequest(request: Doc<"skillScanRequests">) {
   return {
     clawscan: request.llmAnalysis ?? null,
     skillspector: request.skillSpectorAnalysis ?? null,
-    staticAnalysis: request.staticScan ?? null,
+    staticAnalysis: stripRetiredDependencyRegistryStaticScan(request.staticScan) ?? null,
     virustotal: request.vtAnalysis
       ? {
           ...request.vtAnalysis,
@@ -804,7 +923,7 @@ function storedScanReportFromArtifact(
   return {
     clawscan: artifact.llmAnalysis ?? null,
     skillspector: artifact.skillSpectorAnalysis ?? null,
-    staticAnalysis: artifact.staticScan ?? null,
+    staticAnalysis: stripRetiredDependencyRegistryStaticScan(artifact.staticScan) ?? null,
     virustotal: artifact.vtAnalysis
       ? {
           ...artifact.vtAnalysis,
@@ -1107,7 +1226,7 @@ export const createPublishedSkillScanRequestInternal = internalMutation({
       sha256hash: version.sha256hash,
       vtAnalysis: version.vtAnalysis,
       capabilityTags: version.capabilityTags,
-      staticScan: version.staticScan,
+      staticScan: stripRetiredDependencyRegistryStaticScan(version.staticScan),
       expiresAt: skillScanRequestExpiresAt(now),
       createdAt: now,
       updatedAt: now,
@@ -1846,7 +1965,7 @@ export const getJobTargetInternal = internalQuery({
       const version = await ctx.db.get(job.skillVersionId);
       if (!version || version.softDeletedAt) return { job, missing: true as const };
       const skill = await ctx.db.get(version.skillId);
-      return { job, skill, version };
+      return { job, skill, version: scrubVersionForRetiredDependencyRegistryScan(version) };
     }
     if (job.targetKind === "packageRelease" && job.packageReleaseId) {
       const release = await ctx.db.get(job.packageReleaseId);
@@ -1867,7 +1986,15 @@ export const getJobTargetInternal = internalQuery({
         ? await ctx.db.get(scanRequest.skillVersionId)
         : null;
       const skill = scanRequest.skillId ? await ctx.db.get(scanRequest.skillId) : null;
-      return { job, skill, version: version ?? undefined, scanRequest };
+      return {
+        job,
+        skill,
+        version: version ? scrubVersionForRetiredDependencyRegistryScan(version) : undefined,
+        scanRequest: {
+          ...scanRequest,
+          staticScan: stripRetiredDependencyRegistryStaticScan(scanRequest.staticScan),
+        },
+      };
     }
     return { job, missing: true as const };
   },
@@ -1963,8 +2090,26 @@ export const claimCodexScanJobs = action({
       }
 
       const scanRequest = target.scanRequest as Doc<"skillScanRequests"> | undefined;
+      const skill = target.skill as Doc<"skills"> | null | undefined;
       const version = target.version as Doc<"skillVersions"> | undefined;
       const release = target.release as Doc<"packageReleases"> | undefined;
+      const hydratedSkill = scrubSkillForRetiredDependencyRegistryScan(skill);
+      const hydratedVersion = version
+        ? scrubVersionForRetiredDependencyRegistryScan(version)
+        : undefined;
+      const hydratedTarget = {
+        ...target,
+        ...(hydratedSkill !== undefined ? { skill: hydratedSkill } : {}),
+        ...(hydratedVersion ? { version: hydratedVersion } : {}),
+        ...(scanRequest
+          ? {
+              scanRequest: {
+                ...scanRequest,
+                staticScan: stripRetiredDependencyRegistryStaticScan(scanRequest.staticScan),
+              },
+            }
+          : {}),
+      };
       let files: Array<{
         path: string;
         size: number;
@@ -2027,7 +2172,7 @@ export const claimCodexScanJobs = action({
       hydrated.push({
         job,
         target: {
-          ...target,
+          ...hydratedTarget,
           files: fileUrls,
           clawpackUrl,
         },

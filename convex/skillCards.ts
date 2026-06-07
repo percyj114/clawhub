@@ -3,6 +3,7 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { ActionCtx, MutationCtx } from "./_generated/server";
 import { action, internalMutation, internalQuery } from "./functions";
+import { stripRetiredDependencyRegistryStaticScan } from "./lib/moderationReasonCodes";
 import {
   hasSettledSkillCardInputs,
   MAX_SKILL_CARD_FILE_BYTES,
@@ -94,6 +95,20 @@ function versionClawScanVerdict(version: Doc<"skillVersions">) {
     version.llmAnalysis?.verdict ?? version.llmAnalysis?.status,
   );
   return status === "pending" ? null : status;
+}
+
+function scrubVersionForRetiredDependencyRegistryScan(
+  version: Doc<"skillVersions">,
+): Doc<"skillVersions"> {
+  const {
+    depRegistryAnalysis: _depRegistryAnalysis,
+    depRegistryScanStatus: _depRegistryScanStatus,
+    ...versionWithoutRetiredFields
+  } = version;
+  return {
+    ...versionWithoutRetiredFields,
+    staticScan: stripRetiredDependencyRegistryStaticScan(version.staticScan),
+  };
 }
 
 async function enqueueSkillCardJob(
@@ -244,7 +259,13 @@ export const getJobTargetInternal = internalQuery({
       ctx.db.get(skill.ownerUserId),
       skill.ownerPublisherId ? ctx.db.get(skill.ownerPublisherId) : Promise.resolve(null),
     ]);
-    return { job, skill, version, owner, publisher };
+    return {
+      job,
+      skill,
+      version: scrubVersionForRetiredDependencyRegistryScan(version),
+      owner,
+      publisher,
+    };
   },
 });
 
@@ -356,13 +377,14 @@ export const claimSkillCardJobs = action({
         });
         continue;
       }
+      const version = scrubVersionForRetiredDependencyRegistryScan(target.version);
 
       const fingerprintEntries = (await runQueryRef<
         Array<{ fingerprint: string; kind?: "source" | "generated-bundle" }>
       >(ctx, internal.skills.listVersionFingerprintsInternal, {
-        skillVersionId: target.version._id,
+        skillVersionId: version._id,
       })) as Array<{ fingerprint: string; kind?: "source" | "generated-bundle" }>;
-      const files = sourceSkillVersionFiles(target.version.files, {
+      const files = sourceSkillVersionFiles(version.files, {
         generatedBundleFingerprints: generatedBundleFingerprints(fingerprintEntries),
       });
       const fileUrls = [];
@@ -394,12 +416,12 @@ export const claimSkillCardJobs = action({
         job,
         target: {
           skill: target.skill,
-          version: target.version,
+          version,
           evidence: buildEvidencePacket(
             {
               job,
               skill: target.skill,
-              version: target.version,
+              version,
               owner: target.owner ?? null,
               publisher: target.publisher ?? null,
             },

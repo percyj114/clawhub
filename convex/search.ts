@@ -15,12 +15,16 @@ import {
   tokenize,
 } from "./lib/searchText";
 import { SKILL_CAPABILITY_TAGS } from "./lib/skillCapabilityTags";
-import { isSkillSuspicious } from "./lib/skillSafety";
 import {
-  digestToHydratableSkill,
+  applyEffectiveModerationForPublicSkill,
+  getEffectiveSkillModerationState,
+  isSkillSuspicious,
+} from "./lib/skillSafety";
+import {
   digestToOwnerInfo,
   getFirstSearchToken,
   normalizeSkillSearchText,
+  resolveHydratableSkillForDigest,
 } from "./lib/skillSearchDigest";
 import { isSearchableSkillSlugShape, normalizeSkillSlug } from "./lib/skillSlugValidator";
 
@@ -45,6 +49,10 @@ function makeOwnerInfoGetter(ctx: Pick<QueryCtx, "db">) {
     ownerCache.set(cacheKey, ownerPromise);
     return ownerPromise;
   };
+}
+
+function applyEffectiveModerationForSearchSkill(skill: Doc<"skills">) {
+  return applyEffectiveModerationForPublicSkill(skill, getEffectiveSkillModerationState(skill));
 }
 
 type SkillSearchEntry = {
@@ -410,17 +418,21 @@ export const getExactSkillSlugMatch = internalQuery({
       .withIndex("by_slug", (q) => q.eq("slug", args.slug))
       .unique();
     if (!skill || skill.softDeletedAt) return null;
-    if (args.nonSuspiciousOnly && isSkillSuspicious(skill)) return null;
+    const effectiveSkill = applyEffectiveModerationForSearchSkill(skill);
+    if (args.nonSuspiciousOnly && isSkillSuspicious(effectiveSkill)) return null;
 
     const getOwnerInfo = makeOwnerInfoGetter(ctx);
-    const resolved = await getOwnerInfo(skill.ownerUserId, skill.ownerPublisherId);
-    const publicSkill = toPublicSkill(skill);
+    const resolved = await getOwnerInfo(
+      effectiveSkill.ownerUserId,
+      effectiveSkill.ownerPublisherId,
+    );
+    const publicSkill = toPublicSkill(effectiveSkill);
     if (!publicSkill || !resolved.owner) return null;
 
     return {
       skill: publicSkill,
       version: null,
-      apiKeyRequired: skill.latestVersionSummary?.apiKeyRequired,
+      apiKeyRequired: effectiveSkill.latestVersionSummary?.apiKeyRequired,
       ownerHandle: resolved.ownerHandle,
       owner: resolved.owner,
     };
@@ -443,6 +455,12 @@ export const directPrefixSkillMatches = internalQuery({
 
     const upperBound = prefixUpperBound(normalizedQuery);
     const firstTokenUpperBound = firstToken ? prefixUpperBound(firstToken) : null;
+    const candidateLimit = args.nonSuspiciousOnly
+      ? MAX_DIRECT_SKILL_SEARCH_CANDIDATES * 2
+      : MAX_DIRECT_SKILL_SEARCH_CANDIDATES;
+    const fullTextCandidateLimit = args.nonSuspiciousOnly
+      ? MAX_DIRECT_SKILL_FULL_TEXT_CANDIDATES * 2
+      : MAX_DIRECT_SKILL_FULL_TEXT_CANDIDATES;
     const [
       slugDigests,
       displayNameDigests,
@@ -451,8 +469,74 @@ export const directPrefixSkillMatches = internalQuery({
       ftDisplayNameDigests,
       ftSlugDigests,
     ] = await Promise.all([
-      args.nonSuspiciousOnly
+      ctx.db
+        .query("skillSearchDigest")
+        .withIndex("by_active_normalized_slug", (q) =>
+          q
+            .eq("softDeletedAt", undefined)
+            .gte("normalizedSlug", normalizedQuery)
+            .lt("normalizedSlug", upperBound),
+        )
+        .take(candidateLimit),
+      ctx.db
+        .query("skillSearchDigest")
+        .withIndex("by_active_normalized_display_name", (q) =>
+          q
+            .eq("softDeletedAt", undefined)
+            .gte("normalizedDisplayName", normalizedQuery)
+            .lt("normalizedDisplayName", upperBound),
+        )
+        .take(candidateLimit),
+      firstTokenUpperBound
         ? ctx.db
+            .query("skillSearchDigest")
+            .withIndex("by_active_normalized_slug_first_token", (q) =>
+              q
+                .eq("softDeletedAt", undefined)
+                .gte("normalizedSlugFirstToken", firstToken)
+                .lt("normalizedSlugFirstToken", firstTokenUpperBound),
+            )
+            .take(candidateLimit)
+        : Promise.resolve([]),
+      firstTokenUpperBound
+        ? ctx.db
+            .query("skillSearchDigest")
+            .withIndex("by_active_normalized_display_name_first_token", (q) =>
+              q
+                .eq("softDeletedAt", undefined)
+                .gte("normalizedDisplayNameFirstToken", firstToken)
+                .lt("normalizedDisplayNameFirstToken", firstTokenUpperBound),
+            )
+            .take(candidateLimit)
+        : Promise.resolve([]),
+      // Full-text search on displayName — matches any token at any position.
+      // Resolves Bug (non-first-token undiscoverable) by leveraging the
+      // Convex inverted index added in `search_by_display_name`.
+      ctx.db
+        .query("skillSearchDigest")
+        .withSearchIndex("search_by_display_name", (q) =>
+          q.search("displayName", args.query).eq("softDeletedAt", undefined),
+        )
+        .take(fullTextCandidateLimit),
+      // Full-text search on slug — same rationale, covers slug middle/tail tokens
+      // (e.g. "yijian" or "vision" inside "baidu-yijian-vision").
+      ctx.db
+        .query("skillSearchDigest")
+        .withSearchIndex("search_by_slug", (q) =>
+          q.search("slug", args.query).eq("softDeletedAt", undefined),
+        )
+        .take(fullTextCandidateLimit),
+    ]);
+    const [
+      nonsuspiciousSlugDigests,
+      nonsuspiciousDisplayNameDigests,
+      nonsuspiciousSlugFirstTokenDigests,
+      nonsuspiciousDisplayNameFirstTokenDigests,
+      nonsuspiciousFtDisplayNameDigests,
+      nonsuspiciousFtSlugDigests,
+    ] = args.nonSuspiciousOnly
+      ? await Promise.all([
+          ctx.db
             .query("skillSearchDigest")
             .withIndex("by_nonsuspicious_normalized_slug", (q) =>
               q
@@ -461,18 +545,8 @@ export const directPrefixSkillMatches = internalQuery({
                 .gte("normalizedSlug", normalizedQuery)
                 .lt("normalizedSlug", upperBound),
             )
-            .take(MAX_DIRECT_SKILL_SEARCH_CANDIDATES)
-        : ctx.db
-            .query("skillSearchDigest")
-            .withIndex("by_active_normalized_slug", (q) =>
-              q
-                .eq("softDeletedAt", undefined)
-                .gte("normalizedSlug", normalizedQuery)
-                .lt("normalizedSlug", upperBound),
-            )
             .take(MAX_DIRECT_SKILL_SEARCH_CANDIDATES),
-      args.nonSuspiciousOnly
-        ? ctx.db
+          ctx.db
             .query("skillSearchDigest")
             .withIndex("by_nonsuspicious_normalized_display_name", (q) =>
               q
@@ -481,65 +555,32 @@ export const directPrefixSkillMatches = internalQuery({
                 .gte("normalizedDisplayName", normalizedQuery)
                 .lt("normalizedDisplayName", upperBound),
             )
-            .take(MAX_DIRECT_SKILL_SEARCH_CANDIDATES)
-        : ctx.db
-            .query("skillSearchDigest")
-            .withIndex("by_active_normalized_display_name", (q) =>
-              q
-                .eq("softDeletedAt", undefined)
-                .gte("normalizedDisplayName", normalizedQuery)
-                .lt("normalizedDisplayName", upperBound),
-            )
             .take(MAX_DIRECT_SKILL_SEARCH_CANDIDATES),
-      firstTokenUpperBound
-        ? args.nonSuspiciousOnly
-          ? ctx.db
-              .query("skillSearchDigest")
-              .withIndex("by_nonsuspicious_normalized_slug_first_token", (q) =>
-                q
-                  .eq("softDeletedAt", undefined)
-                  .eq("isSuspicious", false)
-                  .gte("normalizedSlugFirstToken", firstToken)
-                  .lt("normalizedSlugFirstToken", firstTokenUpperBound),
-              )
-              .take(MAX_DIRECT_SKILL_SEARCH_CANDIDATES)
-          : ctx.db
-              .query("skillSearchDigest")
-              .withIndex("by_active_normalized_slug_first_token", (q) =>
-                q
-                  .eq("softDeletedAt", undefined)
-                  .gte("normalizedSlugFirstToken", firstToken)
-                  .lt("normalizedSlugFirstToken", firstTokenUpperBound),
-              )
-              .take(MAX_DIRECT_SKILL_SEARCH_CANDIDATES)
-        : Promise.resolve([]),
-      firstTokenUpperBound
-        ? args.nonSuspiciousOnly
-          ? ctx.db
-              .query("skillSearchDigest")
-              .withIndex("by_nonsuspicious_normalized_display_name_first_token", (q) =>
-                q
-                  .eq("softDeletedAt", undefined)
-                  .eq("isSuspicious", false)
-                  .gte("normalizedDisplayNameFirstToken", firstToken)
-                  .lt("normalizedDisplayNameFirstToken", firstTokenUpperBound),
-              )
-              .take(MAX_DIRECT_SKILL_SEARCH_CANDIDATES)
-          : ctx.db
-              .query("skillSearchDigest")
-              .withIndex("by_active_normalized_display_name_first_token", (q) =>
-                q
-                  .eq("softDeletedAt", undefined)
-                  .gte("normalizedDisplayNameFirstToken", firstToken)
-                  .lt("normalizedDisplayNameFirstToken", firstTokenUpperBound),
-              )
-              .take(MAX_DIRECT_SKILL_SEARCH_CANDIDATES)
-        : Promise.resolve([]),
-      // Full-text search on displayName — matches any token at any position.
-      // Resolves Bug (non-first-token undiscoverable) by leveraging the
-      // Convex inverted index added in `search_by_display_name`.
-      args.nonSuspiciousOnly
-        ? ctx.db
+          firstTokenUpperBound
+            ? ctx.db
+                .query("skillSearchDigest")
+                .withIndex("by_nonsuspicious_normalized_slug_first_token", (q) =>
+                  q
+                    .eq("softDeletedAt", undefined)
+                    .eq("isSuspicious", false)
+                    .gte("normalizedSlugFirstToken", firstToken)
+                    .lt("normalizedSlugFirstToken", firstTokenUpperBound),
+                )
+                .take(MAX_DIRECT_SKILL_SEARCH_CANDIDATES)
+            : Promise.resolve([]),
+          firstTokenUpperBound
+            ? ctx.db
+                .query("skillSearchDigest")
+                .withIndex("by_nonsuspicious_normalized_display_name_first_token", (q) =>
+                  q
+                    .eq("softDeletedAt", undefined)
+                    .eq("isSuspicious", false)
+                    .gte("normalizedDisplayNameFirstToken", firstToken)
+                    .lt("normalizedDisplayNameFirstToken", firstTokenUpperBound),
+                )
+                .take(MAX_DIRECT_SKILL_SEARCH_CANDIDATES)
+            : Promise.resolve([]),
+          ctx.db
             .query("skillSearchDigest")
             .withSearchIndex("search_by_display_name", (q) =>
               q
@@ -547,29 +588,15 @@ export const directPrefixSkillMatches = internalQuery({
                 .eq("softDeletedAt", undefined)
                 .eq("isSuspicious", false),
             )
-            .take(MAX_DIRECT_SKILL_FULL_TEXT_CANDIDATES)
-        : ctx.db
-            .query("skillSearchDigest")
-            .withSearchIndex("search_by_display_name", (q) =>
-              q.search("displayName", args.query).eq("softDeletedAt", undefined),
-            )
             .take(MAX_DIRECT_SKILL_FULL_TEXT_CANDIDATES),
-      // Full-text search on slug — same rationale, covers slug middle/tail tokens
-      // (e.g. "yijian" or "vision" inside "baidu-yijian-vision").
-      args.nonSuspiciousOnly
-        ? ctx.db
+          ctx.db
             .query("skillSearchDigest")
             .withSearchIndex("search_by_slug", (q) =>
               q.search("slug", args.query).eq("softDeletedAt", undefined).eq("isSuspicious", false),
             )
-            .take(MAX_DIRECT_SKILL_FULL_TEXT_CANDIDATES)
-        : ctx.db
-            .query("skillSearchDigest")
-            .withSearchIndex("search_by_slug", (q) =>
-              q.search("slug", args.query).eq("softDeletedAt", undefined),
-            )
             .take(MAX_DIRECT_SKILL_FULL_TEXT_CANDIDATES),
-    ]);
+        ])
+      : [[], [], [], [], [], []];
     // Mirrors the `matchesExactTokens` filter the vector path applies on
     // hydrated results, so every recall path shares one literal-match
     // contract. For single-token queries this gate is a no-op against the
@@ -580,11 +607,17 @@ export const directPrefixSkillMatches = internalQuery({
       matchesExactTokens(queryTokens, [digest.displayName, digest.slug, digest.summary]);
 
     const digests = [
+      ...nonsuspiciousSlugDigests,
       ...slugDigests,
+      ...nonsuspiciousDisplayNameDigests,
       ...displayNameDigests,
+      ...nonsuspiciousSlugFirstTokenDigests,
       ...slugFirstTokenDigests,
+      ...nonsuspiciousDisplayNameFirstTokenDigests,
       ...displayNameFirstTokenDigests,
+      ...nonsuspiciousFtDisplayNameDigests,
       ...ftDisplayNameDigests,
+      ...nonsuspiciousFtSlugDigests,
       ...ftSlugDigests,
     ]
       .filter(
@@ -597,7 +630,7 @@ export const directPrefixSkillMatches = internalQuery({
     const getOwnerInfo = makeOwnerInfoGetter(ctx);
     const entries = await Promise.all(
       digests.map(async (digest): Promise<SkillSearchEntry | null> => {
-        const skill = digestToHydratableSkill(digest);
+        const skill = await resolveHydratableSkillForDigest(ctx, digest);
         if (args.nonSuspiciousOnly && isSkillSuspicious(skill)) return null;
         if (args.highlightedOnly && !isSkillHighlighted(skill)) return null;
         if (!matchesCapabilityTag(skill, args.capabilityTag)) return null;
@@ -648,8 +681,12 @@ export const hydrateResults = internalQuery({
           .withIndex("by_skill", (q) => q.eq("skillId", skillId))
           .unique();
         const skill: HydratableSkill | null = digest
-          ? digestToHydratableSkill(digest)
-          : await ctx.db.get(skillId);
+          ? await resolveHydratableSkillForDigest(ctx, digest)
+          : await ctx.db
+              .get(skillId)
+              .then((fullSkill) =>
+                fullSkill ? applyEffectiveModerationForSearchSkill(fullSkill) : null,
+              );
         if (!skill || skill.softDeletedAt) return null;
         if (args.nonSuspiciousOnly && isSkillSuspicious(skill)) return null;
         // Use pre-resolved owner from digest to avoid reading the users table.
@@ -709,48 +746,57 @@ export const lexicalFallbackSkills = internalQuery({
         .query("skills")
         .withIndex("by_slug", (q) => q.eq("slug", slugQuery))
         .unique();
+      const effectiveExactSlugSkill = exactSlugSkill
+        ? applyEffectiveModerationForSearchSkill(exactSlugSkill)
+        : null;
       if (
-        exactSlugSkill &&
-        !exactSlugSkill.softDeletedAt &&
-        (!args.nonSuspiciousOnly || !isSkillSuspicious(exactSlugSkill)) &&
-        matchesCapabilityTag(exactSlugSkill, args.capabilityTag)
+        effectiveExactSlugSkill &&
+        !effectiveExactSlugSkill.softDeletedAt &&
+        (!args.nonSuspiciousOnly || !isSkillSuspicious(effectiveExactSlugSkill)) &&
+        matchesCapabilityTag(effectiveExactSlugSkill, args.capabilityTag)
       ) {
-        seenSkillIds.add(exactSlugSkill._id);
-        candidates.push(exactSlugSkill);
+        seenSkillIds.add(effectiveExactSlugSkill._id);
+        candidates.push(effectiveExactSlugSkill);
       }
     }
 
     // Scan recent active digests (~800 bytes each) instead of full skill docs (~3-5KB).
     // Use updatedAt and createdAt windows so newly published skills are visible even
     // when they are not in the most recently updated slice.
-    const recentByUpdatedQuery = args.nonSuspiciousOnly
-      ? ctx.db
-          .query("skillSearchDigest")
-          .withIndex("by_nonsuspicious_updated", (q) =>
-            q.eq("softDeletedAt", undefined).eq("isSuspicious", false),
-          )
-      : ctx.db
-          .query("skillSearchDigest")
-          .withIndex("by_active_updated", (q) => q.eq("softDeletedAt", undefined));
-    const recentByCreatedQuery = args.nonSuspiciousOnly
-      ? ctx.db
-          .query("skillSearchDigest")
-          .withIndex("by_nonsuspicious_created", (q) =>
-            q.eq("softDeletedAt", undefined).eq("isSuspicious", false),
-          )
-      : ctx.db
-          .query("skillSearchDigest")
-          .withIndex("by_active_created", (q) => q.eq("softDeletedAt", undefined));
+    const recentByUpdatedQuery = ctx.db
+      .query("skillSearchDigest")
+      .withIndex("by_active_updated", (q) => q.eq("softDeletedAt", undefined));
+    const recentByCreatedQuery = ctx.db
+      .query("skillSearchDigest")
+      .withIndex("by_active_created", (q) => q.eq("softDeletedAt", undefined));
 
     const [recentByUpdated, recentByCreated] = await Promise.all([
       recentByUpdatedQuery.order("desc").take(scanLimit),
       recentByCreatedQuery.order("desc").take(scanLimit),
     ]);
+    const [nonsuspiciousRecentByUpdated, nonsuspiciousRecentByCreated] = args.nonSuspiciousOnly
+      ? await Promise.all([
+          ctx.db
+            .query("skillSearchDigest")
+            .withIndex("by_nonsuspicious_updated", (q) =>
+              q.eq("softDeletedAt", undefined).eq("isSuspicious", false),
+            )
+            .order("desc")
+            .take(scanLimit),
+          ctx.db
+            .query("skillSearchDigest")
+            .withIndex("by_nonsuspicious_created", (q) =>
+              q.eq("softDeletedAt", undefined).eq("isSuspicious", false),
+            )
+            .order("desc")
+            .take(scanLimit),
+        ])
+      : [[], []];
 
-    const addDigestCandidates = (digests: typeof recentByUpdated) => {
+    const addDigestCandidates = async (digests: typeof recentByUpdated) => {
       for (const digest of digests) {
         if (seenSkillIds.has(digest.skillId)) continue;
-        const skill = digestToHydratableSkill(digest);
+        const skill = await resolveHydratableSkillForDigest(ctx, digest);
         if (args.nonSuspiciousOnly && isSkillSuspicious(skill)) continue;
         if (!matchesCapabilityTag(skill, args.capabilityTag)) continue;
         seenSkillIds.add(digest.skillId);
@@ -760,8 +806,10 @@ export const lexicalFallbackSkills = internalQuery({
         if (ownerInfo) preResolvedOwners.set(digest.skillId, ownerInfo);
       }
     };
-    addDigestCandidates(recentByUpdated);
-    addDigestCandidates(recentByCreated);
+    await addDigestCandidates(nonsuspiciousRecentByUpdated);
+    await addDigestCandidates(nonsuspiciousRecentByCreated);
+    await addDigestCandidates(recentByUpdated);
+    await addDigestCandidates(recentByCreated);
 
     const matched = candidates.filter((skill) =>
       matchesExactTokens(args.queryTokens, [skill.displayName, skill.slug, skill.summary]),

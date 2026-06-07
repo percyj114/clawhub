@@ -333,7 +333,6 @@ describe("cmdVerifySkill", () => {
           staticScan: { status: "clean", rawStatus: "clean", reasonCodes: [] },
           virusTotal: { status: "clean", rawStatus: "clean", source: "engines" },
           skillSpector: { status: "clean", rawStatus: "clean", issueCount: 0 },
-          dependencyRegistry: null,
         },
       },
       signature: { status: "unsigned" },

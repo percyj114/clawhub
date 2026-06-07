@@ -27,6 +27,15 @@ import {
   type InstallResolverSource,
   type SkillInstallResolution,
 } from "../lib/installResolver";
+import {
+  isRetainedScannerSuspiciousReason,
+  isScannerMaliciousReason,
+  RETIRED_DEP_REGISTRY_REASON_CODE,
+  stripRetiredDependencyRegistryReasonCodes,
+  stripRetiredDependencyRegistryStaticScan,
+  summarizeReasonCodesWithScannerReason,
+  verdictFromCodesWithScannerReason,
+} from "../lib/moderationReasonCodes";
 import type {
   LlmAgenticRiskFinding,
   LlmEvalDimension,
@@ -124,8 +133,14 @@ type PublicSkillVersionParsed = {
 
 type PublicSkillVersionStaticScan = Pick<
   NonNullable<Doc<"skillVersions">["staticScan"]>,
-  "status" | "reasonCodes" | "summary" | "engineVersion" | "checkedAt"
+  "status" | "reasonCodes" | "findings" | "summary" | "engineVersion" | "checkedAt"
 >;
+
+function scrubRetiredPublicStaticScan(
+  staticScan: PublicSkillVersionStaticScan,
+): PublicSkillVersionStaticScan {
+  return stripRetiredDependencyRegistryStaticScan(staticScan) ?? staticScan;
+}
 
 type PublicSkillVersionResponse = {
   _id: Id<"skillVersions">;
@@ -218,27 +233,68 @@ function sanitizeEvidence(
 
 function normalizeModerationFromSkill(skill: SkillModerationShape) {
   const flags = Array.isArray(skill.moderationFlags) ? skill.moderationFlags : [];
-  const verdict =
-    skill.moderationVerdict ??
-    (flags.includes("blocked.malware")
-      ? "malicious"
-      : flags.includes("flagged.suspicious")
-        ? "suspicious"
-        : "clean");
+  const rawReasonCodes = Array.isArray(skill.moderationReasonCodes)
+    ? skill.moderationReasonCodes
+    : [];
+  const reasonCodes = stripRetiredDependencyRegistryReasonCodes(rawReasonCodes);
+  const strippedRetiredReason = reasonCodes.length !== rawReasonCodes.length;
+  const rawEvidence = Array.isArray(skill.moderationEvidence) ? skill.moderationEvidence : [];
+  const evidence = rawEvidence.filter(
+    (finding) => finding.code !== RETIRED_DEP_REGISTRY_REASON_CODE,
+  );
+  const strippedRetiredEvidence = evidence.length !== rawEvidence.length;
+  const shouldRecomputeScannerState =
+    (strippedRetiredReason || strippedRetiredEvidence) &&
+    skill.moderationReason?.startsWith("scanner.") === true;
+  const rawIsMalwareBlocked =
+    skill.moderationVerdict === "malicious" ||
+    flags.includes("blocked.malware") ||
+    isScannerMaliciousReason(skill.moderationReason);
+  const verdict = shouldRecomputeScannerState
+    ? verdictFromCodesWithScannerReason({
+        reasonCodes,
+        scannerReason: skill.moderationReason,
+        isMalwareBlocked: rawIsMalwareBlocked,
+      })
+    : (skill.moderationVerdict ??
+      (flags.includes("blocked.malware")
+        ? "malicious"
+        : flags.includes("flagged.suspicious")
+          ? "suspicious"
+          : "clean"));
   const isMalwareBlocked = verdict === "malicious" || flags.includes("blocked.malware");
   const isSuspicious =
-    !isMalwareBlocked && (verdict === "suspicious" || flags.includes("flagged.suspicious"));
+    !isMalwareBlocked &&
+    (verdict === "suspicious" ||
+      (!shouldRecomputeScannerState && flags.includes("flagged.suspicious")));
 
   return {
     isMalwareBlocked,
     isSuspicious,
     verdict,
-    reasonCodes: Array.isArray(skill.moderationReasonCodes) ? skill.moderationReasonCodes : [],
-    summary: skill.moderationSummary ?? null,
+    reasonCodes,
+    summary: shouldRecomputeScannerState
+      ? summarizeReasonCodesWithScannerReason({
+          reasonCodes,
+          scannerReason: skill.moderationReason,
+          isMalwareBlocked: rawIsMalwareBlocked,
+        })
+      : (skill.moderationSummary ?? null),
     engineVersion: skill.moderationEngineVersion ?? null,
     updatedAt: skill.moderationEvaluatedAt ?? skill.updatedAt ?? null,
-    reason: skill.moderationReason ?? null,
-    evidence: Array.isArray(skill.moderationEvidence) ? skill.moderationEvidence : [],
+    reason:
+      shouldRecomputeScannerState &&
+      !rawIsMalwareBlocked &&
+      reasonCodes.length === 0 &&
+      skill.moderationReason &&
+      !isRetainedScannerSuspiciousReason(skill.moderationReason)
+        ? null
+        : rawIsMalwareBlocked &&
+            shouldRecomputeScannerState &&
+            !skill.moderationReason?.endsWith(".malicious")
+          ? "scanner.aggregate.malicious"
+          : (skill.moderationReason ?? null),
+    evidence,
   };
 }
 
@@ -620,7 +676,7 @@ type SecurityVerdictRequestItem = {
 type VerifySecurityVersion = {
   staticScan?: Pick<
     NonNullable<Doc<"skillVersions">["staticScan"]>,
-    "status" | "reasonCodes" | "summary" | "engineVersion" | "checkedAt"
+    "status" | "reasonCodes" | "findings" | "summary" | "engineVersion" | "checkedAt"
   >;
   llmAnalysis?: Pick<
     NonNullable<Doc<"skillVersions">["llmAnalysis"]>,
@@ -644,16 +700,6 @@ type VerifySecurityVersion = {
     | "checkedAt"
   > &
     Partial<Pick<NonNullable<Doc<"skillVersions">["skillSpectorAnalysis"]>, "summary" | "error">>;
-  depRegistryAnalysis?: Pick<
-    NonNullable<Doc<"skillVersions">["depRegistryAnalysis"]>,
-    "status" | "summary" | "checkedAt"
-  > &
-    Partial<
-      Pick<
-        NonNullable<Doc<"skillVersions">["depRegistryAnalysis"]>,
-        "notFoundPackages" | "unresolvedPackages"
-      >
-    >;
 };
 
 type SecurityVerdictTargetResult = {
@@ -694,7 +740,8 @@ function normalizeVerificationStatus(value: string | null | undefined): Normaliz
 }
 
 function buildVerifySecurity(version: VerifySecurityVersion) {
-  const staticStatus = normalizeVerificationStatus(version.staticScan?.status);
+  const staticScan = version.staticScan ? scrubRetiredPublicStaticScan(version.staticScan) : null;
+  const staticStatus = normalizeVerificationStatus(staticScan?.status);
   const clawRawStatus = version.llmAnalysis?.status ?? null;
   const clawStatus = normalizeVerificationStatus(version.llmAnalysis?.verdict ?? clawRawStatus);
   const vtStatus = version.vtAnalysis
@@ -702,9 +749,6 @@ function buildVerifySecurity(version: VerifySecurityVersion) {
     : null;
   const skillSpectorStatus = version.skillSpectorAnalysis
     ? normalizeVerificationStatus(version.skillSpectorAnalysis.status)
-    : null;
-  const depStatus = version.depRegistryAnalysis
-    ? normalizeVerificationStatus(version.depRegistryAnalysis.status)
     : null;
   const status = clawStatus;
 
@@ -718,14 +762,14 @@ function buildVerifySecurity(version: VerifySecurityVersion) {
     model: version.llmAnalysis?.model ?? null,
     checkedAt: version.llmAnalysis?.checkedAt ?? null,
     signals: {
-      staticScan: version.staticScan
+      staticScan: staticScan
         ? {
             status: staticStatus,
-            rawStatus: version.staticScan.status,
-            reasonCodes: version.staticScan.reasonCodes ?? [],
-            summary: version.staticScan.summary ?? null,
-            engineVersion: version.staticScan.engineVersion ?? null,
-            checkedAt: version.staticScan.checkedAt ?? null,
+            rawStatus: staticScan.status,
+            reasonCodes: staticScan.reasonCodes ?? [],
+            summary: staticScan.summary ?? null,
+            engineVersion: staticScan.engineVersion ?? null,
+            checkedAt: staticScan.checkedAt ?? null,
           }
         : {
             status: "pending" as const,
@@ -759,16 +803,6 @@ function buildVerifySecurity(version: VerifySecurityVersion) {
             summary: version.skillSpectorAnalysis.summary ?? null,
             error: version.skillSpectorAnalysis.error ?? null,
             checkedAt: version.skillSpectorAnalysis.checkedAt ?? null,
-          }
-        : null,
-      dependencyRegistry: version.depRegistryAnalysis
-        ? {
-            status: depStatus ?? "pending",
-            rawStatus: version.depRegistryAnalysis.status,
-            summary: version.depRegistryAnalysis.summary ?? null,
-            notFoundPackages: version.depRegistryAnalysis.notFoundPackages ?? [],
-            unresolvedPackages: version.depRegistryAnalysis.unresolvedPackages ?? [],
-            checkedAt: version.depRegistryAnalysis.checkedAt ?? null,
           }
         : null,
     },
@@ -837,7 +871,6 @@ function getVerifySecurityCheckedAt(security: ReturnType<typeof buildVerifySecur
     security.signals.staticScan?.checkedAt,
     security.signals.virusTotal?.checkedAt,
     security.signals.skillSpector?.checkedAt,
-    security.signals.dependencyRegistry?.checkedAt,
   ].filter((value): value is number => typeof value === "number");
   return candidates.length > 0 ? Math.max(...candidates) : null;
 }
@@ -882,14 +915,6 @@ function buildSecurityVerdictSummary(security: ReturnType<typeof buildVerifySecu
             issueCount: security.signals.skillSpector.issueCount,
             scannerVersion: security.signals.skillSpector.scannerVersion,
             checkedAt: security.signals.skillSpector.checkedAt,
-          }
-        : null,
-      dependencyRegistry: security.signals.dependencyRegistry
-        ? {
-            status: security.signals.dependencyRegistry.status,
-            rawStatus: security.signals.dependencyRegistry.rawStatus,
-            summary: security.signals.dependencyRegistry.summary,
-            checkedAt: security.signals.dependencyRegistry.checkedAt,
           }
         : null,
     },

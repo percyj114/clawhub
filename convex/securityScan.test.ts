@@ -6,6 +6,7 @@ import {
   clearQueuedBackfillJobsForLocalDev,
   claimQueuedJobsInternal,
   completeCodexScanJob,
+  createPublishedSkillScanRequestInternal,
   enqueueBulkSkillRescanBatchForAdminInternal,
   failCodexScanJob,
   getBulkSkillRescanBatchStatusForAdminInternal,
@@ -72,6 +73,13 @@ const completeCodexScanJobHandler = (
       runId?: string;
     },
     { ok: true }
+  >
+)._handler;
+
+const createPublishedSkillScanRequestInternalHandler = (
+  createPublishedSkillScanRequestInternal as unknown as WrappedHandler<
+    { actorUserId: string; slug: string; version?: string; update?: boolean },
+    { scanId: string; jobId: string; status: string }
   >
 )._handler;
 
@@ -311,6 +319,7 @@ function makeRescanCtx(options: {
   const get = vi.fn(async (id: string) => docs.get(id) ?? null);
   const insert = vi.fn(async (table: string, doc: Record<string, unknown>) => {
     const id = `${table}:${inserts.length + 1}`;
+    docs.set(id, { _id: id, _creationTime: Date.now(), ...doc });
     inserts.push({ table, doc });
     return id;
   });
@@ -318,61 +327,82 @@ function makeRescanCtx(options: {
     patches.push({ id, patch: doc });
   });
   const query = vi.fn((table: string) => ({
-    withIndex: vi.fn((_indexName: string, buildRange: (q: { eq: typeof eq }) => unknown) => {
-      const equals = new Map<string, unknown>();
-      function eq(field: string, value: unknown) {
-        equals.set(field, value);
-        return { eq };
-      }
-      buildRange({ eq });
-      return {
-        collect: vi.fn(async () => {
-          if (table === "securityScanJobs") return options.activeJobs ?? [];
+    withIndex: vi.fn(
+      (
+        _indexName: string,
+        buildRange: (q: {
+          eq: (field: string, value: unknown) => unknown;
+          lte: (field: string, value: number) => unknown;
+        }) => unknown,
+      ) => {
+        const equals = new Map<string, unknown>();
+        const indexBuilder = {
+          eq(field: string, value: unknown) {
+            equals.set(field, value);
+            return indexBuilder;
+          },
+          lte() {
+            return indexBuilder;
+          },
+        };
+        buildRange(indexBuilder);
+        const securityJobs = options.activeJobs ?? [];
+        const collect = vi.fn(async () => {
+          if (table === "securityScanJobs") return securityJobs;
           return [];
-        }),
-        unique: vi.fn(async () => {
-          if (table === "publisherMembers") return options.membership ?? null;
-          if (table === "skills") {
-            return (
-              Array.from(docs.values()).find(
-                (doc) =>
-                  doc._id?.toString().startsWith("skills:") && doc.slug === equals.get("slug"),
-              ) ?? null
-            );
-          }
-          if (table === "packages") {
-            return (
-              Array.from(docs.values()).find(
-                (doc) =>
-                  doc._id?.toString().startsWith("packages:") &&
-                  doc.normalizedName === equals.get("normalizedName"),
-              ) ?? null
-            );
-          }
-          if (table === "skillVersions") {
-            return (
-              Array.from(docs.values()).find(
-                (doc) =>
-                  doc._id?.toString().startsWith("skillVersions:") &&
-                  doc.skillId === equals.get("skillId") &&
-                  doc.version === equals.get("version"),
-              ) ?? null
-            );
-          }
-          if (table === "packageReleases") {
-            return (
-              Array.from(docs.values()).find(
-                (doc) =>
-                  doc._id?.toString().startsWith("packageReleases:") &&
-                  doc.packageId === equals.get("packageId") &&
-                  doc.version === equals.get("version"),
-              ) ?? null
-            );
-          }
-          return null;
-        }),
-      };
-    }),
+        });
+        const take = vi.fn(async (limit: number) => {
+          if (table === "securityScanJobs") return securityJobs.slice(0, limit);
+          return [];
+        });
+        return {
+          collect,
+          take,
+          order: vi.fn(() => ({ collect, take })),
+          unique: vi.fn(async () => {
+            if (table === "publisherMembers") return options.membership ?? null;
+            if (table === "skills") {
+              return (
+                Array.from(docs.values()).find(
+                  (doc) =>
+                    doc._id?.toString().startsWith("skills:") && doc.slug === equals.get("slug"),
+                ) ?? null
+              );
+            }
+            if (table === "packages") {
+              return (
+                Array.from(docs.values()).find(
+                  (doc) =>
+                    doc._id?.toString().startsWith("packages:") &&
+                    doc.normalizedName === equals.get("normalizedName"),
+                ) ?? null
+              );
+            }
+            if (table === "skillVersions") {
+              return (
+                Array.from(docs.values()).find(
+                  (doc) =>
+                    doc._id?.toString().startsWith("skillVersions:") &&
+                    doc.skillId === equals.get("skillId") &&
+                    doc.version === equals.get("version"),
+                ) ?? null
+              );
+            }
+            if (table === "packageReleases") {
+              return (
+                Array.from(docs.values()).find(
+                  (doc) =>
+                    doc._id?.toString().startsWith("packageReleases:") &&
+                    doc.packageId === equals.get("packageId") &&
+                    doc.version === equals.get("version"),
+                ) ?? null
+              );
+            }
+            return null;
+          }),
+        };
+      },
+    ),
   }));
 
   return {
@@ -900,6 +930,61 @@ describe("securityScan", () => {
     });
   });
 
+  it("strips retired dependency registry findings from stored skill scan reports", async () => {
+    const ctx = makeStoredScanReportCtx({
+      actor: { _id: "users:owner", role: "user" },
+      docs: {
+        "skills:hidden": {
+          _id: "skills:hidden",
+          slug: "hidden-skill",
+          displayName: "Hidden Skill",
+          ownerUserId: "users:owner",
+        },
+        "skillVersions:hidden": {
+          _id: "skillVersions:hidden",
+          skillId: "skills:hidden",
+          version: "1.2.3",
+          softDeletedAt: 1_700_000_100_000,
+          files: [],
+          staticScan: {
+            status: "suspicious",
+            reasonCodes: ["suspicious.dep_not_found_on_registry"],
+            findings: [
+              {
+                code: "suspicious.dep_not_found_on_registry",
+                severity: "critical",
+                file: "Dependency manifests",
+                line: 1,
+                message: "missing dependency",
+                evidence: "legacy dependency registry evidence",
+              },
+            ],
+            summary: "Detected: suspicious.dep_not_found_on_registry",
+            engineVersion: "static-v1",
+            checkedAt: 1_700_000_000_000,
+          },
+          createdAt: 1_700_000_000_000,
+        },
+      },
+    });
+
+    const report = await getStoredScanReportForUserInternalHandler(ctx, {
+      actorUserId: "users:owner",
+      kind: "skill",
+      name: "hidden-skill",
+      version: "1.2.3",
+    });
+
+    expect(report.report.staticAnalysis).toEqual({
+      status: "clean",
+      reasonCodes: [],
+      findings: [],
+      summary: "No suspicious patterns detected.",
+      engineVersion: "static-v1",
+      checkedAt: 1_700_000_000_000,
+    });
+  });
+
   it("returns stored scan reports for hidden org skill versions to publisher-role uploaders", async () => {
     const ctx = makeStoredScanReportCtx({
       actor: { _id: "users:member", role: "user" },
@@ -1136,6 +1221,68 @@ describe("securityScan", () => {
           doc: expect.objectContaining({
             actorUserId: "users:owner",
             action: "skill.clawscan.rescan",
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it("strips retired dependency registry findings from published skill scan requests", async () => {
+    const { ctx, inserts } = makeRescanCtx({
+      actorId: "users:owner",
+      docs: {
+        "skills:1": {
+          _id: "skills:1",
+          slug: "demo-skill",
+          ownerUserId: "users:owner",
+          latestVersionId: "skillVersions:1",
+        },
+        "skillVersions:1": {
+          _id: "skillVersions:1",
+          skillId: "skills:1",
+          version: "1.0.0",
+          files: [],
+          parsed: {},
+          staticScan: {
+            status: "suspicious",
+            reasonCodes: ["suspicious.dep_not_found_on_registry"],
+            findings: [
+              {
+                code: "suspicious.dep_not_found_on_registry",
+                severity: "critical",
+                file: "Dependency manifests",
+                line: 1,
+                message: "missing dependency",
+                evidence: "legacy dependency registry evidence",
+              },
+            ],
+            summary: "Detected: suspicious.dep_not_found_on_registry",
+            engineVersion: "static-v1",
+            checkedAt: 1,
+          },
+        },
+      },
+    });
+
+    await createPublishedSkillScanRequestInternalHandler(ctx, {
+      actorUserId: "users:owner",
+      slug: "demo-skill",
+      version: "1.0.0",
+    });
+
+    expect(inserts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          table: "skillScanRequests",
+          doc: expect.objectContaining({
+            staticScan: {
+              status: "clean",
+              reasonCodes: [],
+              findings: [],
+              summary: "No suspicious patterns detected.",
+              engineVersion: "static-v1",
+              checkedAt: 1,
+            },
           }),
         }),
       ]),
@@ -1617,6 +1764,458 @@ describe("securityScan", () => {
     expect(result[0]?.target.files.map((file) => file.path)).toEqual(["SKILL.md", "skill-card.md"]);
     expect(getUrl).toHaveBeenCalledWith("storage:skill");
     expect(getUrl).toHaveBeenCalledWith("storage:card");
+  });
+
+  it("strips retired dependency registry findings from claimed version payloads", async () => {
+    vi.stubEnv("SECURITY_SCAN_WORKER_TOKEN", "worker-secret");
+    const runMutation = vi.fn(async (_ref: unknown, args: Record<string, unknown>) => {
+      if ("limit" in args) return [claimedJob];
+      return { ok: true };
+    });
+    const runQuery = vi.fn(async (_ref: unknown, args: Record<string, unknown>) => {
+      if ("jobId" in args) {
+        return {
+          job: claimedJob,
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+            moderationStatus: "hidden",
+            moderationReason: "scanner.aggregate.suspicious",
+            moderationVerdict: "suspicious",
+            moderationFlags: ["flagged.suspicious"],
+            moderationReasonCodes: ["suspicious.dep_not_found_on_registry"],
+            moderationSummary: "Detected: suspicious.dep_not_found_on_registry",
+            moderationEvidence: [
+              {
+                code: "suspicious.dep_not_found_on_registry",
+                severity: "critical",
+                file: "Dependency manifests",
+                line: 1,
+                message: "missing dependency",
+                evidence: "legacy dependency registry evidence",
+              },
+            ],
+            isSuspicious: true,
+          },
+          version: {
+            _id: "skillVersions:1",
+            files: [
+              {
+                path: "SKILL.md",
+                size: 12,
+                sha256: "a".repeat(64),
+                storageId: "storage:skill",
+                contentType: "text/markdown",
+              },
+            ],
+            staticScan: {
+              status: "suspicious",
+              reasonCodes: ["suspicious.dep_not_found_on_registry"],
+              findings: [
+                {
+                  code: "suspicious.dep_not_found_on_registry",
+                  severity: "critical",
+                  file: "Dependency manifests",
+                  line: 1,
+                  message: "missing dependency",
+                  evidence: "legacy dependency registry evidence",
+                },
+              ],
+              summary: "Detected: suspicious.dep_not_found_on_registry",
+              engineVersion: "static-v1",
+              checkedAt: 1,
+            },
+            depRegistryAnalysis: {
+              status: "suspicious",
+              results: [],
+              notFoundPackages: ["missing-package (npm)"],
+              unresolvedPackages: [],
+              summary: "Dependency advisory warning.",
+              checkedAt: 2,
+            },
+            depRegistryScanStatus: "suspicious",
+          },
+        };
+      }
+      if ("skillVersionId" in args) return [];
+      throw new Error(`Unexpected query args: ${JSON.stringify(args)}`);
+    });
+    const getUrl = vi.fn(async (storageId: string) => `https://storage.example/${storageId}`);
+
+    const result = await claimCodexScanJobsHandler(
+      { runMutation, runQuery, storage: { getUrl } },
+      { token: "worker-secret", workerId: "worker-1", limit: 10 },
+    );
+
+    expect(result).toEqual([
+      expect.objectContaining({
+        target: expect.objectContaining({
+          version: expect.objectContaining({
+            staticScan: {
+              status: "clean",
+              reasonCodes: [],
+              findings: [],
+              summary: "No suspicious patterns detected.",
+              engineVersion: "static-v1",
+              checkedAt: 1,
+            },
+          }),
+          skill: expect.objectContaining({
+            moderationStatus: "active",
+            moderationReason: "scanner.aggregate.clean",
+            moderationVerdict: "clean",
+            moderationFlags: undefined,
+            moderationReasonCodes: undefined,
+            moderationSummary: "No suspicious patterns detected.",
+            moderationEvidence: undefined,
+            isSuspicious: false,
+          }),
+        }),
+      }),
+    ]);
+    expect(JSON.stringify(result)).not.toContain("suspicious.dep_not_found_on_registry");
+    expect(JSON.stringify(result)).not.toContain("legacy dependency registry evidence");
+    expect(JSON.stringify(result)).not.toContain("depRegistryAnalysis");
+    expect(JSON.stringify(result)).not.toContain("depRegistryScanStatus");
+  });
+
+  it("preserves scanner-specific suspicious reasons in claimed version payloads", async () => {
+    vi.stubEnv("SECURITY_SCAN_WORKER_TOKEN", "worker-secret");
+    const runMutation = vi.fn(async (_ref: unknown, args: Record<string, unknown>) => {
+      if ("limit" in args) return [claimedJob];
+      return { ok: true };
+    });
+    const runQuery = vi.fn(async (_ref: unknown, args: Record<string, unknown>) => {
+      if ("jobId" in args) {
+        return {
+          job: claimedJob,
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+            moderationStatus: "hidden",
+            moderationReason: "scanner.vt.suspicious",
+            moderationVerdict: "suspicious",
+            moderationFlags: ["flagged.suspicious"],
+            moderationReasonCodes: ["suspicious.dep_not_found_on_registry"],
+            moderationSummary: "Detected: suspicious.dep_not_found_on_registry",
+            moderationEvidence: [
+              {
+                code: "suspicious.dep_not_found_on_registry",
+                severity: "critical",
+                file: "Dependency manifests",
+                line: 1,
+                message: "missing dependency",
+                evidence: "legacy dependency registry evidence",
+              },
+            ],
+            isSuspicious: true,
+          },
+          version: {
+            _id: "skillVersions:1",
+            files: [
+              {
+                path: "SKILL.md",
+                size: 12,
+                sha256: "a".repeat(64),
+                storageId: "storage:skill",
+                contentType: "text/markdown",
+              },
+            ],
+          },
+        };
+      }
+      if ("skillVersionId" in args) return [];
+      throw new Error(`Unexpected query args: ${JSON.stringify(args)}`);
+    });
+    const getUrl = vi.fn(async (storageId: string) => `https://storage.example/${storageId}`);
+
+    const result = await claimCodexScanJobsHandler(
+      { runMutation, runQuery, storage: { getUrl } },
+      { token: "worker-secret", workerId: "worker-1", limit: 10 },
+    );
+
+    expect(result).toEqual([
+      expect.objectContaining({
+        target: expect.objectContaining({
+          skill: expect.objectContaining({
+            moderationStatus: "active",
+            moderationReason: "scanner.vt.suspicious",
+            moderationVerdict: "suspicious",
+            moderationFlags: ["flagged.suspicious"],
+            moderationReasonCodes: undefined,
+            moderationSummary: "Detected: scanner.vt.suspicious",
+            moderationEvidence: undefined,
+            isSuspicious: true,
+          }),
+        }),
+      }),
+    ]);
+    expect(JSON.stringify(result)).not.toContain("suspicious.dep_not_found_on_registry");
+    expect(JSON.stringify(result)).not.toContain("legacy dependency registry evidence");
+  });
+
+  it("preserves no-reason hidden locks in claimed version payloads", async () => {
+    vi.stubEnv("SECURITY_SCAN_WORKER_TOKEN", "worker-secret");
+    const runMutation = vi.fn(async (_ref: unknown, args: Record<string, unknown>) => {
+      if ("limit" in args) return [claimedJob];
+      return { ok: true };
+    });
+    const runQuery = vi.fn(async (_ref: unknown, args: Record<string, unknown>) => {
+      if ("jobId" in args) {
+        return {
+          job: claimedJob,
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+            moderationStatus: "hidden",
+            moderationReason: undefined,
+            moderationVerdict: "suspicious",
+            moderationFlags: ["flagged.suspicious"],
+            moderationReasonCodes: ["suspicious.dep_not_found_on_registry"],
+            moderationSummary: "Detected: suspicious.dep_not_found_on_registry",
+            moderationEvidence: [
+              {
+                code: "suspicious.dep_not_found_on_registry",
+                severity: "critical",
+                file: "Dependency manifests",
+                line: 1,
+                message: "missing dependency",
+                evidence: "legacy dependency registry evidence",
+              },
+            ],
+            isSuspicious: true,
+          },
+          version: {
+            _id: "skillVersions:1",
+            files: [
+              {
+                path: "SKILL.md",
+                size: 12,
+                sha256: "a".repeat(64),
+                storageId: "storage:skill",
+                contentType: "text/markdown",
+              },
+            ],
+          },
+        };
+      }
+      if ("skillVersionId" in args) return [];
+      throw new Error(`Unexpected query args: ${JSON.stringify(args)}`);
+    });
+    const getUrl = vi.fn(async (storageId: string) => `https://storage.example/${storageId}`);
+
+    const result = await claimCodexScanJobsHandler(
+      { runMutation, runQuery, storage: { getUrl } },
+      { token: "worker-secret", workerId: "worker-1", limit: 10 },
+    );
+
+    expect(result).toEqual([
+      expect.objectContaining({
+        target: expect.objectContaining({
+          skill: expect.objectContaining({
+            moderationStatus: "hidden",
+            moderationReason: undefined,
+            moderationVerdict: "suspicious",
+            moderationFlags: ["flagged.suspicious"],
+            moderationReasonCodes: undefined,
+            moderationSummary: undefined,
+            moderationEvidence: undefined,
+            isSuspicious: true,
+          }),
+        }),
+      }),
+    ]);
+    expect(JSON.stringify(result)).not.toContain("suspicious.dep_not_found_on_registry");
+    expect(JSON.stringify(result)).not.toContain("legacy dependency registry evidence");
+  });
+
+  it("keeps legacy scanner-malicious skills blocked in claimed version payloads", async () => {
+    vi.stubEnv("SECURITY_SCAN_WORKER_TOKEN", "worker-secret");
+    const runMutation = vi.fn(async (_ref: unknown, args: Record<string, unknown>) => {
+      if ("limit" in args) return [claimedJob];
+      return { ok: true };
+    });
+    const runQuery = vi.fn(async (_ref: unknown, args: Record<string, unknown>) => {
+      if ("jobId" in args) {
+        return {
+          job: claimedJob,
+          skill: {
+            _id: "skills:1",
+            slug: "demo",
+            moderationStatus: "hidden",
+            moderationReason: "scanner.vt.malicious",
+            moderationVerdict: undefined,
+            moderationFlags: undefined,
+            moderationReasonCodes: ["suspicious.dep_not_found_on_registry"],
+            moderationSummary: "Detected: suspicious.dep_not_found_on_registry",
+            moderationEvidence: [
+              {
+                code: "suspicious.dep_not_found_on_registry",
+                severity: "critical",
+                file: "Dependency manifests",
+                line: 1,
+                message: "missing dependency",
+                evidence: "legacy dependency registry evidence",
+              },
+            ],
+            isSuspicious: true,
+          },
+          version: {
+            _id: "skillVersions:1",
+            files: [
+              {
+                path: "SKILL.md",
+                size: 12,
+                sha256: "a".repeat(64),
+                storageId: "storage:skill",
+                contentType: "text/markdown",
+              },
+            ],
+          },
+        };
+      }
+      if ("skillVersionId" in args) return [];
+      throw new Error(`Unexpected query args: ${JSON.stringify(args)}`);
+    });
+    const getUrl = vi.fn(async (storageId: string) => `https://storage.example/${storageId}`);
+
+    const result = await claimCodexScanJobsHandler(
+      { runMutation, runQuery, storage: { getUrl } },
+      { token: "worker-secret", workerId: "worker-1", limit: 10 },
+    );
+
+    expect(result).toEqual([
+      expect.objectContaining({
+        target: expect.objectContaining({
+          skill: expect.objectContaining({
+            moderationStatus: "hidden",
+            moderationReason: "scanner.vt.malicious",
+            moderationVerdict: "malicious",
+            moderationFlags: ["blocked.malware"],
+            moderationReasonCodes: undefined,
+            moderationSummary: "Detected: malicious scanner verdict",
+            moderationEvidence: undefined,
+            isSuspicious: false,
+          }),
+        }),
+      }),
+    ]);
+  });
+
+  it("strips retired dependency registry findings from claimed scan request payloads", async () => {
+    vi.stubEnv("SECURITY_SCAN_WORKER_TOKEN", "worker-secret");
+    const scanRequestJob = {
+      ...claimedJob,
+      targetKind: "skillScanRequest",
+      skillVersionId: undefined,
+      skillScanRequestId: "skillScanRequests:1",
+    };
+    const runMutation = vi.fn(async (_ref: unknown, args: Record<string, unknown>) => {
+      if ("limit" in args) return [scanRequestJob];
+      return { ok: true };
+    });
+    const runQuery = vi.fn(async (_ref: unknown, args: Record<string, unknown>) => {
+      if ("jobId" in args) {
+        return {
+          job: scanRequestJob,
+          scanRequest: {
+            _id: "skillScanRequests:1",
+            files: [
+              {
+                path: "SKILL.md",
+                size: 12,
+                sha256: "a".repeat(64),
+                storageId: "storage:skill",
+                contentType: "text/markdown",
+              },
+            ],
+            staticScan: {
+              status: "suspicious",
+              reasonCodes: ["suspicious.dep_not_found_on_registry"],
+              findings: [
+                {
+                  code: "suspicious.dep_not_found_on_registry",
+                  severity: "critical",
+                  file: "Dependency manifests",
+                  line: 1,
+                  message: "missing dependency",
+                  evidence: "legacy dependency registry evidence",
+                },
+              ],
+              summary: "Detected: suspicious.dep_not_found_on_registry",
+              engineVersion: "static-v1",
+              checkedAt: 1,
+            },
+          },
+          version: {
+            _id: "skillVersions:1",
+            files: [],
+            staticScan: {
+              status: "suspicious",
+              reasonCodes: ["suspicious.dep_not_found_on_registry"],
+              findings: [
+                {
+                  code: "suspicious.dep_not_found_on_registry",
+                  severity: "critical",
+                  file: "Dependency manifests",
+                  line: 1,
+                  message: "missing dependency",
+                  evidence: "legacy dependency registry evidence",
+                },
+              ],
+              summary: "Detected: suspicious.dep_not_found_on_registry",
+              engineVersion: "static-v1",
+              checkedAt: 1,
+            },
+            depRegistryAnalysis: {
+              status: "suspicious",
+              results: [],
+              notFoundPackages: ["missing-package (npm)"],
+              unresolvedPackages: [],
+              summary: "Dependency advisory warning.",
+              checkedAt: 2,
+            },
+            depRegistryScanStatus: "suspicious",
+          },
+        };
+      }
+      throw new Error(`Unexpected query args: ${JSON.stringify(args)}`);
+    });
+    const getUrl = vi.fn(async (storageId: string) => `https://storage.example/${storageId}`);
+
+    const result = await claimCodexScanJobsHandler(
+      { runMutation, runQuery, storage: { getUrl } },
+      { token: "worker-secret", workerId: "worker-1", limit: 10 },
+    );
+
+    expect(result).toEqual([
+      expect.objectContaining({
+        target: expect.objectContaining({
+          scanRequest: expect.objectContaining({
+            staticScan: {
+              status: "clean",
+              reasonCodes: [],
+              findings: [],
+              summary: "No suspicious patterns detected.",
+              engineVersion: "static-v1",
+              checkedAt: 1,
+            },
+          }),
+          version: expect.objectContaining({
+            staticScan: {
+              status: "clean",
+              reasonCodes: [],
+              findings: [],
+              summary: "No suspicious patterns detected.",
+              engineVersion: "static-v1",
+              checkedAt: 1,
+            },
+          }),
+        }),
+      }),
+    ]);
+    expect(JSON.stringify(result)).not.toContain("depRegistryAnalysis");
+    expect(JSON.stringify(result)).not.toContain("depRegistryScanStatus");
   });
 
   it("clears only queued backfill jobs in local dev", async () => {

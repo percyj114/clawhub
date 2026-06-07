@@ -102,6 +102,10 @@ Powerful behavior is not automatically bad. Many useful tools need credentials,
 local commands, provider APIs, or package installs. The audit checks whether that
 power is expected, disclosed, and proportionate.
 
+ClawHub audits the submitted artifact and metadata. It does not currently verify
+typosquatting risk, dependency graph safety, transitive dependencies, or lockfile
+consistency.
+
 Artifact pages link to the full audit at:
 
 ```text

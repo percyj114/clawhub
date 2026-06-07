@@ -34,7 +34,6 @@ import {
 import { getSkillBadgeMap, getSkillBadgeMaps, isSkillHighlighted } from "./lib/badges";
 import { scheduleNextBatchIfNeeded } from "./lib/batching";
 import { generateChangelogPreview as buildChangelogPreview } from "./lib/changelog";
-import { mergeDepRegistryFinding } from "./lib/depRegistryScan";
 import { embeddingVisibilityFor } from "./lib/embeddingVisibility";
 import {
   canHealSkillOwnershipByGitHubProviderAccountId,
@@ -47,6 +46,8 @@ import {
   readGlobalPublicSkillsCount,
 } from "./lib/globalStats";
 import {
+  compareTrendingEntries,
+  type LeaderboardEntry,
   TRENDING_LEADERBOARD_KIND,
   TRENDING_NON_SUSPICIOUS_LEADERBOARD_KIND,
 } from "./lib/leaderboards";
@@ -60,6 +61,7 @@ import { buildModerationSnapshot } from "./lib/moderationEngine";
 import {
   legacyFlagsFromVerdict,
   MODERATION_ENGINE_VERSION,
+  stripRetiredDependencyRegistryStaticScan,
   summarizeReasonCodes,
   verdictFromCodes,
 } from "./lib/moderationReasonCodes";
@@ -114,15 +116,17 @@ import {
 } from "./lib/skillPublish";
 import { getFrontmatterValue, hashSkillFiles } from "./lib/skills";
 import {
+  applyEffectiveModerationForPublicSkill,
   computeIsSuspicious,
-  isSkillReviewFlagged,
+  getEffectiveSkillModerationState,
   isSkillSuspicious,
   isSkillTransferBlockedByModeration,
+  resolveScannerModerationReason,
 } from "./lib/skillSafety";
 import {
-  digestToHydratableSkill,
   digestToOwnerInfo,
   extractValidatedDigestFields,
+  resolveHydratableSkillForDigest,
   upsertSkillSearchDigest,
 } from "./lib/skillSearchDigest";
 import { assertValidSkillSlug, normalizeSkillSlug } from "./lib/skillSlugValidator";
@@ -228,31 +232,6 @@ const skillSpectorAnalysisValidator = v.object({
   checkedAt: v.number(),
 });
 
-const depRegistryStatusValidator = v.union(
-  v.literal("clean"),
-  v.literal("suspicious"),
-  v.literal("error"),
-);
-
-const depRegistryValidator = v.union(v.literal("pypi"), v.literal("npm"), v.literal("cargo"));
-
-const depRegistryAnalysisValidator = v.object({
-  status: depRegistryStatusValidator,
-  results: v.array(
-    v.object({
-      name: v.string(),
-      registry: depRegistryValidator,
-      source: v.string(),
-      exists: v.boolean(),
-      httpStatus: v.optional(v.number()),
-    }),
-  ),
-  notFoundPackages: v.array(v.string()),
-  unresolvedPackages: v.array(v.string()),
-  summary: v.string(),
-  checkedAt: v.number(),
-});
-
 function buildStructuredModerationPatch(params: {
   staticScan?: Doc<"skillVersions">["staticScan"];
   vtAnalysis?: Doc<"skillVersions">["vtAnalysis"];
@@ -340,32 +319,6 @@ function isObviousJunkSkill(
   );
 }
 
-function resolveScannerModerationReason(params: {
-  vtStatus?: string;
-  llmStatus?: string;
-  verdict?: Doc<"skills">["moderationVerdict"];
-}) {
-  const vtStatus = normalizeAnalysisStatus(params.vtStatus);
-  const llmStatus = normalizeAnalysisStatus(params.llmStatus);
-
-  if (params.verdict === "clean" && (vtStatus === "suspicious" || llmStatus === "suspicious")) {
-    return "scanner.aggregate.clean";
-  }
-  if (vtStatus === "malicious") return "scanner.vt.malicious";
-  if (llmStatus === "malicious") return "scanner.llm.malicious";
-  if (vtStatus === "suspicious") return "scanner.vt.suspicious";
-  if (llmStatus === "suspicious") return "scanner.llm.suspicious";
-  if (vtStatus === "pending" || vtStatus === "loading" || vtStatus === "not_found") {
-    return "scanner.vt.pending";
-  }
-  if (llmStatus === "pending" || llmStatus === "loading") return "scanner.llm.pending";
-  if (vtStatus === "clean") return "scanner.vt.clean";
-  if (llmStatus === "clean") return "scanner.llm.clean";
-  if (params.verdict === "malicious") return "scanner.aggregate.malicious";
-  if (params.verdict === "suspicious") return "scanner.aggregate.suspicious";
-  return "scanner.aggregate.clean";
-}
-
 function scannerStatusFromReasonCodes(params: {
   scanner: "vt" | "llm";
   status?: string;
@@ -389,7 +342,7 @@ function buildScannerModerationPatchFromVersion(params: {
   now: number;
 }): SkillModerationPatch {
   const structuredPatch = buildStructuredModerationPatch({
-    staticScan: params.version.staticScan,
+    staticScan: staticScanForSkillModeration(params.version),
     vtAnalysis: params.version.vtAnalysis,
     llmAnalysis: params.version.llmAnalysis,
     vtStatus: params.version.vtAnalysis?.status,
@@ -564,11 +517,17 @@ function skillIconFromSkillVersion(version: Pick<Doc<"skillVersions">, "icon"> |
   return version && "icon" in version ? version.icon : undefined;
 }
 
+function staticScanForSkillModeration(
+  version: Pick<Doc<"skillVersions">, "staticScan"> | null | undefined,
+) {
+  return stripRetiredDependencyRegistryStaticScan(version?.staticScan);
+}
+
 function isKnownMaliciousSkillVersion(
   version: Pick<Doc<"skillVersions">, "_id" | "staticScan" | "vtAnalysis" | "llmAnalysis">,
 ) {
   const patch = buildStructuredModerationPatch({
-    staticScan: version.staticScan,
+    staticScan: staticScanForSkillModeration(version),
     vtAnalysis: version.vtAnalysis,
     llmAnalysis: version.llmAnalysis,
     vtStatus: version.vtAnalysis?.status,
@@ -836,7 +795,6 @@ const SORT_INDEXES = {
   installs: "by_active_stats_installs_all_time",
 } as const;
 
-// Compound indexes on skillSearchDigest that filter isSuspicious at the index level.
 const NONSUSPICIOUS_SORT_INDEXES = {
   recommended: "by_nonsuspicious_recommended_rank",
   newest: "by_nonsuspicious_created",
@@ -845,7 +803,12 @@ const NONSUSPICIOUS_SORT_INDEXES = {
   downloads: "by_nonsuspicious_downloads",
   stars: "by_nonsuspicious_stars",
   installs: "by_nonsuspicious_installs",
-} as const;
+} as const satisfies Record<keyof typeof SORT_INDEXES, string>;
+
+type PublicListIndexName =
+  | (typeof SORT_INDEXES)[keyof typeof SORT_INDEXES]
+  | (typeof NONSUSPICIOUS_SORT_INDEXES)[keyof typeof NONSUSPICIOUS_SORT_INDEXES];
+
 const MAX_FILTERED_PUBLIC_LIST_SCAN_PAGES = 12;
 const MAX_FILTERED_PUBLIC_LIST_SCAN_ROWS = 500;
 
@@ -1998,6 +1961,29 @@ type PublicSkillVersion = {
   } | null;
 };
 
+function toPublicStaticScan(
+  staticScan: NonNullable<Doc<"skillVersions">["staticScan"]>,
+): NonNullable<PublicSkillVersion["staticScan"]> {
+  const scrubbed = stripRetiredDependencyRegistryStaticScan(staticScan) ?? staticScan;
+  const findings = scrubbed.findings.map((finding) => ({
+    code: finding.code,
+    severity: finding.severity,
+    file: finding.file,
+    line: finding.line,
+    message: finding.message,
+    evidence: "",
+  }));
+
+  return {
+    status: scrubbed.status,
+    reasonCodes: scrubbed.reasonCodes,
+    findings,
+    summary: scrubbed.summary,
+    engineVersion: scrubbed.engineVersion,
+    checkedAt: scrubbed.checkedAt,
+  };
+}
+
 type ManagementSkillEntry = {
   skill: Doc<"skills">;
   latestVersion: Doc<"skillVersions"> | null;
@@ -2050,7 +2036,7 @@ type BadgeKind = Doc<"skillBadges">["kind"];
 
 async function buildPublicSkillEntries(
   ctx: QueryCtx,
-  skills: HydratableSkill[],
+  skills: Doc<"skills">[],
   opts?: {
     includeVersion?: boolean;
     preResolvedOwners?: Map<
@@ -2101,20 +2087,28 @@ async function buildPublicSkillEntries(
 
   const entries = await Promise.all(
     skills.map(async (skill) => {
+      const effectiveSkill = applyEffectiveModerationForPublicSkill(
+        skill,
+        getEffectiveSkillModerationState(skill),
+      );
       // Use denormalized summary when available to avoid reading the full ~6KB version doc.
-      const summary = skill.latestVersionSummary;
+      const summary = effectiveSkill.latestVersionSummary;
       const hasSummary = includeVersion && summary;
       const [latestVersionDoc, ownerInfo] = await Promise.all([
-        includeVersion && skill.latestVersionId
-          ? loadPublicLatestVersionForSkill(ctx, skill)
+        includeVersion && effectiveSkill.latestVersionId
+          ? loadPublicLatestVersionForSkill(ctx, effectiveSkill)
           : null,
-        getOwnerInfo(skill._id, skill.ownerUserId, skill.ownerPublisherId),
+        getOwnerInfo(
+          effectiveSkill._id,
+          effectiveSkill.ownerUserId,
+          effectiveSkill.ownerPublisherId,
+        ),
       ]);
-      const publicSkill = toPublicSkill(skill);
+      const publicSkill = toPublicSkill(effectiveSkill);
       if (!publicSkill || !ownerInfo.owner) return null;
       const latestVersion =
         hasSummary && latestVersionDoc
-          ? toPublicSkillListVersionFromSummary(summary!, latestVersionDoc._id, skill._id)
+          ? toPublicSkillListVersionFromSummary(summary!, latestVersionDoc._id, effectiveSkill._id)
           : toPublicSkillListVersion(latestVersionDoc);
       return {
         skill: publicSkill,
@@ -2246,23 +2240,7 @@ function toPublicSkillVersion(
     skillSpectorAnalysis: version.skillSpectorAnalysis,
     llmAnalysis: version.llmAnalysis,
     apiKeyRequired: version.apiKeyRequired,
-    staticScan: version.staticScan
-      ? {
-          status: version.staticScan.status,
-          reasonCodes: version.staticScan.reasonCodes,
-          findings: (version.staticScan.findings ?? []).map((finding) => ({
-            code: finding.code,
-            severity: finding.severity,
-            file: finding.file,
-            line: finding.line,
-            message: finding.message,
-            evidence: "",
-          })),
-          summary: version.staticScan.summary,
-          engineVersion: version.staticScan.engineVersion,
-          checkedAt: version.staticScan.checkedAt,
-        }
-      : undefined,
+    staticScan: version.staticScan ? toPublicStaticScan(version.staticScan) : undefined,
   };
 }
 
@@ -2529,18 +2507,22 @@ export const getBySlug = query({
     const githubSource = skill.githubSourceId ? await ctx.db.get(skill.githubSourceId) : null;
     const githubSourceRepo = githubSource?.repo;
 
-    const publicSkill = toPublicSkill({ ...skill, badges });
-
     // Determine moderation state
     const overrideActive = Boolean(skill.manualOverride);
+    const effectiveModeration = getEffectiveSkillModerationState(skill);
+    const effectiveSkill = applyEffectiveModerationForPublicSkill(
+      { ...skill, badges },
+      effectiveModeration,
+    );
+    const publicSkill = toPublicSkill(effectiveSkill);
+    const isMalwareBlocked = effectiveModeration.isMalwareBlocked;
+    const isSuspicious = effectiveModeration.isSuspicious;
+    const isReviewFlagged = effectiveModeration.isReviewFlagged;
+    const moderationStatus = effectiveModeration.moderationStatus;
     const isPendingScan =
-      skill.moderationStatus === "hidden" && skill.moderationReason === "pending.scan";
-    const isMalwareBlocked = skill.moderationFlags?.includes("blocked.malware") ?? false;
-    const isSuspicious = skill.moderationFlags?.includes("flagged.suspicious") ?? false;
-    const isReviewFlagged = isSkillReviewFlagged(skill);
-    const isHiddenByMod =
-      skill.moderationStatus === "hidden" && !isPendingScan && !isMalwareBlocked;
-    const isRemoved = skill.moderationStatus === "removed";
+      moderationStatus === "hidden" && skill.moderationReason === "pending.scan";
+    const isHiddenByMod = moderationStatus === "hidden" && !isPendingScan && !isMalwareBlocked;
+    const isRemoved = moderationStatus === "removed";
 
     // Non-owners can see malware-blocked skills (transparency), but not other hidden states
     // Owners can see all their moderated skills
@@ -2574,6 +2556,7 @@ export const getBySlug = query({
       ...skillData,
       canonicalSkillId: canonical ? skillData.canonicalSkillId : undefined,
       forkOf: forkOf ? skillData.forkOf : undefined,
+      isSuspicious,
       ...(githubSourceRepo ? { githubSourceRepo } : {}),
     };
 
@@ -2583,7 +2566,7 @@ export const getBySlug = query({
     const publicModerationSummary =
       !isOwner && overrideActive && !isMalwareBlocked && !isSuspicious
         ? "Security findings were reviewed by moderators and cleared for public use."
-        : skill.moderationSummary;
+        : effectiveModeration.summary;
     const moderationInfo = showModerationInfo
       ? {
           isPendingScan,
@@ -2593,8 +2576,8 @@ export const getBySlug = query({
           isHiddenByMod,
           isRemoved,
           overrideActive,
-          verdict: skill.moderationVerdict,
-          reasonCodes: skill.moderationReasonCodes,
+          verdict: effectiveModeration.verdict,
+          reasonCodes: effectiveModeration.reasonCodes,
           summary: publicModerationSummary,
           engineVersion: skill.moderationEngineVersion,
           updatedAt: skill.moderationEvaluatedAt,
@@ -2983,6 +2966,7 @@ function compactSecurityVerdictVersion(version: Doc<"skillVersions">) {
           staticScan: {
             status: version.staticScan.status,
             reasonCodes: version.staticScan.reasonCodes,
+            findings: version.staticScan.findings,
             summary: version.staticScan.summary,
             engineVersion: version.staticScan.engineVersion,
             checkedAt: version.staticScan.checkedAt,
@@ -3044,15 +3028,6 @@ function compactSecurityVerdictVersion(version: Doc<"skillVersions">) {
           },
         }
       : {}),
-    ...(version.depRegistryAnalysis
-      ? {
-          depRegistryAnalysis: {
-            status: version.depRegistryAnalysis.status,
-            summary: version.depRegistryAnalysis.summary,
-            checkedAt: version.depRegistryAnalysis.checkedAt,
-          },
-        }
-      : {}),
   };
 }
 
@@ -3063,11 +3038,13 @@ export const getSecurityVerdictTargetInternal = internalQuery({
     const skill = resolved.skill;
     if (!skill) return null;
 
-    const isMalwareBlocked = skill.moderationFlags?.includes("blocked.malware") ?? false;
-    const isSuspicious = skill.moderationFlags?.includes("flagged.suspicious") ?? false;
-    const isReviewFlagged = isSkillReviewFlagged(skill);
+    const effectiveModeration = getEffectiveSkillModerationState(skill);
+    const effectiveSkill = applyEffectiveModerationForPublicSkill(skill, effectiveModeration);
+    const isMalwareBlocked = effectiveModeration.isMalwareBlocked;
+    const isSuspicious = effectiveModeration.isSuspicious;
+    const isReviewFlagged = effectiveModeration.isReviewFlagged;
     const overrideActive = Boolean(skill.manualOverride);
-    if (!isPublicSkillDoc(skill) && !isMalwareBlocked) return null;
+    if (!isPublicSkillDoc(effectiveSkill) && !isMalwareBlocked) return null;
 
     const owner = toPublicPublisher(
       await getOwnerPublisher(ctx, {
@@ -3081,17 +3058,17 @@ export const getSecurityVerdictTargetInternal = internalQuery({
       .query("skillVersions")
       .withIndex("by_skill_version", (q) => q.eq("skillId", skill._id).eq("version", args.version))
       .unique();
+    const moderationStatus = effectiveModeration.moderationStatus;
     const isPendingScan =
-      skill.moderationStatus === "hidden" && skill.moderationReason === "pending.scan";
-    const isHiddenByMod =
-      skill.moderationStatus === "hidden" && !isPendingScan && !isMalwareBlocked;
-    const isRemoved = skill.moderationStatus === "removed";
+      moderationStatus === "hidden" && skill.moderationReason === "pending.scan";
+    const isHiddenByMod = moderationStatus === "hidden" && !isPendingScan && !isMalwareBlocked;
+    const isRemoved = moderationStatus === "removed";
     const showModerationInfo =
       isMalwareBlocked || isSuspicious || isReviewFlagged || overrideActive;
     const publicModerationSummary =
       overrideActive && !isMalwareBlocked && !isSuspicious
         ? "Security findings were reviewed by moderators and cleared for public use."
-        : skill.moderationSummary;
+        : effectiveModeration.summary;
 
     return {
       skill: {
@@ -3113,8 +3090,8 @@ export const getSecurityVerdictTargetInternal = internalQuery({
             isHiddenByMod,
             isRemoved,
             overrideActive,
-            verdict: skill.moderationVerdict,
-            reasonCodes: skill.moderationReasonCodes,
+            verdict: effectiveModeration.verdict,
+            reasonCodes: effectiveModeration.reasonCodes,
             summary: publicModerationSummary,
             engineVersion: skill.moderationEngineVersion,
             updatedAt: skill.moderationEvaluatedAt,
@@ -4800,56 +4777,71 @@ export const listPublicPageV3 = query({
     const dir = args.dir ?? (sort === "name" ? "asc" : "desc");
     const { numItems, cursor: initialCursor } = normalizePublicListPagination(args.paginationOpts);
 
-    const runPaginateBase = (cursor: string | null) =>
+    if (args.nonSuspiciousOnly) {
+      const indexName = getPublicListIndexName(sort, true);
+      const eqPrefix = getPublicListEqPrefix(true);
+      const decodedCursor = getPublicListCursorKey({
+        cursor: initialCursor ?? undefined,
+        sort,
+        indexName,
+        maxIndexKeyLength: getPublicListIndexFieldCount(sort, true),
+        eqPrefix,
+      });
+      const result = await collectMergedSafeListPage(ctx, {
+        sort,
+        dir,
+        cursor: initialCursor ?? undefined,
+        decodedLegacyCursor: decodedCursor,
+        numItems,
+        buildItem: async (digest, hydratable) => {
+          if (args.highlightedOnly && !isSkillHighlighted(hydratable)) return null;
+          return buildPublicSkillEntryFromDigest(ctx, digest, hydratable);
+        },
+      });
+
+      return {
+        page: result.items,
+        isDone: !result.hasMore,
+        continueCursor: result.nextCursor ?? "",
+      };
+    }
+
+    const runPaginateBase = (cursor: string | null, pageSize: number) =>
       ctx.db
         .query("skillSearchDigest")
         .withIndex(SORT_INDEXES[sort], (q) => q.eq("softDeletedAt", undefined))
         .order(dir)
-        .paginate({ cursor, numItems });
+        .paginate({ cursor, numItems: pageSize });
 
-    const runPaginateCompound = (cursor: string | null) =>
-      ctx.db
-        .query("skillSearchDigest")
-        .withIndex(NONSUSPICIOUS_SORT_INDEXES[sort], (q) =>
-          q.eq("softDeletedAt", undefined).eq("isSuspicious", false),
-        )
-        .order(dir)
-        .paginate({ cursor, numItems });
-
-    let result = await paginateWithStaleCursorRecovery(
-      args.nonSuspiciousOnly ? runPaginateCompound : runPaginateBase,
-      initialCursor,
-    );
-
-    if (
-      args.nonSuspiciousOnly &&
-      initialCursor === null &&
-      result.page.length === 0 &&
-      !result.isDone
-    ) {
-      result = await paginateWithStaleCursorRecovery(runPaginateBase, null);
-    }
-
-    const filteredPage = filterPublicSkillPage(result.page.map(digestToHydratableSkill), args);
-
-    const filteredMap = new Map(filteredPage.map((s) => [s._id, s]));
     const items: PublicSkillEntry[] = [];
-    for (const digest of result.page) {
-      const hydratable = filteredMap.get(digest.skillId);
-      if (!hydratable) continue;
-      const publicSkill = toPublicSkill(hydratable);
-      if (!publicSkill) continue;
-      const ownerInfo = digestToOwnerInfo(digest);
-      if (!ownerInfo?.owner) continue;
-      const latestVersion = await resolveDigestLatestVersionForSkill(ctx, digest);
-      items.push({
-        skill: publicSkill,
-        latestVersion,
-        ownerHandle: ownerInfo.ownerHandle,
-        owner: ownerInfo.owner,
-      });
+    let cursor = initialCursor;
+    let isDone = true;
+    let continueCursor = "";
+
+    for (let pageCount = 0; pageCount < MAX_FILTERED_PUBLIC_LIST_SCAN_PAGES; pageCount += 1) {
+      const remaining = numItems - items.length;
+      if (remaining <= 0) break;
+
+      const result = await paginateWithStaleCursorRecovery(
+        (candidateCursor) => runPaginateBase(candidateCursor, remaining),
+        cursor,
+      );
+      isDone = result.isDone;
+      continueCursor = result.continueCursor;
+      if (result.page.length === 0) break;
+
+      for (const digest of result.page) {
+        const hydratable = await resolveHydratableSkillForDigest(ctx, digest);
+        if (args.highlightedOnly && !isSkillHighlighted(hydratable)) continue;
+        const item = await buildPublicSkillEntryFromDigest(ctx, digest, hydratable);
+        if (item) items.push(item);
+      }
+
+      if (items.length >= numItems || result.isDone) break;
+      cursor = result.continueCursor;
     }
-    return { ...result, page: items };
+
+    return { page: items, isDone, continueCursor };
   },
 });
 
@@ -4874,6 +4866,7 @@ const NONSUSPICIOUS_SORT_INDEX_FIELD_COUNTS: Record<PublicListSort, number> = {
   stars: 4,
   installs: 4,
 };
+
 const GET_PAGE_TIEBREAKER_FIELD_COUNT = 2;
 
 function encodeIndexKeyValue(val: Value | undefined): Value {
@@ -4887,7 +4880,7 @@ function decodeIndexKeyValue(val: unknown): Value | undefined {
   return val as Value;
 }
 
-function encodeIndexKey(indexName: string, key: IndexKey): string {
+function encodeIndexKey(indexName: PublicListIndexName, key: IndexKey): string {
   return JSON.stringify({
     v: 1,
     index: indexName,
@@ -4895,9 +4888,28 @@ function encodeIndexKey(indexName: string, key: IndexKey): string {
   });
 }
 
+function encodeOptionalIndexKey(key: IndexKey | null): Value[] | null {
+  return key ? key.map(encodeIndexKeyValue) : null;
+}
+
 function indexKeyStartsWithPrefix(key: IndexKey, prefix: IndexKey): boolean {
   if (key.length < prefix.length) return false;
   return prefix.every((value, index) => key[index] === value);
+}
+
+function getPublicListCursorIndexName(cursor?: string): string | null {
+  if (!cursor) return null;
+  try {
+    const parsed = JSON.parse(cursor) as unknown;
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const maybeCursor = parsed as { v?: unknown; index?: unknown };
+    if ((maybeCursor.v === 1 || maybeCursor.v === 2) && typeof maybeCursor.index === "string") {
+      return maybeCursor.index;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 function decodePublicListCursor({
@@ -4944,25 +4956,370 @@ function decodePublicListCursor({
 function getPublicListCursorKey({
   cursor,
   sort,
-  nonSuspiciousOnly,
   indexName,
+  maxIndexKeyLength,
   eqPrefix,
 }: {
   cursor?: string;
   sort: PublicListSort;
-  nonSuspiciousOnly: boolean;
   indexName: string;
+  maxIndexKeyLength?: number;
   eqPrefix: IndexKey;
 }): IndexKey | null {
-  const fieldCounts = nonSuspiciousOnly
-    ? NONSUSPICIOUS_SORT_INDEX_FIELD_COUNTS
-    : SORT_INDEX_FIELD_COUNTS;
   return decodePublicListCursor({
     cursor,
     indexName,
-    maxIndexKeyLength: fieldCounts[sort],
+    maxIndexKeyLength: maxIndexKeyLength ?? SORT_INDEX_FIELD_COUNTS[sort],
     eqPrefix,
   });
+}
+
+function getPublicListIndexName(
+  sort: PublicListSort,
+  nonSuspiciousOnly: boolean,
+): PublicListIndexName {
+  return nonSuspiciousOnly ? NONSUSPICIOUS_SORT_INDEXES[sort] : SORT_INDEXES[sort];
+}
+
+function getPublicListIndexFieldCount(sort: PublicListSort, nonSuspiciousOnly: boolean) {
+  return nonSuspiciousOnly
+    ? NONSUSPICIOUS_SORT_INDEX_FIELD_COUNTS[sort]
+    : SORT_INDEX_FIELD_COUNTS[sort];
+}
+
+function getPublicListEqPrefix(nonSuspiciousOnly: boolean): IndexKey {
+  return nonSuspiciousOnly ? [undefined, false] : [undefined];
+}
+
+function getPublicListSupplementEqPrefix(): IndexKey {
+  return [undefined, true];
+}
+
+function digestNeedsSafeListSupplement(digest: Doc<"skillSearchDigest">) {
+  return Boolean(
+    digest.isSuspicious ||
+    digest.moderationStatus !== "active" ||
+    digest.moderationFlags?.some((flag) => flag.startsWith("flagged.")),
+  );
+}
+
+type SafeListCursorState = {
+  staleCursor: IndexKey | null;
+  cleanCursor: IndexKey | null;
+  staleDone: boolean;
+  cleanDone: boolean;
+};
+
+type SafeListPartitionName = "stale" | "clean";
+
+type SafeListPartitionRow = {
+  digest: Doc<"skillSearchDigest">;
+  cursor: IndexKey;
+};
+
+type SafeListPartitionState = {
+  name: SafeListPartitionName;
+  eqPrefix: IndexKey;
+  cursor: IndexKey | null;
+  scanInclusive: boolean;
+  done: boolean;
+  rows: SafeListPartitionRow[];
+  pageCount: number;
+  remainingRows: number;
+};
+
+function decodeSafeListCursorKey({
+  value,
+  eqPrefix,
+  maxIndexKeyLength,
+}: {
+  value: unknown;
+  eqPrefix: IndexKey;
+  maxIndexKeyLength: number;
+}): IndexKey | null {
+  if (value === null || value === undefined) return null;
+  if (!Array.isArray(value)) return null;
+  const key = value.map(decodeIndexKeyValue);
+  if (key.length > maxIndexKeyLength + GET_PAGE_TIEBREAKER_FIELD_COUNT) return null;
+  if (!indexKeyStartsWithPrefix(key, eqPrefix)) return null;
+  return key;
+}
+
+function decodeSafeListCursor({
+  cursor,
+  indexName,
+  maxIndexKeyLength,
+}: {
+  cursor?: string;
+  indexName: string;
+  maxIndexKeyLength: number;
+}): SafeListCursorState | null {
+  if (!cursor) return null;
+  try {
+    const parsed = JSON.parse(cursor) as unknown;
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const maybeCursor = parsed as {
+      v?: unknown;
+      index?: unknown;
+      stale?: unknown;
+      clean?: unknown;
+      staleDone?: unknown;
+      cleanDone?: unknown;
+    };
+    if (maybeCursor.v !== 2 || maybeCursor.index !== indexName) return null;
+
+    const staleCursor = decodeSafeListCursorKey({
+      value: maybeCursor.stale,
+      eqPrefix: getPublicListSupplementEqPrefix(),
+      maxIndexKeyLength,
+    });
+    const cleanCursor = decodeSafeListCursorKey({
+      value: maybeCursor.clean,
+      eqPrefix: getPublicListEqPrefix(true),
+      maxIndexKeyLength,
+    });
+    if (maybeCursor.stale !== null && maybeCursor.stale !== undefined && !staleCursor) return null;
+    if (maybeCursor.clean !== null && maybeCursor.clean !== undefined && !cleanCursor) return null;
+
+    return {
+      staleCursor,
+      cleanCursor,
+      staleDone: maybeCursor.staleDone === true,
+      cleanDone: maybeCursor.cleanDone === true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function makeSafeListPartitionState({
+  name,
+  cursor,
+  done,
+  numItems,
+}: {
+  name: SafeListPartitionName;
+  cursor: IndexKey | null;
+  done: boolean;
+  numItems: number;
+}): SafeListPartitionState {
+  return {
+    name,
+    eqPrefix: name === "stale" ? getPublicListSupplementEqPrefix() : getPublicListEqPrefix(true),
+    cursor,
+    scanInclusive: !cursor,
+    done,
+    rows: [],
+    pageCount: 0,
+    remainingRows: Math.max(numItems, Math.min(MAX_FILTERED_PUBLIC_LIST_SCAN_ROWS, numItems * 12)),
+  };
+}
+
+function encodeSafeListCursor(
+  indexName: PublicListIndexName,
+  states: {
+    stale: SafeListPartitionState;
+    clean: SafeListPartitionState;
+  },
+) {
+  return JSON.stringify({
+    v: 2,
+    index: indexName,
+    stale: encodeOptionalIndexKey(states.stale.cursor),
+    clean: encodeOptionalIndexKey(states.clean.cursor),
+    staleDone: states.stale.done && states.stale.rows.length === 0,
+    cleanDone: states.clean.done && states.clean.rows.length === 0,
+  });
+}
+
+function compareIndexKeyValues(left: Value | undefined, right: Value | undefined) {
+  if (left === right) return 0;
+  if (left === undefined) return -1;
+  if (right === undefined) return 1;
+  if (typeof left === "number" && typeof right === "number") return left - right;
+  if (typeof left === "string" && typeof right === "string") return left.localeCompare(right);
+  if (typeof left === "boolean" && typeof right === "boolean") {
+    return Number(left) - Number(right);
+  }
+  return formatIndexKeyValueForComparison(left).localeCompare(
+    formatIndexKeyValueForComparison(right),
+  );
+}
+
+function formatIndexKeyValueForComparison(value: Value) {
+  if (typeof value === "bigint") return value.toString();
+  return JSON.stringify(value) ?? "";
+}
+
+function comparableSafeListSortKey(key: IndexKey): IndexKey {
+  if (key.length <= 2) return key;
+  return [key[0], ...key.slice(2)];
+}
+
+function compareSafeListRows(
+  left: SafeListPartitionRow,
+  right: SafeListPartitionRow,
+  dir: "asc" | "desc",
+) {
+  const leftKey = comparableSafeListSortKey(left.cursor);
+  const rightKey = comparableSafeListSortKey(right.cursor);
+  const maxLength = Math.max(leftKey.length, rightKey.length);
+  for (let index = 0; index < maxLength; index += 1) {
+    const comparison = compareIndexKeyValues(leftKey[index], rightKey[index]);
+    if (comparison !== 0) return dir === "asc" ? comparison : -comparison;
+  }
+  return 0;
+}
+
+async function fillSafeListPartition(
+  ctx: QueryCtx,
+  state: SafeListPartitionState,
+  opts: {
+    indexName: PublicListIndexName;
+    dir: "asc" | "desc";
+    numItems: number;
+  },
+) {
+  if (
+    state.done ||
+    state.rows.length > 0 ||
+    state.remainingRows <= 0 ||
+    state.pageCount >= MAX_FILTERED_PUBLIC_LIST_SCAN_PAGES
+  ) {
+    return;
+  }
+
+  const batchSize = Math.min(state.remainingRows, Math.max(opts.numItems * 3, opts.numItems));
+  const result = await getPage(ctx, {
+    table: "skillSearchDigest",
+    startIndexKey: state.cursor ?? state.eqPrefix,
+    startInclusive: state.scanInclusive,
+    endIndexKey: state.eqPrefix,
+    endInclusive: true,
+    absoluteMaxRows: batchSize,
+    order: opts.dir,
+    index: opts.indexName,
+    schema,
+  });
+  state.pageCount += 1;
+  state.remainingRows -= batchSize;
+
+  if (result.indexKeys.length === 0) {
+    state.done = true;
+    return;
+  }
+
+  for (let index = 0; index < result.page.length; index += 1) {
+    const cursor = result.indexKeys[index];
+    if (!cursor) continue;
+    state.rows.push({ digest: result.page[index], cursor });
+  }
+  state.done = !result.hasMore;
+}
+
+function chooseNextSafeListPartition(states: {
+  stale: SafeListPartitionState;
+  clean: SafeListPartitionState;
+  dir: "asc" | "desc";
+}) {
+  const staleRow = states.stale.rows[0];
+  const cleanRow = states.clean.rows[0];
+  if (!staleRow && !cleanRow) return null;
+  if (!staleRow) return states.clean;
+  if (!cleanRow) return states.stale;
+  const comparison = compareSafeListRows(staleRow, cleanRow, states.dir);
+  return comparison < 0 ? states.stale : states.clean;
+}
+
+function hasMoreSafeListRows(states: {
+  stale: SafeListPartitionState;
+  clean: SafeListPartitionState;
+}) {
+  return (
+    states.stale.rows.length > 0 ||
+    states.clean.rows.length > 0 ||
+    !states.stale.done ||
+    !states.clean.done
+  );
+}
+
+async function collectMergedSafeListPage<T>(
+  ctx: QueryCtx,
+  opts: {
+    sort: PublicListSort;
+    dir: "asc" | "desc";
+    cursor?: string;
+    decodedLegacyCursor: IndexKey | null;
+    numItems: number;
+    capabilityTag?: string;
+    categorySlug?: ServerSkillCategorySlug | null;
+    categoryKeywords?: string[];
+    excludeCategoryKeywords?: string[];
+    buildItem: (digest: Doc<"skillSearchDigest">, hydratable: HydratableSkill) => Promise<T | null>;
+  },
+): Promise<{ items: T[]; hasMore: boolean; nextCursor: string | null }> {
+  if (opts.numItems <= 0) return { items: [], hasMore: false, nextCursor: null };
+
+  const indexName = getPublicListIndexName(opts.sort, true);
+  const cursorState = decodeSafeListCursor({
+    cursor: opts.cursor,
+    indexName,
+    maxIndexKeyLength: getPublicListIndexFieldCount(opts.sort, true),
+  });
+  const stale = makeSafeListPartitionState({
+    name: "stale",
+    cursor: cursorState?.staleCursor ?? null,
+    done: cursorState?.staleDone ?? false,
+    numItems: opts.numItems,
+  });
+  const clean = makeSafeListPartitionState({
+    name: "clean",
+    cursor: cursorState?.cleanCursor ?? opts.decodedLegacyCursor,
+    done: cursorState?.cleanDone ?? false,
+    numItems: opts.numItems,
+  });
+  const items: T[] = [];
+  const seenSkillIds = new Set<Id<"skills">>();
+
+  while (items.length < opts.numItems) {
+    await fillSafeListPartition(ctx, stale, { indexName, dir: opts.dir, numItems: opts.numItems });
+    await fillSafeListPartition(ctx, clean, { indexName, dir: opts.dir, numItems: opts.numItems });
+
+    const nextPartition = chooseNextSafeListPartition({ stale, clean, dir: opts.dir });
+    if (!nextPartition) break;
+    const nextRow = nextPartition.rows.shift();
+    if (!nextRow) continue;
+    nextPartition.cursor = nextRow.cursor;
+    nextPartition.scanInclusive = false;
+
+    const { digest } = nextRow;
+    if (seenSkillIds.has(digest.skillId)) continue;
+    if (nextPartition.name === "stale" && !digestNeedsSafeListSupplement(digest)) continue;
+    if (
+      !digestPassesPublicListFilters(digest, {
+        capabilityTag: opts.capabilityTag,
+        categorySlug: opts.categorySlug ?? null,
+        categoryKeywords: opts.categoryKeywords ?? [],
+        excludeCategoryKeywords: opts.excludeCategoryKeywords ?? [],
+      })
+    ) {
+      continue;
+    }
+
+    const hydratable = await resolveHydratableSkillForDigest(ctx, digest);
+    if (isSkillSuspicious(hydratable)) continue;
+    const item = await opts.buildItem(digest, hydratable);
+    if (!item) continue;
+    seenSkillIds.add(digest.skillId);
+    items.push(item);
+  }
+
+  const hasMore = hasMoreSafeListRows({ stale, clean });
+  return {
+    items,
+    hasMore,
+    nextCursor: hasMore ? encodeSafeListCursor(indexName, { stale, clean }) : null,
+  };
 }
 
 /**
@@ -5006,27 +5363,25 @@ export const listPublicPageV4 = query({
     const requestedSort = normalizePublicListSort(args.sort);
     const dir = resolvePublicListDir(requestedSort, args.dir);
     const numItems = clampInt(args.numItems ?? 25, 1, MAX_PUBLIC_LIST_LIMIT);
-    const eqPrefix: IndexKey = args.nonSuspiciousOnly ? [undefined, false] : [undefined];
-    const recommendedIndexName = args.nonSuspiciousOnly
-      ? NONSUSPICIOUS_SORT_INDEXES.recommended
-      : SORT_INDEXES.recommended;
-    const updatedIndexName = args.nonSuspiciousOnly
-      ? NONSUSPICIOUS_SORT_INDEXES.updated
-      : SORT_INDEXES.updated;
+    const nonSuspiciousOnly = args.nonSuspiciousOnly ?? false;
+    const eqPrefix = getPublicListEqPrefix(nonSuspiciousOnly);
+    const recommendedIndexName = getPublicListIndexName("recommended", nonSuspiciousOnly);
+    const updatedIndexName = getPublicListIndexName("updated", nonSuspiciousOnly);
     const recommendedCursor = getPublicListCursorKey({
       cursor: args.cursor,
       sort: "recommended",
-      nonSuspiciousOnly: args.nonSuspiciousOnly ?? false,
       indexName: recommendedIndexName,
+      maxIndexKeyLength: getPublicListIndexFieldCount("recommended", nonSuspiciousOnly),
       eqPrefix,
     });
     const updatedCursor = getPublicListCursorKey({
       cursor: args.cursor,
       sort: "updated",
-      nonSuspiciousOnly: args.nonSuspiciousOnly ?? false,
       indexName: updatedIndexName,
+      maxIndexKeyLength: getPublicListIndexFieldCount("updated", nonSuspiciousOnly),
       eqPrefix,
     });
+    const cursorIndexName = getPublicListCursorIndexName(args.cursor);
 
     // Highlighted skills use a completely different path: query skillBadges
     // by kind to find highlighted skill IDs, then look up their digests.
@@ -5046,25 +5401,27 @@ export const listPublicPageV4 = query({
 
     const sort =
       requestedSort === "recommended"
-        ? resolveRecommendedPublicListSort({
-            decodedCursor: recommendedCursor ?? updatedCursor,
-            hasMissingRankStats: await hasMissingRecommendedRankStats(
-              ctx,
-              args.nonSuspiciousOnly ?? false,
-              recommendedCursor ?? updatedCursor,
-            ),
-          })
+        ? cursorIndexName === updatedIndexName
+          ? "updated"
+          : cursorIndexName === recommendedIndexName
+            ? "recommended"
+            : resolveRecommendedPublicListSort({
+                decodedCursor: recommendedCursor ?? updatedCursor,
+                hasMissingRankStats: await hasMissingRecommendedRankStats(
+                  ctx,
+                  nonSuspiciousOnly,
+                  recommendedCursor ?? updatedCursor,
+                ),
+              })
         : requestedSort;
 
-    const indexName = args.nonSuspiciousOnly
-      ? NONSUSPICIOUS_SORT_INDEXES[sort]
-      : SORT_INDEXES[sort];
+    const indexName = getPublicListIndexName(sort, nonSuspiciousOnly);
 
     const decodedCursor = getPublicListCursorKey({
       cursor: args.cursor,
       sort,
-      nonSuspiciousOnly: args.nonSuspiciousOnly ?? false,
       indexName,
+      maxIndexKeyLength: getPublicListIndexFieldCount(sort, nonSuspiciousOnly),
       eqPrefix,
     });
     const isFirstPage = !decodedCursor;
@@ -5075,8 +5432,9 @@ export const listPublicPageV4 = query({
       Boolean(categorySlug) ||
       categoryKeywords.length > 0 ||
       excludeCategoryKeywords.length > 0;
+    const hasPostHydrationFilters = hasDigestFilters || nonSuspiciousOnly;
 
-    if (!hasDigestFilters) {
+    if (!hasPostHydrationFilters) {
       const result = await getPage(ctx, {
         table: "skillSearchDigest",
         startIndexKey,
@@ -5102,7 +5460,23 @@ export const listPublicPageV4 = query({
       return { page: items, hasMore: result.hasMore, nextCursor };
     }
 
+    if (nonSuspiciousOnly) {
+      const result = await collectMergedSafeListPage(ctx, {
+        sort,
+        dir,
+        cursor: args.cursor,
+        decodedLegacyCursor: decodedCursor,
+        numItems,
+        capabilityTag: args.capabilityTag,
+        categorySlug,
+        categoryKeywords,
+        excludeCategoryKeywords,
+        buildItem: (digest, hydratable) => buildPublicSkillEntryFromDigest(ctx, digest, hydratable),
+      });
+      return { page: result.items, hasMore: result.hasMore, nextCursor: result.nextCursor };
+    }
     const items: PublicSkillEntry[] = [];
+    const seenSkillIds = new Set<Id<"skills">>();
     let scanCursor = startIndexKey;
     let scanInclusive = isFirstPage;
     let hasMore = false;
@@ -5136,6 +5510,7 @@ export const listPublicPageV4 = query({
       for (let index = 0; index < result.page.length; index += 1) {
         const digest = result.page[index];
         const cursor = result.indexKeys[index];
+        if (seenSkillIds.has(digest.skillId)) continue;
         if (
           digestPassesPublicListFilters(digest, {
             capabilityTag: args.capabilityTag,
@@ -5144,8 +5519,13 @@ export const listPublicPageV4 = query({
             excludeCategoryKeywords,
           })
         ) {
-          const item = await buildPublicSkillEntryFromDigest(ctx, digest);
-          if (item) items.push(item);
+          const hydratable = await resolveHydratableSkillForDigest(ctx, digest);
+          if (nonSuspiciousOnly && isSkillSuspicious(hydratable)) continue;
+          const item = await buildPublicSkillEntryFromDigest(ctx, digest, hydratable);
+          if (item) {
+            seenSkillIds.add(digest.skillId);
+            items.push(item);
+          }
         }
         if (items.length >= numItems) {
           hasMore = result.hasMore || index < result.page.length - 1;
@@ -5340,11 +5720,11 @@ export const listRelatedByCategory = query({
     const items: PublicSkillEntry[] = [];
     for (const digest of digests) {
       if (digest.skillId === args.skillId) continue;
-      const hydratable = digestToHydratableSkill(digest);
+      const hydratable = await resolveHydratableSkillForDigest(ctx, digest);
       if (isSkillSuspicious(hydratable)) continue;
       if (categorySlug && inferDigestSkillCategorySlug(digest) !== categorySlug) continue;
       if (!digestMatchesRelatedCategory(digest, keywords)) continue;
-      const item = await buildPublicSkillEntryFromDigest(ctx, digest);
+      const item = await buildPublicSkillEntryFromDigest(ctx, digest, hydratable);
       if (!item) continue;
       items.push(item);
       if (items.length >= limit) break;
@@ -5361,26 +5741,38 @@ export const listPublicTrendingPage = query({
   },
   handler: async (ctx, args) => {
     const limit = clampInt(args.limit ?? 25, 1, MAX_PUBLIC_LIST_LIMIT);
-    const kind = args.nonSuspiciousOnly
+    const primaryKind = args.nonSuspiciousOnly
       ? TRENDING_NON_SUSPICIOUS_LEADERBOARD_KIND
       : TRENDING_LEADERBOARD_KIND;
-    const leaderboard = await ctx.db
+    const primaryLeaderboard = await ctx.db
       .query("skillLeaderboards")
-      .withIndex("by_kind", (q) => q.eq("kind", kind))
+      .withIndex("by_kind", (q) => q.eq("kind", primaryKind))
       .order("desc")
       .first();
+    const fullLeaderboard = args.nonSuspiciousOnly
+      ? await ctx.db
+          .query("skillLeaderboards")
+          .withIndex("by_kind", (q) => q.eq("kind", TRENDING_LEADERBOARD_KIND))
+          .order("desc")
+          .first()
+      : null;
+    const candidates = mergeTrendingLeaderboardEntries(
+      primaryLeaderboard?.items ?? [],
+      fullLeaderboard?.items ?? [],
+    );
 
-    if (!leaderboard) return { items: [], nextCursor: null };
+    if (candidates.length === 0) return { items: [], nextCursor: null };
 
     const items: PublicSkillEntry[] = [];
-    for (const entry of leaderboard.items) {
+    for (const entry of candidates) {
       const digest = await ctx.db
         .query("skillSearchDigest")
         .withIndex("by_skill", (q) => q.eq("skillId", entry.skillId))
         .unique();
       if (!digest) continue;
-      if (args.nonSuspiciousOnly && digest.isSuspicious) continue;
-      const item = await buildPublicSkillEntryFromDigest(ctx, digest);
+      const hydratable = await resolveHydratableSkillForDigest(ctx, digest);
+      if (args.nonSuspiciousOnly && isSkillSuspicious(hydratable)) continue;
+      const item = await buildPublicSkillEntryFromDigest(ctx, digest, hydratable);
       if (!item) continue;
       items.push(item);
       if (items.length >= limit) break;
@@ -5389,6 +5781,20 @@ export const listPublicTrendingPage = query({
     return { items, nextCursor: null };
   },
 });
+
+function mergeTrendingLeaderboardEntries(
+  primaryEntries: LeaderboardEntry[],
+  supplementalEntries: LeaderboardEntry[],
+) {
+  const bySkillId = new Map<Id<"skills">, LeaderboardEntry>();
+  for (const entry of [...primaryEntries, ...supplementalEntries]) {
+    const existing = bySkillId.get(entry.skillId);
+    if (!existing || compareTrendingEntries(entry, existing) > 0) {
+      bySkillId.set(entry.skillId, entry);
+    }
+  }
+  return Array.from(bySkillId.values()).sort((a, b) => compareTrendingEntries(b, a));
+}
 
 export const listAuditPage = query({
   args: {
@@ -5419,21 +5825,7 @@ export const listAuditPage = query({
               vtAnalysis: latestVersion.vtAnalysis,
               llmAnalysis: latestVersion.llmAnalysis,
               staticScan: latestVersion.staticScan
-                ? {
-                    status: latestVersion.staticScan.status,
-                    reasonCodes: latestVersion.staticScan.reasonCodes,
-                    findings: (latestVersion.staticScan.findings ?? []).map((finding) => ({
-                      code: finding.code,
-                      severity: finding.severity,
-                      file: finding.file,
-                      line: finding.line,
-                      message: finding.message,
-                      evidence: "",
-                    })),
-                    summary: latestVersion.staticScan.summary,
-                    engineVersion: latestVersion.staticScan.engineVersion,
-                    checkedAt: latestVersion.staticScan.checkedAt,
-                  }
+                ? toPublicStaticScan(latestVersion.staticScan)
                 : null,
             }
           : null,
@@ -5449,8 +5841,9 @@ export const listAuditPage = query({
 async function buildPublicSkillEntryFromDigest(
   ctx: Pick<QueryCtx, "db">,
   digest: Doc<"skillSearchDigest">,
+  resolvedHydratable?: HydratableSkill,
 ): Promise<PublicSkillEntry | null> {
-  const hydratable = digestToHydratableSkill(digest);
+  const hydratable = resolvedHydratable ?? (await resolveHydratableSkillForDigest(ctx, digest));
   const publicSkill = toPublicSkill(hydratable);
   if (!publicSkill) return null;
   const ownerInfo = digestToOwnerInfo(digest);
@@ -5513,8 +5906,10 @@ async function resolveDigestLatestVersionForSkill(
 async function buildPublicSkillApiListEntryFromDigest(
   ctx: Pick<QueryCtx, "db">,
   digest: Doc<"skillSearchDigest">,
+  resolvedHydratable?: HydratableSkill,
 ) {
-  const publicSkill = toPublicSkill(digestToHydratableSkill(digest));
+  const hydratable = resolvedHydratable ?? (await resolveHydratableSkillForDigest(ctx, digest));
+  const publicSkill = toPublicSkill(hydratable);
   if (!publicSkill) return null;
   const ownerInfo = digestToOwnerInfo(digest);
   if (!ownerInfo?.owner) return null;
@@ -5559,70 +5954,83 @@ export const listPublicApiPageV1 = query({
     const requestedSort = normalizePublicListSort(args.sort);
     const dir = resolvePublicListDir(requestedSort, args.dir);
     const numItems = clampInt(args.numItems ?? 25, 1, MAX_PUBLIC_LIST_LIMIT);
-    const eqPrefix: IndexKey = args.nonSuspiciousOnly ? [undefined, false] : [undefined];
-    const recommendedIndexName = args.nonSuspiciousOnly
-      ? NONSUSPICIOUS_SORT_INDEXES.recommended
-      : SORT_INDEXES.recommended;
-    const updatedIndexName = args.nonSuspiciousOnly
-      ? NONSUSPICIOUS_SORT_INDEXES.updated
-      : SORT_INDEXES.updated;
+    const nonSuspiciousOnly = args.nonSuspiciousOnly ?? false;
+    const eqPrefix = getPublicListEqPrefix(nonSuspiciousOnly);
+    const recommendedIndexName = getPublicListIndexName("recommended", nonSuspiciousOnly);
+    const updatedIndexName = getPublicListIndexName("updated", nonSuspiciousOnly);
     const recommendedCursor = getPublicListCursorKey({
       cursor: args.cursor,
       sort: "recommended",
-      nonSuspiciousOnly: args.nonSuspiciousOnly ?? false,
       indexName: recommendedIndexName,
+      maxIndexKeyLength: getPublicListIndexFieldCount("recommended", nonSuspiciousOnly),
       eqPrefix,
     });
     const updatedCursor = getPublicListCursorKey({
       cursor: args.cursor,
       sort: "updated",
-      nonSuspiciousOnly: args.nonSuspiciousOnly ?? false,
       indexName: updatedIndexName,
+      maxIndexKeyLength: getPublicListIndexFieldCount("updated", nonSuspiciousOnly),
       eqPrefix,
     });
+    const cursorIndexName = getPublicListCursorIndexName(args.cursor);
     const sort =
       requestedSort === "recommended"
-        ? resolveRecommendedPublicListSort({
-            decodedCursor: recommendedCursor ?? updatedCursor,
-            hasMissingRankStats: await hasMissingRecommendedRankStats(
-              ctx,
-              args.nonSuspiciousOnly ?? false,
-              recommendedCursor ?? updatedCursor,
-            ),
-          })
+        ? cursorIndexName === updatedIndexName
+          ? "updated"
+          : cursorIndexName === recommendedIndexName
+            ? "recommended"
+            : resolveRecommendedPublicListSort({
+                decodedCursor: recommendedCursor ?? updatedCursor,
+                hasMissingRankStats: await hasMissingRecommendedRankStats(
+                  ctx,
+                  nonSuspiciousOnly,
+                  recommendedCursor ?? updatedCursor,
+                ),
+              })
         : requestedSort;
-    const indexName = args.nonSuspiciousOnly
-      ? NONSUSPICIOUS_SORT_INDEXES[sort]
-      : SORT_INDEXES[sort];
+    const indexName = getPublicListIndexName(sort, nonSuspiciousOnly);
     const decodedCursor = getPublicListCursorKey({
       cursor: args.cursor,
       sort,
-      nonSuspiciousOnly: args.nonSuspiciousOnly ?? false,
       indexName,
+      maxIndexKeyLength: getPublicListIndexFieldCount(sort, nonSuspiciousOnly),
       eqPrefix,
     });
     const isFirstPage = !decodedCursor;
-    const result = await getPage(ctx, {
-      table: "skillSearchDigest",
-      startIndexKey: decodedCursor ?? eqPrefix,
-      startInclusive: isFirstPage,
-      endIndexKey: eqPrefix,
-      endInclusive: true,
-      absoluteMaxRows: numItems,
-      order: dir,
-      index: indexName,
-      schema,
-    });
-    const items = [];
-    for (const digest of result.page) {
-      const item = await buildPublicSkillApiListEntryFromDigest(ctx, digest);
-      if (item) items.push(item);
+    if (!nonSuspiciousOnly) {
+      const result = await getPage(ctx, {
+        table: "skillSearchDigest",
+        startIndexKey: decodedCursor ?? eqPrefix,
+        startInclusive: isFirstPage,
+        endIndexKey: eqPrefix,
+        endInclusive: true,
+        absoluteMaxRows: numItems,
+        order: dir,
+        index: indexName,
+        schema,
+      });
+      const items = [];
+      for (const digest of result.page) {
+        const item = await buildPublicSkillApiListEntryFromDigest(ctx, digest);
+        if (item) items.push(item);
+      }
+      const nextCursor =
+        result.hasMore && result.indexKeys.length > 0
+          ? encodeIndexKey(indexName, result.indexKeys[result.indexKeys.length - 1])
+          : null;
+      return { items, nextCursor };
     }
-    const nextCursor =
-      result.hasMore && result.indexKeys.length > 0
-        ? encodeIndexKey(indexName, result.indexKeys[result.indexKeys.length - 1])
-        : null;
-    return { items, nextCursor };
+
+    const result = await collectMergedSafeListPage(ctx, {
+      sort,
+      dir,
+      cursor: args.cursor,
+      decodedLegacyCursor: decodedCursor,
+      numItems,
+      buildItem: (digest, hydratable) =>
+        buildPublicSkillApiListEntryFromDigest(ctx, digest, hydratable),
+    });
+    return { items: result.items, nextCursor: result.nextCursor };
   },
 });
 
@@ -5684,14 +6092,18 @@ function getSkillCatalogChannel(digest: Doc<"skillSearchDigest">): "official" | 
   return isSkillCatalogOfficial(digest) ? "official" : "community";
 }
 
-function isVisibleSkillCatalogDigest(digest: Doc<"skillSearchDigest">) {
-  const publicSkill = toPublicSkill(digestToHydratableSkill(digest));
+async function isVisibleSkillCatalogDigest(
+  ctx: Pick<QueryCtx, "db">,
+  digest: Doc<"skillSearchDigest">,
+) {
+  const publicSkill = toPublicSkill(await resolveHydratableSkillForDigest(ctx, digest));
   if (!publicSkill) return false;
   const ownerInfo = digestToOwnerInfo(digest);
   return Boolean(ownerInfo?.owner);
 }
 
-function skillCatalogMatchesFilters(
+async function skillCatalogMatchesFilters(
+  ctx: Pick<QueryCtx, "db">,
   digest: Doc<"skillSearchDigest">,
   args: {
     channel?: "official" | "community" | "private";
@@ -5701,7 +6113,7 @@ function skillCatalogMatchesFilters(
     capabilityTag?: string;
   },
 ) {
-  if (!isVisibleSkillCatalogDigest(digest)) return false;
+  if (!(await isVisibleSkillCatalogDigest(ctx, digest))) return false;
   if (args.channel === "private") return false;
   if (args.executesCode === true) return false;
   const isOfficial = isSkillCatalogOfficial(digest);
@@ -5882,7 +6294,7 @@ export const listPackageCatalogPage = query({
 
       for (let index = offset; index < page.page.length; index += 1) {
         const digest = page.page[index];
-        if (!skillCatalogMatchesFilters(digest, args)) continue;
+        if (!(await skillCatalogMatchesFilters(ctx, digest, args))) continue;
         collected.push(await toPublicSkillCatalogItem(ctx, digest));
         if (collected.length >= targetCount) {
           const nextOffset = index + 1;
@@ -5945,7 +6357,7 @@ async function searchPackageCatalogImpl(ctx: QueryCtx, args: SkillPackageCatalog
       .query("skillSearchDigest")
       .withIndex("by_skill", (q) => q.eq("skillId", exactSkill.skill!._id))
       .unique();
-    if (exactDigest && skillCatalogMatchesFilters(exactDigest, args)) {
+    if (exactDigest && (await skillCatalogMatchesFilters(ctx, exactDigest, args))) {
       const match = skillCatalogSearchMatch(exactDigest, queryText);
       if (match) {
         seen.add(exactDigest.skillId);
@@ -5966,7 +6378,7 @@ async function searchPackageCatalogImpl(ctx: QueryCtx, args: SkillPackageCatalog
       .paginate({ cursor: null, numItems: pageSize });
 
     for (const digest of page.page) {
-      if (!skillCatalogMatchesFilters(digest, args)) continue;
+      if (!(await skillCatalogMatchesFilters(ctx, digest, args))) continue;
       const match = skillCatalogSearchMatch(digest, queryText);
       if (!match || seen.has(digest.skillId)) continue;
       seen.add(digest.skillId);
@@ -6146,7 +6558,8 @@ async function fetchHighlightedPage(
       .withIndex("by_skill", (q) => q.eq("skillId", badge.skillId))
       .unique();
     if (!digest || digest.softDeletedAt) continue;
-    if (opts.nonSuspiciousOnly && digest.isSuspicious) continue;
+    const hydratable = await resolveHydratableSkillForDigest(ctx, digest);
+    if (opts.nonSuspiciousOnly && isSkillSuspicious(hydratable)) continue;
     if (
       !digestPassesPublicListFilters(digest, {
         capabilityTag: opts.capabilityTag,
@@ -6157,6 +6570,7 @@ async function fetchHighlightedPage(
     ) {
       continue;
     }
+    if (!toPublicSkill(hydratable)) continue;
     digests.push(digest);
   }
 
@@ -6203,20 +6617,6 @@ async function fetchHighlightedPage(
 
   // Highlighted skills are few enough to return in one page — no cursor needed
   return { page: items, hasMore: false, nextCursor: null };
-}
-
-function filterPublicSkillPage(
-  page: HydratableSkill[],
-  args: { highlightedOnly?: boolean; nonSuspiciousOnly?: boolean },
-) {
-  if (!args.nonSuspiciousOnly && !args.highlightedOnly) {
-    return page;
-  }
-  return page.filter((skill) => {
-    if (args.nonSuspiciousOnly && isSkillSuspicious(skill)) return false;
-    if (args.highlightedOnly && !isSkillHighlighted(skill)) return false;
-    return true;
-  });
 }
 
 function normalizePublicListPagination(paginationOpts: {
@@ -7135,36 +7535,6 @@ export const updateSkillVersionStaticScanInternal = internalMutation({
   },
 });
 
-export const updateVersionDepRegistryAnalysisInternal = internalMutation({
-  args: {
-    versionId: v.id("skillVersions"),
-    depRegistryAnalysis: depRegistryAnalysisValidator,
-  },
-  handler: async (ctx, args) => {
-    const version = await ctx.db.get(args.versionId);
-    if (!version) return { ok: true as const, skipped: "missing" as const };
-
-    const staticScan = mergeDepRegistryFinding({
-      staticScan: version.staticScan,
-      analysis: args.depRegistryAnalysis,
-      statusFromCodes: verdictFromCodes,
-      summarizeCodes: summarizeReasonCodes,
-    });
-    const versionPatch = {
-      depRegistryAnalysis: args.depRegistryAnalysis,
-      depRegistryScanStatus: args.depRegistryAnalysis.status,
-      staticScan,
-    };
-
-    await ctx.db.patch(version._id, versionPatch);
-    await ctx.scheduler?.runAfter(0, internal.skillCards.enqueueForVersionInternal, {
-      versionId: version._id,
-      source: "scan",
-    });
-    return { ok: true as const, status: args.depRegistryAnalysis.status };
-  },
-});
-
 export const scanSkillVersionStaticallyInternal: ReturnType<typeof internalAction> = internalAction(
   {
     args: {
@@ -7285,7 +7655,7 @@ export const escalateSkillByIdInternal = internalMutation({
     const vtStatus = reasonMatch?.[1] === "vt" ? reasonMatch[2] : version?.vtAnalysis?.status;
     const llmStatus = reasonMatch?.[1] === "llm" ? reasonMatch[2] : version?.llmAnalysis?.status;
     const snapshot = buildModerationSnapshot({
-      staticScan: version?.staticScan,
+      staticScan: staticScanForSkillModeration(version),
       vtAnalysis: version?.vtAnalysis,
       vtStatus,
       llmStatus,
@@ -8361,7 +8731,7 @@ export const approveSkillByHashInternal = internalMutation({
         : undefined;
       const scanner = args.scanner.trim().toLowerCase();
       const snapshot = buildModerationSnapshot({
-        staticScan: version.staticScan,
+        staticScan: staticScanForSkillModeration(version),
         vtAnalysis: version.vtAnalysis,
         vtStatus: scanner === "vt" ? args.status : version.vtAnalysis?.status,
         llmStatus: scanner === "llm" ? args.status : version.llmAnalysis?.status,
@@ -8457,7 +8827,7 @@ export const escalateByVtInternal = internalMutation({
       !isMalicious && !alreadyBlocked && isPrivilegedOwnerForSuspiciousBypass(owner);
 
     const snapshot = buildModerationSnapshot({
-      staticScan: version.staticScan,
+      staticScan: staticScanForSkillModeration(version),
       vtAnalysis: version.vtAnalysis,
       vtStatus: args.status,
       llmStatus: version.llmAnalysis?.status,
@@ -11510,21 +11880,24 @@ export const listByDateRange = internalQuery({
       );
     }
 
+    const page: Doc<"skillSearchDigest">[] = [];
+    for (const skill of result.page) {
+      if (await isExportableSkillDigest(ctx, skill)) page.push(skill);
+    }
+
     return {
-      page: result.page.filter(isExportableSkillDigest),
+      page,
       nextCursor,
       hasMore: result.hasMore,
     };
   },
 });
 
-function isExportableSkillDigest(
-  skill: Pick<
-    Doc<"skillSearchDigest">,
-    "latestVersionId" | "softDeletedAt" | "moderationStatus" | "moderationFlags"
-  >,
-) {
-  return Boolean(skill.latestVersionId) && isPublicSkillDoc(skill);
+async function isExportableSkillDigest(ctx: Pick<QueryCtx, "db">, skill: Doc<"skillSearchDigest">) {
+  if (!skill.latestVersionId) return false;
+  if (isPublicSkillDoc(skill)) return true;
+  const hydratable = await resolveHydratableSkillForDigest(ctx, skill);
+  return isPublicSkillDoc(hydratable);
 }
 
 /**

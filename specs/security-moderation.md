@@ -181,6 +181,9 @@ See also: [acceptable-usage.md](./acceptable-usage.md) for the marketplace polic
 ## Skill moderation pipeline
 
 - New skill publishes now persist a deterministic static scan result on the version.
+- ClawHub no longer runs dependency registry existence checks for skill
+  manifests. Scan and trust state must not claim dependency graph,
+  typosquatting, or transitive dependency safety.
 - Static findings are internal evidence for Codex-backed ClawScan only. They do
   not hide, block, set public security status, affect installability, or trigger
   user autobans.

@@ -379,6 +379,75 @@ describe("llm eval prompt assembly", () => {
     expect(runMutation).toHaveBeenCalled();
   });
 
+  it("strips retired dependency registry findings from skill evaluation prompts", async () => {
+    process.env.OPENAI_API_KEY = "test-openai-key";
+    const fetchMock = mockOpenAiFetch();
+    const runMutation = vi.fn(async () => undefined);
+    const ctx = {
+      runQuery: vi.fn(async (_ref: unknown, args: Record<string, unknown>) => {
+        if (args.versionId === "skillVersions:with-retired-static-scan") {
+          return {
+            _id: "skillVersions:with-retired-static-scan",
+            skillId: "skills:demo",
+            version: "1.0.0",
+            createdAt: Date.UTC(2026, 0, 1),
+            files: [
+              {
+                path: "SKILL.md",
+                size: 32,
+                storageId: "_storage:skill-md",
+                sha256: "a".repeat(64),
+                contentType: "text/markdown",
+              },
+            ],
+            parsed: { frontmatter: {}, metadata: {}, clawdis: {} },
+            staticScan: {
+              status: "suspicious",
+              reasonCodes: ["suspicious.dep_not_found_on_registry"],
+              findings: [
+                {
+                  code: "suspicious.dep_not_found_on_registry",
+                  severity: "critical",
+                  file: "Dependency manifests",
+                  line: 1,
+                  message: "Package missing from dependency registry.",
+                  evidence: "missing-package (npm)",
+                },
+              ],
+              summary: "Detected: suspicious.dep_not_found_on_registry",
+              engineVersion: "static-v1",
+              checkedAt: 1,
+            },
+          };
+        }
+        if (args.skillId === "skills:demo") {
+          return {
+            _id: "skills:demo",
+            slug: "demo-skill",
+            displayName: "Demo Skill",
+            ownerUserId: "users:owner",
+            summary: "Demo skill.",
+          };
+        }
+        if (args.skillVersionId === "skillVersions:with-retired-static-scan") return [];
+        throw new Error(`Unexpected query args: ${JSON.stringify(args)}`);
+      }),
+      runMutation,
+      storage: {
+        get: vi.fn(async () => new Blob(["# Demo Skill\n\nUse the configured API."])),
+      },
+    };
+
+    await evaluateWithLlmHandler(ctx, { versionId: "skillVersions:with-retired-static-scan" });
+
+    const request = getFetchInput(fetchMock);
+    expect(request.input).not.toContain("suspicious.dep_not_found_on_registry");
+    expect(request.input).not.toContain("missing-package (npm)");
+    expect(request.input).not.toContain("Package missing from dependency registry.");
+    expect(request.input).toContain("No suspicious patterns detected.");
+    expect(runMutation).toHaveBeenCalled();
+  });
+
   it("ignores legacy package release clawScanNote text", async () => {
     process.env.OPENAI_API_KEY = "test-openai-key";
     const fetchMock = mockOpenAiFetch();

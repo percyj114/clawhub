@@ -9,8 +9,14 @@ vi.mock("./lib/access", async () => {
 });
 
 const { requireUser } = await import("./lib/access");
-const { setSkillManualOverride, clearSkillManualOverride, updateVersionLlmAnalysisInternal } =
-  await import("./skills");
+const {
+  setSkillManualOverride,
+  clearSkillManualOverride,
+  updateVersionLlmAnalysisInternal,
+  recomputeLatestSkillModerationInternal,
+  approveSkillByHashInternal,
+  escalateByVtInternal,
+} = await import("./skills");
 
 type WrappedHandler<TArgs, TResult = unknown> = {
   _handler: (ctx: unknown, args: TArgs) => Promise<TResult>;
@@ -35,6 +41,26 @@ const updateVersionLlmAnalysisInternalHandler = (
     versionId: string;
     moderationMode?: "normal" | "preserve";
     llmAnalysis: Record<string, unknown>;
+  }>
+)._handler;
+
+const recomputeLatestSkillModerationInternalHandler = (
+  recomputeLatestSkillModerationInternal as unknown as WrappedHandler<{
+    skillId: string;
+  }>
+)._handler;
+const approveSkillByHashInternalHandler = (
+  approveSkillByHashInternal as unknown as WrappedHandler<{
+    sha256hash: string;
+    scanner: string;
+    status: string;
+    moderationStatus?: "active" | "hidden";
+  }>
+)._handler;
+const escalateByVtInternalHandler = (
+  escalateByVtInternal as unknown as WrappedHandler<{
+    sha256hash: string;
+    status: "malicious" | "suspicious";
   }>
 )._handler;
 
@@ -82,6 +108,86 @@ function findPatchForId(patch: ReturnType<typeof vi.fn>, id: string) {
   return (patch.mock.calls as Array<[string, Record<string, unknown>]>).find(
     ([patchedId]) => patchedId === id,
   )?.[1];
+}
+
+function legacyDependencyRegistryStaticScan() {
+  return {
+    status: "suspicious",
+    reasonCodes: ["suspicious.dep_not_found_on_registry"],
+    findings: [
+      {
+        code: "suspicious.dep_not_found_on_registry",
+        severity: "critical",
+        file: "package.json",
+        line: 1,
+        message: "Dependency does not appear in the package registry.",
+        evidence: "legacy dependency registry evidence",
+      },
+    ],
+    summary: "Detected: suspicious.dep_not_found_on_registry",
+    engineVersion: "static-v1",
+    checkedAt: 1,
+  };
+}
+
+function makeHashModerationCtx() {
+  const skill = {
+    _id: "skills:hash",
+    ownerUserId: "users:owner",
+    latestVersionId: "skillVersions:hash",
+    softDeletedAt: undefined,
+    moderationStatus: "active",
+    moderationReason: "scanner.aggregate.suspicious",
+    moderationVerdict: "suspicious",
+    moderationFlags: ["flagged.suspicious"],
+    moderationReasonCodes: ["suspicious.dep_not_found_on_registry"],
+    isSuspicious: true,
+  };
+  const version = {
+    _id: "skillVersions:hash",
+    skillId: "skills:hash",
+    sha256hash: "a".repeat(64),
+    staticScan: legacyDependencyRegistryStaticScan(),
+    vtAnalysis: undefined,
+    llmAnalysis: undefined,
+  };
+  const owner = {
+    _id: "users:owner",
+    role: "user",
+  };
+  const patch = vi.fn(async () => {});
+  const insert = vi.fn(async () => "auditLogs:1");
+  const deleteRow = vi.fn(async () => {});
+  const replace = vi.fn(async () => {});
+  const query = vi.fn((table: string) => {
+    if (table === "skillVersions") {
+      return {
+        withIndex: vi.fn(() => ({
+          unique: vi.fn(async () => version),
+        })),
+      };
+    }
+    if (table === "globalStats") {
+      return {
+        withIndex: vi.fn(() => ({
+          unique: vi.fn(async () => ({ _id: "globalStats:1", activeSkillsCount: 1 })),
+        })),
+      };
+    }
+    throw new Error(`Unexpected query table: ${table}`);
+  });
+  const get = vi.fn(async (id: string) => {
+    if (id === "skills:hash") return skill;
+    if (id === "skillVersions:hash") return version;
+    if (id === "users:owner") return owner;
+    return null;
+  });
+  return {
+    ctx: {
+      db: { get, patch, insert, delete: deleteRow, replace, query, normalizeId: vi.fn() },
+    } as never,
+    patch,
+  };
 }
 
 describe("skills manual overrides", () => {
@@ -650,5 +756,169 @@ describe("skills manual overrides", () => {
         isSuspicious: false,
       }),
     );
+  });
+
+  it("does not restore retired dependency registry findings while syncing clean LLM results", async () => {
+    const now = 1_700_000_500_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+
+    const skill = {
+      _id: "skills:1",
+      ownerUserId: "users:owner",
+      latestVersionId: "skillVersions:10",
+      softDeletedAt: undefined,
+      moderationStatus: "active",
+      moderationReason: "scanner.aggregate.clean",
+      moderationVerdict: "clean",
+      moderationFlags: undefined,
+      moderationReasonCodes: undefined,
+      isSuspicious: false,
+    };
+    const version = {
+      _id: "skillVersions:10",
+      skillId: "skills:1",
+      staticScan: {
+        status: "suspicious",
+        reasonCodes: ["suspicious.dep_not_found_on_registry"],
+        findings: [
+          {
+            code: "suspicious.dep_not_found_on_registry",
+            severity: "critical",
+            file: "package.json",
+            line: 1,
+            message: "Dependency does not appear in the package registry.",
+            evidence: "legacy dependency registry evidence",
+          },
+        ],
+        summary: "Detected: suspicious.dep_not_found_on_registry",
+        engineVersion: "static-v1",
+        checkedAt: now - 200,
+      },
+      vtAnalysis: undefined,
+      llmAnalysis: undefined,
+    };
+
+    const { ctx, patch } = makeCtx({ skill, version });
+
+    await updateVersionLlmAnalysisInternalHandler(ctx, {
+      versionId: "skillVersions:10",
+      llmAnalysis: {
+        status: "clean",
+        checkedAt: now,
+      },
+    });
+
+    expect(patch).toHaveBeenCalledWith(
+      "skills:1",
+      expect.objectContaining({
+        moderationStatus: "active",
+        moderationFlags: undefined,
+        moderationVerdict: "clean",
+        moderationReasonCodes: undefined,
+        isSuspicious: false,
+      }),
+    );
+  });
+
+  it("does not restore retired dependency registry findings during latest moderation recompute", async () => {
+    const now = 1_700_000_600_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+
+    const skill = {
+      _id: "skills:1",
+      slug: "legacy",
+      ownerUserId: "users:owner",
+      latestVersionId: "skillVersions:11",
+      softDeletedAt: undefined,
+      moderationStatus: "active",
+      moderationReason: "scanner.aggregate.clean",
+      moderationVerdict: "clean",
+      moderationFlags: undefined,
+      moderationReasonCodes: undefined,
+      isSuspicious: false,
+    };
+    const version = {
+      _id: "skillVersions:11",
+      skillId: "skills:1",
+      staticScan: {
+        status: "suspicious",
+        reasonCodes: ["suspicious.dep_not_found_on_registry"],
+        findings: [
+          {
+            code: "suspicious.dep_not_found_on_registry",
+            severity: "critical",
+            file: "package.json",
+            line: 1,
+            message: "Dependency does not appear in the package registry.",
+            evidence: "legacy dependency registry evidence",
+          },
+        ],
+        summary: "Detected: suspicious.dep_not_found_on_registry",
+        engineVersion: "static-v1",
+        checkedAt: now - 200,
+      },
+      vtAnalysis: undefined,
+      llmAnalysis: {
+        status: "clean",
+        checkedAt: now - 100,
+      },
+    };
+
+    const { ctx, patch } = makeCtx({ skill, version });
+
+    await recomputeLatestSkillModerationInternalHandler(ctx, {
+      skillId: "skills:1",
+    });
+
+    expect(patch).toHaveBeenCalledWith(
+      "skills:1",
+      expect.objectContaining({
+        moderationStatus: "active",
+        moderationFlags: undefined,
+        moderationVerdict: "clean",
+        moderationReasonCodes: undefined,
+        isSuspicious: false,
+      }),
+    );
+  });
+
+  it("does not restore retired dependency registry findings during hash approvals", async () => {
+    const { ctx, patch } = makeHashModerationCtx();
+
+    await approveSkillByHashInternalHandler(ctx, {
+      sha256hash: "a".repeat(64),
+      scanner: "llm",
+      status: "clean",
+    });
+
+    const skillPatch = findPatchForId(patch, "skills:hash");
+    expect(skillPatch).toMatchObject({
+      moderationStatus: "active",
+      moderationVerdict: "clean",
+      moderationReasonCodes: undefined,
+      moderationEvidence: undefined,
+      moderationSummary: "No suspicious patterns detected.",
+      isSuspicious: false,
+    });
+    expect(JSON.stringify(skillPatch)).not.toContain("suspicious.dep_not_found_on_registry");
+  });
+
+  it("does not restore retired dependency registry findings during VT escalations", async () => {
+    const { ctx, patch } = makeHashModerationCtx();
+
+    await escalateByVtInternalHandler(ctx, {
+      sha256hash: "a".repeat(64),
+      status: "suspicious",
+    });
+
+    const skillPatch = findPatchForId(patch, "skills:hash");
+    expect(skillPatch).toMatchObject({
+      moderationVerdict: "clean",
+      moderationReasonCodes: undefined,
+      moderationEvidence: undefined,
+      moderationSummary: "No suspicious patterns detected.",
+      isSuspicious: false,
+    });
+    expect(JSON.stringify(skillPatch)).not.toContain("suspicious.dep_not_found_on_registry");
   });
 });

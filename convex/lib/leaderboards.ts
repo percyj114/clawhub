@@ -1,6 +1,6 @@
 import type { Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
-import { isSkillSuspicious } from "./skillSafety";
+import { getEffectiveSkillModerationState } from "./skillSafety";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 export const TRENDING_DAYS = 7;
@@ -73,7 +73,14 @@ export async function takeTopNonSuspiciousTrendingEntries(
 
   for (const entry of entries) {
     const skill = await ctx.db.get(entry.skillId);
-    if (!skill || skill.softDeletedAt || isSkillSuspicious(skill)) continue;
+    if (!skill || skill.softDeletedAt) continue;
+    const effectiveModeration = getEffectiveSkillModerationState(skill);
+    if (
+      (effectiveModeration.moderationStatus ?? "active") !== "active" ||
+      effectiveModeration.isSuspicious
+    ) {
+      continue;
+    }
     items.push(entry);
     if (items.length >= limit) break;
   }

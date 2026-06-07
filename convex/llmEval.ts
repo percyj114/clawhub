@@ -18,6 +18,7 @@ import {
   getCommentScamEvalModel,
   parseCommentScamEvalResponse,
 } from "./lib/commentScamPrompt";
+import { stripRetiredDependencyRegistryStaticScan } from "./lib/moderationReasonCodes";
 import { extractResponseText } from "./lib/openaiResponse";
 import {
   extractEnvVarDeclarations,
@@ -334,7 +335,7 @@ export const evaluateWithLlm = internalAction({
       skillMdContent,
       fileContents,
       injectionSignals,
-      staticScan: version.staticScan,
+      staticScan: stripRetiredDependencyRegistryStaticScan(version.staticScan),
       capabilityTags: version.capabilityTags,
     };
 

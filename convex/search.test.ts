@@ -5,6 +5,7 @@ import { tokenize } from "./lib/searchText";
 import {
   __test,
   directPrefixSkillMatches,
+  getExactSkillSlugMatch,
   hydrateResults,
   lexicalFallbackSouls,
   lexicalFallbackSkills,
@@ -44,6 +45,11 @@ const searchSoulsHandler = (
 const lexicalFallbackSkillsHandler = (lexicalFallbackSkills as unknown as WrappedHandler)._handler;
 const directPrefixSkillMatchesHandler = (directPrefixSkillMatches as unknown as WrappedHandler)
   ._handler;
+const getExactSkillSlugMatchHandler = (
+  getExactSkillSlugMatch as unknown as {
+    _handler: (ctx: unknown, args: unknown) => Promise<{ skill: { slug: string } } | null>;
+  }
+)._handler;
 const lexicalFallbackSoulsHandler = (
   lexicalFallbackSouls as unknown as WrappedHandler<{ soul: { slug: string; _id: string } }>
 )._handler;
@@ -205,9 +211,6 @@ describe("search helpers", () => {
   });
 
   it("does not return suspicious skills via full-text search when nonSuspiciousOnly is set", async () => {
-    // Even though the full-text search would token-match the suspicious
-    // skill, the filterField `isSuspicious=false` plus the post-hydration
-    // `isSkillSuspicious` guard must keep it out of the results.
     const clean = makeSkillDoc({
       id: "skills:clean",
       slug: "baidu-yijian-vision",
@@ -228,6 +231,23 @@ describe("search helpers", () => {
     });
 
     expect(result.map((entry) => entry.skill.slug)).toEqual(["baidu-yijian-vision"]);
+  });
+
+  it("returns retired registry-only direct matches when nonSuspiciousOnly is set", async () => {
+    const retiredOnly = makeRetiredRegistryOnlySkillDoc({
+      id: "skills:retired",
+      slug: "retired-yijian-tool",
+      displayName: "Retired Yijian Tool",
+    });
+    const ctx = makeDirectPrefixCtx([retiredOnly]);
+
+    const result = await directPrefixSkillMatchesHandler(ctx, {
+      query: "yijian",
+      nonSuspiciousOnly: true,
+      limit: 10,
+    });
+
+    expect(result.map((entry) => entry.skill.slug)).toEqual(["retired-yijian-tool"]);
   });
 
   it("does not return soft-deleted skills via full-text search", async () => {
@@ -375,8 +395,30 @@ describe("search helpers", () => {
     expect(result).toHaveLength(1);
     expect(result[0].skill.slug).toBe("orf-clean");
     expect(ctx.usedIndexes).toEqual(
-      expect.arrayContaining(["by_nonsuspicious_updated", "by_nonsuspicious_created"]),
+      expect.arrayContaining(["by_active_updated", "by_active_created"]),
     );
+  });
+
+  it("returns retired registry-only lexical matches when nonSuspiciousOnly is set", async () => {
+    const retiredOnly = makeRetiredRegistryOnlySkillDoc({
+      id: "skills:retired",
+      slug: "orf-retired",
+      displayName: "ORF Retired",
+    });
+    const ctx = makeLexicalCtx({
+      exactSlugSkill: null,
+      recentSkills: [retiredOnly],
+    });
+
+    const result = await lexicalFallbackSkillsHandler(ctx, {
+      query: "orf",
+      queryTokens: ["orf"],
+      nonSuspiciousOnly: true,
+      limit: 10,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].skill.slug).toBe("orf-retired");
   });
 
   it("preserves suspicious lexical fallback results when nonSuspiciousOnly is unset", async () => {
@@ -442,6 +484,25 @@ describe("search helpers", () => {
     expect(result[0].skill.slug).toBe("orf");
     expect(ctx.db.query).toHaveBeenCalledWith("skills");
     expect(ctx.db.query).toHaveBeenCalledWith("skillSearchDigest");
+  });
+
+  it("returns retired registry-only exact slug matches when nonSuspiciousOnly is set", async () => {
+    const exactSlugSkill = makeRetiredRegistryOnlySkillDoc({
+      id: "skills:orf",
+      slug: "orf",
+      displayName: "ORF",
+    });
+    const ctx = makeLexicalCtx({
+      exactSlugSkill,
+      recentSkills: [],
+    });
+
+    const result = await getExactSkillSlugMatchHandler(ctx, {
+      slug: "orf",
+      nonSuspiciousOnly: true,
+    });
+
+    expect(result?.skill.slug).toBe("orf");
   });
 
   it("dedupes overlap and enforces rank + limit across vector and fallback", async () => {
@@ -983,6 +1044,47 @@ describe("search helpers", () => {
     );
 
     expect(result).toHaveLength(0);
+  });
+
+  it("returns retired registry-only vector results when nonSuspiciousOnly is set", async () => {
+    const retiredOnly = makeRetiredRegistryOnlySkillDoc({
+      id: "skills:retired",
+      slug: "vector-retired",
+      displayName: "Vector Retired",
+    });
+    const digest = {
+      ...retiredOnly,
+      skillId: retiredOnly._id,
+      latestVersionSkillId: retiredOnly._id,
+      ownerHandle: "owner",
+      ownerKind: "user",
+      ownerName: "Owner",
+      ownerDisplayName: "Owner",
+      ownerImage: undefined,
+    };
+    const result = await hydrateResultsHandler(
+      {
+        db: {
+          get: vi.fn(async (id: string) => {
+            if (id === "skills:retired") return retiredOnly;
+            return null;
+          }),
+          query: vi.fn((table: string) => ({
+            withIndex: () => ({
+              unique: vi.fn(async () => {
+                if (table === "embeddingSkillMap") return { skillId: "skills:retired" };
+                if (table === "skillSearchDigest") return digest;
+                return null;
+              }),
+            }),
+          })),
+        },
+      },
+      { embeddingIds: ["skillEmbeddings:retired"], nonSuspiciousOnly: true },
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0].skill.slug).toBe("vector-retired");
   });
 
   it("excludes soft-deleted skills from vector search results (#29)", async () => {
@@ -1655,18 +1757,45 @@ function makeSkillDoc(params: {
   id: string;
   slug: string;
   displayName: string;
+  moderationStatus?: "active" | "hidden" | "removed";
   moderationFlags?: string[];
   moderationReason?: string;
+  moderationVerdict?: "clean" | "suspicious" | "malicious";
+  moderationReasonCodes?: string[];
+  moderationSummary?: string;
   softDeletedAt?: number;
 }) {
+  const moderationFlags = params.moderationFlags ?? [];
   return {
     ...makePublicSkill(params),
     _creationTime: 1,
-    moderationStatus: "active",
-    moderationFlags: params.moderationFlags ?? [],
+    moderationStatus: params.moderationStatus ?? "active",
+    moderationFlags,
     moderationReason: params.moderationReason,
+    moderationVerdict: params.moderationVerdict,
+    moderationReasonCodes: params.moderationReasonCodes,
+    moderationSummary: params.moderationSummary,
+    isSuspicious:
+      moderationFlags.includes("flagged.suspicious") ||
+      params.moderationReason?.endsWith(".suspicious") === true,
     softDeletedAt: params.softDeletedAt as number | undefined,
   };
+}
+
+function makeRetiredRegistryOnlySkillDoc(params: {
+  id: string;
+  slug: string;
+  displayName: string;
+}) {
+  return makeSkillDoc({
+    ...params,
+    moderationStatus: "hidden",
+    moderationFlags: ["flagged.suspicious"],
+    moderationReason: "scanner.aggregate.suspicious",
+    moderationVerdict: "suspicious",
+    moderationReasonCodes: ["suspicious.dep_not_found_on_registry"],
+    moderationSummary: "Detected: suspicious.dep_not_found_on_registry",
+  });
 }
 
 function makePublicSoul(params: {
@@ -1713,6 +1842,12 @@ function makeLexicalCtx(params: {
   recentSkills: Array<ReturnType<typeof makeSkillDoc>>;
   recentByCreated?: Array<ReturnType<typeof makeSkillDoc>>;
 }) {
+  const allSkills = [
+    ...(params.exactSlugSkill ? [params.exactSlugSkill] : []),
+    ...params.recentSkills,
+    ...(params.recentByCreated ?? []),
+  ];
+  const skillById = new Map(allSkills.map((skill) => [skill._id, skill]));
   // Convert skill docs to digest-shaped rows (add skillId + owner fields).
   const toDigestRows = (skills: Array<ReturnType<typeof makeSkillDoc>>) =>
     skills.map((skill) => ({
@@ -1776,6 +1911,7 @@ function makeLexicalCtx(params: {
         throw new Error(`Unexpected table ${table}`);
       }),
       get: vi.fn(async (id: string) => {
+        if (id.startsWith("skills:")) return skillById.get(id) ?? null;
         if (id.startsWith("users:")) return { _id: id, handle: "owner" };
         if (id.startsWith("skillVersions:")) return { _id: id, version: "1.0.0" };
         return null;
@@ -1785,6 +1921,7 @@ function makeLexicalCtx(params: {
 }
 
 function makeDirectPrefixCtx(skills: Array<ReturnType<typeof makeSkillDoc>>) {
+  const skillById = new Map(skills.map((skill) => [skill._id, skill]));
   const firstToken = (value: string) => value.toLowerCase().match(/[a-z0-9]+/)?.[0];
   // Token-level splitter that mirrors Convex full-text inverted index behavior:
   // any alphanumeric run of length >= 1 becomes a token, regardless of position.
@@ -1891,6 +2028,7 @@ function makeDirectPrefixCtx(skills: Array<ReturnType<typeof makeSkillDoc>>) {
         };
       }),
       get: vi.fn(async (id: string) => {
+        if (id.startsWith("skills:")) return skillById.get(id) ?? null;
         if (id.startsWith("users:")) return { _id: id, handle: "owner" };
         if (id.startsWith("skillVersions:")) return { _id: id, version: "1.0.0" };
         return null;

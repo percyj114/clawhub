@@ -61,7 +61,7 @@ const failHandler = (
 const claimHandler = (
   claimSkillCardJobs as unknown as WrappedHandler<
     { token: string; workerId: string; limit?: number; leaseMs?: number },
-    Array<{ target: { evidence: Record<string, unknown> } }>
+    Array<{ target: { evidence: Record<string, unknown>; version: Record<string, unknown> } }>
   >
 )._handler;
 
@@ -275,6 +275,95 @@ describe("skillCards queue", () => {
           ],
         },
       });
+    } finally {
+      if (previousToken === undefined) delete process.env.SECURITY_SCAN_WORKER_TOKEN;
+      else process.env.SECURITY_SCAN_WORKER_TOKEN = previousToken;
+    }
+  });
+
+  it("strips retired dependency registry findings from claimed worker payloads", async () => {
+    const previousToken = process.env.SECURITY_SCAN_WORKER_TOKEN;
+    process.env.SECURITY_SCAN_WORKER_TOKEN = "test-worker-token";
+    const job = {
+      _id: "skillCardGenerationJobs:1",
+      skillVersionId: "skillVersions:1",
+      leaseToken: "lease",
+      status: "running",
+    };
+    const version = makeSettledVersion({
+      staticScan: {
+        status: "suspicious",
+        reasonCodes: ["suspicious.dep_not_found_on_registry"],
+        findings: [
+          {
+            code: "suspicious.dep_not_found_on_registry",
+            severity: "critical",
+            file: "Dependency manifests",
+            line: 1,
+            message: "missing dependency",
+            evidence: "legacy dependency registry evidence",
+          },
+        ],
+        summary: "Detected: suspicious.dep_not_found_on_registry",
+        engineVersion: "static-v1",
+        checkedAt: 1,
+      },
+      depRegistryAnalysis: {
+        status: "suspicious",
+        results: [],
+        notFoundPackages: ["missing-package (npm)"],
+        unresolvedPackages: [],
+        summary: "Dependency advisory warning.",
+        checkedAt: 2,
+      },
+      depRegistryScanStatus: "suspicious",
+    });
+    const ctx = {
+      runMutation: vi.fn(async () => [job]),
+      runQuery: vi.fn(async (_ref: unknown, args: Record<string, unknown>) => {
+        if ("jobId" in args) {
+          return {
+            job,
+            skill: {
+              _id: "skills:1",
+              slug: "demo",
+              displayName: "Demo",
+              summary: "Demo skill",
+              capabilityTags: [],
+              badges: null,
+              ownerUserId: "users:1",
+              ownerPublisherId: null,
+            },
+            version,
+            owner: { _id: "users:1", handle: "alice", displayName: "Alice" },
+            publisher: null,
+          };
+        }
+        if ("skillVersionId" in args) return [];
+        throw new Error(`Unexpected query args: ${JSON.stringify(args)}`);
+      }),
+      storage: {
+        getUrl: vi.fn(async () => "https://storage.example/SKILL.md"),
+      },
+    };
+
+    try {
+      const result = await claimHandler(ctx, {
+        token: "test-worker-token",
+        workerId: "worker",
+        limit: 1,
+      });
+
+      expect(result[0]?.target.version.staticScan).toMatchObject({
+        status: "clean",
+        reasonCodes: [],
+        findings: [],
+        summary: "No suspicious patterns detected.",
+      });
+      expect(JSON.stringify(result)).not.toContain("suspicious.dep_not_found_on_registry");
+      expect(JSON.stringify(result)).not.toContain("legacy dependency registry evidence");
+      expect(JSON.stringify(result)).not.toContain("depRegistryAnalysis");
+      expect(JSON.stringify(result)).not.toContain("depRegistryScanStatus");
     } finally {
       if (previousToken === undefined) delete process.env.SECURITY_SCAN_WORKER_TOKEN;
       else process.env.SECURITY_SCAN_WORKER_TOKEN = previousToken;

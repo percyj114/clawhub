@@ -1,8 +1,12 @@
 import type { Doc, Id } from "../_generated/dataModel";
-import type { MutationCtx } from "../_generated/server";
+import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { HydratableSkill, PublicPublisher } from "./public";
 import { getOwnerPublisher } from "./publishers";
 import { tokenize } from "./searchText";
+import {
+  applyEffectiveModerationForPublicSkill,
+  getEffectiveSkillModerationState,
+} from "./skillSafety";
 import { readCanonicalStat } from "./skillStats";
 
 function pick<T extends Record<string, unknown>, K extends keyof T>(obj: T, keys: K[]): Pick<T, K> {
@@ -116,6 +120,34 @@ export function digestToHydratableSkill(digest: Doc<"skillSearchDigest">): Hydra
     _id: digest.skillId,
     _creationTime: digest.createdAt,
   };
+}
+
+function digestNeedsCanonicalModeration(digest: Doc<"skillSearchDigest">) {
+  return Boolean(
+    digest.moderationStatus !== "active" ||
+    digest.isSuspicious ||
+    digest.moderationFlags?.some((flag) => flag.startsWith("flagged.")),
+  );
+}
+
+export async function resolveHydratableSkillForDigest(
+  ctx: Pick<QueryCtx, "db">,
+  digest: Doc<"skillSearchDigest">,
+): Promise<HydratableSkill> {
+  const hydratable = digestToHydratableSkill(digest);
+  if (!digestNeedsCanonicalModeration(digest)) return hydratable;
+
+  const skill = await ctx.db.get(digest.skillId);
+  if (!skill) return hydratable;
+
+  const effectiveModeration = getEffectiveSkillModerationState(skill);
+  return applyEffectiveModerationForPublicSkill(
+    {
+      ...hydratable,
+      softDeletedAt: skill.softDeletedAt,
+    },
+    effectiveModeration,
+  );
 }
 
 /** Insert or update the digest row for a skill. Skips the write when no fields changed. */

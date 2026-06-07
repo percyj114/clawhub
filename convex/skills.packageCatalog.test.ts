@@ -106,6 +106,22 @@ function makeDigest(
   };
 }
 
+function makeRetiredDependencyRegistryOnlyDigest(
+  slug: string,
+  overrides: Partial<Record<string, unknown>> = {},
+) {
+  return makeDigest(slug, {
+    moderationStatus: "hidden",
+    moderationFlags: ["flagged.suspicious"],
+    moderationReason: "scanner.aggregate.suspicious",
+    moderationVerdict: "suspicious",
+    moderationReasonCodes: ["suspicious.dep_not_found_on_registry"],
+    moderationSummary: "Detected: suspicious.dep_not_found_on_registry",
+    isSuspicious: true,
+    ...overrides,
+  });
+}
+
 function makeCtx(
   pages: Array<{ page: Array<Record<string, unknown>>; isDone: boolean; continueCursor: string }>,
 ) {
@@ -157,6 +173,15 @@ function makeCtx(
           }),
         };
       },
+      get: async (id: string) => {
+        const digest = allDigests.find((entry) => entry.skillId === id);
+        if (!digest) return null;
+        return {
+          ...digest,
+          _id: digest.skillId,
+          _creationTime: digest._creationTime,
+        };
+      },
     },
   };
 }
@@ -192,6 +217,29 @@ describe("skills package catalog queries", () => {
     ]);
   });
 
+  it("lists retired registry-only skills as package catalog rows after runtime scrub", async () => {
+    const result = await listPackageCatalogPageHandler(
+      makeCtx([
+        {
+          page: [makeRetiredDependencyRegistryOnlyDigest("retired-registry-only")],
+          isDone: true,
+          continueCursor: "",
+        },
+      ]),
+      {
+        paginationOpts: { cursor: null, numItems: 10 },
+      },
+    );
+
+    expect(result.page).toEqual([
+      expect.objectContaining({
+        name: "retired-registry-only",
+        family: "skill",
+        channel: "community",
+      }),
+    ]);
+  });
+
   it("searches skills with package-style lexical scoring", async () => {
     const result = await searchPackageCatalogPublicHandler(
       makeCtx([
@@ -217,6 +265,31 @@ describe("skills package catalog queries", () => {
       },
     });
     expect(result[0]?.score).toBeGreaterThan(0);
+  });
+
+  it("searches retired registry-only skills after runtime scrub", async () => {
+    const result = await searchPackageCatalogPublicHandler(
+      makeCtx([
+        {
+          page: [makeRetiredDependencyRegistryOnlyDigest("retired-search-tool")],
+          isDone: true,
+          continueCursor: "",
+        },
+      ]),
+      {
+        query: "retired-search-tool",
+        limit: 5,
+      },
+    );
+
+    expect(result).toEqual([
+      expect.objectContaining({
+        package: expect.objectContaining({
+          name: "retired-search-tool",
+          family: "skill",
+        }),
+      }),
+    ]);
   });
 
   it("does not let official status make unrelated skills eligible for package search", async () => {
