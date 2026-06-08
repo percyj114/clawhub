@@ -1,5 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { getFunctionName } from "convex/server";
 import type { ReactNode } from "react";
+import { toast } from "sonner";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
 import { SkillDetailPage } from "../components/SkillDetailPage";
@@ -40,6 +42,13 @@ vi.mock("convex/react", () => ({
   useAction: () => getReadmeMock,
 }));
 
+vi.mock("sonner", () => ({
+  toast: {
+    error: vi.fn(),
+    success: vi.fn(),
+  },
+}));
+
 vi.mock("../lib/useAuthStatus", () => ({
   useAuthStatus: () => useAuthStatusMock(),
 }));
@@ -71,6 +80,7 @@ describe("SkillDetailPage", () => {
     useAuthStatusMock.mockReset();
     getReadmeMock.mockResolvedValue({ text: "" });
     useMutationMock.mockReturnValue(vi.fn());
+    vi.mocked(toast.success).mockReset();
     useAuthStatusMock.mockReturnValue({
       isAuthenticated: false,
       isLoading: false,
@@ -1557,6 +1567,158 @@ describe("SkillDetailPage", () => {
     );
     expect(screen.getByText("Rename slug")).toBeTruthy();
     expect(screen.getByText("Merge listing")).toBeTruthy();
+  });
+
+  it("lets owners confirm skill deletion from settings", async () => {
+    const deleteSkill = vi.fn().mockResolvedValue({
+      ok: true,
+      slugReservedUntil: Date.UTC(2026, 6, 7),
+    });
+    useMutationMock.mockImplementation((mutation) =>
+      getFunctionName(mutation) === "skills:setOwnedSkillSoftDeleted" ? deleteSkill : vi.fn(),
+    );
+    useAuthStatusMock.mockReturnValue({
+      isAuthenticated: true,
+      isLoading: false,
+      me: { _id: "users:1", role: "user" },
+    });
+    useQueryMock.mockImplementation((_fn: unknown, args: unknown) => {
+      if (args === "skip") return undefined;
+      if (
+        args &&
+        typeof args === "object" &&
+        ("ownerUserId" in args || "ownerPublisherId" in args)
+      ) {
+        return [{ _id: "skills:1", slug: "weather", displayName: "Weather" }];
+      }
+      if (args && typeof args === "object" && "skillId" in args) return [];
+      if (args && typeof args === "object" && "slug" in args) {
+        return {
+          skill: {
+            _id: "skills:1",
+            slug: "weather",
+            displayName: "Weather",
+            summary: "Get current weather.",
+            ownerUserId: "users:1",
+            ownerPublisherId: "publishers:steipete",
+            tags: {},
+            stats: { stars: 0, downloads: 0 },
+          },
+          owner: {
+            _id: "publishers:steipete",
+            _creationTime: 0,
+            kind: "user",
+            handle: "steipete",
+            displayName: "Peter",
+            linkedUserId: "users:1",
+          },
+          latestVersion: { _id: "skillVersions:1", version: "1.0.0", parsed: {}, files: [] },
+        };
+      }
+      return undefined;
+    });
+
+    render(<SkillDetailPage slug="weather" mode="settings" />);
+
+    expect(await screen.findByRole("heading", { name: /Skill settings/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Delete skill" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Delete skill" }));
+
+    expect(deleteSkill).not.toHaveBeenCalled();
+    expect(screen.getByRole("heading", { name: "Delete skill" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete skill" }));
+
+    await waitFor(() => {
+      expect(deleteSkill).toHaveBeenCalledWith({ skillId });
+    });
+    expect(toast.success).toHaveBeenCalledWith(
+      expect.stringMatching(/^Deleted weather\. Slug reserved until /),
+    );
+    expect(navigateMock).toHaveBeenCalledWith({ to: "/", replace: true });
+  });
+
+  it("does not show the owner delete action to staff-only settings viewers", async () => {
+    useAuthStatusMock.mockReturnValue({
+      isAuthenticated: true,
+      isLoading: false,
+      me: { _id: "users:moderator", role: "moderator" },
+    });
+    useQueryMock.mockImplementation((_fn: unknown, args: unknown) => {
+      if (args === "skip") return undefined;
+      if (args && typeof args === "object" && "skillId" in args) return [];
+      if (args && typeof args === "object" && "slug" in args) {
+        return {
+          skill: {
+            _id: "skills:1",
+            slug: "weather",
+            displayName: "Weather",
+            summary: "Get current weather.",
+            ownerUserId: "users:1",
+            ownerPublisherId: "publishers:steipete",
+            tags: {},
+            stats: { stars: 0, downloads: 0 },
+          },
+          owner: {
+            _id: "publishers:steipete",
+            _creationTime: 0,
+            kind: "user",
+            handle: "steipete",
+            displayName: "Peter",
+            linkedUserId: "users:1",
+          },
+          latestVersion: { _id: "skillVersions:1", version: "1.0.0", parsed: {}, files: [] },
+        };
+      }
+      return undefined;
+    });
+
+    render(<SkillDetailPage slug="weather" mode="settings" />);
+
+    expect(await screen.findByRole("heading", { name: /Skill settings/i })).toBeTruthy();
+    expect(screen.getByText("Rename slug")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Delete skill" })).toBeNull();
+  });
+
+  it("does not show the owner delete action to org skill creators without org admin access", async () => {
+    useAuthStatusMock.mockReturnValue({
+      isAuthenticated: true,
+      isLoading: false,
+      me: { _id: "users:creator", role: "user" },
+    });
+    useQueryMock.mockImplementation((_fn: unknown, args: unknown) => {
+      if (args === "skip") return undefined;
+      if (args && typeof args === "object" && "skillId" in args) return [];
+      if (args && typeof args === "object" && "slug" in args) {
+        return {
+          skill: {
+            _id: "skills:1",
+            slug: "weather",
+            displayName: "Weather",
+            summary: "Get current weather.",
+            ownerUserId: "users:creator",
+            ownerPublisherId: "publishers:org",
+            tags: {},
+            stats: { stars: 0, downloads: 0 },
+          },
+          owner: {
+            _id: "publishers:org",
+            _creationTime: 0,
+            kind: "org",
+            handle: "weather-org",
+            displayName: "Weather Org",
+          },
+          latestVersion: { _id: "skillVersions:1", version: "1.0.0", parsed: {}, files: [] },
+        };
+      }
+      return undefined;
+    });
+
+    render(<SkillDetailPage slug="weather" mode="settings" />);
+
+    expect(await screen.findByRole("heading", { name: /Skill settings/i })).toBeTruthy();
+    expect(screen.getByText("Rename slug")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Delete skill" })).toBeNull();
   });
 
   it("does not expose settings to publisher members without admin access", async () => {
