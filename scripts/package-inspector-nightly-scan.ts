@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -22,9 +23,12 @@ type ClaimResponse = {
 const siteUrl = (process.env.CLAWHUB_SITE_URL ?? "https://clawhub.ai").replace(/\/+$/, "");
 const token = process.env.CLAWHUB_PLUGIN_INSPECTOR_WORKER_TOKEN;
 const batchSize = process.env.PLUGIN_INSPECTOR_BATCH_SIZE ?? "25";
-const inspectorVersion = process.env.PLUGIN_INSPECTOR_VERSION;
+const inspectorVersion =
+  process.env.PLUGIN_INSPECTOR_VERSION ?? resolveBundledPluginInspectorVersion();
 const artifactRoot =
   process.env.PLUGIN_INSPECTOR_ARTIFACT_DIR ?? "plugin-inspector-nightly-reports";
+const repoRoot = path.resolve(process.env.GITHUB_WORKSPACE ?? process.cwd());
+const clawhubCliEntry = path.join(repoRoot, "packages", "clawhub", "src", "cli.ts");
 
 if (!token) throw new Error("CLAWHUB_PLUGIN_INSPECTOR_WORKER_TOKEN is required");
 
@@ -72,24 +76,17 @@ for (const item of claim.items) {
         : pluginRoot;
     await writeSyntheticConfigIfNeeded(scanRoot, item.packageName);
     const scan = spawnSync(
-      "bunx",
-      [
-        "@openclaw/plugin-inspector@latest",
-        "ci",
-        "--no-openclaw",
-        "--plugin-root",
-        scanRoot,
-        "--out",
-        reportDir,
-        "--json",
-      ],
-      { encoding: "utf8" },
+      "bun",
+      [clawhubCliEntry, "package", "validate", scanRoot, "--out", reportDir, "--json"],
+      { cwd: repoRoot, encoding: "utf8" },
     );
     await writeFile(path.join(reportDir, "stdout.txt"), scan.stdout ?? "");
     await writeFile(path.join(reportDir, "stderr.txt"), scan.stderr ?? "");
     const reportPath = path.join(reportDir, "plugin-inspector-report.json");
     if (!existsSync(reportPath)) {
-      throw new Error(scan.stderr || scan.stdout || `plugin-inspector exited ${scan.status}`);
+      throw new Error(
+        scan.stderr || scan.stdout || `clawhub package validate exited ${scan.status}`,
+      );
     }
     const report = JSON.parse(await readFile(reportPath, "utf8"));
     await postJson(`${siteUrl}/api/v1/package-inspector/results`, {
@@ -232,4 +229,17 @@ function run(command: string, args: string[]) {
   if (result.status !== 0) {
     throw new Error(`${command} ${args.join(" ")} failed: ${result.stderr || result.stdout}`);
   }
+}
+
+function resolveBundledPluginInspectorVersion() {
+  const require = createRequire(import.meta.url);
+  const entry = require.resolve("@openclaw/plugin-inspector");
+  const packageJsonPath = path.resolve(path.dirname(entry), "..", "package.json");
+  const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
+    version?: unknown;
+  };
+  if (typeof packageJson.version !== "string" || !packageJson.version.trim()) {
+    throw new Error("Unable to resolve bundled @openclaw/plugin-inspector version");
+  }
+  return packageJson.version.trim();
 }

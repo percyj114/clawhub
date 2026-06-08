@@ -19,6 +19,18 @@ const authTokenMocks = createAuthTokenModuleMocks();
 const registryMocks = createRegistryModuleMocks();
 const httpMocks = createHttpModuleMocks();
 const uiMocks = createUiModuleMocks();
+const inspectorMocks = {
+  pluginRoot: {
+    runCheck: vi.fn(),
+  },
+  reports: {
+    renderTextSummary: vi.fn((report: { status?: string }) => `Plugin Inspector: ${report.status}`),
+    sanitizeArtifact: vi.fn((report: unknown) => report),
+  },
+  ci: {
+    writeOutputs: vi.fn(),
+  },
+};
 const originalOidcRequestUrl = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
 const originalOidcRequestToken = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
 
@@ -26,6 +38,7 @@ vi.mock("../../http.js", () => httpMocks.moduleFactory());
 vi.mock("../registry.js", () => registryMocks.moduleFactory());
 vi.mock("../authToken.js", () => authTokenMocks.moduleFactory());
 vi.mock("../ui.js", () => uiMocks.moduleFactory());
+vi.mock("@openclaw/plugin-inspector", () => inspectorMocks);
 
 const {
   cmdDeletePackage,
@@ -41,6 +54,7 @@ const {
   cmdReportPackage,
   cmdTransferPackage,
   cmdUndeletePackage,
+  cmdValidatePackage,
   cmdVerifyPackage,
 } = await import("./packages");
 const {
@@ -214,6 +228,100 @@ afterEach(() => {
 });
 
 describe("package commands", () => {
+  it("validates a local plugin package with bundled Plugin Inspector offline", async () => {
+    const workdir = await makeTmpWorkdir();
+    try {
+      const folder = join(workdir, "demo-plugin");
+      await mkdir(folder, { recursive: true });
+      await writeFile(join(folder, "package.json"), '{"name":"demo-plugin","version":"1.0.0"}\n');
+
+      inspectorMocks.pluginRoot.runCheck.mockResolvedValueOnce({
+        report: { status: "pass", summary: { breakageCount: 0 } },
+        paths: { jsonPath: join(folder, "reports", "plugin-inspector-report.json") },
+      });
+
+      await cmdValidatePackage(makeOpts(workdir), "demo-plugin", {});
+
+      expect(inspectorMocks.pluginRoot.runCheck).toHaveBeenCalledWith(
+        expect.objectContaining({
+          allowExecution: false,
+          capture: false,
+          configPath: expect.stringContaining("plugin-inspector.config.json"),
+          mockSdk: true,
+          openclawPath: false,
+          outDir: "reports",
+          pluginRoot: folder,
+        }),
+      );
+      expect(inspectorMocks.ci.writeOutputs).toHaveBeenCalledWith(
+        { status: "pass", summary: { breakageCount: 0 } },
+        { cwd: join(folder, "reports"), outDir: "." },
+      );
+      expect(mockLog).toHaveBeenCalledWith("Plugin Inspector: pass");
+    } finally {
+      await rm(workdir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails package validation when Plugin Inspector reports hard breakages", async () => {
+    const workdir = await makeTmpWorkdir();
+    try {
+      const folder = join(workdir, "broken-plugin");
+      await mkdir(folder, { recursive: true });
+      await writeFile(join(folder, "package.json"), '{"name":"broken-plugin","version":"1.0.0"}\n');
+      inspectorMocks.pluginRoot.runCheck.mockResolvedValueOnce({
+        report: { status: "fail", summary: { breakageCount: 1 } },
+        paths: { jsonPath: join(folder, "reports", "plugin-inspector-report.json") },
+      });
+
+      await expect(cmdValidatePackage(makeOpts(workdir), "broken-plugin", {})).rejects.toThrow(
+        "Plugin Inspector found 1 hard error",
+      );
+
+      expect(mockLog).toHaveBeenCalledWith("Plugin Inspector: fail");
+    } finally {
+      await rm(workdir, { recursive: true, force: true });
+    }
+  });
+
+  it("prints package validation JSON from the sanitized Plugin Inspector report", async () => {
+    const workdir = await makeTmpWorkdir();
+    try {
+      const folder = join(workdir, "warning-plugin");
+      await mkdir(folder, { recursive: true });
+      await writeFile(
+        join(folder, "package.json"),
+        '{"name":"warning-plugin","version":"1.0.0"}\n',
+      );
+      const report = {
+        status: "pass",
+        summary: { breakageCount: 0, warningCount: 1 },
+        issues: [{ code: "legacy-hook", level: "warning" }],
+      };
+      inspectorMocks.pluginRoot.runCheck.mockResolvedValueOnce({
+        report,
+        paths: { jsonPath: join(folder, "reports", "plugin-inspector-report.json") },
+      });
+      inspectorMocks.reports.sanitizeArtifact.mockReturnValueOnce({
+        status: "pass",
+        issues: [{ code: "legacy-hook", level: "warning" }],
+      });
+
+      await cmdValidatePackage(makeOpts(workdir), "warning-plugin", { json: true });
+
+      expect(mockWrite).toHaveBeenCalledWith(
+        `${JSON.stringify(
+          { status: "pass", issues: [{ code: "legacy-hook", level: "warning" }] },
+          null,
+          2,
+        )}\n`,
+      );
+      expect(mockLog).not.toHaveBeenCalled();
+    } finally {
+      await rm(workdir, { recursive: true, force: true });
+    }
+  });
+
   it("searches package catalog via /api/v1/packages/search", async () => {
     httpMocks.apiRequest.mockResolvedValueOnce({
       results: [

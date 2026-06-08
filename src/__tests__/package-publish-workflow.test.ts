@@ -6,7 +6,7 @@ describe("package publish workflow", () => {
   it("runs plugin-inspector before publishing and uploads inspector artifacts", () => {
     const workflow = readFileSync(resolve(".github/workflows/package-publish.yml"), "utf8");
 
-    const inspectorIndex = workflow.indexOf("Run plugin inspector");
+    const inspectorIndex = workflow.indexOf("Run plugin validation");
     const publishIndex = workflow.indexOf("Run package publish");
     const checkoutPublishSourceIndex = workflow.indexOf(
       "Checkout publish source for plugin inspector",
@@ -29,13 +29,12 @@ describe("package publish workflow", () => {
     expect(workflow).toContain("cleanup_generated_inspector_config");
     expect(workflow).toContain('rm -f "$generated_config"');
     expect(workflow).toContain('re.sub(r"[^a-z0-9]+", "-", base)');
-    expect(workflow).toContain("@openclaw/plugin-inspector");
-    expect(workflow).toContain("ci --no-openclaw");
+    expect(workflow).toContain("package validate");
     expect(workflow).toContain("plugin-inspector-report");
     expect(workflow).toContain("actions/upload-artifact");
   });
 
-  it("runs nightly plugin inspector rescans with the latest inspector package", () => {
+  it("runs nightly plugin inspector rescans with the bundled CLI validator", () => {
     const workflow = readFileSync(
       resolve(".github/workflows/plugin-inspector-nightly.yml"),
       "utf8",
@@ -44,9 +43,11 @@ describe("package publish workflow", () => {
     const http = readFileSync(resolve("convex/packageInspectorHttp.ts"), "utf8");
 
     expect(workflow).toContain("schedule:");
-    expect(workflow).toContain("@openclaw/plugin-inspector@latest");
+    expect(workflow).toContain("bun install --frozen-lockfile");
     expect(workflow).toContain("CLAWHUB_PLUGIN_INSPECTOR_WORKER_TOKEN");
     expect(script).toContain("package-inspector/claim");
+    expect(script).toContain('"package", "validate"');
+    expect(script).toContain("resolveBundledPluginInspectorVersion");
     expect(http).toContain("package-inspector/artifact");
     expect(script).toContain("package-inspector/results");
     expect(script).toContain("Authorization: `Bearer ${token}`");

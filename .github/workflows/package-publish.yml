@@ -61,11 +61,6 @@ on:
         description: Optional source path inside the repository for monorepo package publishes.
         required: false
         type: string
-      clawhub_version:
-        description: Legacy npm CLI version input. Kept for compatibility; the workflow now runs the checked-out source.
-        required: false
-        type: string
-        default: latest
     secrets:
       clawhub_token:
         required: false
@@ -432,7 +427,7 @@ jobs:
           ref: ${{ steps.resolve_publish.outputs.inspect_checkout_ref }}
           path: clawhub-publish-source
 
-      - name: Run plugin inspector
+      - name: Run plugin validation
         env:
           INSPECT_LOCAL_ROOT: ${{ steps.resolve_publish.outputs.inspect_local_root }}
           INSPECT_SUBDIR: ${{ steps.resolve_publish.outputs.inspect_subdir }}
@@ -499,7 +494,7 @@ jobs:
           )
           generated_config_path.write_text(str(config_path), encoding="utf-8")
           PY
-          bunx @openclaw/plugin-inspector@0.3.11 ci --no-openclaw --plugin-root "$inspect_root" --out "$RUNNER_TEMP/plugin-inspector"
+          bun "$GITHUB_WORKSPACE/clawhub-source/packages/clawhub/src/cli.ts" package validate "$inspect_root" --out "$RUNNER_TEMP/plugin-inspector"
           cleanup_generated_inspector_config
           trap - EXIT
 

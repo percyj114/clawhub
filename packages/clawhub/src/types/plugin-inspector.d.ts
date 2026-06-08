@@ -16,16 +16,18 @@ declare module "@openclaw/plugin-inspector" {
   };
 
   export const pluginRoot: {
-    runCheck(options?: {
-      pluginRoot?: string;
+    runCheck(options: {
+      allowExecution?: boolean;
+      capture?: boolean;
+      configPath?: string;
+      mockSdk?: boolean;
       openclawPath?: string | false;
       outDir?: string;
-      capture?: boolean;
-      mockSdk?: boolean;
-      allowExecution?: boolean;
-      configPath?: string;
-      generatedAt?: string;
-    }): Promise<{ report: PluginInspectorReport; paths: PluginInspectorPaths }>;
+      pluginRoot?: string;
+    }): Promise<{
+      report: PluginInspectorReport;
+      paths: PluginInspectorPaths;
+    }>;
   };
 
   export const reports: {
