@@ -7331,6 +7331,8 @@ export const claimPackageInspectorScanBatchInternal = internalMutation({
       ) {
         continue;
       }
+      const latestReleaseId = pkg.latestReleaseId ?? pkg.tags?.latest;
+      if (latestReleaseId !== release._id) continue;
       items.push({
         packageId: pkg._id,
         releaseId: release._id,

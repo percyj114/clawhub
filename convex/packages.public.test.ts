@@ -6787,6 +6787,7 @@ describe("packages public queries", () => {
               _id: "packages:one",
               name: "one-plugin",
               family: "code-plugin",
+              latestReleaseId: "packageReleases:one",
             };
           }
           if (id === "packages:two") {
@@ -6794,6 +6795,7 @@ describe("packages public queries", () => {
               _id: "packages:two",
               name: "two-plugin",
               family: "bundle-plugin",
+              tags: { latest: "packageReleases:two" },
             };
           }
           return null;
@@ -6846,6 +6848,97 @@ describe("packages public queries", () => {
     );
   });
 
+  it("claims only latest releases for nightly plugin inspector scans", async () => {
+    const paginate = vi.fn(async () => ({
+      page: [
+        {
+          _id: "packageReleases:old",
+          packageId: "packages:modern",
+          version: "1.0.0",
+          artifactKind: "legacy-zip",
+        },
+        {
+          _id: "packageReleases:current",
+          packageId: "packages:modern",
+          version: "2.0.0",
+          artifactKind: "npm-pack",
+        },
+        {
+          _id: "packageReleases:legacy-latest",
+          packageId: "packages:legacy",
+          version: "1.5.0",
+          artifactKind: "legacy-zip",
+        },
+      ],
+      isDone: true,
+      continueCursor: null,
+    }));
+    const ctx = {
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === "packages:modern") {
+            return {
+              _id: "packages:modern",
+              name: "modern-plugin",
+              family: "code-plugin",
+              channel: "community",
+              latestReleaseId: "packageReleases:current",
+              tags: { latest: "packageReleases:current" },
+            };
+          }
+          if (id === "packages:legacy") {
+            return {
+              _id: "packages:legacy",
+              name: "legacy-plugin",
+              family: "code-plugin",
+              channel: "community",
+              tags: { latest: "packageReleases:legacy-latest" },
+            };
+          }
+          return null;
+        }),
+        query: vi.fn((table: string) => {
+          if (table === "packageInspectorScanCursors") {
+            return {
+              withIndex: vi.fn(() => ({
+                unique: vi.fn().mockResolvedValue(null),
+              })),
+            };
+          }
+          if (table === "packageReleases") {
+            return {
+              withIndex: vi.fn(() => ({
+                order: vi.fn(() => ({
+                  paginate,
+                })),
+              })),
+            };
+          }
+          throw new Error(`Unexpected table ${table}`);
+        }),
+        insert: vi.fn(),
+        patch: vi.fn(),
+        replace: vi.fn(),
+        delete: vi.fn(),
+        normalizeId: vi.fn(() => null),
+      },
+    };
+
+    await expect(
+      claimPackageInspectorScanBatchInternalHandler(ctx as never, {
+        batchSize: 3,
+        leaseMs: 60_000,
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      leased: false,
+      items: [
+        { releaseId: "packageReleases:current", packageName: "modern-plugin" },
+        { releaseId: "packageReleases:legacy-latest", packageName: "legacy-plugin" },
+      ],
+    });
+  });
+
   it("does not claim private or public-blocked releases for unauthenticated nightly scans", async () => {
     const paginate = vi.fn(async () => ({
       page: [
@@ -6882,6 +6975,7 @@ describe("packages public queries", () => {
               family: "code-plugin",
               channel: "community",
               scanStatus: "clean",
+              latestReleaseId: "packageReleases:public",
             };
           }
           if (id === "packages:private") {
@@ -6891,6 +6985,7 @@ describe("packages public queries", () => {
               family: "code-plugin",
               channel: "private",
               scanStatus: "clean",
+              latestReleaseId: "packageReleases:private",
             };
           }
           if (id === "packages:blocked") {
@@ -6900,6 +6995,7 @@ describe("packages public queries", () => {
               family: "code-plugin",
               channel: "community",
               scanStatus: "clean",
+              latestReleaseId: "packageReleases:blocked",
             };
           }
           return null;
