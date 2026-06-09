@@ -142,7 +142,7 @@ test("plugin inspector blocks hard publish errors and publishes warning findings
   await dashboardWarningLink.click();
 
   await expect(page).toHaveURL(new RegExp(`/plugins/${warningName}#validation$`));
-  await expect(page.getByRole("tab", { name: /Validation \\(\\d+\\)/ })).toHaveAttribute(
+  await expect(page.getByRole("tab", { name: /Validation \(\d+\)/ })).toHaveAttribute(
     "aria-selected",
     "true",
   );
