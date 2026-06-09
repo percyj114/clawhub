@@ -48,13 +48,15 @@ export async function isActiveOfficialPublisherId(
   cache?: OfficialPublisherLookupCache,
 ): Promise<boolean> {
   if (!publisherId) return false;
+  if (!(await hasOfficialPublisherRow(ctx, publisherId, cache))) return false;
 
   const key = String(publisherId);
   const cached = cache?.publisherById.get(key);
   const publisher = cached ?? ctx.db.get(publisherId);
   cache?.publisherById.set(key, publisher);
 
-  return await isOfficialPublisher(ctx, await publisher, cache);
+  const livePublisher = await publisher;
+  return Boolean(livePublisher && !livePublisher.deletedAt && !livePublisher.deactivatedAt);
 }
 
 export async function toPublicPublisherWithOfficial(

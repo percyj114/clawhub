@@ -150,6 +150,17 @@ describe("isOfficialPublisher", () => {
     expect(ctx.db.get).toHaveBeenCalledWith("publishers:acme");
   });
 
+  it("does not read the publisher document when no official row exists", async () => {
+    const ctx = makeCtx({
+      publishers: [makePublisher({ _id: "publishers:acme", handle: "acme" })],
+    });
+
+    await expect(
+      isActiveOfficialPublisherId(ctx as never, "publishers:acme" as never),
+    ).resolves.toBe(false);
+    expect(ctx.db.get).not.toHaveBeenCalled();
+  });
+
   it("caches repeated official row lookups by publisher id", async () => {
     const ctx = makeCtx({ officialPublisherIds: ["publishers:acme"] });
     const cache = createOfficialPublisherLookupCache();

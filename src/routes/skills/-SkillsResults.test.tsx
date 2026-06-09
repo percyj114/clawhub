@@ -24,8 +24,17 @@ vi.mock("@tanstack/react-router", () => ({
 }));
 
 vi.mock("../../components/UserBadge", () => ({
-  UserBadge: ({ fallbackHandle }: { fallbackHandle?: string | null }) => (
-    <span>{fallbackHandle ?? "unknown"}</span>
+  UserBadge: ({
+    fallbackHandle,
+    user,
+  }: {
+    fallbackHandle?: string | null;
+    user?: { official?: boolean } | null;
+  }) => (
+    <span>
+      {fallbackHandle ?? "unknown"}
+      {user?.official ? <span aria-label="Official">Official</span> : null}
+    </span>
   ),
 }));
 
@@ -54,7 +63,7 @@ describe("SkillsResults", () => {
       />,
     );
 
-    expect(screen.getByLabelText("Official")).toBeTruthy();
+    expect(screen.getAllByLabelText("Official")).toHaveLength(1);
   });
 });
 
