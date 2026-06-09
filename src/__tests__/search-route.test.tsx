@@ -252,28 +252,27 @@ describe("search route", () => {
   });
 
   it("passes official skill owners into search result rows", async () => {
+    const officialSkillResult = {
+      type: "skill" as const,
+      skill: {
+        _id: "skill-weather",
+        slug: "weather",
+        displayName: "Weather",
+        ownerUserId: "users:1",
+        stats: { downloads: 0, stars: 0 },
+        updatedAt: 1,
+        createdAt: 1,
+      },
+      ownerHandle: "openclaw",
+      owner: {
+        handle: "openclaw",
+        official: true,
+      },
+      score: 1,
+    };
     useUnifiedSearchMock.mockReturnValue({
-      results: [
-        {
-          type: "skill",
-          skill: {
-            _id: "skill-weather",
-            slug: "weather",
-            displayName: "Weather",
-            ownerUserId: "users:1",
-            stats: { downloads: 0, stars: 0 },
-            updatedAt: 1,
-            createdAt: 1,
-          },
-          ownerHandle: "openclaw",
-          owner: {
-            handle: "openclaw",
-            official: true,
-          },
-          score: 1,
-        },
-      ],
-      skillResults: [],
+      results: [officialSkillResult],
+      skillResults: [officialSkillResult],
       pluginResults: [],
       skillCount: 1,
       pluginCount: 0,
