@@ -223,8 +223,8 @@ describe("plugin detail route", () => {
       detail: {
         package: {
           ...loaderDataMock.detail.package!,
-          channel: "official",
-          isOfficial: true,
+          channel: "community",
+          isOfficial: false,
         },
         owner: {
           handle: "openclaw",
@@ -242,7 +242,7 @@ describe("plugin detail route", () => {
     const ownerLink = screen.getByRole("link", { name: "OpenClaw" });
     const ownerBadge = ownerLink.closest(".user-badge");
     expect(ownerBadge?.querySelector(".official-badge")).toBeTruthy();
-    expect(container.querySelector(".official-tag")).toBeTruthy();
+    expect(container.querySelector(".official-tag")).toBeNull();
     expect(screen.queryByText("Verified")).toBeNull();
   });
 

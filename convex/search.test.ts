@@ -5,6 +5,7 @@ import { tokenize } from "./lib/searchText";
 import {
   __test,
   directPrefixSkillMatches,
+  getExactSkillSlugMatch,
   hydrateResults,
   lexicalFallbackSouls,
   lexicalFallbackSkills,
@@ -28,6 +29,9 @@ vi.mock("./lib/badges", () => ({
 type WrappedHandler<Result = { skill: { slug: string; _id: string } }> = {
   _handler: (ctx: unknown, args: unknown) => Promise<Array<Result>>;
 };
+type SingleWrappedHandler<Result> = {
+  _handler: (ctx: unknown, args: unknown) => Promise<Result>;
+};
 
 const searchSkillsHandler = (
   searchSkills as unknown as WrappedHandler<{
@@ -44,6 +48,13 @@ const searchSoulsHandler = (
 const lexicalFallbackSkillsHandler = (lexicalFallbackSkills as unknown as WrappedHandler)._handler;
 const directPrefixSkillMatchesHandler = (directPrefixSkillMatches as unknown as WrappedHandler)
   ._handler;
+const getExactSkillSlugMatchHandler = (
+  getExactSkillSlugMatch as unknown as SingleWrappedHandler<{
+    skill: { slug: string; _id: string };
+    ownerHandle: string | null;
+    owner: { official?: boolean } | null;
+  } | null>
+)._handler;
 const lexicalFallbackSoulsHandler = (
   lexicalFallbackSouls as unknown as WrappedHandler<{ soul: { slug: string; _id: string } }>
 )._handler;
@@ -448,6 +459,81 @@ describe("search helpers", () => {
     expect(result[0].skill.slug).toBe("orf");
     expect(ctx.db.query).toHaveBeenCalledWith("skills");
     expect(ctx.db.query).toHaveBeenCalledWith("skillSearchDigest");
+  });
+
+  it("marks live exact slug owner publishers official", async () => {
+    const exactSlugSkill = makeSkillDoc({
+      id: "skills:official-exact",
+      slug: "official-exact",
+      displayName: "Official Exact",
+      ownerPublisherId: "publishers:owner",
+    });
+    let requestedPublisherId: string | undefined;
+    const getMock = vi.fn(async (id: string) => {
+      if (id === "publishers:owner") {
+        return {
+          _id: "publishers:owner",
+          _creationTime: 1,
+          kind: "org",
+          handle: "owner",
+          displayName: "Owner",
+          image: undefined,
+          bio: undefined,
+          linkedUserId: undefined,
+          deletedAt: undefined,
+          deactivatedAt: undefined,
+          createdAt: 1,
+          updatedAt: 1,
+        };
+      }
+      return null;
+    });
+
+    const result = await getExactSkillSlugMatchHandler(
+      {
+        db: {
+          get: getMock,
+          query: vi.fn((table: string) => ({
+            withIndex: (
+              index: string,
+              build?: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
+            ) => {
+              const q = {
+                eq: vi.fn((field: string, value: unknown) => {
+                  if (field === "publisherId") requestedPublisherId = String(value);
+                  return q;
+                }),
+              };
+              build?.(q);
+              return {
+                unique: vi.fn(async () => {
+                  if (table === "skills" && index === "by_slug") return exactSlugSkill;
+                  if (
+                    table === "officialPublishers" &&
+                    index === "by_publisher" &&
+                    requestedPublisherId === "publishers:owner"
+                  ) {
+                    return {
+                      _id: "officialPublishers:owner",
+                      publisherId: "publishers:owner",
+                      createdAt: 1,
+                      updatedAt: 1,
+                    };
+                  }
+                  return null;
+                }),
+              };
+            },
+          })),
+        },
+      },
+      { slug: "official-exact" },
+    );
+
+    expect(result?.skill.slug).toBe("official-exact");
+    expect(result?.ownerHandle).toBe("owner");
+    expect(result?.owner?.official).toBe(true);
+    expect(getMock).toHaveBeenCalledWith("publishers:owner");
   });
 
   it("dedupes overlap and enforces rank + limit across vector and fallback", async () => {
@@ -1319,6 +1405,7 @@ describe("search helpers", () => {
       updatedAt: skillDoc.updatedAt,
     };
 
+    let ownerPublisherDeactivatedAt: number | undefined = 123;
     const getMock = vi.fn(async (id: string) => {
       // Should NOT be called for skills:1 when digest exists
       if (id === "skills:1") throw new Error("Should not read full skill doc");
@@ -1329,7 +1416,7 @@ describe("search helpers", () => {
           kind: "org",
           handle: "owner",
           displayName: "Owner",
-          deactivatedAt: 123,
+          deactivatedAt: ownerPublisherDeactivatedAt,
           createdAt: 1,
           updatedAt: 1,
         };
@@ -1349,52 +1436,50 @@ describe("search helpers", () => {
       }
       return null;
     });
-    const result = await hydrateResultsHandler(
-      {
-        db: {
-          get: getMock,
-          query: vi.fn((table: string) => ({
-            withIndex: (
-              index: string,
-              build?: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
-            ) => {
-              let requestedPublisherId: string | undefined;
-              const q = {
-                eq: vi.fn((field: string, value: unknown) => {
-                  if (field === "publisherId") requestedPublisherId = String(value);
-                  return q;
-                }),
-              };
-              build?.(q);
-              return {
-                unique: vi.fn(async () => {
-                  if (table === "embeddingSkillMap" && index === "by_embedding") {
-                    return { embeddingId: "skillEmbeddings:1", skillId: "skills:1" };
-                  }
-                  if (table === "skillSearchDigest" && index === "by_skill") {
-                    return digestDoc;
-                  }
-                  if (
-                    table === "officialPublishers" &&
-                    index === "by_publisher" &&
-                    requestedPublisherId === "publishers:owner"
-                  ) {
-                    return {
-                      _id: "officialPublishers:owner",
-                      publisherId: "publishers:owner",
-                      createdAt: 1,
-                      updatedAt: 1,
-                    };
-                  }
-                  return null;
-                }),
-              };
-            },
-          })),
-        },
+    const ctx = {
+      db: {
+        get: getMock,
+        query: vi.fn((table: string) => ({
+          withIndex: (
+            index: string,
+            build?: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
+          ) => {
+            let requestedPublisherId: string | undefined;
+            const q = {
+              eq: vi.fn((field: string, value: unknown) => {
+                if (field === "publisherId") requestedPublisherId = String(value);
+                return q;
+              }),
+            };
+            build?.(q);
+            return {
+              unique: vi.fn(async () => {
+                if (table === "embeddingSkillMap" && index === "by_embedding") {
+                  return { embeddingId: "skillEmbeddings:1", skillId: "skills:1" };
+                }
+                if (table === "skillSearchDigest" && index === "by_skill") {
+                  return digestDoc;
+                }
+                if (
+                  table === "officialPublishers" &&
+                  index === "by_publisher" &&
+                  requestedPublisherId === "publishers:owner"
+                ) {
+                  return {
+                    _id: "officialPublishers:owner",
+                    publisherId: "publishers:owner",
+                    createdAt: 1,
+                    updatedAt: 1,
+                  };
+                }
+                return null;
+              }),
+            };
+          },
+        })),
       },
-      { embeddingIds: ["skillEmbeddings:1"] },
-    );
+    };
+    const result = await hydrateResultsHandler(ctx, { embeddingIds: ["skillEmbeddings:1"] });
 
     expect(result).toHaveLength(1);
     expect(result[0].skill.slug).toBe("digest-skill");
@@ -1404,6 +1489,12 @@ describe("search helpers", () => {
     expect(getMock).toHaveBeenCalledWith("publishers:owner");
     // Owner resolved from digest — users table should NOT be read
     expect(getMock).not.toHaveBeenCalledWith("users:owner");
+
+    ownerPublisherDeactivatedAt = undefined;
+    const activeResult = await hydrateResultsHandler(ctx, { embeddingIds: ["skillEmbeddings:1"] });
+
+    expect(activeResult).toHaveLength(1);
+    expect(activeResult[0].owner?.official).toBe(true);
   });
 
   it("falls back to full skill doc when digest is missing", async () => {
@@ -1670,6 +1761,7 @@ function makePublicSkill(params: {
   installsAllTime?: number;
   stars?: number;
   capabilityTags?: string[];
+  ownerPublisherId?: string;
 }) {
   return {
     _id: params.id,
@@ -1678,6 +1770,7 @@ function makePublicSkill(params: {
     displayName: params.displayName,
     summary: `${params.displayName} summary`,
     ownerUserId: "users:owner",
+    ownerPublisherId: params.ownerPublisherId,
     canonicalSkillId: undefined,
     forkOf: undefined,
     latestVersionId: "skillVersions:1",
@@ -1704,6 +1797,7 @@ function makeSkillDoc(params: {
   moderationFlags?: string[];
   moderationReason?: string;
   softDeletedAt?: number;
+  ownerPublisherId?: string;
 }) {
   return {
     ...makePublicSkill(params),
