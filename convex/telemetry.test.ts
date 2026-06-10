@@ -1,5 +1,5 @@
 /* @vitest-environment node */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./functions", () => ({
   internalAction: (def: { handler: unknown }) => ({ _handler: def.handler }),
@@ -58,6 +58,10 @@ function makeIndexBuilder() {
 }
 
 describe("telemetry install events", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("records legacy snapshot batches additively", async () => {
     const skills = [
       { _id: "skills:weather", slug: "weather" },
@@ -125,6 +129,9 @@ describe("telemetry install events", () => {
               if (table === "skills" && indexName === "by_slug") {
                 return { unique: async () => skill };
               }
+              if (table === "installTelemetryDedupes" && indexName === "by_user_skill_root_day") {
+                return { unique: async () => null };
+              }
               if (table === "userSyncRoots" && indexName === "by_user_root") {
                 return { unique: async () => null };
               }
@@ -151,6 +158,14 @@ describe("telemetry install events", () => {
       rootLabel: "~/skills",
     });
 
+    expect(insert).toHaveBeenCalledWith(
+      "installTelemetryDedupes",
+      expect.objectContaining({
+        userId: "users:one",
+        skillId: "skills:demo",
+        rootKey: "root",
+      }),
+    );
     expect(insert).toHaveBeenCalledWith(
       "userSkillInstalls",
       expect.objectContaining({
@@ -206,6 +221,9 @@ describe("telemetry install events", () => {
               if (table === "skills" && indexName === "by_slug") {
                 return { unique: async () => skill };
               }
+              if (table === "installTelemetryDedupes" && indexName === "by_user_skill_root_day") {
+                return { unique: async () => null };
+              }
               if (table === "userSkillInstalls" && indexName === "by_user_skill") {
                 return { unique: async () => existingInstall };
               }
@@ -251,6 +269,9 @@ describe("telemetry install events", () => {
               if (table === "skills" && indexName === "by_slug") {
                 return { unique: async () => skill };
               }
+              if (table === "installTelemetryDedupes" && indexName === "by_user_skill_root_day") {
+                return { unique: async () => null };
+              }
               if (table === "userSkillInstalls" && indexName === "by_user_skill") {
                 return { unique: async () => existingInstall };
               }
@@ -280,5 +301,48 @@ describe("telemetry install events", () => {
         kind: "install_reactivate",
       }),
     );
+  });
+
+  it("dedupes repeated install telemetry for the same user, skill, root, and day", async () => {
+    vi.setSystemTime(86_500_000);
+    const skill = { _id: "skills:demo", slug: "demo" };
+    const insert = vi.fn();
+    const patch = vi.fn();
+    const ctx = {
+      db: {
+        query: vi.fn((table: string) => ({
+          withIndex: vi.fn(
+            (indexName: string, callback: (q: ReturnType<typeof makeIndexBuilder>) => unknown) => {
+              const builder = makeIndexBuilder();
+              callback(builder);
+              if (table === "skills" && indexName === "by_slug") {
+                return { unique: async () => skill };
+              }
+              if (table === "installTelemetryDedupes" && indexName === "by_user_skill_root_day") {
+                expect(builder.eq).toHaveBeenCalledWith("userId", "users:one");
+                expect(builder.eq).toHaveBeenCalledWith("skillId", "skills:demo");
+                expect(builder.eq).toHaveBeenCalledWith("rootKey", "root");
+                expect(builder.eq).toHaveBeenCalledWith("dayStart", 86_400_000);
+                return { unique: async () => ({ _id: "installTelemetryDedupes:existing" }) };
+              }
+              throw new Error(`unexpected query ${table}.${indexName}`);
+            },
+          ),
+        })),
+        insert,
+        patch,
+      },
+    };
+
+    await reportCliInstallHandler(ctx, {
+      userId: "users:one",
+      slug: "demo",
+      version: "1.0.1",
+      rootId: "root",
+      rootLabel: "~/skills",
+    });
+
+    expect(insert).not.toHaveBeenCalled();
+    expect(patch).not.toHaveBeenCalled();
   });
 });
