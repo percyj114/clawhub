@@ -2459,8 +2459,15 @@ const installTelemetryDedupes = defineTable({
 })
   .index("by_user_skill_root_day", ["userId", "skillId", "rootKey", "dayStart"])
   .index("by_user", ["userId"])
+  .index("by_user_createdAt", ["userId", "createdAt"])
   .index("by_skill", ["skillId"])
   .index("by_day", ["dayStart"]);
+
+const userTelemetryClearState = defineTable({
+  userId: v.id("users"),
+  clearStartedAt: v.number(),
+  updatedAt: v.number(),
+}).index("by_user", ["userId"]);
 
 const reservedSlugs = defineTable({
   slug: v.string(),
@@ -2532,6 +2539,7 @@ const userSyncRoots = defineTable({
   expiredAt: v.optional(v.number()),
 })
   .index("by_user", ["userId"])
+  .index("by_user_lastSeenAt", ["userId", "lastSeenAt"])
   .index("by_user_root", ["userId", "rootId"]);
 
 const userSkillInstalls = defineTable({
@@ -2543,6 +2551,7 @@ const userSkillInstalls = defineTable({
   lastVersion: v.optional(v.string()),
 })
   .index("by_user", ["userId"])
+  .index("by_user_lastSeenAt", ["userId", "lastSeenAt"])
   .index("by_user_skill", ["userId", "skillId"])
   .index("by_skill", ["skillId"]);
 
@@ -2556,6 +2565,7 @@ const userSkillRootInstalls = defineTable({
   removedAt: v.optional(v.number()),
 })
   .index("by_user", ["userId"])
+  .index("by_user_lastSeenAt", ["userId", "lastSeenAt"])
   .index("by_user_root", ["userId", "rootId"])
   .index("by_user_root_skill", ["userId", "rootId", "skillId"])
   .index("by_user_skill", ["userId", "skillId"])
@@ -2650,6 +2660,7 @@ export default defineSchema({
   downloadMetricDedupes,
   packageInstallMetricDedupes,
   installTelemetryDedupes,
+  userTelemetryClearState,
   reservedSlugs,
   reservedHandles,
   githubBackupSyncState,
