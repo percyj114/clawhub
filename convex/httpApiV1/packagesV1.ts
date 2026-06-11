@@ -256,7 +256,7 @@ function normalizeCapabilityTagSegment(value: string) {
 const PACKAGE_FAMILY_VALUES = ["skill", "code-plugin", "bundle-plugin"] as const;
 const PLUGIN_EXPORT_FAMILY_VALUES = ["code-plugin", "bundle-plugin"] as const;
 const PACKAGE_CHANNEL_VALUES = ["official", "community", "private"] as const;
-const PACKAGE_LIST_SORT_VALUES = ["updated", "downloads"] as const;
+const PACKAGE_LIST_SORT_VALUES = ["updated", "downloads", "recommended"] as const;
 const MAX_PLUGIN_EXPORT_FILE_COUNT = 10_000;
 const MAX_PLUGIN_EXPORT_PAGE_LIMIT = 250;
 const DEFAULT_PLUGIN_EXPORT_PAGE_LIMIT = 250;
@@ -996,6 +996,14 @@ function compareCatalogItemsForSort(
   b: CatalogListItem,
   sort: (typeof PACKAGE_LIST_SORT_VALUES)[number] | undefined,
 ) {
+  if (sort === "recommended") {
+    const stars = (b.stats?.stars ?? 0) - (a.stats?.stars ?? 0);
+    if (stars !== 0) return stars;
+    const installs = (b.stats?.installs ?? 0) - (a.stats?.installs ?? 0);
+    if (installs !== 0) return installs;
+    const downloads = (b.stats?.downloads ?? 0) - (a.stats?.downloads ?? 0);
+    if (downloads !== 0) return downloads;
+  }
   if (sort === "downloads") {
     const downloads = (b.stats?.downloads ?? 0) - (a.stats?.downloads ?? 0);
     if (downloads !== 0) return downloads;

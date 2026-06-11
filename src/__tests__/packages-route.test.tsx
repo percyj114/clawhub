@@ -273,13 +273,13 @@ describe("plugins route", () => {
       expect.objectContaining({
         cursor: "cursor:current",
         limit: 25,
-        sort: "downloads",
+        sort: "recommended",
       }),
     );
     expect(fetchPluginCatalogMock.mock.calls[0]?.[0]).not.toHaveProperty("family");
   });
 
-  it("uses downloads as the recommended plugin browse ranking", async () => {
+  it("uses recommended as the plugin browse ranking", async () => {
     fetchPluginCatalogMock.mockResolvedValue({ items: [], nextCursor: null });
     const { loadPluginsPageData } = await import("../routes/plugins/index");
 
@@ -287,7 +287,7 @@ describe("plugins route", () => {
 
     expect(fetchPluginCatalogMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        sort: "downloads",
+        sort: "recommended",
         limit: 25,
       }),
     );

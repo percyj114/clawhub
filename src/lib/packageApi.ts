@@ -167,7 +167,7 @@ export type PackageVersionDetail = {
 };
 
 type PluginFamily = "code-plugin" | "bundle-plugin";
-type PackageCatalogSort = "updated" | "downloads";
+type PackageCatalogSort = "updated" | "downloads" | "recommended";
 
 type PluginCatalogResult = {
   items: PackageListItem[];

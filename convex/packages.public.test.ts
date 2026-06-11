@@ -131,7 +131,7 @@ const listPublicPageHandler = (
       executesCode?: boolean;
       capabilityTag?: string;
       category?: string;
-      sort?: "updated" | "downloads";
+      sort?: "updated" | "downloads" | "recommended";
       paginationOpts: { cursor: string | null; numItems: number };
     },
     { page: Array<{ name: string }>; isDone: boolean; continueCursor: string }
@@ -146,7 +146,7 @@ const listPageForViewerInternalHandler = (
       executesCode?: boolean;
       capabilityTag?: string;
       category?: string;
-      sort?: "updated" | "downloads";
+      sort?: "updated" | "downloads" | "recommended";
       viewerUserId?: string;
       paginationOpts: { cursor: string | null; numItems: number };
     },
@@ -1109,7 +1109,9 @@ function makeDigestCtx(options: {
                   builder?.(queryBuilder);
                   if (
                     indexName === "by_active_downloads" ||
-                    indexName === "by_active_family_downloads"
+                    indexName === "by_active_family_downloads" ||
+                    indexName === "by_active_recommended_rank" ||
+                    indexName === "by_active_family_recommended_rank"
                   ) {
                     indexFilters.push({ indexName, filters });
                     return withIndex(table, indexName);
@@ -2255,6 +2257,57 @@ describe("packages public queries", () => {
     expect(indexFilters).toEqual([
       {
         indexName: "by_active_family_downloads",
+        filters: [
+          { field: "softDeletedAt", value: undefined },
+          { field: "family", value: "code-plugin" },
+        ],
+      },
+    ]);
+    expect(paginate).toHaveBeenCalledTimes(1);
+    expect(paginate).toHaveBeenCalledWith({ cursor: null, numItems: 50 });
+  });
+
+  it("uses a family-scoped recommended index for recommended plugin pages", async () => {
+    const { ctx, indexFilters, indexNames, paginate } = makeDigestCtx({
+      packagePages: [
+        {
+          page: [
+            makePackageDoc({
+              _id: "packages:code-plugin-starred",
+              name: "code-plugin-starred",
+              normalizedName: "code-plugin-starred",
+              displayName: "Code Plugin Starred",
+              family: "code-plugin",
+              stats: { downloads: 10, installs: 20, stars: 5, versions: 1 },
+            }),
+            makePackageDoc({
+              _id: "packages:code-plugin-downloaded",
+              name: "code-plugin-downloaded",
+              normalizedName: "code-plugin-downloaded",
+              displayName: "Code Plugin Downloaded",
+              family: "code-plugin",
+              stats: { downloads: 1_000, installs: 0, stars: 1, versions: 1 },
+            }),
+          ],
+          isDone: true,
+          continueCursor: "",
+        },
+      ],
+    });
+
+    const result = await listPublicPageHandler(ctx, {
+      family: "code-plugin",
+      sort: "recommended",
+      paginationOpts: { cursor: null, numItems: 1 },
+    });
+
+    expect(result.page.map((entry) => entry.name)).toEqual(["code-plugin-starred"]);
+    expect(result.isDone).toBe(false);
+    expect(result.continueCursor.startsWith("pkgpage:")).toBe(true);
+    expect(indexNames).toEqual(["by_active_family_recommended_rank"]);
+    expect(indexFilters).toEqual([
+      {
+        indexName: "by_active_family_recommended_rank",
         filters: [
           { field: "softDeletedAt", value: undefined },
           { field: "family", value: "code-plugin" },

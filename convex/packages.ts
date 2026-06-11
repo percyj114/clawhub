@@ -2592,7 +2592,9 @@ export const listPublicPage = query({
     executesCode: v.optional(v.boolean()),
     capabilityTag: v.optional(v.string()),
     category: v.optional(v.string()),
-    sort: v.optional(v.union(v.literal("updated"), v.literal("downloads"))),
+    sort: v.optional(
+      v.union(v.literal("updated"), v.literal("downloads"), v.literal("recommended")),
+    ),
     paginationOpts: paginationOptsValidator,
   },
   handler: async (ctx, args) => {
@@ -3060,7 +3062,9 @@ export const listPageForViewerInternal = internalQuery({
     executesCode: v.optional(v.boolean()),
     capabilityTag: v.optional(v.string()),
     category: v.optional(v.string()),
-    sort: v.optional(v.union(v.literal("updated"), v.literal("downloads"))),
+    sort: v.optional(
+      v.union(v.literal("updated"), v.literal("downloads"), v.literal("recommended")),
+    ),
     viewerUserId: v.optional(v.id("users")),
     paginationOpts: paginationOptsValidator,
   },
@@ -3094,7 +3098,7 @@ async function listPackagePageImpl(
     executesCode?: boolean;
     capabilityTag?: string;
     category?: string;
-    sort?: "updated" | "downloads";
+    sort?: "updated" | "downloads" | "recommended";
     viewerUserId?: Id<"users">;
     paginationOpts: { cursor: string | null; numItems: number };
   },
@@ -3139,21 +3143,27 @@ async function listPackagePageImpl(
     ),
   );
 
-  if (args.sort === "downloads") {
+  if (args.sort === "downloads" || args.sort === "recommended") {
     let cursor = pageCursor;
     let pageOffset = offset;
     let pageSize: number | null = decodedCursor.pageSize ?? null;
     let done = decodedCursor.done;
-    const buildDownloadsQuery = () =>
+    const buildSortedQuery = () =>
       family
         ? ctx.db
             .query("packages")
-            .withIndex("by_active_family_downloads", (q) =>
-              q.eq("softDeletedAt", undefined).eq("family", family),
+            .withIndex(
+              args.sort === "recommended"
+                ? "by_active_family_recommended_rank"
+                : "by_active_family_downloads",
+              (q) => q.eq("softDeletedAt", undefined).eq("family", family),
             )
         : ctx.db
             .query("packages")
-            .withIndex("by_active_downloads", (q) => q.eq("softDeletedAt", undefined));
+            .withIndex(
+              args.sort === "recommended" ? "by_active_recommended_rank" : "by_active_downloads",
+              (q) => q.eq("softDeletedAt", undefined),
+            );
 
     while ((pageOffset > 0 || !done) && collected.length < targetCount) {
       const scanPageSize = Math.min(
@@ -3163,7 +3173,7 @@ async function listPackagePageImpl(
           : Math.max(targetCount * 5, targetCount, 50),
       );
       const currentCursor = cursor;
-      const page = await buildDownloadsQuery()
+      const page = await buildSortedQuery()
         .order("desc")
         .paginate({ cursor: currentCursor, numItems: scanPageSize });
 

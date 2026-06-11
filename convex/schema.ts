@@ -1219,7 +1219,22 @@ const packages = defineTable({
   .index("by_runtime_id", ["runtimeId"])
   .index("by_active_updated", ["softDeletedAt", "updatedAt"])
   .index("by_active_downloads", ["softDeletedAt", "stats.downloads", "updatedAt"])
-  .index("by_active_family_downloads", ["softDeletedAt", "family", "stats.downloads", "updatedAt"]);
+  .index("by_active_family_downloads", ["softDeletedAt", "family", "stats.downloads", "updatedAt"])
+  .index("by_active_recommended_rank", [
+    "softDeletedAt",
+    "stats.stars",
+    "stats.installs",
+    "stats.downloads",
+    "updatedAt",
+  ])
+  .index("by_active_family_recommended_rank", [
+    "softDeletedAt",
+    "family",
+    "stats.stars",
+    "stats.installs",
+    "stats.downloads",
+    "updatedAt",
+  ]);
 
 const packageReleases = defineTable({
   packageId: v.id("packages"),

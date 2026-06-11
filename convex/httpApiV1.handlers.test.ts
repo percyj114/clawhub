@@ -117,6 +117,7 @@ function makeCatalogItem(
     family: "code-plugin" | "bundle-plugin" | "skill";
     updatedAt: number;
     score?: number;
+    stats?: { downloads: number; installs: number; stars: number; versions: number };
   },
 ) {
   return {
@@ -128,6 +129,7 @@ function makeCatalogItem(
     createdAt: options.updatedAt,
     updatedAt: options.updatedAt,
     ...(typeof options.score === "number" ? { score: options.score } : {}),
+    ...(options.stats ? { stats: options.stats } : {}),
   };
 }
 
@@ -7446,6 +7448,43 @@ describe("httpApiV1 handlers", () => {
         }),
       );
     }
+  });
+
+  it("plugins list recommended sort ranks stars before downloads across plugin families", async () => {
+    const codePlugin = makeCatalogItem("code-starred", {
+      family: "code-plugin",
+      updatedAt: 100,
+      stats: { downloads: 10, installs: 20, stars: 5, versions: 1 },
+    });
+    const bundlePlugin = makeCatalogItem("bundle-downloaded", {
+      family: "bundle-plugin",
+      updatedAt: 200,
+      stats: { downloads: 1_000, installs: 0, stars: 1, versions: 1 },
+    });
+    const runQuery = vi.fn((_, args: Record<string, unknown>) => {
+      if (Object.keys(args).length === 0) return 2;
+      expect(args).toEqual(expect.objectContaining({ sort: "recommended" }));
+      if (args.family === "code-plugin") {
+        return { page: [codePlugin], isDone: true, continueCursor: "" };
+      }
+      if (args.family === "bundle-plugin") {
+        return { page: [bundlePlugin], isDone: true, continueCursor: "" };
+      }
+      throw new Error(`unexpected family ${String(args.family)}`);
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.listPluginsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/plugins?limit=2&sort=recommended"),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.items.map((entry: { name: string }) => entry.name)).toEqual([
+      "code-starred",
+      "bundle-downloaded",
+    ]);
   });
 
   it("plugins list rejects invalid categories", async () => {
