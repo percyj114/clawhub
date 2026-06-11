@@ -1,6 +1,7 @@
 /* @vitest-environment node */
 
 import { describe, expect, it } from "vitest";
+import { computeRecommendationScore } from "./recommendationScore";
 import {
   digestToHydratableSkill,
   extractDigestFields,
@@ -81,6 +82,9 @@ describe("extractDigestFields", () => {
     expect(digest.statsStars).toBe(5);
     expect(digest.statsInstallsCurrent).toBe(10);
     expect(digest.statsInstallsAllTime).toBe(100);
+    expect(digest.recommendedScore).toBe(
+      computeRecommendationScore({ downloads: 42, installs: 100, stars: 5 }),
+    );
     expect(digest.stats).toEqual({
       downloads: 42,
       installsCurrent: 10,
@@ -116,6 +120,9 @@ describe("extractDigestFields", () => {
     expect(digest.statsStars).toBe(5);
     expect(digest.statsInstallsCurrent).toBe(10);
     expect(digest.statsInstallsAllTime).toBe(100);
+    expect(digest.recommendedScore).toBe(
+      computeRecommendationScore({ downloads: 42, installs: 100, stars: 5 }),
+    );
   });
 
   it("omits large fields not needed for search", () => {

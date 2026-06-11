@@ -25,11 +25,17 @@ vi.mock("./_generated/api", () => ({
 
 const {
   __test,
+  backfillPackageRecommendationScoresInternal,
+  backfillSkillDigestRecommendationScoresInternal,
   countPublicPackageDigestPageInternal,
   reconcileSkillStarCountsHandler,
   updateGlobalStatsAction,
 } = await import("./statsMaintenance");
-const { buildSkillStatPatch } = __test;
+const {
+  buildSkillStatPatch,
+  computePackageRecommendationScore,
+  computeSkillDigestRecommendationScore,
+} = __test;
 
 type WrappedHandler<TArgs, TResult> = {
   handler?: (ctx: unknown, args: TArgs) => Promise<TResult>;
@@ -46,6 +52,16 @@ const countPublicPackageDigestPageHandler = getHandler<
   { cursor?: string; pageSize?: number },
   { count: number; isDone: boolean; cursor: string }
 >(countPublicPackageDigestPageInternal as never);
+
+const backfillSkillDigestRecommendationScoresHandler = getHandler<
+  { cursor?: string; batchSize?: number; dryRun?: boolean },
+  { scanned: number; patched: number; cursor: string | null; isDone: boolean; dryRun: boolean }
+>(backfillSkillDigestRecommendationScoresInternal as never);
+
+const backfillPackageRecommendationScoresHandler = getHandler<
+  { cursor?: string; batchSize?: number; dryRun?: boolean },
+  { scanned: number; patched: number; cursor: string | null; isDone: boolean; dryRun: boolean }
+>(backfillPackageRecommendationScoresInternal as never);
 
 const updateGlobalStatsActionHandler = getHandler<
   Record<string, never>,
@@ -252,6 +268,119 @@ describe("public package digest count maintenance", () => {
       activeSkillsCount: 70_300,
       activePluginsCount: 321,
     });
+  });
+});
+
+describe("recommendation score backfills", () => {
+  it("computes skill digest recommendation scores from top-level stats first", () => {
+    expect(
+      computeSkillDigestRecommendationScore({
+        statsDownloads: 43_080,
+        statsInstallsAllTime: 2,
+        statsStars: 0,
+        stats: { downloads: 1, installsAllTime: 1, installsCurrent: 0, stars: 20 },
+      } as never),
+    ).toBeGreaterThan(
+      computeSkillDigestRecommendationScore({
+        statsDownloads: 1,
+        statsInstallsAllTime: 0,
+        statsStars: 1,
+        stats: { downloads: 43_080, installsAllTime: 2, installsCurrent: 0, stars: 0 },
+      } as never),
+    );
+  });
+
+  it("patches stale skill digest recommendation scores in bounded pages", async () => {
+    const patch = vi.fn();
+    const paginate = vi.fn().mockResolvedValue({
+      page: [
+        {
+          _id: "skillSearchDigest:one",
+          statsDownloads: 43_080,
+          statsInstallsAllTime: 2,
+          statsStars: 0,
+          recommendedScore: undefined,
+          stats: { downloads: 43_080, installsAllTime: 2, installsCurrent: 0, stars: 0 },
+        },
+      ],
+      isDone: false,
+      continueCursor: "next",
+    });
+    const ctx = {
+      db: {
+        query: vi.fn((table: string) => {
+          expect(table).toBe("skillSearchDigest");
+          return { order: vi.fn(() => ({ paginate })) };
+        }),
+        patch,
+      },
+    };
+
+    const result = await backfillSkillDigestRecommendationScoresHandler(ctx, {
+      cursor: "current",
+      batchSize: 1,
+    });
+
+    expect(result).toMatchObject({
+      scanned: 1,
+      patched: 1,
+      cursor: "next",
+      isDone: false,
+      dryRun: false,
+    });
+    expect(paginate).toHaveBeenCalledWith({ cursor: "current", numItems: 1 });
+    expect(patch).toHaveBeenCalledWith("skillSearchDigest:one", {
+      recommendedScore: computeSkillDigestRecommendationScore({
+        statsDownloads: 43_080,
+        statsInstallsAllTime: 2,
+        statsStars: 0,
+        stats: { downloads: 43_080, installsAllTime: 2, installsCurrent: 0, stars: 0 },
+      } as never),
+    });
+  });
+
+  it("dry-runs package recommendation score backfills without patching", async () => {
+    const patch = vi.fn();
+    const paginate = vi.fn().mockResolvedValue({
+      page: [
+        {
+          _id: "packages:one",
+          stats: { downloads: 100, installs: 5, stars: 2, versions: 1 },
+          recommendedScore: -1,
+        },
+      ],
+      isDone: true,
+      continueCursor: "",
+    });
+    const ctx = {
+      db: {
+        query: vi.fn((table: string) => {
+          expect(table).toBe("packages");
+          return { order: vi.fn(() => ({ paginate })) };
+        }),
+        patch,
+      },
+    };
+
+    const result = await backfillPackageRecommendationScoresHandler(ctx, {
+      batchSize: 5,
+      dryRun: true,
+    });
+
+    expect(result).toMatchObject({
+      scanned: 1,
+      patched: 1,
+      cursor: null,
+      isDone: true,
+      dryRun: true,
+    });
+    expect(paginate).toHaveBeenCalledWith({ cursor: null, numItems: 5 });
+    expect(patch).not.toHaveBeenCalled();
+    expect(
+      computePackageRecommendationScore({
+        stats: { downloads: 100, installs: 5, stars: 2, versions: 1 },
+      } as never),
+    ).toBeGreaterThan(0);
   });
 });
 

@@ -7450,7 +7450,7 @@ describe("httpApiV1 handlers", () => {
     }
   });
 
-  it("plugins list recommended sort ranks stars before downloads across plugin families", async () => {
+  it("plugins list recommended sort uses weighted scores across plugin families", async () => {
     const codePlugin = makeCatalogItem("code-starred", {
       family: "code-plugin",
       updatedAt: 100,
@@ -7482,8 +7482,8 @@ describe("httpApiV1 handlers", () => {
     expect(response.status).toBe(200);
     const json = await response.json();
     expect(json.items.map((entry: { name: string }) => entry.name)).toEqual([
-      "code-starred",
       "bundle-downloaded",
+      "code-starred",
     ]);
   });
 

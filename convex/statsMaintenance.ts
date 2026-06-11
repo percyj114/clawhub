@@ -9,6 +9,7 @@ import {
   setGlobalPublicPluginsCount,
   setGlobalPublicSkillsCount,
 } from "./lib/globalStats";
+import { computeRecommendationScore } from "./lib/recommendationScore";
 
 const DEFAULT_BATCH_SIZE = 200;
 const MAX_BATCH_SIZE = 1000;
@@ -182,6 +183,74 @@ export const runSkillStatBackfillInternal: ReturnType<typeof internalAction> = i
   handler: runSkillStatBackfillInternalHandler,
 });
 
+export const backfillSkillDigestRecommendationScoresInternal = internalMutation({
+  args: {
+    cursor: v.optional(v.string()),
+    batchSize: v.optional(v.number()),
+    dryRun: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    const batchSize = clampInt(args.batchSize ?? DEFAULT_BATCH_SIZE, 1, MAX_BATCH_SIZE);
+    const { page, isDone, continueCursor } = await ctx.db
+      .query("skillSearchDigest")
+      .order("asc")
+      .paginate({ cursor: args.cursor ?? null, numItems: batchSize });
+
+    let patched = 0;
+    for (const digest of page) {
+      const recommendedScore = computeSkillDigestRecommendationScore(digest);
+      if (digest.recommendedScore === recommendedScore) continue;
+      patched += 1;
+      if (!args.dryRun) {
+        await ctx.db.patch(digest._id, { recommendedScore });
+      }
+    }
+
+    return {
+      ok: true as const,
+      dryRun: args.dryRun === true,
+      scanned: page.length,
+      patched,
+      cursor: isDone ? null : continueCursor,
+      isDone,
+    };
+  },
+});
+
+export const backfillPackageRecommendationScoresInternal = internalMutation({
+  args: {
+    cursor: v.optional(v.string()),
+    batchSize: v.optional(v.number()),
+    dryRun: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    const batchSize = clampInt(args.batchSize ?? DEFAULT_BATCH_SIZE, 1, MAX_BATCH_SIZE);
+    const { page, isDone, continueCursor } = await ctx.db
+      .query("packages")
+      .order("asc")
+      .paginate({ cursor: args.cursor ?? null, numItems: batchSize });
+
+    let patched = 0;
+    for (const pkg of page) {
+      const recommendedScore = computePackageRecommendationScore(pkg);
+      if (pkg.recommendedScore === recommendedScore) continue;
+      patched += 1;
+      if (!args.dryRun) {
+        await ctx.db.patch(pkg._id, { recommendedScore });
+      }
+    }
+
+    return {
+      ok: true as const,
+      dryRun: args.dryRun === true,
+      scanned: page.length,
+      patched,
+      cursor: isDone ? null : continueCursor,
+      isDone,
+    };
+  },
+});
+
 function buildSkillStatPatch(skill: Doc<"skills">) {
   const stats = skill.stats;
 
@@ -231,6 +300,22 @@ function buildSkillStatPatch(skill: Doc<"skills">) {
       installsAllTime: nextInstallsAllTime,
     },
   };
+}
+
+function computeSkillDigestRecommendationScore(digest: Doc<"skillSearchDigest">) {
+  return computeRecommendationScore({
+    downloads: digest.statsDownloads ?? digest.stats.downloads,
+    installs: digest.statsInstallsAllTime ?? digest.stats.installsAllTime ?? 0,
+    stars: digest.statsStars ?? digest.stats.stars,
+  });
+}
+
+function computePackageRecommendationScore(pkg: Doc<"packages">) {
+  return computeRecommendationScore({
+    downloads: pkg.stats.downloads,
+    installs: pkg.stats.installs,
+    stars: pkg.stats.stars,
+  });
 }
 
 /**
@@ -357,6 +442,8 @@ function clampInt(value: number, min: number, max: number) {
 // Exported for unit testing only — not part of the public API.
 export const __test = {
   buildSkillStatPatch,
+  computeSkillDigestRecommendationScore,
+  computePackageRecommendationScore,
 };
 
 /**

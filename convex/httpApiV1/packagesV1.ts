@@ -53,6 +53,7 @@ import {
   MAX_PUBLISH_FILE_BYTES,
   MAX_PUBLISH_TOTAL_BYTES,
 } from "../lib/publishLimits";
+import { compareRecommendationStats } from "../lib/recommendationScore";
 import {
   getPublicSkillFileAccessBlock,
   getPublicSkillVersionAccessBlock,
@@ -997,12 +998,19 @@ function compareCatalogItemsForSort(
   sort: (typeof PACKAGE_LIST_SORT_VALUES)[number] | undefined,
 ) {
   if (sort === "recommended") {
-    const stars = (b.stats?.stars ?? 0) - (a.stats?.stars ?? 0);
-    if (stars !== 0) return stars;
-    const downloads = (b.stats?.downloads ?? 0) - (a.stats?.downloads ?? 0);
-    if (downloads !== 0) return downloads;
-    const installs = (b.stats?.installs ?? 0) - (a.stats?.installs ?? 0);
-    if (installs !== 0) return installs;
+    const score = compareRecommendationStats(
+      {
+        downloads: a.stats?.downloads ?? 0,
+        installs: a.stats?.installs ?? 0,
+        stars: a.stats?.stars ?? 0,
+      },
+      {
+        downloads: b.stats?.downloads ?? 0,
+        installs: b.stats?.installs ?? 0,
+        stars: b.stats?.stars ?? 0,
+      },
+    );
+    if (score !== 0) return score;
   }
   if (sort === "downloads") {
     const downloads = (b.stats?.downloads ?? 0) - (a.stats?.downloads ?? 0);

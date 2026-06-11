@@ -1066,6 +1066,7 @@ const skillSearchDigest = defineTable({
   statsStars: v.optional(v.number()),
   statsInstallsCurrent: v.optional(v.number()),
   statsInstallsAllTime: v.optional(v.number()),
+  recommendedScore: v.optional(v.number()),
   softDeletedAt: v.optional(v.number()),
   moderationStatus: moderationStatusValidator,
   moderationFlags: v.optional(v.array(v.string())),
@@ -1099,6 +1100,7 @@ const skillSearchDigest = defineTable({
     "statsDownloads",
     "updatedAt",
   ])
+  .index("by_active_recommended_score", ["softDeletedAt", "recommendedScore", "updatedAt"])
   .index("by_nonsuspicious_updated", ["softDeletedAt", "isSuspicious", "updatedAt"])
   .index("by_nonsuspicious_created", ["softDeletedAt", "isSuspicious", "createdAt"])
   .index("by_nonsuspicious_name", ["softDeletedAt", "isSuspicious", "displayName"])
@@ -1137,6 +1139,12 @@ const skillSearchDigest = defineTable({
     "statsStars",
     "statsInstallsAllTime",
     "statsDownloads",
+    "updatedAt",
+  ])
+  .index("by_nonsuspicious_recommended_score", [
+    "softDeletedAt",
+    "isSuspicious",
+    "recommendedScore",
     "updatedAt",
   ])
   .searchIndex("search_by_display_name", {
@@ -1180,6 +1188,7 @@ const packages = defineTable({
   verification: packageVerificationValidator,
   scanStatus: packageScanStatusValidator,
   stats: packageStatsValidator,
+  recommendedScore: v.optional(v.number()),
   reportCount: v.optional(v.number()),
   lastReportedAt: v.optional(v.number()),
   softDeletedAt: v.optional(v.number()),
@@ -1233,6 +1242,13 @@ const packages = defineTable({
     "stats.stars",
     "stats.downloads",
     "stats.installs",
+    "updatedAt",
+  ])
+  .index("by_active_recommended_score", ["softDeletedAt", "recommendedScore", "updatedAt"])
+  .index("by_active_family_recommended_score", [
+    "softDeletedAt",
+    "family",
+    "recommendedScore",
     "updatedAt",
   ]);
 

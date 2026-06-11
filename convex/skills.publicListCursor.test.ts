@@ -180,6 +180,7 @@ describe("public skill list deterministic cursors", () => {
     });
 
     expect(withIndex.mock.calls.map(([indexName]) => indexName)).toEqual([
+      "by_active_recommended_score",
       "by_active_stats_stars",
       "by_active_stats_installs_all_time",
       "by_active_stats_downloads",
@@ -203,6 +204,7 @@ describe("public skill list deterministic cursors", () => {
     });
 
     expect(withIndex.mock.calls.map(([indexName]) => indexName)).toEqual([
+      "by_nonsuspicious_recommended_score",
       "by_nonsuspicious_stars",
       "by_nonsuspicious_installs",
       "by_nonsuspicious_downloads",

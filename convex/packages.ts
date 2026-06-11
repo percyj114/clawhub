@@ -87,6 +87,7 @@ import {
   getPublishTotalSizeError,
   MAX_PUBLISH_TOTAL_BYTES,
 } from "./lib/publishLimits";
+import { computeRecommendationScore } from "./lib/recommendationScore";
 import { MAX_ACTIVE_REPORTS_PER_USER, MAX_REPORT_REASON_LENGTH } from "./lib/reporting";
 import { matchesAllTokens, matchesExploratoryTokenPrefixes, tokenize } from "./lib/searchText";
 import { hashSkillFiles } from "./lib/skills";
@@ -111,6 +112,39 @@ const REAL_BUNDLE_MANIFESTS = [
 const INITIAL_PACKAGE_VT_SCAN_DELAY_MS = 30_000;
 const PLUGIN_EXPORT_FAMILIES = ["code-plugin", "bundle-plugin"] as const;
 const GET_PAGE_TIEBREAKER_FIELD_COUNT = 2;
+
+function computePackageRecommendationScore(stats: Doc<"packages">["stats"]) {
+  return computeRecommendationScore({
+    downloads: stats.downloads,
+    installs: stats.installs,
+    stars: stats.stars,
+  });
+}
+
+async function getPackageRecommendedIndexName(
+  ctx: Pick<QueryCtx, "db">,
+  family: Doc<"packages">["family"] | undefined,
+) {
+  if (family) {
+    const missingScore = await ctx.db
+      .query("packages")
+      .withIndex("by_active_family_recommended_score", (q) =>
+        q.eq("softDeletedAt", undefined).eq("family", family).eq("recommendedScore", undefined),
+      )
+      .first();
+    return missingScore
+      ? "by_active_family_recommended_rank"
+      : "by_active_family_recommended_score";
+  }
+
+  const missingScore = await ctx.db
+    .query("packages")
+    .withIndex("by_active_recommended_score", (q) =>
+      q.eq("softDeletedAt", undefined).eq("recommendedScore", undefined),
+    )
+    .first();
+  return missingScore ? "by_active_recommended_rank" : "by_active_recommended_score";
+}
 
 const llmAgenticRiskEvidenceValidator = v.object({
   path: v.string(),
@@ -3148,21 +3182,19 @@ async function listPackagePageImpl(
     let pageOffset = offset;
     let pageSize: number | null = decodedCursor.pageSize ?? null;
     let done = decodedCursor.done;
+    const recommendedIndexName =
+      args.sort === "recommended" ? await getPackageRecommendedIndexName(ctx, family) : null;
     const buildSortedQuery = () =>
       family
         ? ctx.db
             .query("packages")
-            .withIndex(
-              args.sort === "recommended"
-                ? "by_active_family_recommended_rank"
-                : "by_active_family_downloads",
-              (q) => q.eq("softDeletedAt", undefined).eq("family", family),
+            .withIndex(recommendedIndexName ?? "by_active_family_downloads", (q) =>
+              q.eq("softDeletedAt", undefined).eq("family", family),
             )
         : ctx.db
             .query("packages")
-            .withIndex(
-              args.sort === "recommended" ? "by_active_recommended_rank" : "by_active_downloads",
-              (q) => q.eq("softDeletedAt", undefined),
+            .withIndex(recommendedIndexName ?? "by_active_downloads", (q) =>
+              q.eq("softDeletedAt", undefined),
             );
 
     while ((pageOffset > 0 || !done) && collected.length < targetCount) {
@@ -3509,13 +3541,15 @@ export const processPackageStatEventsInternal = internalMutation({
     for (const [packageId, stats] of statsByPackage) {
       const pkg = await ctx.db.get(packageId);
       if (!pkg) continue;
+      const nextStats = {
+        downloads: (pkg.stats?.downloads ?? 0) + stats.downloads,
+        installs: (pkg.stats?.installs ?? 0) + stats.installs,
+        stars: pkg.stats?.stars ?? 0,
+        versions: pkg.stats?.versions ?? 0,
+      };
       await ctx.db.patch(pkg._id, {
-        stats: {
-          downloads: (pkg.stats?.downloads ?? 0) + stats.downloads,
-          installs: (pkg.stats?.installs ?? 0) + stats.installs,
-          stars: pkg.stats?.stars ?? 0,
-          versions: pkg.stats?.versions ?? 0,
-        },
+        stats: nextStats,
+        recommendedScore: computePackageRecommendationScore(nextStats),
       });
       packagesUpdated += 1;
     }
@@ -6747,6 +6781,12 @@ export const reservePackageNameInternal = internalMutation({
       capabilityTags: [],
       executesCode: false,
       stats: { downloads: 0, installs: 0, stars: 0, versions: 0 },
+      recommendedScore: computePackageRecommendationScore({
+        downloads: 0,
+        installs: 0,
+        stars: 0,
+        versions: 0,
+      }),
       createdAt: now,
       updatedAt: now,
     });
@@ -7731,6 +7771,12 @@ export const insertReleaseInternal = internalMutation({
         verification: args.verification,
         scanStatus: args.verification?.scanStatus,
         stats: { downloads: 0, installs: 0, stars: 0, versions: 0 },
+        recommendedScore: computePackageRecommendationScore({
+          downloads: 0,
+          installs: 0,
+          stars: 0,
+          versions: 0,
+        }),
         createdAt: now,
         updatedAt: now,
       }));

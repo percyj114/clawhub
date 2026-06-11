@@ -19,12 +19,17 @@ const listPublicPageV4Handler = (
 )._handler;
 
 describe("skills.listPublicPageV4", () => {
-  it("defines recommended rank indexes in contract order", () => {
+  it("defines recommended indexes in contract order", () => {
     expect(getSkillSearchDigestIndexFields("by_active_recommended_rank")).toEqual([
       "softDeletedAt",
       "statsStars",
       "statsInstallsAllTime",
       "statsDownloads",
+      "updatedAt",
+    ]);
+    expect(getSkillSearchDigestIndexFields("by_active_recommended_score")).toEqual([
+      "softDeletedAt",
+      "recommendedScore",
       "updatedAt",
     ]);
     expect(getSkillSearchDigestIndexFields("by_nonsuspicious_recommended_rank")).toEqual([
@@ -33,6 +38,12 @@ describe("skills.listPublicPageV4", () => {
       "statsStars",
       "statsInstallsAllTime",
       "statsDownloads",
+      "updatedAt",
+    ]);
+    expect(getSkillSearchDigestIndexFields("by_nonsuspicious_recommended_score")).toEqual([
+      "softDeletedAt",
+      "isSuspicious",
+      "recommendedScore",
       "updatedAt",
     ]);
   });
@@ -95,7 +106,45 @@ describe("skills.listPublicPageV4", () => {
     ).toBe("recommended");
   });
 
-  it("sorts highlighted recommended results by stars, installs, downloads, then updatedAt", async () => {
+  it("uses the score index after recommendation scores are backfilled", () => {
+    expect(
+      __test.resolveRecommendedPublicListQuery({
+        scoreIndexName: "by_active_recommended_score",
+        rankIndexName: "by_active_recommended_rank",
+        updatedIndexName: "by_active_updated",
+        scoreCursor: null,
+        rankCursor: null,
+        updatedCursor: null,
+        hasMissingScores: false,
+        hasMissingRankStats: false,
+      }),
+    ).toEqual({
+      sort: "recommended",
+      indexName: "by_active_recommended_score",
+      decodedCursor: null,
+    });
+  });
+
+  it("falls back to the old rank index while recommendation scores are missing", () => {
+    expect(
+      __test.resolveRecommendedPublicListQuery({
+        scoreIndexName: "by_active_recommended_score",
+        rankIndexName: "by_active_recommended_rank",
+        updatedIndexName: "by_active_updated",
+        scoreCursor: null,
+        rankCursor: null,
+        updatedCursor: null,
+        hasMissingScores: true,
+        hasMissingRankStats: false,
+      }),
+    ).toEqual({
+      sort: "recommended",
+      indexName: "by_active_recommended_rank",
+      decodedCursor: null,
+    });
+  });
+
+  it("sorts highlighted recommended results by weighted score, then updatedAt", async () => {
     const result = await listPublicPageV4Handler(
       makeHighlightedCtx([
         makeDigest({
@@ -135,10 +184,10 @@ describe("skills.listPublicPageV4", () => {
     );
 
     expect(result.page.map((entry) => entry.skill.slug)).toEqual([
-      "stars-skill",
-      "installs-skill",
       "downloads-skill",
       "updated-skill",
+      "installs-skill",
+      "stars-skill",
     ]);
   });
 });

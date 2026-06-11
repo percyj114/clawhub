@@ -1,6 +1,7 @@
 /* @vitest-environment node */
 
 import { describe, expect, it, vi } from "vitest";
+import { computeRecommendationScore } from "./lib/recommendationScore";
 import {
   processPackageStatEventsInternal,
   recordPackageDownloadInternal,
@@ -135,6 +136,11 @@ describe("package stat events", () => {
       "packages:one",
       expect.objectContaining({
         stats: expect.objectContaining({ downloads: 11 }),
+        recommendedScore: computeRecommendationScore({
+          downloads: 11,
+          installs: 2,
+          stars: 2,
+        }),
       }),
     );
     expect(patch).toHaveBeenCalledWith(

@@ -96,6 +96,7 @@ import type * as lib_publisherAbuseScoring from "../lib/publisherAbuseScoring.js
 import type * as lib_publisherCatalogDisplay from "../lib/publisherCatalogDisplay.js";
 import type * as lib_publisherStats from "../lib/publisherStats.js";
 import type * as lib_publishers from "../lib/publishers.js";
+import type * as lib_recommendationScore from "../lib/recommendationScore.js";
 import type * as lib_reporting from "../lib/reporting.js";
 import type * as lib_reservedHandles from "../lib/reservedHandles.js";
 import type * as lib_reservedSlugs from "../lib/reservedSlugs.js";
@@ -251,6 +252,7 @@ declare const fullApi: ApiFromModules<{
   "lib/publisherCatalogDisplay": typeof lib_publisherCatalogDisplay;
   "lib/publisherStats": typeof lib_publisherStats;
   "lib/publishers": typeof lib_publishers;
+  "lib/recommendationScore": typeof lib_recommendationScore;
   "lib/reporting": typeof lib_reporting;
   "lib/reservedHandles": typeof lib_reservedHandles;
   "lib/reservedSlugs": typeof lib_reservedSlugs;

@@ -3,6 +3,7 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAX_PUBLISH_FILE_BYTES } from "./lib/publishLimits";
+import { computeRecommendationScore } from "./lib/recommendationScore";
 import {
   backfillLatestPackageScanStatusInternal,
   backfillPackageReleaseScansInternal,
@@ -919,6 +920,13 @@ function makePackageDoc(overrides: Partial<Record<string, unknown>> = {}) {
   };
 }
 
+function readTestField(row: Record<string, unknown>, field: string): unknown {
+  return field.split(".").reduce<unknown>((current, key) => {
+    if (typeof current !== "object" || current === null || Array.isArray(current)) return undefined;
+    return (current as Record<string, unknown>)[key];
+  }, row);
+}
+
 function makeReleaseDoc(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     _id: "packageReleases:demo-1",
@@ -973,7 +981,7 @@ function makeDigestCtx(options: {
   const indexNames: string[] = [];
   const indexFilters: Array<{
     indexName: string;
-    filters: Array<{ field: string; value: string | undefined }>;
+    filters: Array<{ field: string; value: unknown }>;
   }> = [];
   const tableNames: string[] = [];
 
@@ -1049,6 +1057,7 @@ function makeDigestCtx(options: {
     indexNames.push(indexName);
     let ordered = false;
     return {
+      first: vi.fn(async () => null),
       order: vi.fn(() => {
         if (ordered) throw new Error("query builder reused after iteration");
         ordered = true;
@@ -1082,7 +1091,7 @@ function makeDigestCtx(options: {
                 (
                   indexName: string,
                   builder?: (q: {
-                    eq: (field: string, value: string | undefined) => unknown;
+                    eq: (field: string, value: unknown) => unknown;
                     gte: (field: string, value: string) => unknown;
                     lt: (field: string, value: string) => unknown;
                   }) => unknown,
@@ -1090,11 +1099,11 @@ function makeDigestCtx(options: {
                   let matchedValue = "";
                   let lowerBound = "";
                   let upperBound = "";
-                  const filters: Array<{ field: string; value: string | undefined }> = [];
+                  const filters: Array<{ field: string; value: unknown }> = [];
                   const queryBuilder = {
-                    eq: (field: string, value: string | undefined) => {
+                    eq: (field: string, value: unknown) => {
                       filters.push({ field, value });
-                      matchedValue = value ?? "";
+                      matchedValue = typeof value === "string" ? value : "";
                       return queryBuilder;
                     },
                     gte: (_field: string, value: string) => {
@@ -1111,10 +1120,24 @@ function makeDigestCtx(options: {
                     indexName === "by_active_downloads" ||
                     indexName === "by_active_family_downloads" ||
                     indexName === "by_active_recommended_rank" ||
-                    indexName === "by_active_family_recommended_rank"
+                    indexName === "by_active_family_recommended_rank" ||
+                    indexName === "by_active_recommended_score" ||
+                    indexName === "by_active_family_recommended_score"
                   ) {
                     indexFilters.push({ indexName, filters });
-                    return withIndex(table, indexName);
+                    const indexedQuery = withIndex(table, indexName);
+                    return {
+                      ...indexedQuery,
+                      first: vi
+                        .fn()
+                        .mockResolvedValue(
+                          (rowsByTable.get(table) ?? []).find((row) =>
+                            filters.every(
+                              ({ field, value }) => readTestField(row, field) === value,
+                            ),
+                          ) ?? null,
+                        ),
+                    };
                   }
                   if (indexName !== "by_name" && indexName !== "by_runtime_id") {
                     throw new Error(`Unexpected packages index ${indexName}`);
@@ -2267,7 +2290,7 @@ describe("packages public queries", () => {
     expect(paginate).toHaveBeenCalledWith({ cursor: null, numItems: 50 });
   });
 
-  it("uses a family-scoped recommended index that ranks downloads before installs after stars", async () => {
+  it("uses a family-scoped weighted recommended score index after backfill", async () => {
     const { ctx, indexFilters, indexNames, paginate } = makeDigestCtx({
       packagePages: [
         {
@@ -2279,6 +2302,11 @@ describe("packages public queries", () => {
               displayName: "Code Plugin Downloaded",
               family: "code-plugin",
               stats: { downloads: 43_080, installs: 2, stars: 0, versions: 1 },
+              recommendedScore: computeRecommendationScore({
+                downloads: 43_080,
+                installs: 2,
+                stars: 0,
+              }),
             }),
             makePackageDoc({
               _id: "packages:code-plugin-installed",
@@ -2287,6 +2315,11 @@ describe("packages public queries", () => {
               displayName: "Code Plugin Installed",
               family: "code-plugin",
               stats: { downloads: 393, installs: 74, stars: 0, versions: 1 },
+              recommendedScore: computeRecommendationScore({
+                downloads: 393,
+                installs: 74,
+                stars: 0,
+              }),
             }),
           ],
           isDone: true,
@@ -2304,10 +2337,21 @@ describe("packages public queries", () => {
     expect(result.page.map((entry) => entry.name)).toEqual(["code-plugin-downloaded"]);
     expect(result.isDone).toBe(false);
     expect(result.continueCursor.startsWith("pkgpage:")).toBe(true);
-    expect(indexNames).toEqual(["by_active_family_recommended_rank"]);
+    expect(indexNames).toEqual([
+      "by_active_family_recommended_score",
+      "by_active_family_recommended_score",
+    ]);
     expect(indexFilters).toEqual([
       {
-        indexName: "by_active_family_recommended_rank",
+        indexName: "by_active_family_recommended_score",
+        filters: [
+          { field: "softDeletedAt", value: undefined },
+          { field: "family", value: "code-plugin" },
+          { field: "recommendedScore", value: undefined },
+        ],
+      },
+      {
+        indexName: "by_active_family_recommended_score",
         filters: [
           { field: "softDeletedAt", value: undefined },
           { field: "family", value: "code-plugin" },
@@ -2316,6 +2360,55 @@ describe("packages public queries", () => {
     ]);
     expect(paginate).toHaveBeenCalledTimes(1);
     expect(paginate).toHaveBeenCalledWith({ cursor: null, numItems: 50 });
+  });
+
+  it("falls back to the family-scoped recommended rank index while scores are missing", async () => {
+    const { ctx, indexFilters, indexNames } = makeDigestCtx({
+      packagePages: [
+        {
+          page: [
+            makePackageDoc({
+              _id: "packages:code-plugin-downloaded",
+              name: "code-plugin-downloaded",
+              normalizedName: "code-plugin-downloaded",
+              displayName: "Code Plugin Downloaded",
+              family: "code-plugin",
+              stats: { downloads: 43_080, installs: 2, stars: 0, versions: 1 },
+            }),
+          ],
+          isDone: true,
+          continueCursor: "",
+        },
+      ],
+    });
+
+    await listPublicPageHandler(ctx, {
+      family: "code-plugin",
+      sort: "recommended",
+      paginationOpts: { cursor: null, numItems: 1 },
+    });
+
+    expect(indexNames).toEqual([
+      "by_active_family_recommended_score",
+      "by_active_family_recommended_rank",
+    ]);
+    expect(indexFilters).toEqual([
+      {
+        indexName: "by_active_family_recommended_score",
+        filters: [
+          { field: "softDeletedAt", value: undefined },
+          { field: "family", value: "code-plugin" },
+          { field: "recommendedScore", value: undefined },
+        ],
+      },
+      {
+        indexName: "by_active_family_recommended_rank",
+        filters: [
+          { field: "softDeletedAt", value: undefined },
+          { field: "family", value: "code-plugin" },
+        ],
+      },
+    ]);
   });
 
   it("continues scanning global download-sorted pages for non-indexed filters", async () => {
@@ -4110,6 +4203,7 @@ describe("packages public queries", () => {
         isOfficial: false,
         tags: {},
         stats: { downloads: 0, installs: 0, stars: 0, versions: 0 },
+        recommendedScore: 0,
       }),
     );
     expect(insert).not.toHaveBeenCalledWith("packageReleases", expect.anything());
