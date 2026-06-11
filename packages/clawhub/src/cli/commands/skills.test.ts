@@ -798,6 +798,56 @@ describe("cmdUpdate", () => {
     expect(rm).not.toHaveBeenCalled();
     expect(mockSpinner.succeed).toHaveBeenCalledWith("demo: up to date (1.0.0)");
   });
+
+  it("writes identical installedAt to origin and lockfile on update", async () => {
+    mockApiRequest.mockResolvedValue({
+      skill: {
+        slug: "demo",
+        displayName: "Demo",
+        summary: null,
+        tags: {},
+        stats: {},
+        createdAt: 0,
+        updatedAt: 0,
+      },
+      latestVersion: { version: "2.0.0" },
+      owner: null,
+      moderation: null,
+    });
+    mockDownloadZip.mockResolvedValue(new Uint8Array([1, 2, 3]));
+    vi.mocked(readLockfile).mockResolvedValue({
+      version: 1,
+      skills: {
+        demo: { version: "1.0.0", installedAt: 100 },
+      },
+    });
+    vi.mocked(readSkillOrigin).mockResolvedValue({
+      version: 1,
+      registry: "https://clawhub.ai",
+      slug: "demo",
+      installedVersion: "1.0.0",
+      installedAt: 100,
+      fingerprint: "hash",
+    });
+    vi.mocked(writeLockfile).mockResolvedValue();
+    vi.mocked(writeSkillOrigin).mockResolvedValue();
+    vi.mocked(extractZipToDir).mockResolvedValue();
+    vi.mocked(listTextFiles).mockResolvedValue([
+      { relPath: "SKILL.md", bytes: new Uint8Array([1]) },
+    ]);
+    vi.mocked(hashSkillFiles).mockReturnValue({ fingerprint: "hash", files: [] });
+    vi.mocked(stat).mockResolvedValue({} as unknown as Awaited<ReturnType<typeof stat>>);
+    vi.mocked(rm).mockResolvedValue();
+
+    await cmdUpdate(makeOpts(), "demo", {}, false);
+
+    const originInstalledAt = vi.mocked(writeSkillOrigin).mock.calls[0]?.[1]?.installedAt;
+    const lockfileInstalledAt =
+      vi.mocked(writeLockfile).mock.calls[0]?.[1]?.skills?.demo?.installedAt;
+    expect(originInstalledAt).toBeDefined();
+    expect(lockfileInstalledAt).toBeDefined();
+    expect(originInstalledAt).toBe(lockfileInstalledAt);
+  });
 });
 
 describe("pin commands", () => {
@@ -1247,6 +1297,46 @@ describe("cmdInstall", () => {
     const downloadOrder = mockDownloadZip.mock.invocationCallOrder[0];
     expect(rmOrder).toBeLessThan(downloadOrder);
   });
+
+  it("writes identical installedAt to origin and lockfile on install", async () => {
+    mockApiRequest.mockImplementation(async (_registry, args) => {
+      if (args.path === LegacyApiRoutes.cliTelemetryInstall) return { ok: true };
+      return {
+        skill: {
+          slug: "demo",
+          displayName: "Demo",
+          summary: null,
+          tags: {},
+          stats: {},
+          createdAt: 0,
+          updatedAt: 0,
+        },
+        latestVersion: { version: "1.0.0" },
+        owner: null,
+        moderation: null,
+      };
+    });
+    mockDownloadZip.mockResolvedValue(new Uint8Array([1, 2, 3]));
+    vi.mocked(readLockfile).mockResolvedValue({ version: 1, skills: {} });
+    vi.mocked(writeLockfile).mockResolvedValue();
+    vi.mocked(writeSkillOrigin).mockResolvedValue();
+    vi.mocked(extractZipToDir).mockResolvedValue();
+    vi.mocked(listTextFiles).mockResolvedValue([
+      { relPath: "SKILL.md", bytes: new Uint8Array([1]) },
+    ]);
+    vi.mocked(hashSkillFiles).mockReturnValue({ fingerprint: "hash", files: [] });
+    vi.mocked(stat).mockRejectedValue(new Error("missing"));
+    vi.mocked(rm).mockResolvedValue();
+
+    await cmdInstall(makeOpts(), "demo");
+
+    const originInstalledAt = vi.mocked(writeSkillOrigin).mock.calls[0]?.[1]?.installedAt;
+    const lockfileInstalledAt =
+      vi.mocked(writeLockfile).mock.calls[0]?.[1]?.skills?.demo?.installedAt;
+    expect(originInstalledAt).toBeDefined();
+    expect(lockfileInstalledAt).toBeDefined();
+    expect(originInstalledAt).toBe(lockfileInstalledAt);
+  });
 });
 
 describe("cmdUninstall", () => {
@@ -1324,6 +1414,34 @@ describe("cmdUninstall", () => {
       skills: {},
     });
     expect(mockSpinner.succeed).toHaveBeenCalledWith("Uninstalled demo");
+  });
+
+  it("reports uninstall telemetry after successful removal", async () => {
+    mockGetOptionalAuthToken.mockResolvedValue("tkn");
+    mockApiRequest.mockResolvedValue({ ok: true });
+    vi.mocked(readLockfile).mockResolvedValue({
+      version: 1,
+      skills: { demo: { version: "1.0.0", installedAt: 123 } },
+    });
+    vi.mocked(writeLockfile).mockResolvedValue();
+    vi.mocked(rm).mockResolvedValue();
+
+    await cmdUninstall(makeOpts(), "demo", { yes: true }, false);
+
+    expect(mockApiRequest).toHaveBeenCalledWith(
+      "https://clawhub.ai",
+      expect.objectContaining({
+        method: "POST",
+        path: LegacyApiRoutes.cliTelemetryInstall,
+        token: "tkn",
+        body: expect.objectContaining({
+          event: "uninstall",
+          slug: "demo",
+          rootId: expect.any(String),
+        }),
+      }),
+      expect.anything(),
+    );
   });
 
   it("does not update lockfile if remove fails", async () => {

@@ -5,6 +5,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalMutation, internalQuery, mutation, query } from "./functions";
 import { assertAdmin, getOptionalActiveAuthUserId, requireUser } from "./lib/access";
+import { isPublicSkillDoc } from "./lib/globalStats";
 import { isOfficialPublisher, toPublicPublisherWithOfficial } from "./lib/officialPublishers";
 import { toPublicPublisher } from "./lib/public";
 import {
@@ -99,7 +100,7 @@ type PublisherListSummary = {
 };
 
 function isPublicPublishedSkill(skill: Doc<"skills">) {
-  return !skill.softDeletedAt && (!skill.moderationStatus || skill.moderationStatus === "active");
+  return isPublicSkillDoc(skill);
 }
 
 type PublicPublisherKindFilter = "user" | "org";
@@ -827,6 +828,9 @@ async function ensureOrgPublisherHandleWithActor(
     });
 
   if (existingPublisher?.kind === "org") {
+    if (existingPublisher.deletedAt || existingPublisher.deactivatedAt) {
+      throw new ConvexError(`Publisher "@${handle}" was deleted and cannot be updated`);
+    }
     await ctx.db.patch(existingPublisher._id, {
       displayName: args.displayName?.trim() || existingPublisher.displayName,
       trustedPublisher: args.trusted ?? existingPublisher.trustedPublisher,
@@ -1837,6 +1841,103 @@ export const removeOrgPublisherMemberInternal = internalMutation({
       handle,
       removed: true,
       member,
+    };
+  },
+});
+
+export const deleteEmptyOrgPublisherInternal = internalMutation({
+  args: {
+    actorUserId: v.id("users"),
+    handle: v.string(),
+    reason: v.string(),
+    dryRun: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    const actor = await ctx.db.get(args.actorUserId);
+    if (!actor || actor.deletedAt || actor.deactivatedAt) throw new ConvexError("Unauthorized");
+    assertAdmin(actor);
+
+    const handle = normalizePublisherHandle(args.handle);
+    if (!handle || !PUBLISHER_HANDLE_PATTERN.test(handle)) {
+      throw new ConvexError("Handle must be lowercase, url-safe, and 2-40 characters");
+    }
+    const reason = args.reason.trim();
+    if (!reason) throw new ConvexError("Reason is required");
+    if (reason.length > 500) throw new ConvexError("Reason too long (max 500 chars)");
+
+    const publisher = await getPublisherByHandle(ctx, handle);
+    if (!publisher || publisher.kind !== "org" || publisher.deletedAt || publisher.deactivatedAt) {
+      throw new ConvexError("Publisher not found");
+    }
+
+    const [activeSkills, activePackages, members] = await Promise.all([
+      ctx.db
+        .query("skills")
+        .withIndex("by_owner_publisher_active_updated", (q) =>
+          q.eq("ownerPublisherId", publisher._id).eq("softDeletedAt", undefined),
+        )
+        .take(1),
+      ctx.db
+        .query("packages")
+        .withIndex("by_owner_publisher_active_updated", (q) =>
+          q.eq("ownerPublisherId", publisher._id).eq("softDeletedAt", undefined),
+        )
+        .take(1),
+      ctx.db
+        .query("publisherMembers")
+        .withIndex("by_publisher", (q) => q.eq("publisherId", publisher._id))
+        .collect(),
+    ]);
+
+    if (activeSkills.length > 0 || activePackages.length > 0) {
+      throw new ConvexError(
+        `Publisher has active skills or packages and cannot be deleted with this empty-org command`,
+      );
+    }
+
+    const dryRun = args.dryRun !== false;
+    if (dryRun) {
+      return {
+        ok: true as const,
+        publisherId: publisher._id,
+        handle,
+        dryRun: true,
+        deleted: false,
+        activeSkills: activeSkills.length,
+        activePackages: activePackages.length,
+        memberCount: members.length,
+      };
+    }
+
+    const now = Date.now();
+    await ctx.db.insert("auditLogs", {
+      actorUserId: args.actorUserId,
+      action: "publisher.org.delete_empty",
+      targetType: "publisher",
+      targetId: publisher._id,
+      metadata: {
+        handle,
+        reason,
+        memberCount: members.length,
+        source: "publisher.org.mod",
+      },
+      createdAt: now,
+    });
+    await ctx.db.patch(publisher._id, {
+      deletedAt: now,
+      deactivatedAt: now,
+      updatedAt: now,
+    });
+
+    return {
+      ok: true as const,
+      publisherId: publisher._id,
+      handle,
+      dryRun: false,
+      deleted: true,
+      activeSkills: 0,
+      activePackages: 0,
+      memberCount: members.length,
     };
   },
 });

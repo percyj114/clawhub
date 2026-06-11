@@ -11,14 +11,25 @@ make a skill rank higher in public discovery.
 
 ## CLI Telemetry
 
-`clawhub install` is the canonical install telemetry source. It sends one
-best-effort event after a local install succeeds:
+`clawhub install` is the canonical source for new install telemetry. It sends
+one best-effort event after a local install succeeds:
 
 ```text
 { event: "install", slug, version?, rootId?, rootLabel? }
 ```
 
 Telemetry failures must not fail the local install command.
+
+`clawhub uninstall` sends one best-effort deactivation event after the local
+uninstall succeeds:
+
+```text
+{ event: "uninstall", slug, rootId?, rootLabel? }
+```
+
+Telemetry failures must not fail the local uninstall command. This event is the
+explicit path that marks a root install removed and decrements current install
+counts when the user's active root count for that skill reaches zero.
 
 `clawhub sync` is a publishing/catalog workflow. It must not report install
 telemetry, because a scanned local root is not proof of a fresh install.
@@ -29,7 +40,7 @@ success response for valid legacy roots-shaped payloads, but it must not update
 install counters or root-install state.
 
 The `/api/cli/telemetry/install` route is strict. It accepts only the explicit
-install event shape and rejects legacy roots-shaped sync snapshots.
+install/uninstall event shape and rejects legacy roots-shaped sync snapshots.
 
 ## CLI Compatibility
 

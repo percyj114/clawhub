@@ -816,21 +816,6 @@ export declare const ApiV1PackageModerationStatusResponseSchema: import("arktype
     } | null;
 }, {}>;
 export type ApiV1PackageModerationStatusResponse = (typeof ApiV1PackageModerationStatusResponseSchema)[inferred];
-export declare const PackageArtifactBackfillRequestSchema: import("arktype/internal/variants/object.ts").ObjectType<{
-    cursor?: string | null | undefined;
-    batchSize?: number | undefined;
-    dryRun?: boolean | undefined;
-}, {}>;
-export type PackageArtifactBackfillRequest = (typeof PackageArtifactBackfillRequestSchema)[inferred];
-export declare const ApiV1PackageArtifactBackfillResponseSchema: import("arktype/internal/variants/object.ts").ObjectType<{
-    ok: true;
-    scanned: number;
-    updated: number;
-    nextCursor: string | null;
-    done: boolean;
-    dryRun: boolean;
-}, {}>;
-export type ApiV1PackageArtifactBackfillResponse = (typeof ApiV1PackageArtifactBackfillResponseSchema)[inferred];
 export declare const PackageReadinessCheckSchema: import("arktype/internal/variants/object.ts").ObjectType<{
     id: string;
     label: string;
@@ -1057,6 +1042,10 @@ export declare const ApiV1PackagePublishResponseSchema: import("arktype/internal
         severity?: string | undefined;
         level?: string | undefined;
         issueClass?: string | undefined;
+        authorRemediation?: {
+            summary: string;
+            docsUrl?: string | undefined;
+        } | undefined;
         inspectorVersion?: string | undefined;
         targetOpenClawVersion?: string | undefined;
     }[] | undefined;

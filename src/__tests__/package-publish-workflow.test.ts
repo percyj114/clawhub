@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { parse as parseYaml } from "yaml";
 
 describe("package publish workflow", () => {
   it("runs plugin-inspector before publishing and uploads inspector artifacts", () => {
@@ -32,15 +33,22 @@ describe("package publish workflow", () => {
     expect(workflow).toContain("actions/upload-artifact");
   });
 
-  it("runs nightly plugin inspector rescans with the bundled CLI validator", () => {
+  it("runs manual plugin inspector bulk scans with the bundled CLI validator", () => {
     const workflow = readFileSync(
-      resolve(".github/workflows/plugin-inspector-nightly.yml"),
+      resolve(".github/workflows/plugin-inspector-bulk-scan.yml"),
       "utf8",
     );
     const script = readFileSync(resolve("scripts/package-inspector-nightly-scan.ts"), "utf8");
     const http = readFileSync(resolve("convex/packageInspectorHttp.ts"), "utf8");
 
-    expect(workflow).toContain("schedule:");
+    expect(workflow).toContain("workflow_dispatch:");
+    expect(workflow).toContain("Maximum plugin releases to scan");
+    expect(workflow).toContain("Plugin Inspector Bulk Scan");
+    expect(workflow).toContain("plugin-inspector-bulk-scan-reports");
+    expect(workflow).toContain("source_pr:");
+    expect(workflow).toContain("source_sha:");
+    expect(workflow).not.toMatch(/^\s*schedule:/m);
+    expect(workflow).not.toMatch(/^\s*-\s*cron:/m);
     expect(workflow).toContain("bun install --frozen-lockfile");
     expect(workflow).toContain("CLAWHUB_PLUGIN_INSPECTOR_WORKER_TOKEN");
     expect(script).toContain("package-inspector/claim");
@@ -50,7 +58,7 @@ describe("package publish workflow", () => {
     expect(script).toContain("package-inspector/results");
     expect(script).toContain("Authorization: `Bearer ${token}`");
     expect(script).toContain('path.join(pluginRoot, "package")');
-    expect(script).not.toContain("plugin-inspector-nightly-error");
+    expect(script).not.toContain("plugin-inspector-bulk-scan-error");
     expect(script).toContain("pluginInspector");
     expect(workflow).toContain("dry_run:");
     expect(workflow).toContain("PLUGIN_INSPECTOR_DRY_RUN");
@@ -61,6 +69,47 @@ describe("package publish workflow", () => {
     expect(script).toContain("summarizeImpact");
     expect(script).toContain("if (!dryRun) {");
     expect(workflow).toContain("actions/upload-artifact");
+  });
+
+  it("dispatches plugin inspector bulk scans after main inspector pin bumps", () => {
+    const workflowText = readFileSync(
+      resolve(".github/workflows/plugin-inspector-pin-bump-dispatch.yml"),
+      "utf8",
+    );
+    const workflow = parseYaml(workflowText) as {
+      on?: {
+        push?: {
+          branches?: string[];
+          paths?: string[];
+        };
+      };
+      permissions?: Record<string, string>;
+      jobs?: Record<
+        string,
+        {
+          if?: string;
+          steps?: Array<{ name?: string; run?: string; with?: Record<string, string> }>;
+        }
+      >;
+    };
+
+    expect(workflow.on?.push?.branches).toEqual(["main"]);
+    expect(workflow.on?.push?.paths).toEqual([
+      "package.json",
+      "packages/clawhub/package.json",
+      "bun.lock",
+    ]);
+    expect(workflow.permissions?.actions).toBe("write");
+
+    expect(workflowText).toContain("scripts/github/plugin-inspector-pin-change.mjs");
+    expect(workflowText).toContain("gh workflow run plugin-inspector-bulk-scan.yml");
+    expect(workflowText).toContain("--ref main");
+    expect(workflowText).toContain("batch_size=25");
+    expect(workflowText).toContain("dry_run=false");
+    expect(workflowText).toContain("BASE_SHA: ${{ github.event.before }}");
+    expect(workflowText).toContain("HEAD_SHA: ${{ github.sha }}");
+    expect(workflowText).toContain("source_sha=${{ github.sha }}");
+    expect(workflowText).not.toContain("pull_request_target");
   });
 
   it("supports publishing a prebuilt ClawPack artifact from a caller workflow", () => {

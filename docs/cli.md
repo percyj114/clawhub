@@ -141,6 +141,8 @@ Stores your API token + cached registry URL.
 ### `uninstall <slug>`
 
 - Removes `<workdir>/<dir>/<slug>` and deletes the lockfile entry.
+- Sends best-effort telemetry while logged in so current install counts can be
+  deactivated.
 - Interactive: asks for confirmation.
 - Non-interactive (`--no-input`): requires `--yes`.
 
@@ -426,6 +428,9 @@ Example:
 clawhub package validate ./example-plugin
 ```
 
+If validation reports a package, manifest, SDK import, or artifact finding, see
+[Plugin validation fixes](./plugin-validation-fixes.md), then rerun the command.
+
 ### `package delete <name>`
 
 - Soft-deletes a package and all releases.
@@ -643,6 +648,8 @@ Notes:
   more detailed compatibility metadata.
 - If you are using an older `clawhub` CLI release, upgrade before publishing so
   the local preflight checks run before upload.
+- If validation reports a remediation code, see
+  [Plugin validation fixes](./plugin-validation-fixes.md).
 
 #### GitHub Actions
 

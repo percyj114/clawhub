@@ -154,7 +154,7 @@ export type ApiV1SkillInstallResolveResponse =
   (typeof ApiV1SkillInstallResolveResponseSchema)[inferred];
 
 export const CliTelemetryInstallRequestSchema = type({
-  event: '"install"',
+  event: '"install"|"uninstall"',
   slug: "string",
   version: "string?",
   rootId: "string?",
@@ -206,6 +206,31 @@ export const ApiV1PublisherCreateResponseSchema = type({
   trusted: "false",
 });
 export type ApiV1PublisherCreateResponse = (typeof ApiV1PublisherCreateResponseSchema)[inferred];
+
+export const ApiV1PublisherDeleteResponseSchema = type({
+  ok: "true",
+  publisherId: "string",
+  handle: "string",
+  dryRun: "boolean",
+  deleted: "boolean",
+  activeSkills: "number",
+  activePackages: "number",
+  memberCount: "number",
+});
+export type ApiV1PublisherDeleteResponse = (typeof ApiV1PublisherDeleteResponseSchema)[inferred];
+
+export const ApiV1StaffEmailSendResponseSchema = type({
+  ok: "true",
+  sent: "true",
+  recipient: type({
+    email: "string",
+    "userId?": "string",
+    "handle?": "string|null",
+  }),
+  subject: "string",
+  providerId: "string|null",
+});
+export type ApiV1StaffEmailSendResponse = (typeof ApiV1StaffEmailSendResponseSchema)[inferred];
 
 export const ApiV1SearchResponseSchema = type({
   results: type({

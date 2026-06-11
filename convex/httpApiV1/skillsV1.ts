@@ -311,6 +311,7 @@ const internalRefs = internal as unknown as {
   };
   skills: {
     getSecurityVerdictTargetInternal: unknown;
+    getVerifyTargetBySlugInternal: unknown;
     getSkillBySlugInternal: unknown;
     getVersionByIdInternal: unknown;
     getVersionBySkillAndVersionInternal: unknown;
@@ -664,16 +665,6 @@ type VerifySecurityVersion = {
     | "checkedAt"
   > &
     Partial<Pick<NonNullable<Doc<"skillVersions">["skillSpectorAnalysis"]>, "summary" | "error">>;
-  depRegistryAnalysis?: Pick<
-    NonNullable<Doc<"skillVersions">["depRegistryAnalysis"]>,
-    "status" | "summary" | "checkedAt"
-  > &
-    Partial<
-      Pick<
-        NonNullable<Doc<"skillVersions">["depRegistryAnalysis"]>,
-        "notFoundPackages" | "unresolvedPackages"
-      >
-    >;
 };
 
 type SecurityVerdictTargetResult = {
@@ -722,9 +713,6 @@ function buildVerifySecurity(version: VerifySecurityVersion) {
     : null;
   const skillSpectorStatus = version.skillSpectorAnalysis
     ? normalizeVerificationStatus(version.skillSpectorAnalysis.status)
-    : null;
-  const depStatus = version.depRegistryAnalysis
-    ? normalizeVerificationStatus(version.depRegistryAnalysis.status)
     : null;
   const status = clawStatus;
 
@@ -781,16 +769,7 @@ function buildVerifySecurity(version: VerifySecurityVersion) {
             checkedAt: version.skillSpectorAnalysis.checkedAt ?? null,
           }
         : null,
-      dependencyRegistry: version.depRegistryAnalysis
-        ? {
-            status: depStatus ?? "pending",
-            rawStatus: version.depRegistryAnalysis.status,
-            summary: version.depRegistryAnalysis.summary ?? null,
-            notFoundPackages: version.depRegistryAnalysis.notFoundPackages ?? [],
-            unresolvedPackages: version.depRegistryAnalysis.unresolvedPackages ?? [],
-            checkedAt: version.depRegistryAnalysis.checkedAt ?? null,
-          }
-        : null,
+      dependencyRegistry: null,
     },
   };
 }
@@ -823,7 +802,7 @@ function buildVerifyReasons(args: {
   securityStatus: NormalizedSecurityStatus;
 }) {
   const reasons: string[] = [];
-  if (!args.cardAvailable) reasons.push("card.missing");
+  if (!args.cardAvailable && !args.isMalwareBlocked) reasons.push("card.missing");
   reasons.push(
     ...buildSecurityVerdictReasons({
       isMalwareBlocked: args.isMalwareBlocked,
@@ -857,7 +836,6 @@ function getVerifySecurityCheckedAt(security: ReturnType<typeof buildVerifySecur
     security.signals.staticScan?.checkedAt,
     security.signals.virusTotal?.checkedAt,
     security.signals.skillSpector?.checkedAt,
-    security.signals.dependencyRegistry?.checkedAt,
   ].filter((value): value is number => typeof value === "number");
   return candidates.length > 0 ? Math.max(...candidates) : null;
 }
@@ -904,14 +882,7 @@ function buildSecurityVerdictSummary(security: ReturnType<typeof buildVerifySecu
             checkedAt: security.signals.skillSpector.checkedAt,
           }
         : null,
-      dependencyRegistry: security.signals.dependencyRegistry
-        ? {
-            status: security.signals.dependencyRegistry.status,
-            rawStatus: security.signals.dependencyRegistry.rawStatus,
-            summary: security.signals.dependencyRegistry.summary,
-            checkedAt: security.signals.dependencyRegistry.checkedAt,
-          }
-        : null,
+      dependencyRegistry: null,
     },
   };
 }
@@ -1535,6 +1506,7 @@ type ExactVersionModeratedSkill = Pick<
   | "moderationStatus"
   | "moderationReason"
   | "moderationFlags"
+  | "moderationVerdict"
   | "moderationSourceVersionId"
 >;
 
@@ -2032,7 +2004,11 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
     const tagParam = url.searchParams.get("tag")?.trim();
     if (versionParam && tagParam) return text("Use either version or tag", 400, rate.headers);
 
-    const skillResult = (await ctx.runQuery(api.skills.getBySlug, { slug })) as GetBySlugResult;
+    const skillResult = (await runQueryRef<GetBySlugResult>(
+      ctx,
+      internalRefs.skills.getVerifyTargetBySlugInternal,
+      { slug },
+    )) as GetBySlugResult;
     if (!skillResult?.skill) {
       const hidden = await describeOwnerVisibleSkillState(ctx, request, slug);
       if (hidden) return text(hidden.message, hidden.status, rate.headers);
@@ -2071,11 +2047,14 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
     const bundleFingerprints = fingerprintEntries
       .filter((entry) => entry.kind === "generated-bundle")
       .map((entry) => entry.fingerprint);
-    const generatedCardFile = await selectGeneratedSkillCardFile(version.files, bundleFingerprints);
+    const isMalwareBlocked = skillResult.moderationInfo?.isMalwareBlocked ?? false;
+    const generatedCardFile = isMalwareBlocked
+      ? null
+      : await selectGeneratedSkillCardFile(version.files, bundleFingerprints);
     const security = buildVerifySecurity(version);
     const reasons = buildVerifyReasons({
       cardAvailable: Boolean(generatedCardFile),
-      isMalwareBlocked: skillResult.moderationInfo?.isMalwareBlocked ?? false,
+      isMalwareBlocked,
       securityPassed: security.passed,
       securityStatus: security.status,
     });
@@ -2112,7 +2091,9 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
           : {
               available: false,
               path: "skill-card.md",
-              url: buildCardUrl(request, skillResult.skill.slug, version.version),
+              url: isMalwareBlocked
+                ? null
+                : buildCardUrl(request, skillResult.skill.slug, version.version),
               sha256: null,
               size: null,
               contentType: null,

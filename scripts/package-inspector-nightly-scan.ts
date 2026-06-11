@@ -64,7 +64,7 @@ const dryRunMaxBatches = Math.max(
 const inspectorVersion =
   process.env.PLUGIN_INSPECTOR_VERSION ?? resolveBundledPluginInspectorVersion();
 const artifactRoot =
-  process.env.PLUGIN_INSPECTOR_ARTIFACT_DIR ?? "plugin-inspector-nightly-reports";
+  process.env.PLUGIN_INSPECTOR_ARTIFACT_DIR ?? "plugin-inspector-bulk-scan-reports";
 const repoRoot = path.resolve(process.env.GITHUB_WORKSPACE ?? process.cwd());
 const clawhubCliEntry = path.join(repoRoot, "packages", "clawhub", "src", "cli.ts");
 
@@ -89,7 +89,7 @@ do {
   for (const item of claim.items) {
     const workRoot = path.join(
       tmpdir(),
-      `clawhub-plugin-inspector-nightly-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      `clawhub-plugin-inspector-bulk-scan-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     );
     const pluginRoot = path.join(workRoot, "plugin");
     const reportDir = path.resolve(
@@ -153,9 +153,7 @@ do {
       hadWorkerFailure = true;
       const message = error instanceof Error ? error.message : String(error);
       await writeFile(path.join(reportDir, "error.txt"), message);
-      console.error(
-        `Nightly Plugin Inspector worker failed for ${item.packageName}@${item.version}`,
-      );
+      console.error(`Plugin Inspector bulk scan failed for ${item.packageName}@${item.version}`);
       console.error(message);
     } finally {
       await rm(workRoot, { recursive: true, force: true });
@@ -249,14 +247,17 @@ function isPlainObject(value: unknown) {
 
 function normalizeFindings(report: Record<string, unknown>): NormalizedFinding[] {
   const issues = Array.isArray(report.issues)
-    ? report.issues.map((issue) => normalizeFinding(issue, "warning")).filter(isFinding)
+    ? report.issues
+        .map((issue) => normalizeFinding(issue, "warning"))
+        .filter(isFinding)
+        .filter(isAuthorFacingFinding)
     : [];
   if (issues.length > 0) return issues;
   return [
     ...normalizeFindingArray(report.breakages, "breakage"),
     ...normalizeFindingArray(report.warnings, "warning"),
     ...normalizeFindingArray(report.suggestions, "warning"),
-  ];
+  ].filter(isAuthorFacingFinding);
 }
 
 function normalizeFindingArray(value: unknown, fallbackLevel: string) {
@@ -291,6 +292,10 @@ function normalizeFinding(value: unknown, fallbackLevel: string): NormalizedFind
 
 function isFinding(value: NormalizedFinding | null): value is NormalizedFinding {
   return value !== null;
+}
+
+function isAuthorFacingFinding(value: NormalizedFinding) {
+  return value.issueClass !== "inspector-gap";
 }
 
 function toImpactEntry(
@@ -381,7 +386,7 @@ function summarizeImpact(args: {
 
 function renderImpactMarkdown(summary: ReturnType<typeof summarizeImpact>) {
   const lines = [
-    "# Plugin Inspector Nightly Dry Run",
+    "# Plugin Inspector Bulk Scan Dry Run",
     "",
     `- Generated: ${summary.generatedAt}`,
     `- Site: ${summary.siteUrl}`,

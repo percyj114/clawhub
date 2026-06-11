@@ -18,7 +18,7 @@ vi.mock("./_generated/api", () => ({
   },
 }));
 
-const { reportCliInstallInternal } = await import("./telemetry");
+const { reportCliInstallInternal, reportCliUninstallInternal } = await import("./telemetry");
 
 const reportCliInstallHandler = (
   reportCliInstallInternal as unknown as {
@@ -30,6 +30,19 @@ const reportCliInstallHandler = (
         version?: string;
         rootId?: string;
         rootLabel?: string;
+      },
+    ) => Promise<void>;
+  }
+)._handler;
+
+const reportCliUninstallHandler = (
+  reportCliUninstallInternal as unknown as {
+    _handler: (
+      ctx: unknown,
+      args: {
+        userId: string;
+        slug: string;
+        rootId?: string;
       },
     ) => Promise<void>;
   }
@@ -208,6 +221,71 @@ describe("telemetry install events", () => {
       expect.objectContaining({
         skillId: "skills:demo",
         kind: "install_reactivate",
+      }),
+    );
+  });
+
+  it("deactivates current install counts when CLI uninstall removes the last active root", async () => {
+    const skill = { _id: "skills:demo", slug: "demo" };
+    const rootInstall = {
+      _id: "userSkillRootInstalls:one",
+      userId: "users:one",
+      rootId: "root",
+      skillId: "skills:demo",
+      lastVersion: "1.0.0",
+    };
+    const aggregateInstall = {
+      _id: "userSkillInstalls:one",
+      userId: "users:one",
+      skillId: "skills:demo",
+      activeRoots: 1,
+      lastVersion: "1.0.0",
+    };
+    const insert = vi.fn();
+    const patch = vi.fn();
+    const ctx = {
+      db: {
+        query: vi.fn((table: string) => ({
+          withIndex: vi.fn(
+            (indexName: string, callback: (q: ReturnType<typeof makeIndexBuilder>) => unknown) => {
+              callback(makeIndexBuilder());
+              if (table === "skills" && indexName === "by_slug") {
+                return { unique: async () => skill };
+              }
+              if (table === "userSkillRootInstalls" && indexName === "by_user_root_skill") {
+                return { unique: async () => rootInstall };
+              }
+              if (table === "userSkillInstalls" && indexName === "by_user_skill") {
+                return { unique: async () => aggregateInstall };
+              }
+              throw new Error(`unexpected query ${table}.${indexName}`);
+            },
+          ),
+        })),
+        insert,
+        patch,
+      },
+    };
+
+    await reportCliUninstallHandler(ctx, {
+      userId: "users:one",
+      slug: "demo",
+      rootId: "root",
+    });
+
+    expect(patch).toHaveBeenCalledWith(
+      "userSkillRootInstalls:one",
+      expect.objectContaining({ removedAt: expect.any(Number) }),
+    );
+    expect(patch).toHaveBeenCalledWith(
+      "userSkillInstalls:one",
+      expect.objectContaining({ activeRoots: 0 }),
+    );
+    expect(insert).toHaveBeenCalledWith(
+      "skillStatEvents",
+      expect.objectContaining({
+        skillId: "skills:demo",
+        kind: "install_deactivate",
       }),
     );
   });

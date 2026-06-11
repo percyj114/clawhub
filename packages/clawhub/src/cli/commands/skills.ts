@@ -34,7 +34,10 @@ import { getRegistry } from "../registry.js";
 import type { GlobalOpts, ResolveResult } from "../types.js";
 import { createSpinner, fail, formatError, isInteractive, promptConfirm } from "../ui.js";
 import { presentModerationPlan, reportModerationPlan } from "./moderationPlan.js";
-import { reportInstalledSkillsTelemetryIfEnabled } from "./syncHelpers.js";
+import {
+  reportInstalledSkillsTelemetryIfEnabled,
+  reportUninstalledSkillTelemetryIfEnabled,
+} from "./syncHelpers.js";
 
 type SkillReportOptions = {
   version?: string;
@@ -243,16 +246,17 @@ export async function cmdInstall(
     const installedFingerprint =
       installedFiles.length > 0 ? hashSkillFiles(installedFiles).fingerprint : undefined;
 
+    const installedAt = Date.now();
     await writeSkillOrigin(target, {
       version: 1,
       registry,
       slug: trimmed,
       installedVersion: resolvedVersion!,
-      installedAt: Date.now(),
+      installedAt,
       fingerprint: installedFingerprint,
     });
 
-    lock.skills[trimmed] = withPinnedMetadata(resolvedVersion!, Date.now(), existingEntry);
+    lock.skills[trimmed] = withPinnedMetadata(resolvedVersion!, installedAt, existingEntry);
     await writeLockfile(opts.workdir, lock);
     await reportInstalledSkillsTelemetryIfEnabled({
       token,
@@ -422,16 +426,17 @@ export async function cmdUpdate(
           const installedFingerprint =
             installedFiles.length > 0 ? hashSkillFiles(installedFiles).fingerprint : undefined;
 
+          const installedAt = existingOrigin?.installedAt ?? Date.now();
           await writeSkillOrigin(target, {
             version: 1,
             registry: existingOrigin?.registry ?? registry,
             slug: entry,
             installedVersion: targetVersion,
-            installedAt: existingOrigin?.installedAt ?? Date.now(),
+            installedAt,
             fingerprint: installedFingerprint,
           });
 
-          lock.skills[entry] = withPinnedMetadata(targetVersion, Date.now(), lock.skills[entry]);
+          lock.skills[entry] = withPinnedMetadata(targetVersion, installedAt, lock.skills[entry]);
           spinner.succeed(`${entry}: updated -> ${formatGitHubVersion(targetVersion)}`);
           continue;
         }
@@ -511,16 +516,17 @@ export async function cmdUpdate(
       const installedFingerprint =
         installedFiles.length > 0 ? hashSkillFiles(installedFiles).fingerprint : undefined;
 
+      const installedAt = existingOrigin?.installedAt ?? Date.now();
       await writeSkillOrigin(target, {
         version: 1,
         registry: existingOrigin?.registry ?? registry,
         slug: existingOrigin?.slug ?? entry,
         installedVersion: targetVersion,
-        installedAt: existingOrigin?.installedAt ?? Date.now(),
+        installedAt,
         fingerprint: installedFingerprint,
       });
 
-      lock.skills[entry] = withPinnedMetadata(targetVersion, Date.now(), lock.skills[entry]);
+      lock.skills[entry] = withPinnedMetadata(targetVersion, installedAt, lock.skills[entry]);
       spinner.succeed(`${entry}: updated -> ${targetVersion}`);
     } catch (error) {
       spinner.fail(formatError(error));
@@ -625,6 +631,21 @@ export async function cmdUninstall(
 
     delete lock.skills[trimmed];
     await writeLockfile(opts.workdir, lock);
+
+    try {
+      const token = await getOptionalAuthToken();
+      if (token) {
+        const registry = await getRegistry(opts, { cache: true });
+        await reportUninstalledSkillTelemetryIfEnabled({
+          token,
+          registry,
+          root: opts.dir,
+          slug: trimmed,
+        });
+      }
+    } catch {
+      // Best-effort telemetry must not block local uninstall cleanup.
+    }
 
     spinner.succeed(`Uninstalled ${trimmed}`);
   } catch (error) {

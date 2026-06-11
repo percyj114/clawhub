@@ -1069,6 +1069,9 @@ const skillSearchDigest = defineTable({
   softDeletedAt: v.optional(v.number()),
   moderationStatus: moderationStatusValidator,
   moderationFlags: v.optional(v.array(v.string())),
+  moderationVerdict: v.optional(
+    v.union(v.literal("clean"), v.literal("suspicious"), v.literal("malicious")),
+  ),
   moderationReason: v.optional(v.string()),
   isSuspicious: v.optional(v.boolean()),
   createdAt: v.number(),
@@ -1216,7 +1219,8 @@ const packages = defineTable({
   .index("by_family_official_updated", ["family", "isOfficial", "updatedAt"])
   .index("by_runtime_id", ["runtimeId"])
   .index("by_active_updated", ["softDeletedAt", "updatedAt"])
-  .index("by_active_downloads", ["softDeletedAt", "stats.downloads", "updatedAt"]);
+  .index("by_active_downloads", ["softDeletedAt", "stats.downloads", "updatedAt"])
+  .index("by_active_family_downloads", ["softDeletedAt", "family", "stats.downloads", "updatedAt"]);
 
 const packageReleases = defineTable({
   packageId: v.id("packages"),
@@ -1330,6 +1334,12 @@ const packageInspectorWarnings = defineTable({
   deprecated: v.optional(v.boolean()),
   message: v.string(),
   evidence: v.optional(v.array(v.string())),
+  authorRemediation: v.optional(
+    v.object({
+      summary: v.string(),
+      docsUrl: v.optional(v.string()),
+    }),
+  ),
   fixture: v.optional(v.string()),
   decision: v.optional(v.string()),
   inspectorFindingId: v.optional(v.string()),

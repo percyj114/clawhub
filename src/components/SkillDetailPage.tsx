@@ -299,6 +299,17 @@ export function SkillDetailPage({
     Boolean(me && skill && me._id === skill.ownerUserId) ||
     isStaff ||
     Boolean(skill?.ownerPublisherId && myManagePublisherIds.has(skill.ownerPublisherId));
+  const canManagePersonalPublisherSkill =
+    Boolean(me && skill && !skill.ownerPublisherId && me._id === skill.ownerUserId) ||
+    Boolean(
+      me &&
+      skill?.ownerPublisherId &&
+      owner?.kind === "user" &&
+      (owner.linkedUserId ? owner.linkedUserId === me._id : me._id === skill.ownerUserId),
+    );
+  const canDeleteSkillFromSettings =
+    canManagePersonalPublisherSkill ||
+    Boolean(skill?.ownerPublisherId && myManagePublisherIds.has(skill.ownerPublisherId));
   const ownedSkills = useQuery(
     api.skills.list,
     canAccessSettings && skill
@@ -744,6 +755,7 @@ export function SkillDetailPage({
         ownedSkills={(ownedSkills ?? []).filter((entry) => entry._id !== skill._id)}
         summary={skill.summary ?? ""}
         onSaveSummary={canAccessSettings ? submitSummary : null}
+        canDeleteSkill={canDeleteSkillFromSettings}
       />
     ) : null;
 

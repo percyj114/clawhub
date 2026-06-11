@@ -67,6 +67,58 @@ export const reportCliInstallInternal = internalMutation({
   },
 });
 
+export const reportCliUninstallInternal = internalMutation({
+  args: {
+    userId: v.id("users"),
+    slug: v.string(),
+    rootId: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const slug = args.slug.trim().toLowerCase();
+    if (!slug) return;
+
+    const skill = await ctx.db
+      .query("skills")
+      .withIndex("by_slug", (q) => q.eq("slug", slug))
+      .unique();
+    if (!skill || skill.softDeletedAt) return;
+
+    const now = Date.now();
+    const rootId = args.rootId?.trim();
+    if (rootId) {
+      const existingRootInstall = await ctx.db
+        .query("userSkillRootInstalls")
+        .withIndex("by_user_root_skill", (q) =>
+          q.eq("userId", args.userId).eq("rootId", rootId).eq("skillId", skill._id),
+        )
+        .unique();
+      if (!existingRootInstall || existingRootInstall.removedAt) return;
+
+      await ctx.db.patch(existingRootInstall._id, {
+        lastSeenAt: now,
+        removedAt: now,
+      });
+      await decrementActiveRoots(ctx, {
+        userId: args.userId,
+        skillId: skill._id,
+      });
+      return;
+    }
+
+    const existing = await ctx.db
+      .query("userSkillInstalls")
+      .withIndex("by_user_skill", (q) => q.eq("userId", args.userId).eq("skillId", skill._id))
+      .unique();
+    if (!existing || existing.activeRoots <= 0) return;
+
+    await ctx.db.patch(existing._id, {
+      activeRoots: 0,
+      lastSeenAt: now,
+    });
+    await insertStatEvent(ctx, { skillId: skill._id, kind: "install_deactivate" });
+  },
+});
+
 export const clearMyTelemetry = mutation({
   args: {},
   handler: async (ctx) => {
@@ -337,6 +389,27 @@ async function incrementActiveRoots(
       skillId: params.skillId,
       deltaAllTime: 0,
       deltaCurrent: 1,
+    });
+  }
+}
+
+async function decrementActiveRoots(
+  ctx: MutationCtx,
+  params: { userId: Id<"users">; skillId: Id<"skills"> },
+) {
+  const existing = await ctx.db
+    .query("userSkillInstalls")
+    .withIndex("by_user_skill", (q) => q.eq("userId", params.userId).eq("skillId", params.skillId))
+    .unique();
+  if (!existing) return;
+
+  const nextActive = Math.max(0, (existing.activeRoots ?? 0) - 1);
+  await ctx.db.patch(existing._id, { activeRoots: nextActive });
+  if ((existing.activeRoots ?? 0) > 0 && nextActive === 0) {
+    await bumpSkillInstallCounts(ctx, {
+      skillId: params.skillId,
+      deltaAllTime: 0,
+      deltaCurrent: -1,
     });
   }
 }

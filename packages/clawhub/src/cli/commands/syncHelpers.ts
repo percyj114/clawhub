@@ -54,6 +54,38 @@ export async function reportInstalledSkillsTelemetryIfEnabled(params: {
   }
 }
 
+export async function reportUninstalledSkillTelemetryIfEnabled(params: {
+  token: string | undefined;
+  registry: string;
+  root: string;
+  slug: string;
+}) {
+  if (!params.token || isTelemetryDisabled()) return;
+  const slug = params.slug.trim();
+  if (!slug) return;
+
+  try {
+    await apiRequest(
+      params.registry,
+      {
+        method: "POST",
+        path: LegacyApiRoutes.cliTelemetryInstall,
+        token: params.token,
+        body: {
+          event: "uninstall",
+          slug,
+          rootId: rootTelemetryId(params.root),
+          rootLabel: formatRootLabel(params.root),
+        },
+      },
+      ApiCliTelemetrySyncResponseSchema,
+    );
+  } catch {
+    // Install telemetry is best-effort; local uninstalls must not fail because
+    // metrics reporting is unavailable.
+  }
+}
+
 function isTelemetryDisabled() {
   const raw = process.env.CLAWHUB_DISABLE_TELEMETRY ?? process.env.CLAWDHUB_DISABLE_TELEMETRY;
   if (!raw) return false;

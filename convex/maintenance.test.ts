@@ -1,5 +1,9 @@
 /* @vitest-environment node */
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@convex-dev/auth/server", () => ({
+  getAuthUserId: vi.fn(),
+}));
 
 vi.mock("./_generated/api", () => ({
   internal: {
@@ -21,13 +25,14 @@ vi.mock("./_generated/api", () => ({
       backfillSkillFingerprintsInternal: Symbol("backfillSkillFingerprintsInternal"),
       applySkillCapabilityTagsInternal: Symbol("applySkillCapabilityTagsInternal"),
       backfillSkillCapabilityTagsInternal: Symbol("backfillSkillCapabilityTagsInternal"),
-      backfillDigestVersionSummary: Symbol("backfillDigestVersionSummary"),
+      backfillSkillSearchDigestModerationVerdictsInternal: Symbol(
+        "backfillSkillSearchDigestModerationVerdictsInternal",
+      ),
       getEmptySkillCleanupPageInternal: Symbol("getEmptySkillCleanupPageInternal"),
       applyEmptySkillCleanupInternal: Symbol("applyEmptySkillCleanupInternal"),
       nominateUserForEmptySkillSpamInternal: Symbol("nominateUserForEmptySkillSpamInternal"),
       cleanupEmptySkillsInternal: Symbol("cleanupEmptySkillsInternal"),
       nominateEmptySkillSpammersInternal: Symbol("nominateEmptySkillSpammersInternal"),
-      repairLegacyPublisherOwnership: Symbol("repairLegacyPublisherOwnership"),
     },
     skills: {
       backfillLatestSkillModerationInternal: Symbol("skills.backfillLatestSkillModerationInternal"),
@@ -46,21 +51,25 @@ vi.mock("./lib/skillSummary", () => ({
 
 const {
   applySkillCapabilityTagsInternal,
-  backfillDigestVersionSummary,
   backfillLatestVersionSummaryInternal,
+  backfillSkillSearchDigestModerationVerdictsInternal,
   backfillPublisherStatsInternalHandler,
-  backfillSkillSearchDigestInternal,
   backfillSkillFingerprintsInternalHandler,
   backfillSkillSummariesInternalHandler,
   backfillUserStatsInternalHandler,
   cleanupEmptySkillsInternalHandler,
   nominateEmptySkillSpammersInternalHandler,
   repairLegacyPublisherOwnershipForUserHandler,
-  repairLegacyPublisherOwnershipHandler,
   upsertSkillBadgeRecordInternal,
 } = await import("./maintenance");
 const { internal } = await import("./_generated/api");
 const { generateSkillSummary } = await import("./lib/skillSummary");
+const { getAuthUserId } = await import("@convex-dev/auth/server");
+
+beforeEach(() => {
+  vi.mocked(getAuthUserId).mockReset();
+  vi.mocked(getAuthUserId).mockResolvedValue(null);
+});
 
 function makeBlob(text: string) {
   return { text: () => Promise.resolve(text) } as unknown as Blob;
@@ -420,198 +429,9 @@ function paginateRows(rows: Record<string, unknown>[], cursor: string | null, nu
 }
 
 describe("maintenance legacy publisher ownership repair", () => {
-  it("dry-runs legacy publisher ownership repair without writes", async () => {
-    const { db, patchCalls, insertCalls } = makeLegacyPublisherOwnershipDb();
-
-    const result = await repairLegacyPublisherOwnershipHandler(
-      { db, scheduler: { runAfter: vi.fn() } } as never,
-      { phase: "users", dryRun: true, batchSize: 10, scheduleNext: false },
-    );
-
-    expect(result).toMatchObject({
-      phase: "users",
-      dryRun: true,
-      scanned: 1,
-      repaired: 1,
-      skipped: 0,
-      isDone: true,
-    });
-    expect(patchCalls).toEqual([]);
-    expect(insertCalls).toEqual([]);
-  });
-
-  it("reports dry-run personal publisher handle conflicts without writes", async () => {
-    const { db, tableMap, patchCalls, insertCalls } = makeLegacyPublisherOwnershipDb();
-    tableMap.users.set("users:conflict", {
-      _id: "users:conflict",
-      _creationTime: 1_717_456_000_000 - 1000,
-      handle: "existing-owner",
-      name: "Conflicting Owner",
-      displayName: "Conflicting Owner",
-      deletedAt: undefined,
-      deactivatedAt: undefined,
-      purgedAt: undefined,
-    });
-
-    const result = await repairLegacyPublisherOwnershipHandler(
-      { db, scheduler: { runAfter: vi.fn() } } as never,
-      { phase: "users", dryRun: true, batchSize: 10, scheduleNext: false },
-    );
-
-    expect(result).toMatchObject({
-      phase: "users",
-      dryRun: true,
-      scanned: 2,
-      repaired: 1,
-      skipped: 1,
-      isDone: true,
-      errors: ['user:users:conflict: Publisher handle "@existing-owner" is already claimed'],
-    });
-    expect(patchCalls).toEqual([]);
-    expect(insertCalls).toEqual([]);
-  });
-
-  it("skips apply-mode personal publisher handle conflicts while repairing other users", async () => {
-    const { db, tableMap } = makeLegacyPublisherOwnershipDb();
-    tableMap.users.set("users:conflict", {
-      _id: "users:conflict",
-      _creationTime: 1_717_456_000_000 - 1000,
-      handle: "existing-owner",
-      name: "Conflicting Owner",
-      displayName: "Conflicting Owner",
-      deletedAt: undefined,
-      deactivatedAt: undefined,
-      purgedAt: undefined,
-    });
-
-    const result = await repairLegacyPublisherOwnershipHandler(
-      { db, scheduler: { runAfter: vi.fn() } } as never,
-      { phase: "users", dryRun: false, batchSize: 10, scheduleNext: false },
-    );
-
-    const createdPublisher = Array.from(tableMap.publishers.values()).find(
-      (publisher) => publisher.handle === "legacy-owner",
-    );
-    expect(result).toMatchObject({
-      phase: "users",
-      dryRun: false,
-      scanned: 2,
-      repaired: 1,
-      skipped: 1,
-      isDone: true,
-      errors: ['user:users:conflict: Publisher handle "@existing-owner" is already claimed'],
-    });
-    expect(createdPublisher).toMatchObject({
-      kind: "user",
-      linkedUserId: "users:legacy",
-    });
-    expect(tableMap.users.get("users:legacy")).toMatchObject({
-      personalPublisherId: createdPublisher?._id,
-    });
-    expect(tableMap.users.get("users:conflict")).not.toHaveProperty("personalPublisherId");
-  });
-
-  it("repairs active legacy users, skills, aliases, embeddings, and packages", async () => {
-    const { db, tableMap, patchCalls, insertCalls } = makeLegacyPublisherOwnershipDb();
-    const scheduler = { runAfter: vi.fn() };
-
-    const usersResult = await repairLegacyPublisherOwnershipHandler({ db, scheduler } as never, {
-      phase: "users",
-      dryRun: false,
-      batchSize: 10,
-      scheduleNext: false,
-    });
-    const createdPublisher = Array.from(tableMap.publishers.values()).find(
-      (publisher) => publisher.handle === "legacy-owner",
-    );
-    expect(usersResult).toMatchObject({
-      phase: "users",
-      dryRun: false,
-      scanned: 1,
-      repaired: 1,
-      skipped: 0,
-      isDone: true,
-    });
-    expect(createdPublisher).toMatchObject({
-      kind: "user",
-      handle: "legacy-owner",
-      displayName: "Legacy Owner",
-      linkedUserId: "users:legacy",
-    });
-    expect(tableMap.users.get("users:legacy")).toMatchObject({
-      personalPublisherId: createdPublisher?._id,
-    });
-    expect(insertCalls.some((call) => call.table === "publisherMembers")).toBe(true);
-
-    const skillsResult = await repairLegacyPublisherOwnershipHandler({ db, scheduler } as never, {
-      phase: "skills",
-      dryRun: false,
-      batchSize: 10,
-      scheduleNext: false,
-    });
-    expect(skillsResult).toMatchObject({
-      phase: "skills",
-      dryRun: false,
-      scanned: 2,
-      repaired: 1,
-      skipped: 1,
-      isDone: true,
-    });
-    expect(tableMap.skills.get("skills:legacy")).toMatchObject({
-      ownerPublisherId: createdPublisher?._id,
-    });
-    expect(tableMap.skills.get("skills:deleted-owner")).toMatchObject({
-      ownerPublisherId: undefined,
-    });
-    expect(tableMap.skillSlugAliases.get("skillSlugAliases:legacy")).toMatchObject({
-      ownerPublisherId: createdPublisher?._id,
-    });
-    expect(tableMap.skillEmbeddings.get("skillEmbeddings:legacy")).not.toHaveProperty(
-      "ownerPublisherId",
-      createdPublisher?._id,
-    );
-
-    const packagesResult = await repairLegacyPublisherOwnershipHandler({ db, scheduler } as never, {
-      phase: "packages",
-      dryRun: false,
-      batchSize: 10,
-      scheduleNext: false,
-    });
-    expect(packagesResult).toMatchObject({
-      phase: "packages",
-      dryRun: false,
-      scanned: 1,
-      repaired: 1,
-      skipped: 0,
-      isDone: true,
-    });
-    expect(tableMap.packages.get("packages:legacy")).toMatchObject({
-      ownerPublisherId: createdPublisher?._id,
-    });
-    expect(patchCalls.some((call) => call.id === "skillSearchDigest:legacy")).toBe(false);
-    expect(patchCalls.some((call) => call.id === "packageSearchDigest:legacy")).toBe(false);
-    expect(
-      patchCalls.some(
-        (call) =>
-          call.id === createdPublisher?._id &&
-          ("publishedSkills" in call.patch || "publishedPackages" in call.patch),
-      ),
-    ).toBe(false);
-  });
-
   it("repairs legacy owner projections for one targeted user by handle", async () => {
     const { db, tableMap } = makeLegacyPublisherOwnershipDb();
     const scheduler = { runAfter: vi.fn() };
-
-    await repairLegacyPublisherOwnershipHandler({ db, scheduler } as never, {
-      phase: "users",
-      dryRun: false,
-      batchSize: 10,
-      scheduleNext: false,
-    });
-    const createdPublisher = Array.from(tableMap.publishers.values()).find(
-      (publisher) => publisher.handle === "legacy-owner",
-    );
 
     const skillsResult = await repairLegacyPublisherOwnershipForUserHandler(
       { db, scheduler } as never,
@@ -622,6 +442,9 @@ describe("maintenance legacy publisher ownership repair", () => {
         batchSize: 10,
         scheduleNext: false,
       },
+    );
+    const createdPublisher = Array.from(tableMap.publishers.values()).find(
+      (publisher) => publisher.handle === "legacy-owner",
     );
     expect(skillsResult).toMatchObject({
       phase: "skills",
@@ -676,13 +499,6 @@ describe("maintenance legacy publisher ownership repair", () => {
     const { db } = makeLegacyPublisherOwnershipDb();
     const scheduler = { runAfter: vi.fn() };
 
-    await repairLegacyPublisherOwnershipHandler({ db, scheduler } as never, {
-      phase: "users",
-      dryRun: false,
-      batchSize: 10,
-      scheduleNext: false,
-    });
-
     const patch = db.patch;
     db.patch = vi.fn(async (id: string, value: Record<string, unknown>) => {
       if (id === "skillEmbeddings:legacy") throw new Error("embedding sync failed");
@@ -690,7 +506,8 @@ describe("maintenance legacy publisher ownership repair", () => {
     });
 
     await expect(
-      repairLegacyPublisherOwnershipHandler({ db, scheduler } as never, {
+      repairLegacyPublisherOwnershipForUserHandler({ db, scheduler } as never, {
+        handle: "legacy-owner",
         phase: "skills",
         dryRun: false,
         batchSize: 10,
@@ -706,13 +523,6 @@ describe("maintenance legacy publisher ownership repair", () => {
     const { db } = makeLegacyPublisherOwnershipDb();
     const scheduler = { runAfter: vi.fn() };
 
-    await repairLegacyPublisherOwnershipHandler({ db, scheduler } as never, {
-      phase: "users",
-      dryRun: false,
-      batchSize: 10,
-      scheduleNext: false,
-    });
-
     const patch = db.patch;
     db.patch = vi.fn(async (id: string, value: Record<string, unknown>) => {
       if (id === "packages:legacy") throw new Error("package patch failed");
@@ -720,7 +530,8 @@ describe("maintenance legacy publisher ownership repair", () => {
     });
 
     await expect(
-      repairLegacyPublisherOwnershipHandler({ db, scheduler } as never, {
+      repairLegacyPublisherOwnershipForUserHandler({ db, scheduler } as never, {
+        handle: "legacy-owner",
         phase: "packages",
         dryRun: false,
         batchSize: 10,
@@ -731,113 +542,6 @@ describe("maintenance legacy publisher ownership repair", () => {
 });
 
 describe("maintenance backfill", () => {
-  it("patches stale skill search digest rank stats from legacy skill stats", async () => {
-    const existingDigest = {
-      _id: "skillSearchDigest:1",
-      skillId: "skills:1",
-      slug: "demo",
-      displayName: "Demo",
-      summary: "Old summary",
-      ownerUserId: "users:owner",
-      tags: {},
-      stats: {
-        downloads: 3,
-        stars: 2,
-        installsCurrent: 4,
-        installsAllTime: 5,
-        versions: 1,
-        comments: 0,
-      },
-      softDeletedAt: undefined,
-      createdAt: 100,
-      updatedAt: 200,
-    };
-    const skill = {
-      _id: "skills:1",
-      slug: "demo",
-      displayName: "Demo",
-      summary: "New summary",
-      ownerUserId: "users:owner",
-      tags: {},
-      stats: {
-        downloads: 42,
-        stars: 7,
-        installsCurrent: 9,
-        installsAllTime: 100,
-        versions: 1,
-        comments: 0,
-      },
-      softDeletedAt: undefined,
-      createdAt: 100,
-      updatedAt: 300,
-    };
-    const paginate = vi.fn().mockResolvedValue({
-      page: [skill],
-      continueCursor: null,
-      isDone: true,
-    });
-    const unique = vi.fn().mockResolvedValue(existingDigest);
-    class TestEqBuilder {
-      eq(_field: string, _value: unknown) {
-        return this;
-      }
-    }
-    const withIndex = vi.fn((_indexName: string, build: (q: TestEqBuilder) => unknown) => {
-      build(new TestEqBuilder());
-      return { unique };
-    });
-    const query = vi.fn((table: string) => {
-      if (table === "skills") return { paginate };
-      if (table === "skillSearchDigest") return { withIndex };
-      throw new Error(`unexpected table ${table}`);
-    });
-    const patch = vi.fn().mockResolvedValue(undefined);
-    const insert = vi.fn().mockResolvedValue("skillSearchDigest:inserted");
-    const replace = vi.fn().mockResolvedValue(undefined);
-    const deleteDoc = vi.fn().mockResolvedValue(undefined);
-
-    const result = await (
-      backfillSkillSearchDigestInternal as unknown as { _handler: Function }
-    )._handler(
-      {
-        db: {
-          get: vi.fn(),
-          query,
-          patch,
-          insert,
-          replace,
-          delete: deleteDoc,
-          normalizeId: vi.fn(),
-        },
-        scheduler: {
-          runAfter: vi.fn(),
-        },
-      } as never,
-      { batchSize: 10 },
-    );
-
-    expect(result).toEqual({ upserted: 1, isDone: true, scanned: 1 });
-    expect(paginate).toHaveBeenCalledWith({ cursor: null, numItems: 10 });
-    expect(withIndex).toHaveBeenCalledWith("by_skill", expect.any(Function));
-    expect(insert).not.toHaveBeenCalled();
-    expect(patch).toHaveBeenCalledWith(
-      "skillSearchDigest:1",
-      expect.objectContaining({
-        summary: "New summary",
-        statsDownloads: 42,
-        statsStars: 7,
-        statsInstallsCurrent: 9,
-        statsInstallsAllTime: 100,
-        stats: expect.objectContaining({
-          downloads: 42,
-          stars: 7,
-          installsCurrent: 9,
-          installsAllTime: 100,
-        }),
-      }),
-    );
-  });
-
   it("repairs summary + parsed by reparsing SKILL.md", async () => {
     const runQuery = vi.fn().mockResolvedValue({
       items: [
@@ -1048,80 +752,6 @@ describe("maintenance backfill", () => {
       },
     });
     expect(runAfter).not.toHaveBeenCalled();
-  });
-
-  it("backfills digest capability tags even when version summary already matches", async () => {
-    const digest = {
-      _id: "skillSearchDigest:1",
-      skillId: "skills:1",
-      latestVersionId: "skillVersions:1",
-      latestVersionSkillId: "skills:1",
-      latestVersionSummary: {
-        version: "1.0.0",
-        createdAt: 123,
-        changelog: "Same changelog",
-        changelogSource: "user",
-        clawdis: undefined,
-      },
-      capabilityTags: ["old"],
-    };
-    const skill = {
-      _id: "skills:1",
-      slug: "demo",
-      displayName: "Demo",
-      stats: {
-        downloads: 0,
-        stars: 0,
-        installsCurrent: 0,
-        installsAllTime: 0,
-        versions: 1,
-        comments: 0,
-      },
-      latestVersionId: "skillVersions:1",
-      latestVersionSummary: digest.latestVersionSummary,
-      capabilityTags: ["read-files"],
-    };
-    const version = {
-      _id: "skillVersions:1",
-      skillId: "skills:1",
-      softDeletedAt: undefined,
-      version: "1.0.0",
-    };
-    const paginate = vi.fn().mockResolvedValue({
-      page: [digest],
-      continueCursor: null,
-      isDone: true,
-    });
-    const patch = vi.fn().mockResolvedValue(undefined);
-    const ctx = {
-      db: {
-        query: vi.fn(() => ({ paginate })),
-        get: vi.fn(async (id: string) => {
-          if (id === "skills:1") return skill;
-          if (id === "skillVersions:1") return version;
-          return null;
-        }),
-        patch,
-        normalizeId: vi.fn(),
-      },
-      scheduler: {
-        runAfter: vi.fn(),
-      },
-    } as never;
-
-    const result = await (
-      backfillDigestVersionSummary as unknown as { _handler: Function }
-    )._handler(ctx, {
-      batchSize: 10,
-    });
-
-    expect(result).toEqual({ patched: 1, isDone: true, scanned: 1 });
-    expect(patch).toHaveBeenCalledWith("skillSearchDigest:1", {
-      latestVersionId: "skillVersions:1",
-      latestVersionSkillId: "skills:1",
-      latestVersionSummary: digest.latestVersionSummary,
-      capabilityTags: ["read-files"],
-    });
   });
 
   it("backfills denormalized user hover stats from indexed owner pages", async () => {
@@ -1495,6 +1125,125 @@ describe("maintenance capability tag backfill", () => {
       capabilityTags: ["financial-authority", "can-make-purchases"],
       updatedAt: 987,
     });
+  });
+});
+
+describe("skill search digest moderation verdict backfill", () => {
+  it("patches digest moderation verdicts from canonical skill rows and schedules the next page", async () => {
+    const paginate = vi.fn().mockResolvedValue({
+      page: [
+        {
+          _id: "skillSearchDigest:malicious",
+          skillId: "skills:malicious",
+          moderationVerdict: undefined,
+        },
+        {
+          _id: "skillSearchDigest:clean",
+          skillId: "skills:clean",
+          moderationVerdict: "clean",
+        },
+        {
+          _id: "skillSearchDigest:missing",
+          skillId: "skills:missing",
+          moderationVerdict: undefined,
+        },
+      ],
+      continueCursor: "next-page",
+      isDone: false,
+    });
+    const query = vi.fn().mockReturnValue({ paginate });
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce({
+        _id: "skills:malicious",
+        moderationVerdict: "malicious",
+        updatedAt: 123,
+      })
+      .mockResolvedValueOnce({
+        _id: "skills:clean",
+        moderationVerdict: "clean",
+        updatedAt: 456,
+      })
+      .mockResolvedValueOnce(null);
+    const patch = vi.fn().mockResolvedValue(undefined);
+    const runAfter = vi.fn().mockResolvedValue(undefined);
+
+    const result = await (
+      backfillSkillSearchDigestModerationVerdictsInternal as unknown as { _handler: Function }
+    )._handler(
+      {
+        db: { query, get, patch, normalizeId: vi.fn() },
+        scheduler: { runAfter },
+      } as never,
+      { cursor: "start", batchSize: 25 },
+    );
+
+    expect(result).toEqual({
+      scanned: 3,
+      patched: 1,
+      missingSkills: 1,
+      cursor: "next-page",
+      isDone: false,
+      dryRun: false,
+    });
+    expect(query).toHaveBeenCalledWith("skillSearchDigest");
+    expect(paginate).toHaveBeenCalledWith({ cursor: "start", numItems: 25 });
+    expect(patch).toHaveBeenCalledWith("skillSearchDigest:malicious", {
+      moderationVerdict: "malicious",
+      updatedAt: 123,
+    });
+    expect(runAfter).toHaveBeenCalledWith(
+      0,
+      internal.maintenance.backfillSkillSearchDigestModerationVerdictsInternal,
+      {
+        cursor: "next-page",
+        batchSize: 25,
+        dryRun: false,
+      },
+    );
+  });
+
+  it("reports would-be patches without writing or scheduling in dry run mode", async () => {
+    const paginate = vi.fn().mockResolvedValue({
+      page: [
+        {
+          _id: "skillSearchDigest:malicious",
+          skillId: "skills:malicious",
+          moderationVerdict: undefined,
+        },
+      ],
+      continueCursor: "next-page",
+      isDone: false,
+    });
+    const query = vi.fn().mockReturnValue({ paginate });
+    const get = vi.fn().mockResolvedValue({
+      _id: "skills:malicious",
+      moderationVerdict: "malicious",
+      updatedAt: 123,
+    });
+    const patch = vi.fn().mockResolvedValue(undefined);
+    const runAfter = vi.fn().mockResolvedValue(undefined);
+
+    const result = await (
+      backfillSkillSearchDigestModerationVerdictsInternal as unknown as { _handler: Function }
+    )._handler(
+      {
+        db: { query, get, patch, normalizeId: vi.fn() },
+        scheduler: { runAfter },
+      } as never,
+      { batchSize: 25, dryRun: true },
+    );
+
+    expect(result).toEqual({
+      scanned: 1,
+      patched: 1,
+      missingSkills: 0,
+      cursor: "next-page",
+      isDone: false,
+      dryRun: true,
+    });
+    expect(patch).not.toHaveBeenCalled();
+    expect(runAfter).not.toHaveBeenCalled();
   });
 });
 

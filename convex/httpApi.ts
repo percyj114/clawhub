@@ -239,13 +239,21 @@ async function cliTelemetryInstallHandler(ctx: ActionCtx, request: Request) {
   try {
     const { userId } = await requireApiTokenUser(ctx, request);
     const args = parseArk(CliTelemetryInstallRequestSchema, body, "Install telemetry payload");
-    await ctx.runMutation(internal.telemetry.reportCliInstallInternal, {
-      userId,
-      slug: args.slug,
-      version: args.version,
-      rootId: args.rootId,
-      rootLabel: args.rootLabel,
-    });
+    if (args.event === "uninstall") {
+      await ctx.runMutation(internal.telemetry.reportCliUninstallInternal, {
+        userId,
+        slug: args.slug,
+        rootId: args.rootId,
+      });
+    } else {
+      await ctx.runMutation(internal.telemetry.reportCliInstallInternal, {
+        userId,
+        slug: args.slug,
+        version: args.version,
+        rootId: args.rootId,
+        rootLabel: args.rootLabel,
+      });
+    }
     const ok = parseArk(ApiCliTelemetrySyncResponseSchema, { ok: true }, "Telemetry response");
     return json(ok);
   } catch (error) {

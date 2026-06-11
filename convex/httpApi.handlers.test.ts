@@ -295,6 +295,30 @@ describe("httpApi handlers", () => {
     });
   });
 
+  it("cliTelemetryInstallHttp forwards one uninstall event and returns ok", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValueOnce({ userId: "users:1" } as never);
+    const runMutation = vi.fn().mockResolvedValue(null);
+    const response = await __handlers.cliTelemetryInstallHandler(
+      makeCtx({ runMutation }),
+      new Request("https://x/api/cli/telemetry/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          event: "uninstall",
+          slug: "weather",
+          rootId: "abc",
+        }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true });
+    expect(runMutation).toHaveBeenCalledWith(expect.anything(), {
+      userId: "users:1",
+      slug: "weather",
+      rootId: "abc",
+    });
+  });
+
   it("cliTelemetryInstallHttp rejects sync-shaped roots snapshots", async () => {
     vi.mocked(requireApiTokenUser).mockResolvedValueOnce({ userId: "users:1" } as never);
     const runMutation = vi.fn().mockResolvedValue(null);

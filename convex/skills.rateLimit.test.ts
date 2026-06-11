@@ -639,7 +639,7 @@ describe("skills anti-spam guards", () => {
     );
   });
 
-  it("does not release a stale owner reservation after moderation owns the current hide", async () => {
+  it("does not release a moderated hidden skill without an unpublished reservation", async () => {
     const now = Date.now();
     const storedSkills = new Map<string, Record<string, unknown>>([
       [
@@ -652,7 +652,6 @@ describe("skills anti-spam guards", () => {
           ownerPublisherId: "publishers:previous",
           softDeletedAt: now - 31 * 24 * 60 * 60 * 1000,
           hiddenBy: undefined,
-          unpublishedSlugReservedUntil: now - 1_000,
           moderationStatus: "hidden",
           moderationFlags: ["blocked.malware"],
           moderationVerdict: "malicious",
