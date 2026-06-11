@@ -2267,26 +2267,26 @@ describe("packages public queries", () => {
     expect(paginate).toHaveBeenCalledWith({ cursor: null, numItems: 50 });
   });
 
-  it("uses a family-scoped recommended index for recommended plugin pages", async () => {
+  it("uses a family-scoped recommended index that ranks downloads before installs after stars", async () => {
     const { ctx, indexFilters, indexNames, paginate } = makeDigestCtx({
       packagePages: [
         {
           page: [
-            makePackageDoc({
-              _id: "packages:code-plugin-starred",
-              name: "code-plugin-starred",
-              normalizedName: "code-plugin-starred",
-              displayName: "Code Plugin Starred",
-              family: "code-plugin",
-              stats: { downloads: 10, installs: 20, stars: 5, versions: 1 },
-            }),
             makePackageDoc({
               _id: "packages:code-plugin-downloaded",
               name: "code-plugin-downloaded",
               normalizedName: "code-plugin-downloaded",
               displayName: "Code Plugin Downloaded",
               family: "code-plugin",
-              stats: { downloads: 1_000, installs: 0, stars: 1, versions: 1 },
+              stats: { downloads: 43_080, installs: 2, stars: 0, versions: 1 },
+            }),
+            makePackageDoc({
+              _id: "packages:code-plugin-installed",
+              name: "code-plugin-installed",
+              normalizedName: "code-plugin-installed",
+              displayName: "Code Plugin Installed",
+              family: "code-plugin",
+              stats: { downloads: 393, installs: 74, stars: 0, versions: 1 },
             }),
           ],
           isDone: true,
@@ -2301,7 +2301,7 @@ describe("packages public queries", () => {
       paginationOpts: { cursor: null, numItems: 1 },
     });
 
-    expect(result.page.map((entry) => entry.name)).toEqual(["code-plugin-starred"]);
+    expect(result.page.map((entry) => entry.name)).toEqual(["code-plugin-downloaded"]);
     expect(result.isDone).toBe(false);
     expect(result.continueCursor.startsWith("pkgpage:")).toBe(true);
     expect(indexNames).toEqual(["by_active_family_recommended_rank"]);

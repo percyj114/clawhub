@@ -1223,16 +1223,16 @@ const packages = defineTable({
   .index("by_active_recommended_rank", [
     "softDeletedAt",
     "stats.stars",
-    "stats.installs",
     "stats.downloads",
+    "stats.installs",
     "updatedAt",
   ])
   .index("by_active_family_recommended_rank", [
     "softDeletedAt",
     "family",
     "stats.stars",
-    "stats.installs",
     "stats.downloads",
+    "stats.installs",
     "updatedAt",
   ]);
 

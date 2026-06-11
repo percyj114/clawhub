@@ -999,10 +999,10 @@ function compareCatalogItemsForSort(
   if (sort === "recommended") {
     const stars = (b.stats?.stars ?? 0) - (a.stats?.stars ?? 0);
     if (stars !== 0) return stars;
-    const installs = (b.stats?.installs ?? 0) - (a.stats?.installs ?? 0);
-    if (installs !== 0) return installs;
     const downloads = (b.stats?.downloads ?? 0) - (a.stats?.downloads ?? 0);
     if (downloads !== 0) return downloads;
+    const installs = (b.stats?.installs ?? 0) - (a.stats?.installs ?? 0);
+    if (installs !== 0) return installs;
   }
   if (sort === "downloads") {
     const downloads = (b.stats?.downloads ?? 0) - (a.stats?.downloads ?? 0);

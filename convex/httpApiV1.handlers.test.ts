@@ -7487,6 +7487,43 @@ describe("httpApiV1 handlers", () => {
     ]);
   });
 
+  it("plugins list recommended sort ranks downloads before installs when stars tie", async () => {
+    const codePlugin = makeCatalogItem("code-downloaded", {
+      family: "code-plugin",
+      updatedAt: 100,
+      stats: { downloads: 43_080, installs: 2, stars: 0, versions: 1 },
+    });
+    const bundlePlugin = makeCatalogItem("bundle-installed", {
+      family: "bundle-plugin",
+      updatedAt: 200,
+      stats: { downloads: 393, installs: 74, stars: 0, versions: 1 },
+    });
+    const runQuery = vi.fn((_, args: Record<string, unknown>) => {
+      if (Object.keys(args).length === 0) return 2;
+      expect(args).toEqual(expect.objectContaining({ sort: "recommended" }));
+      if (args.family === "code-plugin") {
+        return { page: [codePlugin], isDone: true, continueCursor: "" };
+      }
+      if (args.family === "bundle-plugin") {
+        return { page: [bundlePlugin], isDone: true, continueCursor: "" };
+      }
+      throw new Error(`unexpected family ${String(args.family)}`);
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.listPluginsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/plugins?limit=2&sort=recommended"),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.items.map((entry: { name: string }) => entry.name)).toEqual([
+      "code-downloaded",
+      "bundle-installed",
+    ]);
+  });
+
   it("plugins list rejects invalid categories", async () => {
     const runQuery = vi.fn();
     const runMutation = vi.fn().mockResolvedValue(okRate());
