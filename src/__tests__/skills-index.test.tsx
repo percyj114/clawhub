@@ -109,6 +109,34 @@ describe("SkillsIndex", () => {
     expect(screen.queryByText("70.3K")).toBeNull();
   });
 
+  it("clears the skill search from the search field", async () => {
+    searchMock = { q: "agent", sort: "relevance", category: "dev-tools" };
+
+    render(<SkillsIndex />);
+    await act(async () => {});
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear skill search" }));
+
+    expect(navigateMock).toHaveBeenCalled();
+    const lastCall = navigateMock.mock.calls.at(-1)?.[0] as {
+      search: (prev: Record<string, unknown>) => Record<string, unknown>;
+      replace?: boolean;
+    };
+    expect(
+      lastCall.search({
+        q: "agent",
+        sort: "relevance",
+        category: "dev-tools",
+      }),
+    ).toEqual({
+      q: undefined,
+      sort: undefined,
+      category: "dev-tools",
+    });
+    expect(lastCall.replace).toBe(true);
+    expect(screen.queryByRole("button", { name: "Clear" })).toBeNull();
+  });
+
   it("does not render a browse count when more pages exist", async () => {
     convexHttpMock.query.mockResolvedValue({
       page: [makeListResult("skill-0", "Skill 0")],

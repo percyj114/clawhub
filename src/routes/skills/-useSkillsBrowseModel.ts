@@ -408,6 +408,24 @@ export function useSkillsBrowseModel({
     });
   }, [navigate]);
 
+  const onClearQuery = useCallback(() => {
+    window.clearTimeout(navigateTimer.current);
+    setQuery("");
+    searchInputRef.current?.focus();
+    void navigate({
+      search: (prev) => {
+        const clearsSearchOnlySort = parseSort(prev.sort) === "relevance";
+        return {
+          ...prev,
+          q: undefined,
+          sort: clearsSearchOnlySort ? undefined : prev.sort,
+          dir: clearsSearchOnlySort ? undefined : prev.dir,
+        };
+      },
+      replace: true,
+    });
+  }, [navigate, searchInputRef]);
+
   const onSortChange = useCallback(
     (value: string) => {
       const nextSort = parseSort(value);
@@ -485,6 +503,7 @@ export function useSkillsBrowseModel({
     loadMoreRef,
     onCapabilityTagChange,
     onClearFilters,
+    onClearQuery,
     onQueryChange,
     onSortChange,
     onToggleDir,

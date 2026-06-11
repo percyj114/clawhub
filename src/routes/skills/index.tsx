@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
-import { Search } from "lucide-react";
+import { Search, X } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 import { api } from "../../../convex/_generated/api";
 import { BrowseSidebar } from "../../components/BrowseSidebar";
@@ -181,6 +181,16 @@ export function SkillsIndex() {
           onChange={(event) => model.onQueryChange(event.target.value)}
           placeholder="Search skills..."
         />
+        {model.query ? (
+          <button
+            type="button"
+            className="browse-search-clear"
+            aria-label="Clear skill search"
+            onClick={model.onClearQuery}
+          >
+            <X size={14} aria-hidden="true" />
+          </button>
+        ) : null}
       </div>
       <div className={`browse-layout${sidebarOpen ? " sidebar-open" : ""}`}>
         <BrowseSidebar

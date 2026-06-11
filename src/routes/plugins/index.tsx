@@ -1,6 +1,6 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import { isPluginCategorySlug } from "clawhub-schema";
-import { PackageSearch, Search } from "lucide-react";
+import { PackageSearch, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BrowseSidebar } from "../../components/BrowseSidebar";
 import { PluginListItem } from "../../components/PluginListItem";
@@ -316,6 +316,7 @@ function PluginsIndex() {
 
   const [query, setQuery] = useState(search.q ?? "");
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setQuery(search.q ?? "");
@@ -490,6 +491,20 @@ function PluginsIndex() {
     });
   };
 
+  const handleClearSearch = () => {
+    setQuery("");
+    searchInputRef.current?.focus();
+    void navigate({
+      search: (prev: PluginSearchState) => ({
+        ...prev,
+        q: undefined,
+        cursor: undefined,
+        sort: undefined,
+      }),
+      replace: true,
+    });
+  };
+
   const handleToggleView = () => {
     void navigate({
       search: (prev: PluginSearchState) => ({
@@ -540,12 +555,23 @@ function PluginsIndex() {
       <form className="browse-page-search" onSubmit={handleSearch}>
         <Search size={15} className="navbar-search-icon" aria-hidden="true" />
         <input
+          ref={searchInputRef}
           className="browse-search-input"
           aria-label="Search plugins"
           placeholder="Search plugins..."
           value={query}
           onChange={(event) => setQuery(event.target.value)}
         />
+        {query ? (
+          <button
+            type="button"
+            className="browse-search-clear"
+            aria-label="Clear plugin search"
+            onClick={handleClearSearch}
+          >
+            <X size={14} aria-hidden="true" />
+          </button>
+        ) : null}
       </form>
       <div className={`browse-layout${sidebarOpen ? " sidebar-open" : ""}`}>
         <BrowseSidebar

@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import type { ComponentType, ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -213,6 +213,28 @@ describe("publishers route", () => {
     expect(searchInput.compareDocumentPosition(listView) & Node.DOCUMENT_POSITION_PRECEDING).toBe(
       Node.DOCUMENT_POSITION_PRECEDING,
     );
+  });
+
+  it("clears publisher search from the search field", async () => {
+    searchMock.mockReturnValue({ q: "ope", kind: "orgs" });
+    const route = await loadRoute();
+    const Component = route.__config.component as ComponentType;
+
+    render(<Component />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear publisher search" }));
+
+    expect(navigateMock).toHaveBeenCalled();
+    const lastCall = navigateMock.mock.calls.at(-1)?.[0] as {
+      search: (prev: Record<string, unknown>) => Record<string, unknown>;
+      replace?: boolean;
+    };
+    expect(lastCall.search({ q: "ope", kind: "orgs" })).toEqual({
+      q: undefined,
+      kind: "orgs",
+    });
+    expect(lastCall.replace).toBe(true);
+    expect(screen.queryByRole("button", { name: "Clear" })).toBeNull();
   });
 
   it("sets publisher-specific sharing metadata", async () => {

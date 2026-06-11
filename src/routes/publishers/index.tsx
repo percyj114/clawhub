@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Search } from "lucide-react";
+import { Search, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../../convex/_generated/api";
 import { BrowseSidebar } from "../../components/BrowseSidebar";
@@ -99,6 +99,7 @@ function PublishersIndex() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
   const loadMoreInFlightRef = useRef(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const activeKind = search.kind;
   const activeView = search.view ?? "list";
   const canLoadMore = Boolean(nextCursor);
@@ -133,6 +134,18 @@ function PublishersIndex() {
     },
     [navigate],
   );
+
+  const handleClearQuery = useCallback(() => {
+    setQuery("");
+    searchInputRef.current?.focus();
+    void navigate({
+      search: (prev: PublishersSearchState) => ({
+        ...prev,
+        q: undefined,
+      }),
+      replace: true,
+    });
+  }, [navigate]);
 
   const handleKindChange = useCallback(
     (kind: string | undefined) => {
@@ -232,12 +245,23 @@ function PublishersIndex() {
       <div className="browse-page-search">
         <Search size={15} className="navbar-search-icon" aria-hidden="true" />
         <input
+          ref={searchInputRef}
           className="browse-search-input"
           aria-label="Search publishers"
           value={query}
           onChange={(event) => handleQueryChange(event.target.value)}
           placeholder="Search publishers..."
         />
+        {query ? (
+          <button
+            type="button"
+            className="browse-search-clear"
+            aria-label="Clear publisher search"
+            onClick={handleClearQuery}
+          >
+            <X size={14} aria-hidden="true" />
+          </button>
+        ) : null}
       </div>
 
       <div className={`browse-layout${sidebarOpen ? " sidebar-open" : ""}`}>

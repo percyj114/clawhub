@@ -824,6 +824,37 @@ describe("plugins route", () => {
     });
   });
 
+  it("clears plugin search from the search field", async () => {
+    searchMock = { q: "github", cursor: "cursor:current", sort: "name", category: "security" };
+    const route = await loadRoute();
+    const Component = route.__config.component as ComponentType;
+
+    render(<Component />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear plugin search" }));
+
+    expect(navigateMock).toHaveBeenCalled();
+    const lastCall = navigateMock.mock.calls.at(-1)?.[0] as {
+      search: (prev: Record<string, unknown>) => Record<string, unknown>;
+      replace?: boolean;
+    };
+    expect(
+      lastCall.search({
+        q: "github",
+        cursor: "cursor:current",
+        sort: "name",
+        category: "security",
+      }),
+    ).toEqual({
+      q: undefined,
+      cursor: undefined,
+      sort: undefined,
+      category: "security",
+    });
+    expect(lastCall.replace).toBe(true);
+    expect(screen.queryByRole("button", { name: "Clear" })).toBeNull();
+  });
+
   it("keeps browse sort choices when only a category is active", async () => {
     searchMock = { category: "security" };
     loaderDataMock = {

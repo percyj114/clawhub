@@ -11191,6 +11191,33 @@ a.agentic-risk-finding-title:focus-visible {
   border-color: var(--border-ui-active);
 }
 
+.browse-search-clear {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--r-sm);
+  color: var(--ink-soft);
+  background: transparent;
+  cursor: pointer;
+  transition:
+    color 150ms ease,
+    background-color 150ms ease;
+}
+
+.browse-search-clear:hover {
+  color: var(--ink);
+  background: var(--hover-bg);
+}
+
+.browse-search-clear:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: 2px;
+}
+
 .audits-page {
   max-width: 1180px;
 }
