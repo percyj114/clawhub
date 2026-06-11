@@ -6,6 +6,7 @@ import { BrowseSidebar } from "../../components/BrowseSidebar";
 import { PublisherListItem } from "../../components/PublisherListItem";
 import { Button } from "../../components/ui/button";
 import { convexHttp } from "../../convex/client";
+import { formatBrowseCount } from "../../lib/browseCount";
 import type { PublicPublisherListItem } from "../../lib/publicUser";
 import { getSiteMode, getSiteName, getSiteUrlForMode } from "../../lib/site";
 
@@ -102,6 +103,10 @@ function PublishersIndex() {
   const activeView = search.view ?? "list";
   const canLoadMore = Boolean(nextCursor);
   const hasQuery = Boolean(search.q?.trim());
+  const hasActiveFilters = hasQuery || Boolean(activeKind);
+  const formattedCount = !hasActiveFilters
+    ? formatBrowseCount(result.globalCounts?.all ?? result.counts.all)
+    : null;
   const showHighlights = !hasQuery && !activeKind;
   const highlightedPublishers = showHighlights ? publishers.slice(0, 3) : [];
   const directoryPublishers = showHighlights ? publishers.slice(3) : publishers;
@@ -210,7 +215,15 @@ function PublishersIndex() {
         >
           Filters
         </button>
-        <h1 className="browse-title">Publishers</h1>
+        <h1 className="browse-title">
+          Publishers
+          {formattedCount ? (
+            <>
+              {" "}
+              <span className="browse-count">{formattedCount}</span>
+            </>
+          ) : null}
+        </h1>
         <div className="browse-view-toggle">
           <button
             className={`browse-view-btn${activeView === "list" ? " is-active" : ""}`}

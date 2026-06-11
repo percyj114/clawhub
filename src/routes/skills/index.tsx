@@ -1,7 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useQuery } from "convex/react";
 import { Search } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
+import { api } from "../../../convex/_generated/api";
 import { BrowseSidebar } from "../../components/BrowseSidebar";
+import { formatBrowseCount } from "../../lib/browseCount";
 import { SKILL_CATEGORIES } from "../../lib/categories";
 import { parseDir, parseSort } from "./-params";
 import { SkillsResults } from "./-SkillsResults";
@@ -73,7 +76,10 @@ export function SkillsIndex() {
   const sortOptionsWithRelevance = model.hasQuery
     ? [{ value: "relevance", label: "Relevance" }, ...SEARCH_SORT_OPTIONS]
     : BROWSE_SORT_OPTIONS;
-  const hasActiveFilters = model.hasQuery || Boolean(model.activeCategory) || model.featuredOnly;
+  const hasActiveFilters =
+    model.hasQuery || Boolean(model.activeCategory) || model.featuredOnly || Boolean(search.tag);
+  const totalSkillsCount = useQuery(api.skills.countPublicSkills, {});
+  const formattedCount = !hasActiveFilters ? formatBrowseCount(totalSkillsCount) : null;
 
   const handleSortChange = useCallback(
     (value: string) => {
@@ -143,7 +149,15 @@ export function SkillsIndex() {
         >
           Filters
         </button>
-        <h1 className="browse-title">Skills</h1>
+        <h1 className="browse-title">
+          Skills
+          {formattedCount ? (
+            <>
+              {" "}
+              <span className="browse-count">{formattedCount}</span>
+            </>
+          ) : null}
+        </h1>
         <div className="browse-view-toggle">
           <button
             className={`browse-view-btn${model.view === "list" ? " is-active" : ""}`}

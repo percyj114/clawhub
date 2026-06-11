@@ -3,7 +3,12 @@ import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 import type { ActionCtx } from "./_generated/server";
 import { internalAction, internalMutation, internalQuery } from "./functions";
-import { isPublicSkillDoc, setGlobalPublicSkillsCount } from "./lib/globalStats";
+import {
+  isPublicPluginDoc,
+  isPublicSkillDoc,
+  setGlobalPublicPluginsCount,
+  setGlobalPublicSkillsCount,
+} from "./lib/globalStats";
 
 const DEFAULT_BATCH_SIZE = 200;
 const MAX_BATCH_SIZE = 1000;
@@ -377,11 +382,38 @@ export const countPublicDigestPageInternal = internalQuery({
   },
 });
 
+export const countPublicPackageDigestPageInternal = internalQuery({
+  args: { cursor: v.optional(v.string()), pageSize: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const pageSize = clampInt(args.pageSize ?? 1000, 100, 2000);
+    const { page, isDone, continueCursor } = await ctx.db
+      .query("packageSearchDigest")
+      .paginate({ cursor: args.cursor ?? null, numItems: pageSize });
+
+    let count = 0;
+    for (const digest of page) {
+      if (isPublicPluginDoc(digest)) count++;
+    }
+    return { count, isDone, cursor: continueCursor };
+  },
+});
+
 /** Write the reconciled global stats count. */
 export const writeGlobalStatsInternal = internalMutation({
-  args: { count: v.number() },
+  args: {
+    count: v.optional(v.number()),
+    activeSkillsCount: v.optional(v.number()),
+    activePluginsCount: v.optional(v.number()),
+  },
   handler: async (ctx, args) => {
-    await setGlobalPublicSkillsCount(ctx, args.count);
+    if (args.activeSkillsCount !== undefined) {
+      await setGlobalPublicSkillsCount(ctx, args.activeSkillsCount);
+    } else if (args.count !== undefined) {
+      await setGlobalPublicSkillsCount(ctx, args.count);
+    }
+    if (args.activePluginsCount !== undefined) {
+      await setGlobalPublicPluginsCount(ctx, args.activePluginsCount);
+    }
   },
 });
 
@@ -393,22 +425,43 @@ export const writeGlobalStatsInternal = internalMutation({
 export const updateGlobalStatsAction = internalAction({
   args: {},
   handler: async (ctx) => {
-    let total = 0;
-    let cursor: string | undefined;
+    let activeSkillsCount = 0;
+    let skillCursor: string | undefined;
 
     // eslint-disable-next-line no-constant-condition
     while (true) {
       const result = (await ctx.runQuery(internal.statsMaintenance.countPublicDigestPageInternal, {
-        cursor,
+        cursor: skillCursor,
         pageSize: 1000,
       })) as { count: number; isDone: boolean; cursor: string };
 
-      total += result.count;
+      activeSkillsCount += result.count;
       if (result.isDone) break;
-      cursor = result.cursor;
+      skillCursor = result.cursor;
     }
 
-    await ctx.runMutation(internal.statsMaintenance.writeGlobalStatsInternal, { count: total });
-    return { count: total };
+    let activePluginsCount = 0;
+    let pluginCursor: string | undefined;
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const result = (await ctx.runQuery(
+        internal.statsMaintenance.countPublicPackageDigestPageInternal,
+        {
+          cursor: pluginCursor,
+          pageSize: 1000,
+        },
+      )) as { count: number; isDone: boolean; cursor: string };
+
+      activePluginsCount += result.count;
+      if (result.isDone) break;
+      pluginCursor = result.cursor;
+    }
+
+    await ctx.runMutation(internal.statsMaintenance.writeGlobalStatsInternal, {
+      activeSkillsCount,
+      activePluginsCount,
+    });
+    return { activeSkillsCount, activePluginsCount };
   },
 });

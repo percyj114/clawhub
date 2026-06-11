@@ -16,12 +16,41 @@ vi.mock("./_generated/api", () => ({
       getSkillStatBackfillStateInternal: Symbol("getSkillStatBackfillStateInternal"),
       setSkillStatBackfillStateInternal: Symbol("setSkillStatBackfillStateInternal"),
       reconcileSkillStarCounts: Symbol("reconcileSkillStarCounts"),
+      countPublicDigestPageInternal: Symbol("countPublicDigestPageInternal"),
+      countPublicPackageDigestPageInternal: Symbol("countPublicPackageDigestPageInternal"),
+      writeGlobalStatsInternal: Symbol("writeGlobalStatsInternal"),
     },
   },
 }));
 
-const { __test, reconcileSkillStarCountsHandler } = await import("./statsMaintenance");
+const {
+  __test,
+  countPublicPackageDigestPageInternal,
+  reconcileSkillStarCountsHandler,
+  updateGlobalStatsAction,
+} = await import("./statsMaintenance");
 const { buildSkillStatPatch } = __test;
+
+type WrappedHandler<TArgs, TResult> = {
+  handler?: (ctx: unknown, args: TArgs) => Promise<TResult>;
+  _handler?: (ctx: unknown, args: TArgs) => Promise<TResult>;
+};
+
+function getHandler<TArgs, TResult>(fn: WrappedHandler<TArgs, TResult>) {
+  const handler = fn.handler ?? fn._handler;
+  if (!handler) throw new Error("Missing function handler");
+  return handler;
+}
+
+const countPublicPackageDigestPageHandler = getHandler<
+  { cursor?: string; pageSize?: number },
+  { count: number; isDone: boolean; cursor: string }
+>(countPublicPackageDigestPageInternal as never);
+
+const updateGlobalStatsActionHandler = getHandler<
+  Record<string, never>,
+  { activeSkillsCount: number; activePluginsCount: number }
+>(updateGlobalStatsAction as never);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -146,6 +175,83 @@ describe("buildSkillStatPatch", () => {
     // comments is not a stat field managed by buildSkillStatPatch — it must be
     // carried over unchanged from the original nested object.
     expect(patch!.stats.comments).toBe(99);
+  });
+});
+
+describe("public package digest count maintenance", () => {
+  it("counts only public code and bundle plugin digests", async () => {
+    const paginate = vi.fn().mockResolvedValue({
+      page: [
+        {
+          family: "code-plugin",
+          channel: "community",
+          scanStatus: "clean",
+          softDeletedAt: undefined,
+        },
+        {
+          family: "bundle-plugin",
+          channel: "official",
+          scanStatus: "not-run",
+          softDeletedAt: undefined,
+        },
+        {
+          family: "skill",
+          channel: "community",
+          scanStatus: "clean",
+          softDeletedAt: undefined,
+        },
+        {
+          family: "code-plugin",
+          channel: "private",
+          scanStatus: "clean",
+          softDeletedAt: undefined,
+        },
+        {
+          family: "bundle-plugin",
+          channel: "community",
+          scanStatus: "malicious",
+          softDeletedAt: undefined,
+        },
+        {
+          family: "code-plugin",
+          channel: "community",
+          scanStatus: "clean",
+          softDeletedAt: 123,
+        },
+      ],
+      continueCursor: "next",
+      isDone: true,
+    });
+    const ctx = {
+      db: {
+        query: vi.fn((table: string) => {
+          expect(table).toBe("packageSearchDigest");
+          return {
+            paginate,
+          };
+        }),
+      },
+    };
+
+    const result = await countPublicPackageDigestPageHandler(ctx, {});
+
+    expect(result).toEqual({ count: 2, isDone: true, cursor: "next" });
+  });
+
+  it("writes skills and plugin counts in one global stats update", async () => {
+    const runQuery = vi
+      .fn()
+      .mockResolvedValueOnce({ count: 70_300, isDone: true, cursor: "" })
+      .mockResolvedValueOnce({ count: 321, isDone: true, cursor: "" });
+    const runMutation = vi.fn();
+
+    const result = await updateGlobalStatsActionHandler({ runQuery, runMutation }, {});
+
+    expect(result).toEqual({ activeSkillsCount: 70_300, activePluginsCount: 321 });
+    expect(runMutation).toHaveBeenCalledWith(expect.anything(), {
+      activeSkillsCount: 70_300,
+      activePluginsCount: 321,
+    });
   });
 });
 

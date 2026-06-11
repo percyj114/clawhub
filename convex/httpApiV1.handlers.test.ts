@@ -7388,6 +7388,9 @@ describe("httpApiV1 handlers", () => {
       updatedAt: 100,
     };
     const runQuery = vi.fn((_, args: Record<string, unknown>) => {
+      if (Object.keys(args).length === 0) {
+        return 2;
+      }
       if (args.family === "code-plugin") {
         return { page: [codePlugin], isDone: true, continueCursor: "" };
       }
@@ -7404,13 +7407,18 @@ describe("httpApiV1 handlers", () => {
     );
 
     expect(response.status).toBe(200);
-    expect((await response.json()).items.map((entry: { name: string }) => entry.name)).toEqual([
+    const json = await response.json();
+    expect(json.items.map((entry: { name: string }) => entry.name)).toEqual([
       "code-plugin",
       "bundle-plugin",
     ]);
-    const families = runQuery.mock.calls.map(([, args]) => (args as { family?: string }).family);
+    expect(json.totalCount).toBe(2);
+    const families = runQuery.mock.calls
+      .map(([, args]) => (args as { family?: string }).family)
+      .filter(Boolean);
     expect(families).toEqual(["code-plugin", "bundle-plugin"]);
     for (const [, args] of runQuery.mock.calls) {
+      if (!("family" in (args as Record<string, unknown>))) continue;
       expect(args).toEqual(
         expect.objectContaining({
           category: undefined,
@@ -7468,6 +7476,7 @@ describe("httpApiV1 handlers", () => {
       updatedAt: 200,
     });
     const runQuery = vi.fn((_, args: Record<string, unknown>) => {
+      if (Object.keys(args).length === 0) return 3;
       const pagination = args.paginationOpts as { cursor: string | null };
       if (args.family === "code-plugin" && pagination.cursor === null) {
         return { page: [codeNewest], isDone: false, continueCursor: "code-cursor" };

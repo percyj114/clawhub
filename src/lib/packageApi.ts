@@ -172,11 +172,13 @@ type PackageCatalogSort = "updated" | "downloads";
 type PluginCatalogResult = {
   items: PackageListItem[];
   nextCursor: string | null;
+  totalCount?: number | null;
 };
 
 type PackageCatalogBrowseResponse = {
   items: PackageListItem[];
   nextCursor: string | null;
+  totalCount?: number | null;
 };
 
 type PackageApiErrorOptions = {
@@ -454,6 +456,7 @@ export async function fetchPluginCatalog(params: {
     return {
       items: browseResponse?.items ?? [],
       nextCursor: browseResponse?.nextCursor ?? null,
+      totalCount: browseResponse?.totalCount ?? null,
     };
   }
 
@@ -497,6 +500,7 @@ export async function fetchPluginCatalog(params: {
   return {
     items: result?.items ?? [],
     nextCursor: result?.nextCursor ?? null,
+    totalCount: result?.totalCount ?? null,
   };
 }
 

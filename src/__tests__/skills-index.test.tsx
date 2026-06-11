@@ -89,14 +89,24 @@ describe("SkillsIndex", () => {
     expect(screen.queryByText(/\d+ loaded/)).toBeNull();
   });
 
-  it("does not render the total skills count in the page title", async () => {
-    convexReactMocks.useQuery.mockReturnValue(0);
+  it("renders the total skills count in the unfiltered page title", async () => {
+    convexReactMocks.useQuery.mockReturnValue(70_300);
+
+    render(<SkillsIndex />);
+    await act(async () => {});
+
+    expect(screen.getByRole("heading", { name: "Skills 70.3K" })).toBeTruthy();
+  });
+
+  it("hides the total skills count when filters are active", async () => {
+    searchMock = { category: "dev-tools" };
+    convexReactMocks.useQuery.mockReturnValue(70_300);
 
     render(<SkillsIndex />);
     await act(async () => {});
 
     expect(screen.getByRole("heading", { name: "Skills" })).toBeTruthy();
-    expect(screen.queryByText("0")).toBeNull();
+    expect(screen.queryByText("70.3K")).toBeNull();
   });
 
   it("does not render a browse count when more pages exist", async () => {

@@ -17,40 +17,34 @@ const redirectMock = vi.fn((args: unknown) => {
   throw error;
 });
 let searchMock: Record<string, unknown> = {};
-let loaderDataMock: {
-  items: Array<{
-    name: string;
-    displayName: string;
-    family: "skill" | "code-plugin" | "bundle-plugin";
-    channel: "official" | "community" | "private";
-    isOfficial: boolean;
-    executesCode?: boolean;
-    summary?: string | null;
-    ownerHandle?: string | null;
-    latestVersion?: string | null;
-    stats?: { downloads: number; installs: number; stars: number; versions: number };
-    createdAt: number;
-    updatedAt: number;
-  }>;
-  nextCursor: string | null;
-  rateLimited: boolean;
-  retryAfterSeconds: number | null;
-  apiError?: boolean;
-} = {
-  items: [],
-  nextCursor: null,
-  rateLimited: false,
-  retryAfterSeconds: null,
-};
+let loaderDataMock:
+  | {
+      items: Array<{
+        name: string;
+        displayName: string;
+        family: "skill" | "code-plugin" | "bundle-plugin";
+        channel: "official" | "community" | "private";
+        isOfficial: boolean;
+        executesCode?: boolean;
+        summary?: string | null;
+        ownerHandle?: string | null;
+        latestVersion?: string | null;
+        stats?: { downloads: number; installs: number; stars: number; versions: number };
+        createdAt: number;
+        updatedAt: number;
+      }>;
+      nextCursor: string | null;
+      rateLimited: boolean;
+      retryAfterSeconds: number | null;
+      totalCount?: number | null;
+      isLoading?: boolean;
+      apiError?: boolean;
+    }
+  | undefined;
 
 vi.mock("@tanstack/react-router", () => ({
   createFileRoute:
-    () =>
-    (config: {
-      loader?: (args: { deps: Record<string, unknown> }) => Promise<unknown>;
-      component?: unknown;
-      validateSearch?: unknown;
-    }) => ({
+    () => (config: { loader?: unknown; component?: unknown; validateSearch?: unknown }) => ({
       __config: config,
       useNavigate: () => navigateMock,
       useSearch: () => searchMock,
@@ -72,7 +66,7 @@ vi.mock("../lib/featuredCatalog", () => ({
 async function loadRoute() {
   return (await import("../routes/plugins/index")).Route as unknown as {
     __config: {
-      loader?: (args: { deps: Record<string, unknown> }) => Promise<unknown>;
+      loader?: unknown;
       component?: ComponentType;
       pendingComponent?: ComponentType;
       validateSearch?: (search: Record<string, unknown>) => Record<string, unknown>;
@@ -83,18 +77,13 @@ async function loadRoute() {
 describe("plugins route", () => {
   beforeEach(() => {
     fetchPluginCatalogMock.mockReset();
+    fetchPluginCatalogMock.mockResolvedValue({ items: [], nextCursor: null });
     fetchFeaturedPluginsMock.mockReset();
     isRateLimitedPackageApiErrorMock.mockClear();
     navigateMock.mockReset();
     redirectMock.mockClear();
     searchMock = {};
-    loaderDataMock = {
-      items: [],
-      nextCursor: null,
-      rateLimited: false,
-      retryAfterSeconds: null,
-      apiError: false,
-    };
+    loaderDataMock = undefined;
   });
 
   it("rejects skill family filter in search state", async () => {
@@ -253,23 +242,18 @@ describe("plugins route", () => {
     );
   });
 
-  it("forwards opaque cursors through the loader", async () => {
+  it("forwards opaque cursors through catalog loading", async () => {
     fetchPluginCatalogMock.mockResolvedValue({ items: [], nextCursor: "cursor:next" });
-    const route = await loadRoute();
-    const loader = route.__config.loader as (args: {
-      deps: Record<string, unknown>;
-    }) => Promise<unknown>;
+    const { loadPluginsPageData } = await import("../routes/plugins/index");
 
-    await loader({
-      deps: {
-        cursor: "cursor:current",
-      },
+    await loadPluginsPageData({
+      cursor: "cursor:current",
     });
 
     expect(fetchPluginCatalogMock).toHaveBeenCalledWith(
       expect.objectContaining({
         cursor: "cursor:current",
-        limit: 100,
+        limit: 25,
       }),
     );
     expect(fetchPluginCatalogMock.mock.calls[0]?.[0]).not.toHaveProperty("family");
@@ -277,24 +261,19 @@ describe("plugins route", () => {
 
   it("uses relevance fetching for sorted search results", async () => {
     fetchPluginCatalogMock.mockResolvedValue({ items: [], nextCursor: "cursor:next" });
-    const route = await loadRoute();
-    const loader = route.__config.loader as (args: {
-      deps: Record<string, unknown>;
-    }) => Promise<unknown>;
+    const { loadPluginsPageData } = await import("../routes/plugins/index");
 
-    await loader({
-      deps: {
-        q: "security",
-        sort: "name",
-        cursor: "cursor:search",
-      },
+    await loadPluginsPageData({
+      q: "security",
+      sort: "name",
+      cursor: "cursor:search",
     });
 
     expect(fetchPluginCatalogMock).toHaveBeenCalledWith(
       expect.objectContaining({
         q: "security",
         cursor: undefined,
-        limit: 100,
+        limit: 25,
       }),
     );
     expect(fetchPluginCatalogMock.mock.calls[0]?.[0]).not.toHaveProperty("sort");
@@ -302,37 +281,27 @@ describe("plugins route", () => {
 
   it("forwards downloads sort for plugin browse", async () => {
     fetchPluginCatalogMock.mockResolvedValue({ items: [], nextCursor: null });
-    const route = await loadRoute();
-    const loader = route.__config.loader as (args: {
-      deps: Record<string, unknown>;
-    }) => Promise<unknown>;
+    const { loadPluginsPageData } = await import("../routes/plugins/index");
 
-    await loader({
-      deps: {
-        sort: "downloads",
-      },
+    await loadPluginsPageData({
+      sort: "downloads",
     });
 
     expect(fetchPluginCatalogMock).toHaveBeenCalledWith(
       expect.objectContaining({
         sort: "downloads",
-        limit: 100,
+        limit: 25,
       }),
     );
   });
 
-  it("forwards category through the loader without changing the query", async () => {
+  it("forwards category through catalog loading without changing the query", async () => {
     fetchPluginCatalogMock.mockResolvedValue({ items: [], nextCursor: null });
-    const route = await loadRoute();
-    const loader = route.__config.loader as (args: {
-      deps: Record<string, unknown>;
-    }) => Promise<unknown>;
+    const { loadPluginsPageData } = await import("../routes/plugins/index");
 
-    await loader({
-      deps: {
-        q: "api",
-        category: "data",
-      },
+    await loadPluginsPageData({
+      q: "api",
+      category: "data",
     });
 
     expect(fetchPluginCatalogMock).toHaveBeenCalledWith(
@@ -340,7 +309,7 @@ describe("plugins route", () => {
         q: "api",
         category: "data",
         cursor: undefined,
-        limit: 100,
+        limit: 25,
       }),
     );
   });
@@ -409,6 +378,40 @@ describe("plugins route", () => {
     expect(screen.getByText("1.2k")).toBeTruthy();
   });
 
+  it("renders the browse shell immediately while catalog data loads", async () => {
+    const item = {
+      name: "demo-plugin",
+      displayName: "Demo Plugin",
+      family: "code-plugin" as const,
+      channel: "community" as const,
+      isOfficial: false,
+      executesCode: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    let resolveCatalog: (value: {
+      items: (typeof item)[];
+      nextCursor: string | null;
+      totalCount: number;
+    }) => void = () => {};
+    fetchPluginCatalogMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveCatalog = resolve;
+      }),
+    );
+    const route = await loadRoute();
+    const Component = route.__config.component as ComponentType;
+
+    render(<Component />);
+
+    expect(screen.getByRole("heading", { name: "Plugins" })).toBeTruthy();
+    expect(screen.getByRole("status", { name: "Loading results" })).toBeTruthy();
+    resolveCatalog({ items: [item], nextCursor: null, totalCount: 321 });
+
+    expect(await screen.findByText("Demo Plugin")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Plugins 321" })).toBeTruthy();
+  });
+
   it("keeps plugin count copy hidden on non-first browse pages", async () => {
     searchMock = { cursor: "cursor:current" };
     loaderDataMock = {
@@ -438,7 +441,52 @@ describe("plugins route", () => {
     expect(screen.queryByText("1 result shown")).toBeNull();
   });
 
-  it("renders a label-only title and switches to grid view", async () => {
+  it("renders the total plugin count in the unfiltered page title", async () => {
+    loaderDataMock = {
+      items: [
+        {
+          name: "demo-plugin",
+          displayName: "Demo Plugin",
+          family: "code-plugin",
+          channel: "community",
+          isOfficial: false,
+          executesCode: true,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+      nextCursor: null,
+      totalCount: 321,
+      rateLimited: false,
+      retryAfterSeconds: null,
+    };
+    const route = await loadRoute();
+    const Component = route.__config.component as ComponentType;
+
+    render(<Component />);
+
+    expect(screen.getByRole("heading", { name: "Plugins 321" })).toBeTruthy();
+  });
+
+  it("hides the total plugin count when filters are active", async () => {
+    searchMock = { official: true };
+    loaderDataMock = {
+      items: [],
+      nextCursor: null,
+      totalCount: 321,
+      rateLimited: false,
+      retryAfterSeconds: null,
+    };
+    const route = await loadRoute();
+    const Component = route.__config.component as ComponentType;
+
+    render(<Component />);
+
+    expect(screen.getByRole("heading", { name: "Plugins" })).toBeTruthy();
+    expect(screen.queryByText("321")).toBeNull();
+  });
+
+  it("renders a label-only title without positive count data and switches to grid view", async () => {
     loaderDataMock = {
       items: [
         {
@@ -538,7 +586,7 @@ describe("plugins route", () => {
     expect(lastCall.search({ view: "cards" })).toEqual({ view: undefined });
   });
 
-  it("filters out skills from loader results", async () => {
+  it("preserves catalog results during catalog loading", async () => {
     fetchPluginCatalogMock.mockResolvedValue({
       items: [
         {
@@ -562,33 +610,25 @@ describe("plugins route", () => {
       ],
       nextCursor: null,
     });
-    const route = await loadRoute();
-    const loader = route.__config.loader as (args: {
-      deps: Record<string, unknown>;
-    }) => Promise<{ items: Array<{ name: string }>; nextCursor: string | null }>;
+    const { loadPluginsPageData } = await import("../routes/plugins/index");
 
-    const result = await loader({ deps: {} });
+    const result = await loadPluginsPageData({});
 
     expect(result.items).toHaveLength(2);
   });
 
   it("uses plugin-only catalog fetching for official browse", async () => {
     fetchPluginCatalogMock.mockResolvedValue({ items: [], nextCursor: null });
-    const route = await loadRoute();
-    const loader = route.__config.loader as (args: {
-      deps: Record<string, unknown>;
-    }) => Promise<unknown>;
+    const { loadPluginsPageData } = await import("../routes/plugins/index");
 
-    await loader({
-      deps: {
-        official: true,
-      },
+    await loadPluginsPageData({
+      official: true,
     });
 
     expect(fetchPluginCatalogMock).toHaveBeenCalledWith(
       expect.objectContaining({
         isOfficial: true,
-        limit: 100,
+        limit: 25,
       }),
     );
     expect(fetchPluginCatalogMock.mock.calls[0]?.[0]).not.toHaveProperty("family");
@@ -617,41 +657,28 @@ describe("plugins route", () => {
 
   it("returns a retryable empty state when the catalog is rate limited", async () => {
     fetchPluginCatalogMock.mockRejectedValue({ status: 429, retryAfterSeconds: 22 });
-    const route = await loadRoute();
-    const loader = route.__config.loader as (args: { deps: Record<string, unknown> }) => Promise<{
-      items: Array<{ name: string }>;
-      nextCursor: string | null;
-      rateLimited: boolean;
-      retryAfterSeconds: number | null;
-    }>;
+    const { loadPluginsPageData } = await import("../routes/plugins/index");
 
-    const result = await loader({ deps: {} });
+    const result = await loadPluginsPageData({});
 
     expect(result).toEqual({
       items: [],
       nextCursor: null,
       rateLimited: true,
       retryAfterSeconds: 22,
+      totalCount: null,
+      isLoading: false,
       apiError: false,
     });
   });
 
   it("flags API errors for filtered catalog requests", async () => {
     fetchPluginCatalogMock.mockRejectedValue(new Error("boom"));
-    const route = await loadRoute();
-    const loader = route.__config.loader as (args: { deps: Record<string, unknown> }) => Promise<{
-      items: Array<{ name: string }>;
-      nextCursor: string | null;
-      rateLimited: boolean;
-      retryAfterSeconds: number | null;
-      apiError?: boolean;
-    }>;
+    const { loadPluginsPageData } = await import("../routes/plugins/index");
 
-    const result = await loader({
-      deps: {
-        q: "demo",
-        executesCode: true,
-      },
+    const result = await loadPluginsPageData({
+      q: "demo",
+      executesCode: true,
     });
 
     expect(result).toEqual({
@@ -659,8 +686,37 @@ describe("plugins route", () => {
       nextCursor: null,
       rateLimited: false,
       retryAfterSeconds: null,
+      totalCount: null,
+      isLoading: false,
       apiError: true,
     });
+  });
+
+  it("flags browser network failures instead of leaving plugin loading stuck", async () => {
+    fetchPluginCatalogMock.mockRejectedValue(new TypeError("Failed to fetch"));
+    const { loadPluginsPageData } = await import("../routes/plugins/index");
+
+    const result = await loadPluginsPageData({});
+
+    expect(result).toEqual({
+      items: [],
+      nextCursor: null,
+      rateLimited: false,
+      retryAfterSeconds: null,
+      totalCount: null,
+      isLoading: false,
+      apiError: true,
+    });
+  });
+
+  it("rethrows aborted plugin catalog requests", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const abortError = new DOMException("The operation was aborted.", "AbortError");
+    fetchPluginCatalogMock.mockRejectedValue(abortError);
+    const { loadPluginsPageData } = await import("../routes/plugins/index");
+
+    await expect(loadPluginsPageData({ signal: controller.signal })).rejects.toBe(abortError);
   });
 
   it("renders a rate-limit message instead of the global error boundary state", async () => {

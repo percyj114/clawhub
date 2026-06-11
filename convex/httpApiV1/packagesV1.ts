@@ -97,6 +97,7 @@ const apiRefs = api as unknown as {
 };
 const internalRefs = internal as unknown as {
   packages: {
+    countPublicPluginsInternal: unknown;
     getByNameForViewerInternal: unknown;
     listPluginExportPageInternal: unknown;
     listPageForViewerInternal: unknown;
@@ -1541,6 +1542,17 @@ async function listPackages(
   }
 
   if (!effectiveFamily && options?.pluginFamilies?.length) {
+    const includeTotalCount =
+      !includeSkills &&
+      !category &&
+      !channelParam.value &&
+      typeof isOfficial.value !== "boolean" &&
+      !highlightedOnly &&
+      typeof executesCode.value !== "boolean" &&
+      !capabilityTag;
+    const totalCount = includeTotalCount
+      ? await runQueryRef<number | null>(ctx, internalRefs.packages.countPublicPluginsInternal, {})
+      : null;
     const decodedCursor = decodePluginCatalogCursor(cursor);
     const codePluginSource = initCatalogSource<CatalogListItem>(decodedCursor.codePlugins);
     const bundlePluginSource = initCatalogSource<CatalogListItem>(decodedCursor.bundlePlugins);
@@ -1616,6 +1628,7 @@ async function listPackages(
       {
         items,
         nextCursor: isDoneAll ? null : encodePluginCatalogCursor(nextState),
+        ...(totalCount !== null ? { totalCount } : {}),
       },
       200,
       rate.headers,

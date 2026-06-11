@@ -159,11 +159,33 @@ describe("publishers route", () => {
     expect(screen.getByText("No publishers found")).toBeTruthy();
   });
 
-  it("does not render publisher count copy in the title, toolbar, or type tabs", async () => {
+  it("renders the total publisher count in the unfiltered page title", async () => {
     loaderDataMock.mockReturnValue({
       page: [],
-      counts: { all: 0, organizations: 0, individuals: 0 },
-      globalCounts: { all: 0, organizations: 0, individuals: 0 },
+      counts: { all: 17, organizations: 6, individuals: 11 },
+      globalCounts: { all: 17, organizations: 6, individuals: 11 },
+      continueCursor: "",
+      isDone: true,
+    });
+    const route = await loadRoute();
+    const Component = route.__config.component as ComponentType;
+
+    render(<Component />);
+
+    expect(screen.getByRole("heading", { name: "Publishers 17" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "All" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "Organizations" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "People" })).toBeTruthy();
+    expect(screen.queryByText("Builders")).toBeNull();
+    expect(screen.queryByText(/Showing/i)).toBeNull();
+  });
+
+  it("hides the total publisher count when filters are active", async () => {
+    searchMock.mockReturnValue({ kind: "orgs" });
+    loaderDataMock.mockReturnValue({
+      page: [],
+      counts: { all: 6, organizations: 6, individuals: 0 },
+      globalCounts: { all: 17, organizations: 6, individuals: 11 },
       continueCursor: "",
       isDone: true,
     });
@@ -173,12 +195,7 @@ describe("publishers route", () => {
     render(<Component />);
 
     expect(screen.getByRole("heading", { name: "Publishers" })).toBeTruthy();
-    expect(screen.getByRole("radio", { name: "All" })).toBeTruthy();
-    expect(screen.getByRole("radio", { name: "Organizations" })).toBeTruthy();
-    expect(screen.getByRole("radio", { name: "People" })).toBeTruthy();
-    expect(screen.queryByText("Builders")).toBeNull();
-    expect(screen.queryByText("0")).toBeNull();
-    expect(screen.queryByText(/Showing/i)).toBeNull();
+    expect(screen.queryByText("17")).toBeNull();
   });
 
   it("keeps publisher view controls in the page header and type filters in the sidebar", async () => {

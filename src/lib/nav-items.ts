@@ -6,7 +6,7 @@ import { FEATURE_SOULS } from "./features";
  */
 
 /** Lucide icon name used as a key to look up the component at render time. */
-type NavIconName = "wrench" | "plug" | "ghost";
+type NavIconName = "wrench" | "plug" | "user" | "ghost";
 
 interface NavItemBase {
   /** Visible link text */
@@ -101,6 +101,7 @@ export const PRIMARY_NAV_ITEMS: NavItem[] = [
     label: "Publishers",
     to: "/publishers",
     search: PUBLISHERS_SEARCH,
+    icon: "user",
     authRequired: false,
     staffOnly: false,
     soulModeOnly: false,

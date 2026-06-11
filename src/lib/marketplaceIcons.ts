@@ -15,6 +15,7 @@ export const MARKETPLACE_KIND_ICONS = {
 export const NAV_ICONS = {
   wrench: Wrench,
   plug: MARKETPLACE_KIND_ICONS.plugin,
+  user: MARKETPLACE_KIND_ICONS.user,
   ghost: MARKETPLACE_KIND_ICONS.soul,
 } as const satisfies Record<string, MarketplaceIconComponent>;
 

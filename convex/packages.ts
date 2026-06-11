@@ -49,6 +49,7 @@ import { sha256Hex } from "./lib/clawpack";
 import { buildPackageInspectorFindingsEmail } from "./lib/emails";
 import { requireGitHubAccountAge } from "./lib/githubAccount";
 import { normalizeGitHubRepository } from "./lib/githubActionsOidc";
+import { readGlobalPublicPluginsCount } from "./lib/globalStats";
 import { isOfficialPublisher } from "./lib/officialPublishers";
 import {
   assertPackageVersion,
@@ -3065,6 +3066,13 @@ export const listPageForViewerInternal = internalQuery({
   },
   handler: async (ctx, args) => {
     return await listPackagePageImpl(ctx, args);
+  },
+});
+
+export const countPublicPluginsInternal = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    return await readGlobalPublicPluginsCount(ctx);
   },
 });
 

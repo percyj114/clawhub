@@ -1,11 +1,12 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import { isPluginCategorySlug } from "clawhub-schema";
 import { PackageSearch, Search } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { BrowseSidebar } from "../../components/BrowseSidebar";
 import { PluginListItem } from "../../components/PluginListItem";
 import { BrowseResultsSkeleton } from "../../components/skeletons/BrowseResultsSkeleton";
 import { Button } from "../../components/ui/button";
+import { formatBrowseCount } from "../../lib/browseCount";
 import { PLUGIN_CATEGORIES } from "../../lib/categories";
 import {
   fetchPluginCatalog,
@@ -15,7 +16,7 @@ import {
 
 type PluginSort = "relevance" | "updated" | "downloads" | "newest" | "name";
 
-const PLUGINS_PAGE_SIZE = 100;
+const PLUGINS_PAGE_SIZE = 25;
 
 type PluginSearchState = {
   q?: string;
@@ -43,8 +44,33 @@ type PluginsLoaderData = {
   nextCursor: string | null;
   rateLimited: boolean;
   retryAfterSeconds: number | null;
+  totalCount?: number | null;
+  isLoading?: boolean;
   apiError?: boolean;
 };
+
+type PluginsPageDataRequest = {
+  q?: string;
+  category?: string;
+  cursor?: string;
+  featured?: boolean;
+  official?: boolean;
+  executesCode?: boolean;
+  sort?: PluginSort;
+  signal?: AbortSignal;
+};
+
+function createPluginsLoadingData(): PluginsLoaderData {
+  return {
+    items: [],
+    nextCursor: null,
+    rateLimited: false,
+    retryAfterSeconds: null,
+    totalCount: null,
+    isLoading: true,
+    apiError: false,
+  };
+}
 
 function formatRetryDelay(retryAfterSeconds: number | null) {
   if (!retryAfterSeconds || retryAfterSeconds <= 0) return "in a moment";
@@ -104,6 +130,62 @@ function sortPluginSearchItems(items: PackageListItem[], sort: PluginSort) {
   return sorted;
 }
 
+function isNavigationAbortError(err: unknown, signal?: AbortSignal) {
+  if (signal?.aborted) return true;
+  return err instanceof Error && err.name === "AbortError";
+}
+
+export async function loadPluginsPageData(
+  args: PluginsPageDataRequest,
+): Promise<PluginsLoaderData> {
+  try {
+    const data = await fetchPluginCatalog({
+      q: args.q,
+      category: args.category,
+      cursor: args.q ? undefined : args.cursor,
+      featured: args.featured,
+      isOfficial: args.official,
+      executesCode: args.executesCode,
+      ...(!args.q && args.sort === "downloads" ? { sort: args.sort } : {}),
+      limit: PLUGINS_PAGE_SIZE,
+      signal: args.signal,
+    });
+
+    return {
+      items: data?.items ?? [],
+      nextCursor: data?.nextCursor ?? null,
+      totalCount: data?.totalCount ?? null,
+      rateLimited: false,
+      retryAfterSeconds: null,
+      isLoading: false,
+      apiError: false,
+    };
+  } catch (error) {
+    if (isNavigationAbortError(error, args.signal)) throw error;
+    if (isRateLimitedPackageApiError(error)) {
+      return {
+        items: [],
+        nextCursor: null,
+        rateLimited: true,
+        retryAfterSeconds: error.retryAfterSeconds,
+        totalCount: null,
+        isLoading: false,
+        apiError: false,
+      };
+    }
+
+    return {
+      items: [],
+      nextCursor: null,
+      rateLimited: false,
+      retryAfterSeconds: null,
+      totalCount: null,
+      isLoading: false,
+      apiError: true,
+    };
+  }
+}
+
 export const Route = createFileRoute("/plugins/")({
   pendingComponent: PluginsIndexPending,
   validateSearch: (search): PluginSearchState => ({
@@ -152,55 +234,7 @@ export const Route = createFileRoute("/plugins/")({
       });
     }
   },
-  loaderDeps: ({ search }) => ({
-    q: search.q,
-    category: search.category,
-    cursor: search.cursor,
-    featured: search.featured,
-    official: search.official,
-    executesCode: search.executesCode,
-    sort: search.sort,
-  }),
-  loader: async ({ deps }): Promise<PluginsLoaderData> => {
-    try {
-      const data = await fetchPluginCatalog({
-        q: deps.q,
-        category: deps.category,
-        cursor: deps.q ? undefined : deps.cursor,
-        featured: deps.featured,
-        isOfficial: deps.official,
-        executesCode: deps.executesCode,
-        ...(!deps.q && deps.sort === "downloads" ? { sort: deps.sort } : {}),
-        limit: PLUGINS_PAGE_SIZE,
-      });
-
-      return {
-        items: data?.items ?? [],
-        nextCursor: data?.nextCursor ?? null,
-        rateLimited: false,
-        retryAfterSeconds: null,
-        apiError: false,
-      };
-    } catch (error) {
-      if (isRateLimitedPackageApiError(error)) {
-        return {
-          items: [],
-          nextCursor: null,
-          rateLimited: true,
-          retryAfterSeconds: error.retryAfterSeconds,
-          apiError: false,
-        };
-      }
-
-      return {
-        items: [],
-        nextCursor: null,
-        rateLimited: false,
-        retryAfterSeconds: null,
-        apiError: true,
-      };
-    }
-  },
+  loader: (): PluginsLoaderData => createPluginsLoadingData(),
   component: PluginsIndex,
 });
 
@@ -262,14 +296,22 @@ function PluginsIndexPending() {
 function PluginsIndex() {
   const search = Route.useSearch();
   const navigate = Route.useNavigate();
-  const loaderData = Route.useLoaderData() as PluginsLoaderData | undefined;
+  const initialLoaderData = Route.useLoaderData() as PluginsLoaderData | undefined;
+  const [catalogData, setCatalogData] = useState<PluginsLoaderData>(
+    () => initialLoaderData ?? createPluginsLoadingData(),
+  );
+  const shouldKeepInitialDataRef = useRef(
+    Boolean(initialLoaderData && !initialLoaderData.isLoading),
+  );
 
   // Defensive handling for when loader data is unavailable (SSR errors, etc.)
-  const items = loaderData?.items ?? [];
-  const nextCursor = loaderData?.nextCursor ?? null;
-  const rateLimited = loaderData?.rateLimited ?? false;
-  const retryAfterSeconds = loaderData?.retryAfterSeconds ?? null;
-  const apiError = loaderData?.apiError ?? !loaderData;
+  const items = catalogData.items;
+  const nextCursor = catalogData.nextCursor;
+  const rateLimited = catalogData.rateLimited;
+  const retryAfterSeconds = catalogData.retryAfterSeconds;
+  const totalCount = catalogData.totalCount ?? null;
+  const isLoading = catalogData.isLoading ?? false;
+  const apiError = catalogData.apiError ?? false;
   const view = normalizePluginView(search.view) ?? "list";
 
   const [query, setQuery] = useState(search.q ?? "");
@@ -280,6 +322,54 @@ function PluginsIndex() {
   }, [search.q]);
 
   const hasQuery = Boolean(search.q?.trim());
+  const hasActiveFilters =
+    hasQuery ||
+    Boolean(search.category) ||
+    Boolean(search.official) ||
+    Boolean(search.executesCode) ||
+    Boolean(search.featured);
+  const formattedCount = !hasActiveFilters ? formatBrowseCount(totalCount) : null;
+
+  useEffect(() => {
+    if (shouldKeepInitialDataRef.current) {
+      shouldKeepInitialDataRef.current = false;
+      return () => {};
+    }
+    const controller = new AbortController();
+    setCatalogData(createPluginsLoadingData());
+    void loadPluginsPageData({
+      q: search.q,
+      category: search.category,
+      cursor: search.cursor,
+      featured: search.featured,
+      official: search.official,
+      executesCode: search.executesCode,
+      sort: search.sort,
+      signal: controller.signal,
+    })
+      .then((data) => setCatalogData(data))
+      .catch((error) => {
+        if (isNavigationAbortError(error, controller.signal)) return;
+        setCatalogData({
+          items: [],
+          nextCursor: null,
+          rateLimited: false,
+          retryAfterSeconds: null,
+          totalCount: null,
+          isLoading: false,
+          apiError: true,
+        });
+      });
+    return () => controller.abort();
+  }, [
+    search.category,
+    search.cursor,
+    search.executesCode,
+    search.featured,
+    search.official,
+    search.q,
+    search.sort,
+  ]);
 
   const activeCategory = search.category;
 
@@ -439,7 +529,15 @@ function PluginsIndex() {
         >
           Filters
         </button>
-        <h1 className="browse-title">Plugins</h1>
+        <h1 className="browse-title">
+          Plugins
+          {formattedCount ? (
+            <>
+              {" "}
+              <span className="browse-count">{formattedCount}</span>
+            </>
+          ) : null}
+        </h1>
         <div className="browse-view-toggle">
           <button
             className={`browse-view-btn${view === "list" ? " is-active" : ""}`}
@@ -483,11 +581,7 @@ function PluginsIndex() {
         />
         <div className="browse-results">
           <div className="browse-results-toolbar">
-            {hasQuery ||
-            search.category ||
-            search.official ||
-            search.executesCode ||
-            search.featured ? (
+            {hasActiveFilters ? (
               <span className="browse-results-count">
                 <button className="browse-clear-btn" type="button" onClick={handleClear}>
                   Clear
@@ -496,7 +590,9 @@ function PluginsIndex() {
             ) : null}
           </div>
 
-          {apiError ? (
+          {isLoading ? (
+            <BrowseResultsSkeleton variant={view} />
+          ) : apiError ? (
             <div className="empty-state">
               <PackageSearch size={22} className="empty-state-icon" aria-hidden="true" />
               <p className="empty-state-title">Unable to load plugins</p>
@@ -527,7 +623,7 @@ function PluginsIndex() {
             </div>
           )}
 
-          {!hasQuery && (search.cursor || nextCursor) ? (
+          {!isLoading && !hasQuery && (search.cursor || nextCursor) ? (
             <div className="mt-5 flex justify-center gap-3">
               {search.cursor ? (
                 <Button
