@@ -3,6 +3,11 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { ComponentType, ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  convexReactMocks,
+  resetConvexReactMocks,
+  setupDefaultConvexReactMocks,
+} from "./helpers/convexReactMocks";
 
 const fetchPluginCatalogMock = vi.fn();
 const fetchFeaturedPluginsMock = vi.fn();
@@ -63,6 +68,18 @@ vi.mock("../lib/featuredCatalog", () => ({
   fetchFeaturedPlugins: (...args: unknown[]) => fetchFeaturedPluginsMock(...args),
 }));
 
+vi.mock("convex/react", () => ({
+  useQuery: (...args: unknown[]) => convexReactMocks.useQuery(...args),
+}));
+
+vi.mock("../../convex/_generated/api", () => ({
+  api: {
+    packages: {
+      countPublicPlugins: "packages:countPublicPlugins",
+    },
+  },
+}));
+
 async function loadRoute() {
   return (await import("../routes/plugins/index")).Route as unknown as {
     __config: {
@@ -80,6 +97,8 @@ describe("plugins route", () => {
     fetchPluginCatalogMock.mockResolvedValue({ items: [], nextCursor: null });
     fetchFeaturedPluginsMock.mockReset();
     isRateLimitedPackageApiErrorMock.mockClear();
+    resetConvexReactMocks();
+    setupDefaultConvexReactMocks();
     navigateMock.mockReset();
     redirectMock.mockClear();
     searchMock = {};
@@ -254,9 +273,24 @@ describe("plugins route", () => {
       expect.objectContaining({
         cursor: "cursor:current",
         limit: 25,
+        sort: "downloads",
       }),
     );
     expect(fetchPluginCatalogMock.mock.calls[0]?.[0]).not.toHaveProperty("family");
+  });
+
+  it("uses downloads as the recommended plugin browse ranking", async () => {
+    fetchPluginCatalogMock.mockResolvedValue({ items: [], nextCursor: null });
+    const { loadPluginsPageData } = await import("../routes/plugins/index");
+
+    await loadPluginsPageData({});
+
+    expect(fetchPluginCatalogMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sort: "downloads",
+        limit: 25,
+      }),
+    );
   });
 
   it("uses relevance fetching for sorted search results", async () => {
@@ -466,6 +500,23 @@ describe("plugins route", () => {
     render(<Component />);
 
     expect(screen.getByRole("heading", { name: "Plugins 321" })).toBeTruthy();
+  });
+
+  it("falls back to the Convex plugin count when catalog data has no total", async () => {
+    convexReactMocks.useQuery.mockReturnValue(333);
+    loaderDataMock = {
+      items: [],
+      nextCursor: null,
+      totalCount: null,
+      rateLimited: false,
+      retryAfterSeconds: null,
+    };
+    const route = await loadRoute();
+    const Component = route.__config.component as ComponentType;
+
+    render(<Component />);
+
+    expect(screen.getByRole("heading", { name: "Plugins 333" })).toBeTruthy();
   });
 
   it("hides the total plugin count when filters are active", async () => {

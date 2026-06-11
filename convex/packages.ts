@@ -3076,6 +3076,14 @@ export const countPublicPluginsInternal = internalQuery({
   },
 });
 
+export const countPublicPlugins = query({
+  args: {},
+  handler: async (ctx) => {
+    const statsCount = await readGlobalPublicPluginsCount(ctx);
+    return statsCount ?? 0;
+  },
+});
+
 async function listPackagePageImpl(
   ctx: DbReaderCtx,
   args: {

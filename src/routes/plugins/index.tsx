@@ -1,7 +1,9 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import { isPluginCategorySlug } from "clawhub-schema";
+import { useQuery } from "convex/react";
 import { PackageSearch, Search, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { api } from "../../../convex/_generated/api";
 import { BrowseSidebar } from "../../components/BrowseSidebar";
 import { PluginListItem } from "../../components/PluginListItem";
 import { BrowseResultsSkeleton } from "../../components/skeletons/BrowseResultsSkeleton";
@@ -147,7 +149,9 @@ export async function loadPluginsPageData(
       featured: args.featured,
       isOfficial: args.official,
       executesCode: args.executesCode,
-      ...(!args.q && args.sort === "downloads" ? { sort: args.sort } : {}),
+      ...(!args.q && (args.sort === "downloads" || !args.sort || args.sort === "recommended")
+        ? { sort: "downloads" as const }
+        : {}),
       limit: PLUGINS_PAGE_SIZE,
       signal: args.signal,
     });
@@ -314,7 +318,8 @@ function PluginsIndex() {
   const nextCursor = catalogData.nextCursor;
   const rateLimited = catalogData.rateLimited;
   const retryAfterSeconds = catalogData.retryAfterSeconds;
-  const totalCount = catalogData.totalCount ?? null;
+  const totalPluginsCount = useQuery(api.packages.countPublicPlugins, {});
+  const totalCount = catalogData.totalCount ?? totalPluginsCount ?? null;
   const isLoading = catalogData.isLoading ?? false;
   const apiError = catalogData.apiError ?? false;
   const view = normalizePluginView(search.view) ?? "list";
