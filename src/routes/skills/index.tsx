@@ -118,10 +118,6 @@ export function SkillsIndex() {
     [model.featuredOnly, model.onSortChange, model.onToggleFeatured, navigate],
   );
 
-  const handleClear = useCallback(() => {
-    model.onClearFilters();
-  }, [model.onClearFilters]);
-
   const handleCategoryChange = useCallback(
     (slug: string | undefined) => {
       const category = parseSkillCategorySlug(slug);
@@ -196,15 +192,6 @@ export function SkillsIndex() {
           onSortChange={handleSortChange}
         />
         <div className="browse-results">
-          {hasActiveFilters ? (
-            <div className="browse-results-toolbar">
-              <span className="browse-results-count">
-                <button className="browse-clear-btn" type="button" onClick={handleClear}>
-                  Clear
-                </button>
-              </span>
-            </div>
-          ) : null}
           <SkillsResults
             isLoadingSkills={model.isLoadingSkills}
             sorted={model.sorted}

@@ -487,7 +487,7 @@ describe("SkillsIndex", () => {
     );
     expect(screen.queryByText("Blockscout for Web3 Dev")).toBeNull();
     expect(screen.getByText("Developer Utils")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Clear" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Clear" })).toBeNull();
     expect(screen.queryByText(/\d+ loaded/)).toBeNull();
   });
 

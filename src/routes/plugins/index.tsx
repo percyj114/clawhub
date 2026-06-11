@@ -500,24 +500,6 @@ function PluginsIndex() {
     });
   };
 
-  const handleClear = () => {
-    void navigate({
-      search: (prev: PluginSearchState) => ({
-        ...prev,
-        cursor: undefined,
-        family: undefined,
-        q: undefined,
-        category: undefined,
-        official: undefined,
-        executesCode: undefined,
-        featured: undefined,
-        sort: undefined,
-      }),
-      replace: true,
-    });
-    setQuery("");
-  };
-
   return (
     <main className="browse-page">
       <div className="browse-page-header">
@@ -580,16 +562,6 @@ function PluginsIndex() {
           onFilterToggle={handleFilterToggle}
         />
         <div className="browse-results">
-          <div className="browse-results-toolbar">
-            {hasActiveFilters ? (
-              <span className="browse-results-count">
-                <button className="browse-clear-btn" type="button" onClick={handleClear}>
-                  Clear
-                </button>
-              </span>
-            ) : null}
-          </div>
-
           {isLoading ? (
             <BrowseResultsSkeleton variant={view} />
           ) : apiError ? (

@@ -134,18 +134,6 @@ function PublishersIndex() {
     [navigate],
   );
 
-  const handleClear = useCallback(() => {
-    setQuery("");
-    void navigate({
-      search: (prev: PublishersSearchState) => ({
-        ...prev,
-        q: undefined,
-        kind: undefined,
-      }),
-      replace: true,
-    });
-  }, [navigate]);
-
   const handleKindChange = useCallback(
     (kind: string | undefined) => {
       void navigate({
@@ -284,16 +272,6 @@ function PublishersIndex() {
                 ))}
               </div>
             </section>
-          ) : null}
-
-          {hasQuery || activeKind ? (
-            <div className="browse-results-toolbar">
-              <span className="browse-results-count">
-                <button className="browse-clear-btn" type="button" onClick={handleClear}>
-                  Clear
-                </button>
-              </span>
-            </div>
           ) : null}
 
           {publishers.length === 0 ? (
