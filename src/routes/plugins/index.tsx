@@ -1,7 +1,7 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import { isPluginCategorySlug } from "clawhub-schema";
 import { PackageSearch, Search, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BrowseSidebar } from "../../components/BrowseSidebar";
 import { PluginListItem } from "../../components/PluginListItem";
 import { BrowseResultsSkeleton } from "../../components/skeletons/BrowseResultsSkeleton";
@@ -14,7 +14,7 @@ import {
   type PackageListItem,
 } from "../../lib/packageApi";
 
-type PluginSort = "relevance" | "updated" | "downloads" | "newest" | "name";
+type PluginSort = "recommended" | "relevance" | "updated" | "downloads" | "newest" | "name";
 
 const PLUGINS_PAGE_SIZE = 25;
 
@@ -83,6 +83,7 @@ function formatRetryDelay(retryAfterSeconds: number | null) {
 
 function parsePluginSort(value: unknown): PluginSort | undefined {
   if (
+    value === "recommended" ||
     value === "relevance" ||
     value === "updated" ||
     value === "downloads" ||
@@ -95,7 +96,7 @@ function parsePluginSort(value: unknown): PluginSort | undefined {
 }
 
 function sortPluginSearchItems(items: PackageListItem[], sort: PluginSort) {
-  if (sort === "relevance") return items;
+  if (sort === "recommended" || sort === "relevance") return items;
   const sorted = [...items];
   sorted.sort((a, b) => {
     const tieBreak = () =>
@@ -218,16 +219,20 @@ export const Route = createFileRoute("/plugins/")({
   beforeLoad: ({ search }) => {
     const hasQuery = Boolean(search.q?.trim());
     const incompatibleSort =
-      !hasQuery && search.sort && search.sort !== "updated" && search.sort !== "downloads";
-    const browseOnlyFeatured = hasQuery && search.featured;
+      !hasQuery &&
+      search.sort &&
+      search.sort !== "recommended" &&
+      search.sort !== "updated" &&
+      search.sort !== "downloads";
+    const staleFeatured = Boolean(search.featured);
     const invalidCategory = Boolean(search.category && !isPluginCategorySlug(search.category));
-    if (incompatibleSort || browseOnlyFeatured || invalidCategory) {
+    if (incompatibleSort || staleFeatured || invalidCategory) {
       throw redirect({
         to: "/plugins",
         search: {
           ...search,
           category: invalidCategory ? undefined : search.category,
-          featured: browseOnlyFeatured ? undefined : search.featured,
+          featured: staleFeatured ? undefined : search.featured,
           sort: incompatibleSort ? undefined : search.sort,
         },
         replace: true,
@@ -270,11 +275,11 @@ function PluginsIndexPending() {
           activeCategory={undefined}
           onCategoryChange={() => {}}
           sortOptions={[
-            { value: "featured", label: "Featured" },
+            { value: "recommended", label: "Recommended" },
             { value: "downloads", label: "Most downloaded" },
             { value: "updated", label: "Recently updated" },
           ]}
-          activeSort="updated"
+          activeSort="recommended"
           onSortChange={() => {}}
           filters={[
             { key: "official", label: "Official only", active: false },
@@ -317,6 +322,7 @@ function PluginsIndex() {
   const [query, setQuery] = useState(search.q ?? "");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchNavigateTimer = useRef<number>(0);
 
   useEffect(() => {
     setQuery(search.q ?? "");
@@ -374,20 +380,17 @@ function PluginsIndex() {
 
   const activeCategory = search.category;
 
-  const activeSort = hasQuery
-    ? (search.sort ?? "relevance")
-    : search.featured
-      ? "featured"
-      : (search.sort ?? "updated");
+  const activeSort: PluginSort =
+    search.sort === "relevance" ? "recommended" : (search.sort ?? "recommended");
   const visibleItems = useMemo(
-    () => (hasQuery ? sortPluginSearchItems(items, activeSort as PluginSort) : items),
+    () => (hasQuery ? sortPluginSearchItems(items, activeSort) : items),
     [activeSort, hasQuery, items],
   );
 
   const sortOptions = useMemo(() => {
     if (hasQuery) {
       return [
-        { value: "relevance", label: "Relevance" },
+        { value: "recommended", label: "Recommended" },
         { value: "downloads", label: "Most downloaded" },
         { value: "updated", label: "Recently updated" },
         { value: "newest", label: "Newest" },
@@ -395,7 +398,7 @@ function PluginsIndex() {
       ];
     }
     return [
-      { value: "featured", label: "Featured" },
+      { value: "recommended", label: "Recommended" },
       { value: "downloads", label: "Most downloaded" },
       { value: "updated", label: "Recently updated" },
     ];
@@ -422,33 +425,8 @@ function PluginsIndex() {
   };
 
   const handleSortChange = (value: string) => {
-    if (value === "featured") {
-      void navigate({
-        search: (prev: PluginSearchState) => ({
-          ...prev,
-          cursor: undefined,
-          featured: true,
-          family: undefined,
-          q: undefined,
-          sort: undefined,
-        }),
-      });
-      return;
-    }
-
-    if (hasQuery) {
-      void navigate({
-        search: (prev: PluginSearchState) => ({
-          ...prev,
-          cursor: undefined,
-          family: undefined,
-          featured: undefined,
-          sort: parsePluginSort(value) === "relevance" ? undefined : parsePluginSort(value),
-        }),
-        replace: true,
-      });
-      return;
-    }
+    const nextSort = parsePluginSort(value);
+    const sort = nextSort === "recommended" || nextSort === "relevance" ? undefined : nextSort;
 
     void navigate({
       search: (prev: PluginSearchState) => ({
@@ -456,7 +434,7 @@ function PluginsIndex() {
         cursor: undefined,
         family: undefined,
         featured: undefined,
-        sort: parsePluginSort(value) === "updated" ? undefined : parsePluginSort(value),
+        sort,
       }),
       replace: true,
     });
@@ -477,21 +455,47 @@ function PluginsIndex() {
     });
   };
 
+  useEffect(() => {
+    return () => window.clearTimeout(searchNavigateTimer.current);
+  }, []);
+
+  const navigateToPluginSearch = useCallback(
+    (next: string, replace: boolean) => {
+      const trimmed = next.trim();
+      void navigate({
+        search: (prev: PluginSearchState) => ({
+          ...prev,
+          cursor: undefined,
+          family: undefined,
+          q: trimmed ? next : undefined,
+          featured: undefined,
+          sort: undefined,
+        }),
+        replace,
+      });
+    },
+    [navigate],
+  );
+
+  const handleQueryChange = useCallback(
+    (next: string) => {
+      setQuery(next);
+      window.clearTimeout(searchNavigateTimer.current);
+      searchNavigateTimer.current = window.setTimeout(() => {
+        navigateToPluginSearch(next, true);
+      }, 220);
+    },
+    [navigateToPluginSearch],
+  );
+
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    void navigate({
-      search: (prev: PluginSearchState) => ({
-        ...prev,
-        cursor: undefined,
-        family: undefined,
-        q: query.trim() || undefined,
-        featured: undefined,
-        sort: undefined,
-      }),
-    });
+    window.clearTimeout(searchNavigateTimer.current);
+    navigateToPluginSearch(query, false);
   };
 
   const handleClearSearch = () => {
+    window.clearTimeout(searchNavigateTimer.current);
     setQuery("");
     searchInputRef.current?.focus();
     void navigate({
@@ -500,6 +504,7 @@ function PluginsIndex() {
         q: undefined,
         cursor: undefined,
         sort: undefined,
+        featured: undefined,
       }),
       replace: true,
     });
@@ -560,7 +565,7 @@ function PluginsIndex() {
           aria-label="Search plugins"
           placeholder="Search plugins..."
           value={query}
-          onChange={(event) => setQuery(event.target.value)}
+          onChange={(event) => handleQueryChange(event.target.value)}
         />
         {query ? (
           <button

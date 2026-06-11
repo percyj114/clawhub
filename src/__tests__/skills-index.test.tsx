@@ -64,6 +64,10 @@ describe("SkillsIndex", () => {
     expect(screen.getByRole("radio", { name: "Recommended" }).getAttribute("aria-checked")).toBe(
       "true",
     );
+    const sortOptions = Array.from(
+      screen.getByRole("radiogroup", { name: "Sort order" }).querySelectorAll('[role="radio"]'),
+    ).map((option) => option.textContent);
+    expect(sortOptions.slice(0, 2)).toEqual(["Recommended", "Featured"]);
   });
 
   it("keeps downloads as an explicit browse sort", async () => {
@@ -289,6 +293,38 @@ describe("SkillsIndex", () => {
       highlightedOnly: false,
       limit: 25,
     });
+  });
+
+  it("keeps recommended as the visible default search sort", async () => {
+    searchMock = { q: "notion" };
+    const actionFn = vi.fn().mockResolvedValue([]);
+    convexReactMocks.useAction.mockReturnValue(actionFn);
+    vi.useFakeTimers();
+
+    render(<SkillsIndex />);
+
+    expect(screen.getByRole("radio", { name: "Recommended" }).getAttribute("aria-checked")).toBe(
+      "true",
+    );
+    expect(screen.queryByRole("radio", { name: "Relevance" })).toBeNull();
+    const sortOptions = Array.from(
+      screen.getByRole("radiogroup", { name: "Sort order" }).querySelectorAll('[role="radio"]'),
+    ).map((option) => option.textContent);
+    expect(sortOptions[0]).toBe("Recommended");
+  });
+
+  it("keeps recommended sort stable while typing a search", async () => {
+    vi.useFakeTimers();
+
+    render(<SkillsIndex />);
+
+    const input = screen.getByPlaceholderText("Search skills...");
+    fireEvent.change(input, { target: { value: "agent" } });
+
+    expect(screen.getByRole("radio", { name: "Recommended" }).getAttribute("aria-checked")).toBe(
+      "true",
+    );
+    expect(screen.queryByRole("radio", { name: "Relevance" })).toBeNull();
   });
 
   it("switches implicit recommended sorting back to relevance when entering search", async () => {

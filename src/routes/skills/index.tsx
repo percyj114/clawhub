@@ -33,6 +33,8 @@ const SEARCH_SORT_OPTIONS = [
   { value: "name", label: "Name" },
 ];
 
+const FEATURED_SORT_OPTION = { value: "featured", label: "Featured" };
+
 const SKILL_CATEGORY_SLUGS = new Set(SKILL_CATEGORIES.map((category) => category.slug));
 
 function parseSkillCategorySlug(value: unknown) {
@@ -73,9 +75,14 @@ export function SkillsIndex() {
     searchInputRef,
   });
 
-  const sortOptionsWithRelevance = model.hasQuery
-    ? [{ value: "relevance", label: "Relevance" }, ...SEARCH_SORT_OPTIONS]
-    : BROWSE_SORT_OPTIONS;
+  const sortOptions = model.hasQuery
+    ? [BROWSE_SORT_OPTIONS[0], ...SEARCH_SORT_OPTIONS]
+    : [BROWSE_SORT_OPTIONS[0], FEATURED_SORT_OPTION, ...BROWSE_SORT_OPTIONS.slice(1)];
+  const activeSort = model.featuredOnly
+    ? "featured"
+    : model.sort === "relevance"
+      ? "recommended"
+      : model.sort;
   const hasActiveFilters =
     model.hasQuery || Boolean(model.activeCategory) || model.featuredOnly || Boolean(search.tag);
   const totalSkillsCount = useQuery(api.skills.countPublicSkills, {});
@@ -197,8 +204,8 @@ export function SkillsIndex() {
           categories={SKILL_CATEGORIES}
           activeCategory={model.activeCategory}
           onCategoryChange={handleCategoryChange}
-          sortOptions={[{ value: "featured", label: "Featured" }, ...sortOptionsWithRelevance]}
-          activeSort={model.featuredOnly ? "featured" : model.sort}
+          sortOptions={sortOptions}
+          activeSort={activeSort}
           onSortChange={handleSortChange}
         />
         <div className="browse-results">

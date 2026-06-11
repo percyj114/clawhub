@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { ComponentType, ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -634,23 +634,31 @@ describe("plugins route", () => {
     expect(fetchPluginCatalogMock.mock.calls[0]?.[0]).not.toHaveProperty("family");
   });
 
-  it("selects featured from the sort group", async () => {
+  it("selects recommended from the plugin sort group", async () => {
     const route = await loadRoute();
     const Component = route.__config.component as ComponentType;
 
     render(<Component />);
 
-    fireEvent.click(screen.getByRole("radio", { name: "Featured" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Recommended" }));
 
     expect(navigateMock).toHaveBeenCalled();
     const lastCall = navigateMock.mock.calls.at(-1)?.[0] as {
+      replace?: boolean;
       search: (prev: Record<string, unknown>) => Record<string, unknown>;
     };
-    expect(lastCall.search({ family: "code-plugin", cursor: "cursor:current" })).toEqual({
+    expect(lastCall.replace).toBe(true);
+    expect(
+      lastCall.search({
+        family: "code-plugin",
+        cursor: "cursor:current",
+        featured: true,
+        sort: "updated",
+      }),
+    ).toEqual({
       family: undefined,
       cursor: undefined,
-      featured: true,
-      q: undefined,
+      featured: undefined,
       sort: undefined,
     });
   });
@@ -744,6 +752,9 @@ describe("plugins route", () => {
     expect(validateSearch({ sort: "updated" })).toEqual(
       expect.objectContaining({ sort: "updated" }),
     );
+    expect(validateSearch({ sort: "recommended" })).toEqual(
+      expect.objectContaining({ sort: "recommended" }),
+    );
     expect(validateSearch({ sort: "relevance" })).toEqual(
       expect.objectContaining({ sort: "relevance" }),
     );
@@ -824,6 +835,44 @@ describe("plugins route", () => {
     });
   });
 
+  it("updates plugin search while typing", async () => {
+    vi.useFakeTimers();
+    const route = await loadRoute();
+    const Component = route.__config.component as ComponentType;
+
+    render(<Component />);
+
+    const input = screen.getByPlaceholderText("Search plugins...");
+    fireEvent.change(input, { target: { value: "github" } });
+    expect(navigateMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(220);
+    });
+
+    expect(navigateMock).toHaveBeenCalled();
+    const lastCall = navigateMock.mock.calls.at(-1)?.[0] as {
+      replace?: boolean;
+      search: (prev: Record<string, unknown>) => Record<string, unknown>;
+    };
+    expect(lastCall.replace).toBe(true);
+    expect(
+      lastCall.search({
+        cursor: "cursor:current",
+        family: "code-plugin",
+        featured: true,
+        sort: "updated",
+      }),
+    ).toEqual({
+      cursor: undefined,
+      family: undefined,
+      featured: undefined,
+      q: "github",
+      sort: undefined,
+    });
+    vi.useRealTimers();
+  });
+
   it("clears plugin search from the search field", async () => {
     searchMock = { q: "github", cursor: "cursor:current", sort: "name", category: "security" };
     const route = await loadRoute();
@@ -879,7 +928,9 @@ describe("plugins route", () => {
 
     render(<Component />);
 
-    expect(screen.getByRole("radio", { name: "Featured" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "Recommended" }).getAttribute("aria-checked")).toBe(
+      "true",
+    );
     expect(screen.getByRole("radio", { name: "Recently updated" })).toBeTruthy();
     expect(screen.queryByRole("radio", { name: "Relevance" })).toBeNull();
   });
@@ -951,9 +1002,25 @@ describe("plugins route", () => {
 
     render(<Component />);
 
-    expect(screen.getByRole("radio", { name: "Relevance" }).getAttribute("aria-checked")).toBe(
+    expect(screen.getByRole("radio", { name: "Recommended" }).getAttribute("aria-checked")).toBe(
       "true",
     );
     expect(screen.queryByRole("radio", { name: "Featured" })).toBeNull();
+    expect(screen.queryByRole("radio", { name: "Relevance" })).toBeNull();
+  });
+
+  it("puts the default plugin sort first", async () => {
+    const route = await loadRoute();
+    const Component = route.__config.component as ComponentType;
+
+    render(<Component />);
+
+    const sortOptions = Array.from(
+      screen.getByRole("radiogroup", { name: "Sort order" }).querySelectorAll('[role="radio"]'),
+    ).map((option) => option.textContent);
+    expect(sortOptions[0]).toBe("Recommended");
+    expect(screen.getByRole("radio", { name: "Recommended" }).getAttribute("aria-checked")).toBe(
+      "true",
+    );
   });
 });

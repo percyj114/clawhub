@@ -431,6 +431,7 @@ export function useSkillsBrowseModel({
       const nextSort = parseSort(value);
       void navigate({
         search: (prev) => {
+          const clearsDefaultSearchSort = hasQuery && nextSort === "recommended";
           const reusePreviousDir =
             prev.sort !== undefined &&
             prev.sort !== "recommended" &&
@@ -438,9 +439,9 @@ export function useSkillsBrowseModel({
             prev.sort !== "relevance";
           return {
             ...prev,
-            sort: nextSort,
+            sort: clearsDefaultSearchSort ? undefined : nextSort,
             dir:
-              nextSort === "recommended" || nextSort === "default"
+              clearsDefaultSearchSort || nextSort === "recommended" || nextSort === "default"
                 ? undefined
                 : parseDir(reusePreviousDir ? prev.dir : undefined, nextSort),
           };
@@ -448,7 +449,7 @@ export function useSkillsBrowseModel({
         replace: true,
       });
     },
-    [navigate],
+    [hasQuery, navigate],
   );
 
   const onToggleDir = useCallback(() => {
