@@ -1416,34 +1416,6 @@ describe("cmdUninstall", () => {
     expect(mockSpinner.succeed).toHaveBeenCalledWith("Uninstalled demo");
   });
 
-  it("reports uninstall telemetry after successful removal", async () => {
-    mockGetOptionalAuthToken.mockResolvedValue("tkn");
-    mockApiRequest.mockResolvedValue({ ok: true });
-    vi.mocked(readLockfile).mockResolvedValue({
-      version: 1,
-      skills: { demo: { version: "1.0.0", installedAt: 123 } },
-    });
-    vi.mocked(writeLockfile).mockResolvedValue();
-    vi.mocked(rm).mockResolvedValue();
-
-    await cmdUninstall(makeOpts(), "demo", { yes: true }, false);
-
-    expect(mockApiRequest).toHaveBeenCalledWith(
-      "https://clawhub.ai",
-      expect.objectContaining({
-        method: "POST",
-        path: LegacyApiRoutes.cliTelemetryInstall,
-        token: "tkn",
-        body: expect.objectContaining({
-          event: "uninstall",
-          slug: "demo",
-          rootId: expect.any(String),
-        }),
-      }),
-      expect.anything(),
-    );
-  });
-
   it("does not update lockfile if remove fails", async () => {
     vi.mocked(readLockfile).mockResolvedValue({
       version: 1,

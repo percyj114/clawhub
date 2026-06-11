@@ -150,7 +150,7 @@ export declare const ApiV1SkillInstallResolveResponseSchema: import("arktype/int
 }, {}>;
 export type ApiV1SkillInstallResolveResponse = (typeof ApiV1SkillInstallResolveResponseSchema)[inferred];
 export declare const CliTelemetryInstallRequestSchema: import("arktype/internal/variants/object.ts").ObjectType<{
-    event: "install" | "uninstall";
+    event: "install";
     slug: string;
     version?: string | undefined;
     rootId?: string | undefined;

@@ -128,7 +128,7 @@ export const ApiV1SkillInstallResolveResponseSchema = type({
     status: "number",
 });
 export const CliTelemetryInstallRequestSchema = type({
-    event: '"install"|"uninstall"',
+    event: '"install"',
     slug: "string",
     version: "string?",
     rootId: "string?",

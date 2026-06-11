@@ -34,10 +34,7 @@ import { getRegistry } from "../registry.js";
 import type { GlobalOpts, ResolveResult } from "../types.js";
 import { createSpinner, fail, formatError, isInteractive, promptConfirm } from "../ui.js";
 import { presentModerationPlan, reportModerationPlan } from "./moderationPlan.js";
-import {
-  reportInstalledSkillsTelemetryIfEnabled,
-  reportUninstalledSkillTelemetryIfEnabled,
-} from "./syncHelpers.js";
+import { reportInstalledSkillsTelemetryIfEnabled } from "./syncHelpers.js";
 
 type SkillReportOptions = {
   version?: string;
@@ -631,21 +628,6 @@ export async function cmdUninstall(
 
     delete lock.skills[trimmed];
     await writeLockfile(opts.workdir, lock);
-
-    try {
-      const token = await getOptionalAuthToken();
-      if (token) {
-        const registry = await getRegistry(opts, { cache: true });
-        await reportUninstalledSkillTelemetryIfEnabled({
-          token,
-          registry,
-          root: opts.dir,
-          slug: trimmed,
-        });
-      }
-    } catch {
-      // Best-effort telemetry must not block local uninstall cleanup.
-    }
 
     spinner.succeed(`Uninstalled ${trimmed}`);
   } catch (error) {

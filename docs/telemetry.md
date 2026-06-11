@@ -14,7 +14,7 @@ ClawHub uses minimal CLI telemetry to compute aggregate install counts.
 Telemetry is only sent when:
 
 - You are logged in in the CLI.
-- You run `clawhub install <slug>` or `clawhub uninstall <slug>`.
+- You run `clawhub install <slug>`.
 - Telemetry is **not disabled** (see “How to disable” below).
 
 If you are not logged in, nothing is reported.
@@ -22,8 +22,6 @@ If you are not logged in, nothing is reported.
 ## What we collect
 
 On each reported `clawhub install`, the CLI sends one best-effort install event.
-On each reported `clawhub uninstall`, the CLI sends one best-effort uninstall
-event to mark that root install removed.
 
 The event includes:
 
@@ -31,9 +29,6 @@ The event includes:
 - `rootLabel`: a short label derived from the last two path segments (home paths are shown with `~`).
 - `slug`: the installed skill slug.
 - `version`: the installed version, when known.
-
-Uninstall events include the same `rootId`, `rootLabel`, and `slug`, but no
-version.
 
 ### What we do _not_ collect
 
@@ -46,7 +41,8 @@ version.
 ClawHub maintains aggregate counters per skill:
 
 - `installsAllTime`: unique users who have reported at least one CLI install for the skill.
-- `installsCurrent`: unique users with at least one active reported install.
+- `installsCurrent`: unique users who have reported an install and have not deleted their
+  telemetry.
 
 ## Transparency + user controls
 
