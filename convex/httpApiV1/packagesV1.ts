@@ -258,7 +258,7 @@ function normalizeCapabilityTagSegment(value: string) {
 const PACKAGE_FAMILY_VALUES = ["skill", "code-plugin", "bundle-plugin"] as const;
 const PLUGIN_EXPORT_FAMILY_VALUES = ["code-plugin", "bundle-plugin"] as const;
 const PACKAGE_CHANNEL_VALUES = ["official", "community", "private"] as const;
-const PACKAGE_LIST_SORT_VALUES = ["updated", "downloads", "recommended"] as const;
+const PACKAGE_LIST_SORT_VALUES = ["updated", "downloads", "recommended", "installs"] as const;
 const MAX_PLUGIN_EXPORT_FILE_COUNT = 10_000;
 const MAX_PLUGIN_EXPORT_PAGE_LIMIT = 250;
 const DEFAULT_PLUGIN_EXPORT_PAGE_LIMIT = 250;
@@ -713,22 +713,34 @@ async function streamClawPackRelease(
   const blob = await ctx.storage.get(release.clawpackStorageId);
   if (!blob) return text("ClawPack artifact not found", 404, rateHeaders);
   try {
+    const identity = getDownloadIdentity(request, viewerUserId ? String(viewerUserId) : null);
+    const now = Date.now();
+    const metricArgs = identity
+      ? await buildDownloadMetricArgs({
+          target: { kind: "package", id: pkg._id },
+          identity,
+          now,
+        })
+      : null;
     if (statKind === "install") {
       await runMutationRef(ctx, internalRefs.packages.recordPackageInstallInternal, {
         packageId: pkg._id,
+        ...(metricArgs
+          ? {
+              identityKind: metricArgs.identityKind,
+              identityHash: metricArgs.identityHash,
+              dayStart: metricArgs.dayStart,
+              occurredAt: metricArgs.occurredAt,
+            }
+          : {}),
       });
     }
 
-    const identity = getDownloadIdentity(request, viewerUserId ? String(viewerUserId) : null);
-    if (identity) {
+    if (metricArgs) {
       await runMutationRef(
         ctx,
         internalRefs.downloadMetrics.recordDownloadMetricInternal,
-        await buildDownloadMetricArgs({
-          target: { kind: "package", id: pkg._id },
-          identity,
-          now: Date.now(),
-        }),
+        metricArgs,
       );
     }
   } catch {
@@ -1018,6 +1030,10 @@ function compareCatalogItemsForSort(
   if (sort === "downloads") {
     const downloads = (b.stats?.downloads ?? 0) - (a.stats?.downloads ?? 0);
     if (downloads !== 0) return downloads;
+  }
+  if (sort === "installs") {
+    const installs = (b.stats?.installs ?? 0) - (a.stats?.installs ?? 0);
+    if (installs !== 0) return installs;
   }
   return compareCatalogItems(a, b);
 }

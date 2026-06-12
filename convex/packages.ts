@@ -2666,7 +2666,12 @@ export const listPublicPage = query({
     capabilityTag: v.optional(v.string()),
     category: v.optional(v.string()),
     sort: v.optional(
-      v.union(v.literal("updated"), v.literal("downloads"), v.literal("recommended")),
+      v.union(
+        v.literal("updated"),
+        v.literal("downloads"),
+        v.literal("recommended"),
+        v.literal("installs"),
+      ),
     ),
     paginationOpts: paginationOptsValidator,
   },
@@ -3136,7 +3141,12 @@ export const listPageForViewerInternal = internalQuery({
     capabilityTag: v.optional(v.string()),
     category: v.optional(v.string()),
     sort: v.optional(
-      v.union(v.literal("updated"), v.literal("downloads"), v.literal("recommended")),
+      v.union(
+        v.literal("updated"),
+        v.literal("downloads"),
+        v.literal("recommended"),
+        v.literal("installs"),
+      ),
     ),
     viewerUserId: v.optional(v.id("users")),
     paginationOpts: paginationOptsValidator,
@@ -3188,7 +3198,7 @@ async function listPackagePageImpl(
     executesCode?: boolean;
     capabilityTag?: string;
     category?: string;
-    sort?: "updated" | "downloads" | "recommended";
+    sort?: "updated" | "downloads" | "recommended" | "installs";
     viewerUserId?: Id<"users">;
     paginationOpts: { cursor: string | null; numItems: number };
   },
@@ -3245,23 +3255,27 @@ async function listPackagePageImpl(
         : await getPackageRecommendedIndexName(ctx, family)
       : null;
 
-  if (args.sort === "downloads" || recommendedIndexName) {
+  if (args.sort === "downloads" || args.sort === "installs" || recommendedIndexName) {
     let cursor = pageCursor;
     let pageOffset = offset;
     let pageSize: number | null = decodedCursor.pageSize ?? null;
     let done = decodedCursor.done;
-    const buildSortedQuery = () =>
-      family
-        ? ctx.db
-            .query("packages")
-            .withIndex(recommendedIndexName ?? "by_active_family_downloads", (q) =>
-              q.eq("softDeletedAt", undefined).eq("family", family),
-            )
-        : ctx.db
-            .query("packages")
-            .withIndex(recommendedIndexName ?? "by_active_downloads", (q) =>
-              q.eq("softDeletedAt", undefined),
-            );
+    const buildSortedQuery = () => {
+      if (family) {
+        const indexName =
+          args.sort === "installs"
+            ? "by_active_family_installs"
+            : (recommendedIndexName ?? "by_active_family_downloads");
+        return ctx.db
+          .query("packages")
+          .withIndex(indexName, (q) => q.eq("softDeletedAt", undefined).eq("family", family));
+      }
+      const indexName =
+        args.sort === "installs"
+          ? "by_active_installs"
+          : (recommendedIndexName ?? "by_active_downloads");
+      return ctx.db.query("packages").withIndex(indexName, (q) => q.eq("softDeletedAt", undefined));
+    };
 
     while ((pageOffset > 0 || !done) && collected.length < targetCount) {
       const scanPageSize = Math.min(
@@ -3575,12 +3589,47 @@ export const recordPackageDownloadInternal = internalMutation({
 });
 
 export const recordPackageInstallInternal = internalMutation({
-  args: { packageId: v.id("packages") },
+  args: {
+    packageId: v.id("packages"),
+    identityKind: v.optional(v.union(v.literal("user"), v.literal("ip"))),
+    identityHash: v.optional(v.string()),
+    dayStart: v.optional(v.number()),
+    occurredAt: v.optional(v.number()),
+  },
   handler: async (ctx, args) => {
+    const identityKind = args.identityKind;
+    const identityHash = args.identityHash;
+    const dayStart = args.dayStart;
+    if (identityKind && identityHash && typeof dayStart === "number") {
+      const existing = await ctx.db
+        .query("packageInstallMetricDedupes")
+        .withIndex("by_target_metric_identity_day", (q) =>
+          q
+            .eq("targetKind", "package")
+            .eq("targetId", args.packageId)
+            .eq("metricKind", "install")
+            .eq("identityKind", identityKind)
+            .eq("identityHash", identityHash)
+            .eq("dayStart", dayStart),
+        )
+        .unique();
+      if (existing) return;
+
+      await ctx.db.insert("packageInstallMetricDedupes", {
+        targetKind: "package",
+        targetId: args.packageId,
+        metricKind: "install",
+        identityKind,
+        identityHash,
+        dayStart,
+        createdAt: Date.now(),
+      });
+    }
+
     await ctx.db.insert("packageStatEvents", {
       packageId: args.packageId,
       kind: "install",
-      occurredAt: Date.now(),
+      occurredAt: args.occurredAt ?? Date.now(),
       processedAt: undefined,
     });
   },

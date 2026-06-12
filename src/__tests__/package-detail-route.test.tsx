@@ -217,7 +217,7 @@ describe("plugin detail route", () => {
     expect(screen.queryByText("Verified")).toBeNull();
   });
 
-  it("renders plugin download counts in the metadata sidebar", async () => {
+  it("renders plugin install counts in the metadata sidebar", async () => {
     loaderDataMock = {
       ...loaderDataMock,
       detail: {
@@ -234,12 +234,12 @@ describe("plugin detail route", () => {
 
     render(<Component />);
 
-    const downloadsLabel = screen.getByText("Downloads");
+    const installsLabel = screen.getByText("Installs");
     const currentVersionLabel = screen.getByText("Current version");
-    expect(downloadsLabel.compareDocumentPosition(currentVersionLabel)).toBe(
+    expect(installsLabel.compareDocumentPosition(currentVersionLabel)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
-    expect(screen.getByText("1.2k")).toBeTruthy();
+    expect(screen.getByText("9")).toBeTruthy();
   });
 
   it("shows plugin settings when the viewer can manage the plugin", async () => {
@@ -425,7 +425,7 @@ describe("plugin detail route", () => {
       label?.startsWith("Security audit"),
     );
     expect(securityAuditLabelIndex).toBeGreaterThanOrEqual(0);
-    expect(securityAuditLabelIndex).toBeGreaterThan(sidebarLabels.indexOf("Downloads"));
+    expect(securityAuditLabelIndex).toBeGreaterThan(sidebarLabels.indexOf("Installs"));
     expect(screen.queryByRole("tab", { name: "Capabilities" })).toBeNull();
     expect(screen.queryByRole("tab", { name: "Verification" })).toBeNull();
   });

@@ -560,7 +560,7 @@ function SkillsHome() {
                         <Star size={12} /> {formatStat(entry.skill.stats?.stars)}
                       </span>
                       <span>
-                        <Download size={12} /> {formatStat(entry.skill.stats?.downloads)}
+                        <Package size={12} /> {formatStat(entry.skill.stats?.installsAllTime)}
                       </span>
                     </div>
                     <span className="home-v2-c-install">
@@ -596,7 +596,7 @@ function SkillsHome() {
                         <Star size={12} /> {formatStat(entry.skill.stats?.stars)}
                       </span>
                       <span>
-                        <Download size={12} /> {formatStat(entry.skill.stats?.downloads)}
+                        <Package size={12} /> {formatStat(entry.skill.stats?.installsAllTime)}
                       </span>
                     </div>
                     <span className="home-v2-c-install">
@@ -677,7 +677,7 @@ function SkillsHome() {
         <span className="home-v2-proof-sep" />
         <div className="home-v2-proof-item">
           <span className="home-v2-proof-num">12M</span>
-          <span className="home-v2-proof-label">downloads</span>
+          <span className="home-v2-proof-label">installs</span>
         </div>
         <span className="home-v2-proof-sep" />
         <div className="home-v2-proof-item">
@@ -727,7 +727,7 @@ function SkillsHome() {
                       <Star size={12} /> {formatStat(entry.skill.stats?.stars)}
                     </span>
                     <span>
-                      <Download size={12} /> {formatStat(entry.skill.stats?.downloads)}
+                      <Package size={12} /> {formatStat(entry.skill.stats?.installsAllTime)}
                     </span>
                   </div>
                   <span className="home-v2-trend-install">

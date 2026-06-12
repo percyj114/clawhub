@@ -361,7 +361,7 @@ describe("plugins route", () => {
     expect(fetchPluginCatalogMock.mock.calls[0]?.[0]).not.toHaveProperty("sort");
   });
 
-  it("forwards downloads sort for plugin browse", async () => {
+  it("forwards explicit plugin browse sorts", async () => {
     fetchPluginCatalogMock.mockResolvedValue({ items: [], nextCursor: null });
     const { loadPluginsPageData } = await import("../routes/plugins/index");
 
@@ -372,6 +372,17 @@ describe("plugins route", () => {
     expect(fetchPluginCatalogMock).toHaveBeenCalledWith(
       expect.objectContaining({
         sort: "downloads",
+        limit: 25,
+      }),
+    );
+
+    await loadPluginsPageData({
+      sort: "installs",
+    });
+
+    expect(fetchPluginCatalogMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sort: "installs",
         limit: 25,
       }),
     );
@@ -433,7 +444,7 @@ describe("plugins route", () => {
     });
   });
 
-  it("renders plugin download counts in browse results", async () => {
+  it("renders plugin install counts in browse results", async () => {
     loaderDataMock = {
       items: [
         {
@@ -445,7 +456,7 @@ describe("plugins route", () => {
           executesCode: true,
           createdAt: 1,
           updatedAt: 1,
-          stats: { downloads: 1_234, installs: 0, stars: 0, versions: 1 },
+          stats: { downloads: 1_234, installs: 9, stars: 0, versions: 1 },
         },
       ],
       nextCursor: null,
@@ -457,7 +468,7 @@ describe("plugins route", () => {
 
     render(<Component />);
 
-    expect(screen.getByText("1.2k")).toBeTruthy();
+    expect(screen.getByText("9")).toBeTruthy();
   });
 
   it("renders the browse shell immediately while catalog data loads", async () => {
@@ -854,6 +865,9 @@ describe("plugins route", () => {
     expect(validateSearch({ sort: "recommended" })).toEqual(
       expect.objectContaining({ sort: "recommended" }),
     );
+    expect(validateSearch({ sort: "installs" })).toEqual(
+      expect.objectContaining({ sort: "installs" }),
+    );
     expect(validateSearch({ sort: "relevance" })).toEqual(
       expect.objectContaining({ sort: "relevance" }),
     );
@@ -1030,6 +1044,7 @@ describe("plugins route", () => {
     expect(screen.getByRole("radio", { name: "Recommended" }).getAttribute("aria-checked")).toBe(
       "true",
     );
+    expect(screen.getByRole("radio", { name: "Most installed" })).toBeTruthy();
     expect(screen.getByRole("radio", { name: "Recently updated" })).toBeTruthy();
     expect(screen.queryByRole("radio", { name: "Relevance" })).toBeNull();
   });
@@ -1120,7 +1135,12 @@ describe("plugins route", () => {
     const sortOptions = Array.from(
       screen.getByRole("radiogroup", { name: "Sort order" }).querySelectorAll('[role="radio"]'),
     ).map((option) => option.textContent);
-    expect(sortOptions).toEqual(["Recommended", "Most downloaded", "Recently updated"]);
+    expect(sortOptions).toEqual([
+      "Recommended",
+      "Most installed",
+      "Most downloaded",
+      "Recently updated",
+    ]);
     expect(screen.queryByRole("radio", { name: "Newest" })).toBeNull();
     expect(screen.queryByRole("radio", { name: "Name" })).toBeNull();
   });

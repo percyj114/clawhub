@@ -489,13 +489,11 @@ describe("fetchPluginCatalog", () => {
     expect(url.searchParams.get("isOfficial")).toBe("true");
   });
 
-  it("forwards downloads sort to the dedicated plugins browse endpoint", async () => {
+  it("forwards explicit sort values to the dedicated plugins browse endpoint", async () => {
     vi.stubEnv("VITE_CONVEX_URL", "https://registry.example");
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(
-        new Response(JSON.stringify({ items: [], nextCursor: null }), { status: 200 }),
-      );
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      return new Response(JSON.stringify({ items: [], nextCursor: null }), { status: 200 });
+    });
 
     await fetchPluginCatalog({
       sort: "downloads",
@@ -505,6 +503,15 @@ describe("fetchPluginCatalog", () => {
     const url = new URL(fetchMock.mock.calls[0]?.[0] as string);
     expect(url.pathname).toBe("/api/v1/plugins");
     expect(url.searchParams.get("sort")).toBe("downloads");
+
+    await fetchPluginCatalog({
+      sort: "installs",
+      limit: 20,
+    });
+
+    const installsUrl = new URL(fetchMock.mock.calls[1]?.[0] as string);
+    expect(installsUrl.pathname).toBe("/api/v1/plugins");
+    expect(installsUrl.searchParams.get("sort")).toBe("installs");
   });
 
   it("uses the dedicated plugins search endpoint for search mode", async () => {

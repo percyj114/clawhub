@@ -16,7 +16,7 @@ import {
   type PackageListItem,
 } from "../../lib/packageApi";
 
-type VisiblePluginSort = "recommended" | "updated" | "downloads";
+type VisiblePluginSort = "recommended" | "updated" | "downloads" | "installs";
 type PluginSort = VisiblePluginSort | "relevance";
 type LegacyPluginSort = PluginSort | "newest" | "name";
 
@@ -39,6 +39,7 @@ type LegacyPluginView = PluginView | "cards";
 
 const PLUGIN_SORT_OPTIONS = [
   { value: "recommended", label: "Recommended" },
+  { value: "installs", label: "Most installed" },
   { value: "downloads", label: "Most downloaded" },
   { value: "updated", label: "Recently updated" },
 ];
@@ -97,6 +98,7 @@ function parsePluginSort(value: unknown): LegacyPluginSort | undefined {
     value === "relevance" ||
     value === "updated" ||
     value === "downloads" ||
+    value === "installs" ||
     value === "newest" ||
     value === "name"
   ) {
@@ -117,6 +119,9 @@ function sortPluginSearchItems(items: PackageListItem[], sort: PluginSort) {
 
     if (sort === "downloads") {
       return (b.stats?.downloads ?? 0) - (a.stats?.downloads ?? 0) || tieBreak();
+    }
+    if (sort === "installs") {
+      return (b.stats?.installs ?? 0) - (a.stats?.installs ?? 0) || tieBreak();
     }
 
     return tieBreak();
@@ -145,7 +150,11 @@ export async function loadPluginsPageData(
       featured: args.featured,
       isOfficial: args.official,
       executesCode: args.executesCode,
-      ...(!args.q && (args.sort === "downloads" || !args.sort || args.sort === "recommended")
+      ...(!args.q &&
+      (args.sort === "downloads" ||
+        args.sort === "installs" ||
+        !args.sort ||
+        args.sort === "recommended")
         ? { sort: args.sort ?? "recommended" }
         : {}),
       limit: PLUGINS_PAGE_SIZE,
@@ -223,6 +232,7 @@ export const Route = createFileRoute("/plugins/")({
       search.sort !== "recommended" &&
       search.sort !== "updated" &&
       search.sort !== "downloads" &&
+      search.sort !== "installs" &&
       !(hasQuery && search.sort === "relevance");
     const staleFeatured = Boolean(search.featured);
     const invalidCategory = Boolean(search.category && !isPluginCategorySlug(search.category));

@@ -10523,9 +10523,16 @@ describe("httpApiV1 handlers", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(runMutation).toHaveBeenCalledWith(internal.packages.recordPackageInstallInternal, {
-      packageId: "packages:demo-plugin",
-    });
+    expect(runMutation).toHaveBeenCalledWith(
+      internal.packages.recordPackageInstallInternal,
+      expect.objectContaining({
+        packageId: "packages:demo-plugin",
+        identityKind: "ip",
+        identityHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        dayStart: expect.any(Number),
+        occurredAt: expect.any(Number),
+      }),
+    );
     expect(runMutation).toHaveBeenCalledWith(
       internal.downloadMetrics.recordDownloadMetricInternal,
       expect.objectContaining({
