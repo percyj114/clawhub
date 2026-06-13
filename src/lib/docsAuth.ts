@@ -1,5 +1,8 @@
+const canonicalDocsOrigin = "https://clawhub.ai";
+const docsOriginAliases = new Map([["https://hub.openclaw.ai", canonicalDocsOrigin]]);
 const productionDocsOrigins = new Set([
-  "https://clawhub.ai",
+  canonicalDocsOrigin,
+  ...docsOriginAliases.keys(),
   "https://documentation.openclaw.ai",
   "https://docs.openclaw.ai",
 ]);
@@ -14,6 +17,12 @@ export function normalizeDocsReturnTo(value?: string | null, options: DocsAuthOp
     const url = new URL(value);
     if (!["http:", "https:"].includes(url.protocol)) return null;
     if (!isAllowedDocsOrigin(url.origin, options.currentOrigin ?? getCurrentOrigin())) return null;
+    const canonicalOrigin = docsOriginAliases.get(url.origin);
+    if (canonicalOrigin) {
+      const canonical = new URL(canonicalOrigin);
+      url.protocol = canonical.protocol;
+      url.host = canonical.host;
+    }
     return url.href;
   } catch {
     return null;

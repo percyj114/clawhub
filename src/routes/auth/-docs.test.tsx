@@ -100,6 +100,18 @@ describe("DocsAuth", () => {
     );
   });
 
+  it("canonicalizes the legacy docs host before posting the auth token", () => {
+    mockSearch = { return_to: "https://hub.openclaw.ai/docs/plugins?from=mobile" };
+
+    render(<DocsAuth autoSubmit={false} />);
+
+    const form = screen.getByRole("button", { name: /continue to docs/i }).closest("form");
+    expect(form?.getAttribute("action")).toBe("https://clawhub.ai/ask-molty/auth/callback");
+    expect(document.querySelector<HTMLInputElement>('input[name="return_to"]')?.value).toBe(
+      "https://clawhub.ai/docs/plugins?from=mobile",
+    );
+  });
+
   it("asks for GitHub verification when no ClawHub session exists", () => {
     mockAuthStatus = { isAuthenticated: false, isLoading: false, me: null };
 
