@@ -130,6 +130,18 @@ function normalizeActivePluginSort(sort: LegacyPluginSort | undefined): PluginSo
   return sort;
 }
 
+function hasPluginBrowseFilter(
+  args: Pick<PluginsPageDataRequest, "category" | "featured" | "official" | "executesCode">,
+) {
+  return Boolean(args.category || args.featured || args.official || args.executesCode);
+}
+
+function getDefaultPluginBrowseSort(
+  args: Pick<PluginsPageDataRequest, "category" | "featured" | "official" | "executesCode">,
+): VisiblePluginSort {
+  return hasPluginBrowseFilter(args) ? "updated" : "recommended";
+}
+
 function isNavigationAbortError(err: unknown, signal?: AbortSignal) {
   if (signal?.aborted) return true;
   return err instanceof Error && err.name === "AbortError";
@@ -151,7 +163,7 @@ export async function loadPluginsPageData(
         args.sort === "updated" ||
         !args.sort ||
         args.sort === "recommended")
-        ? { sort: args.sort ?? "recommended" }
+        ? { sort: args.sort ?? getDefaultPluginBrowseSort(args) }
         : {}),
       limit: PLUGINS_PAGE_SIZE,
       signal: args.signal,
@@ -388,7 +400,7 @@ function PluginsIndex() {
   const activeSort: PluginSort =
     search.sort === "relevance" || search.sort === "newest" || search.sort === "name"
       ? "recommended"
-      : (search.sort ?? "recommended");
+      : (search.sort ?? (hasQuery ? "recommended" : getDefaultPluginBrowseSort(search)));
   const visibleItems = useMemo(
     () => (hasQuery ? sortPluginSearchItems(items, activeSort) : items),
     [activeSort, hasQuery, items],

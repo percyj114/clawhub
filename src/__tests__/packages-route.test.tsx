@@ -402,6 +402,23 @@ describe("plugins route", () => {
     );
   });
 
+  it("uses updated sort for unsorted filtered plugin browse", async () => {
+    fetchPluginCatalogMock.mockResolvedValue({ items: [], nextCursor: null });
+    const { loadPluginsPageData } = await import("../routes/plugins/index");
+
+    await loadPluginsPageData({
+      category: "data",
+    });
+
+    expect(fetchPluginCatalogMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: "data",
+        sort: "updated",
+        limit: 25,
+      }),
+    );
+  });
+
   it("forwards category through catalog loading without changing the query", async () => {
     fetchPluginCatalogMock.mockResolvedValue({ items: [], nextCursor: null });
     const { loadPluginsPageData } = await import("../routes/plugins/index");
@@ -1055,9 +1072,9 @@ describe("plugins route", () => {
 
     render(<Component />);
 
-    expect(screen.getByRole("radio", { name: "Recommended" }).getAttribute("aria-checked")).toBe(
-      "true",
-    );
+    expect(
+      screen.getByRole("radio", { name: "Recently updated" }).getAttribute("aria-checked"),
+    ).toBe("true");
     expect(screen.getByRole("radio", { name: "Most installed" })).toBeTruthy();
     expect(screen.getByRole("radio", { name: "Recently updated" })).toBeTruthy();
     expect(screen.queryByRole("radio", { name: "Relevance" })).toBeNull();

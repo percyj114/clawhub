@@ -19,6 +19,7 @@ vi.mock("./_generated/api", () => ({
       backfillPackageRecommendationScoresInternal: Symbol(
         "backfillPackageRecommendationScoresInternal",
       ),
+      backfillPackageDigestStatsInternal: Symbol("backfillPackageDigestStatsInternal"),
       getSkillStatBackfillStateInternal: Symbol("getSkillStatBackfillStateInternal"),
       setSkillStatBackfillStateInternal: Symbol("setSkillStatBackfillStateInternal"),
       reconcileSkillStarCounts: Symbol("reconcileSkillStarCounts"),
@@ -32,6 +33,7 @@ vi.mock("./_generated/api", () => ({
 const {
   __test,
   backfillPackageRecommendationScoresInternal,
+  backfillPackageDigestStatsInternal,
   backfillSkillDigestRecommendationScoresInternal,
   countPublicPackageDigestPageInternal,
   reconcileSkillStarCountsHandler,
@@ -70,6 +72,11 @@ const backfillPackageRecommendationScoresHandler = getHandler<
   { cursor?: string; batchSize?: number; dryRun?: boolean },
   { scanned: number; patched: number; cursor: string | null; isDone: boolean; dryRun: boolean }
 >(backfillPackageRecommendationScoresInternal as never);
+
+const backfillPackageDigestStatsHandler = getHandler<
+  { cursor?: string; batchSize?: number; dryRun?: boolean },
+  { scanned: number; patched: number; cursor: string | null; isDone: boolean; dryRun: boolean }
+>(backfillPackageDigestStatsInternal as never);
 
 const runRecommendationScoreBackfillHandler = getHandler<
   {
@@ -470,6 +477,143 @@ describe("recommendation score backfills", () => {
       recommendedScore: computePackageRecommendationScore({ stats } as never),
       recommendedScoreVersion: RECOMMENDATION_SCORE_VERSION,
     });
+  });
+
+  it("patches stale package digest stats in bounded pages", async () => {
+    const packageStats = { downloads: 10, installs: 5, stars: 2, versions: 3 };
+    const patch = vi.fn();
+    const paginate = vi.fn().mockResolvedValue({
+      page: [{ _id: "packages:one", stats: packageStats }],
+      isDone: false,
+      continueCursor: "next",
+    });
+    const ctx = {
+      db: {
+        query: vi.fn((table: string) => {
+          if (table === "packages") {
+            return { order: vi.fn(() => ({ paginate })) };
+          }
+          if (table === "packageSearchDigest") {
+            return {
+              withIndex: vi.fn(() => ({
+                unique: vi.fn().mockResolvedValue({
+                  _id: "packageSearchDigest:one",
+                  stats: { downloads: 10, installs: 1, stars: 2, versions: 3 },
+                }),
+              })),
+            };
+          }
+          if (table === "packageCapabilitySearchDigest") {
+            return {
+              withIndex: vi.fn(() => ({
+                collect: vi.fn().mockResolvedValue([
+                  {
+                    _id: "packageCapabilitySearchDigest:one-tools",
+                    stats: { downloads: 10, installs: 1, stars: 2, versions: 3 },
+                  },
+                ]),
+              })),
+            };
+          }
+          if (table === "packagePluginCategorySearchDigest") {
+            return {
+              withIndex: vi.fn(() => ({
+                collect: vi.fn().mockResolvedValue([
+                  {
+                    _id: "packagePluginCategorySearchDigest:one-data",
+                    stats: { downloads: 10, installs: 1, stars: 2, versions: 3 },
+                  },
+                ]),
+              })),
+            };
+          }
+          throw new Error(`Unexpected table: ${table}`);
+        }),
+        patch,
+      },
+    };
+
+    const result = await backfillPackageDigestStatsHandler(ctx, {
+      cursor: "current",
+      batchSize: 1,
+    });
+
+    expect(result).toMatchObject({
+      scanned: 1,
+      patched: 3,
+      cursor: "next",
+      isDone: false,
+      dryRun: false,
+    });
+    expect(paginate).toHaveBeenCalledWith({ cursor: "current", numItems: 1 });
+    expect(patch).toHaveBeenCalledWith("packageSearchDigest:one", { stats: packageStats });
+    expect(patch).toHaveBeenCalledWith("packageCapabilitySearchDigest:one-tools", {
+      stats: packageStats,
+    });
+    expect(patch).toHaveBeenCalledWith("packagePluginCategorySearchDigest:one-data", {
+      stats: packageStats,
+    });
+  });
+
+  it("dry-runs package digest stat backfills without patching", async () => {
+    const patch = vi.fn();
+    const paginate = vi.fn().mockResolvedValue({
+      page: [
+        {
+          _id: "packages:one",
+          stats: { downloads: 10, installs: 5, stars: 2, versions: 3 },
+        },
+      ],
+      isDone: true,
+      continueCursor: "",
+    });
+    const ctx = {
+      db: {
+        query: vi.fn((table: string) => {
+          if (table === "packages") {
+            return { order: vi.fn(() => ({ paginate })) };
+          }
+          if (table === "packageSearchDigest") {
+            return {
+              withIndex: vi.fn(() => ({
+                unique: vi.fn().mockResolvedValue(null),
+              })),
+            };
+          }
+          if (
+            table === "packageCapabilitySearchDigest" ||
+            table === "packagePluginCategorySearchDigest"
+          ) {
+            return {
+              withIndex: vi.fn(() => ({
+                collect: vi.fn().mockResolvedValue([
+                  {
+                    _id: `${table}:stale`,
+                    stats: { downloads: 10, installs: 1, stars: 2, versions: 3 },
+                  },
+                ]),
+              })),
+            };
+          }
+          throw new Error(`Unexpected table: ${table}`);
+        }),
+        patch,
+      },
+    };
+
+    const result = await backfillPackageDigestStatsHandler(ctx, {
+      batchSize: 5,
+      dryRun: true,
+    });
+
+    expect(result).toMatchObject({
+      scanned: 1,
+      patched: 2,
+      cursor: null,
+      isDone: true,
+      dryRun: true,
+    });
+    expect(patch).not.toHaveBeenCalled();
   });
 
   it("runs skill and package recommendation score backfills with resumable cursors", async () => {

@@ -270,6 +270,69 @@ export const backfillPackageRecommendationScoresInternal = internalMutation({
   },
 });
 
+export const backfillPackageDigestStatsInternal = internalMutation({
+  args: {
+    cursor: v.optional(v.string()),
+    batchSize: v.optional(v.number()),
+    dryRun: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    const batchSize = clampInt(args.batchSize ?? DEFAULT_BATCH_SIZE, 1, MAX_BATCH_SIZE);
+    const dryRun = args.dryRun === true;
+    const { page, isDone, continueCursor } = await ctx.db
+      .query("packages")
+      .order("asc")
+      .paginate({ cursor: args.cursor ?? null, numItems: batchSize });
+
+    let patched = 0;
+    for (const pkg of page) {
+      const packageDigest = await ctx.db
+        .query("packageSearchDigest")
+        .withIndex("by_package", (q) => q.eq("packageId", pkg._id))
+        .unique();
+      if (packageDigest && !packageStatsEqual(packageDigest.stats, pkg.stats)) {
+        patched += 1;
+        if (!dryRun) {
+          await ctx.db.patch(packageDigest._id, { stats: pkg.stats });
+        }
+      }
+
+      const capabilityDigests = await ctx.db
+        .query("packageCapabilitySearchDigest")
+        .withIndex("by_package", (q) => q.eq("packageId", pkg._id))
+        .collect();
+      for (const digest of capabilityDigests) {
+        if (packageStatsEqual(digest.stats, pkg.stats)) continue;
+        patched += 1;
+        if (!dryRun) {
+          await ctx.db.patch(digest._id, { stats: pkg.stats });
+        }
+      }
+
+      const pluginCategoryDigests = await ctx.db
+        .query("packagePluginCategorySearchDigest")
+        .withIndex("by_package", (q) => q.eq("packageId", pkg._id))
+        .collect();
+      for (const digest of pluginCategoryDigests) {
+        if (packageStatsEqual(digest.stats, pkg.stats)) continue;
+        patched += 1;
+        if (!dryRun) {
+          await ctx.db.patch(digest._id, { stats: pkg.stats });
+        }
+      }
+    }
+
+    return {
+      ok: true as const,
+      dryRun,
+      scanned: page.length,
+      patched,
+      cursor: isDone ? null : continueCursor,
+      isDone,
+    };
+  },
+});
+
 type RecommendationScoreBackfillArgs = {
   skillCursor?: string;
   packageCursor?: string;
@@ -421,6 +484,19 @@ function computePackageRecommendationScore(pkg: Doc<"packages">) {
     installs: pkg.stats.installs,
     stars: pkg.stats.stars,
   });
+}
+
+function packageStatsEqual(
+  left: Doc<"packageSearchDigest">["stats"],
+  right: Doc<"packages">["stats"],
+) {
+  if (!left) return false;
+  return (
+    left.downloads === right.downloads &&
+    left.installs === right.installs &&
+    left.stars === right.stars &&
+    left.versions === right.versions
+  );
 }
 
 /**
