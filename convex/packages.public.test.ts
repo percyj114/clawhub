@@ -12520,6 +12520,8 @@ describe("owned package sanction batches", () => {
     expect(deleteDoc).toHaveBeenCalledWith("packageInstallMetricDedupes:0");
     expect(deleteDoc).toHaveBeenCalledWith("packageInstallMetricDedupes:199");
     expect(deleteDoc).not.toHaveBeenCalledWith("packageInstallMetricDedupes:200");
+    expect(deleteDoc).not.toHaveBeenCalledWith("packagePublishTokens:demo");
+    expect(deleteDoc).not.toHaveBeenCalledWith("packageReleases:demo-1");
     expect(deleteDoc).not.toHaveBeenCalledWith("packages:demo");
     expect(runAfter).toHaveBeenCalledWith(0, expect.anything(), {
       packageId: "packages:demo",
