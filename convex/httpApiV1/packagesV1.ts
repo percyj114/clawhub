@@ -770,17 +770,13 @@ async function streamClawPackRelease(
           now,
         })
       : null;
-    if (statKind === "install") {
+    if (statKind === "install" && metricArgs) {
       await runMutationRef(ctx, internalRefs.packages.recordPackageInstallInternal, {
         packageId: pkg._id,
-        ...(metricArgs
-          ? {
-              identityKind: metricArgs.identityKind,
-              identityHash: metricArgs.identityHash,
-              dayStart: metricArgs.dayStart,
-              occurredAt: metricArgs.occurredAt,
-            }
-          : {}),
+        identityKind: metricArgs.identityKind,
+        identityHash: metricArgs.identityHash,
+        dayStart: metricArgs.dayStart,
+        occurredAt: metricArgs.occurredAt,
       });
     }
 

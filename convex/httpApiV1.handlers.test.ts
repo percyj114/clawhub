@@ -11455,6 +11455,70 @@ describe("httpApiV1 handlers", () => {
     );
   });
 
+  it("npm mirror tarball downloads skip install metrics without a trusted identity", async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ("name" in args && !("paginationOpts" in args)) {
+        return {
+          package: {
+            _id: "packages:demo-plugin",
+            name: "demo-plugin",
+            displayName: "Demo Plugin",
+            family: "code-plugin",
+            tags: { latest: "packageReleases:1" },
+            latestReleaseId: "packageReleases:1",
+            channel: "community",
+            isOfficial: false,
+            summary: "Demo package",
+            createdAt: 1,
+            updatedAt: 1,
+          },
+          latestRelease: null,
+          owner: null,
+        };
+      }
+      if ("paginationOpts" in args) {
+        return {
+          page: [
+            {
+              _id: "packageReleases:1",
+              packageId: "packages:demo-plugin",
+              version: "1.0.0",
+              createdAt: 1,
+              changelog: "Initial release",
+              distTags: ["latest"],
+              files: [],
+              artifactKind: "npm-pack",
+              clawpackStorageId: "storage:clawpack",
+              npmIntegrity: "sha512-demo",
+              npmShasum: "d".repeat(40),
+              npmTarballName: "demo-plugin-1.0.0.tgz",
+            },
+          ],
+          isDone: true,
+          continueCursor: null,
+        };
+      }
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.npmMirrorGetHandler(
+      makeCtx({
+        runQuery,
+        runMutation,
+        storage: {
+          get: vi.fn(async () => new Blob(["tarball"], { type: "application/octet-stream" })),
+        },
+      }),
+      new Request("https://example.com/api/npm/demo-plugin/-/demo-plugin-1.0.0.tgz"),
+    );
+
+    expect(response.status).toBe(200);
+    const calledMutationRefs = runMutation.mock.calls.map(([mutation]) => mutation);
+    expect(calledMutationRefs).not.toContain(internal.packages.recordPackageInstallInternal);
+    expect(calledMutationRefs).not.toContain(internal.downloadMetrics.recordDownloadMetricInternal);
+  });
+
   it("npm mirror returns not found for invalid package lookup names", async () => {
     const runQuery = vi.fn(async () => {
       throw new Error("unexpected package lookup");
