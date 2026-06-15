@@ -144,6 +144,34 @@ export async function upsertPackageSearchDigest(
   await adjustGlobalPublicPluginsCount(ctx, getPublicPluginVisibilityDelta(null, fields));
 }
 
+export async function patchPackageSearchDigestStats(
+  ctx: Pick<MutationCtx, "db">,
+  packageId: Id<"packages">,
+  stats: Doc<"packages">["stats"],
+) {
+  const digest = await ctx.db
+    .query("packageSearchDigest")
+    .withIndex("by_package", (q) => q.eq("packageId", packageId))
+    .unique();
+  if (digest) await ctx.db.patch(digest._id, { stats });
+
+  const capabilityDigests = await ctx.db
+    .query("packageCapabilitySearchDigest")
+    .withIndex("by_package", (q) => q.eq("packageId", packageId))
+    .collect();
+  for (const capabilityDigest of capabilityDigests) {
+    await ctx.db.patch(capabilityDigest._id, { stats });
+  }
+
+  const categoryDigests = await ctx.db
+    .query("packagePluginCategorySearchDigest")
+    .withIndex("by_package", (q) => q.eq("packageId", packageId))
+    .collect();
+  for (const categoryDigest of categoryDigests) {
+    await ctx.db.patch(categoryDigest._id, { stats });
+  }
+}
+
 async function syncPackageCapabilitySearchDigests(
   ctx: Pick<MutationCtx, "db">,
   fields: PackageSearchDigestFields,

@@ -64,7 +64,11 @@ import {
   summarizePackageForSearch,
   toConvexSafeJsonValue,
 } from "./lib/packageRegistry";
-import { extractPackageDigestFields, upsertPackageSearchDigest } from "./lib/packageSearchDigest";
+import {
+  extractPackageDigestFields,
+  patchPackageSearchDigestStats,
+  upsertPackageSearchDigest,
+} from "./lib/packageSearchDigest";
 import {
   getPackageTrustReasons,
   isPackageBlockedFromPublic,
@@ -1768,8 +1772,12 @@ function buildPackageCapabilityDigestQuery(
     channel?: PackageChannel;
     isOfficial?: boolean;
     executesCode?: boolean;
+    sort?: "updated" | "installs";
   },
 ) {
+  if (args.sort === "installs") {
+    return buildPackageCapabilityInstallDigestQuery(ctx, args);
+  }
   const family = args.family;
   const channel = args.channel;
   const isOfficial = args.isOfficial;
@@ -1924,6 +1932,170 @@ function buildPackageCapabilityDigestQuery(
     );
 }
 
+function buildPackageCapabilityInstallDigestQuery(
+  ctx: DbReaderCtx,
+  args: {
+    capabilityTag: string;
+    family?: PackageFamily;
+    channel?: PackageChannel;
+    isOfficial?: boolean;
+    executesCode?: boolean;
+  },
+) {
+  const family = args.family;
+  const channel = args.channel;
+  const isOfficial = args.isOfficial;
+  const executesCode = args.executesCode;
+
+  if (family && channel && typeof executesCode === "boolean") {
+    return ctx.db
+      .query("packageCapabilitySearchDigest")
+      .withIndex("by_active_family_channel_tag_executes_installs", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("family", family)
+          .eq("channel", channel)
+          .eq("capabilityTag", args.capabilityTag)
+          .eq("executesCode", executesCode),
+      );
+  }
+  if (family && typeof isOfficial === "boolean" && typeof executesCode === "boolean") {
+    return ctx.db
+      .query("packageCapabilitySearchDigest")
+      .withIndex("by_active_family_official_tag_executes_installs", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("family", family)
+          .eq("isOfficial", isOfficial)
+          .eq("capabilityTag", args.capabilityTag)
+          .eq("executesCode", executesCode),
+      );
+  }
+  if (channel && typeof isOfficial === "boolean" && typeof executesCode === "boolean") {
+    return ctx.db
+      .query("packageCapabilitySearchDigest")
+      .withIndex("by_active_channel_official_tag_executes_installs", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("channel", channel)
+          .eq("isOfficial", isOfficial)
+          .eq("capabilityTag", args.capabilityTag)
+          .eq("executesCode", executesCode),
+      );
+  }
+  if (family && channel) {
+    return ctx.db
+      .query("packageCapabilitySearchDigest")
+      .withIndex("by_active_family_channel_tag_installs", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("family", family)
+          .eq("channel", channel)
+          .eq("capabilityTag", args.capabilityTag),
+      );
+  }
+  if (family && typeof isOfficial === "boolean") {
+    return ctx.db
+      .query("packageCapabilitySearchDigest")
+      .withIndex("by_active_family_official_tag_installs", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("family", family)
+          .eq("isOfficial", isOfficial)
+          .eq("capabilityTag", args.capabilityTag),
+      );
+  }
+  if (channel && typeof isOfficial === "boolean") {
+    return ctx.db
+      .query("packageCapabilitySearchDigest")
+      .withIndex("by_active_channel_official_tag_installs", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("channel", channel)
+          .eq("isOfficial", isOfficial)
+          .eq("capabilityTag", args.capabilityTag),
+      );
+  }
+  if (family && typeof executesCode === "boolean") {
+    return ctx.db
+      .query("packageCapabilitySearchDigest")
+      .withIndex("by_active_family_tag_executes_installs", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("family", family)
+          .eq("capabilityTag", args.capabilityTag)
+          .eq("executesCode", executesCode),
+      );
+  }
+  if (channel && typeof executesCode === "boolean") {
+    return ctx.db
+      .query("packageCapabilitySearchDigest")
+      .withIndex("by_active_channel_tag_executes_installs", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("channel", channel)
+          .eq("capabilityTag", args.capabilityTag)
+          .eq("executesCode", executesCode),
+      );
+  }
+  if (typeof isOfficial === "boolean" && typeof executesCode === "boolean") {
+    return ctx.db
+      .query("packageCapabilitySearchDigest")
+      .withIndex("by_active_official_tag_executes_installs", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("isOfficial", isOfficial)
+          .eq("capabilityTag", args.capabilityTag)
+          .eq("executesCode", executesCode),
+      );
+  }
+  if (family) {
+    return ctx.db
+      .query("packageCapabilitySearchDigest")
+      .withIndex("by_active_family_tag_installs", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("family", family)
+          .eq("capabilityTag", args.capabilityTag),
+      );
+  }
+  if (channel) {
+    return ctx.db
+      .query("packageCapabilitySearchDigest")
+      .withIndex("by_active_channel_tag_installs", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("channel", channel)
+          .eq("capabilityTag", args.capabilityTag),
+      );
+  }
+  if (typeof isOfficial === "boolean") {
+    return ctx.db
+      .query("packageCapabilitySearchDigest")
+      .withIndex("by_active_official_tag_installs", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("isOfficial", isOfficial)
+          .eq("capabilityTag", args.capabilityTag),
+      );
+  }
+  if (typeof executesCode === "boolean") {
+    return ctx.db
+      .query("packageCapabilitySearchDigest")
+      .withIndex("by_active_tag_executes_installs", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("capabilityTag", args.capabilityTag)
+          .eq("executesCode", executesCode),
+      );
+  }
+  return ctx.db
+    .query("packageCapabilitySearchDigest")
+    .withIndex("by_active_tag_installs", (q) =>
+      q.eq("softDeletedAt", undefined).eq("capabilityTag", args.capabilityTag),
+    );
+}
+
 function buildPackagePluginCategoryDigestQuery(
   ctx: DbReaderCtx,
   args: {
@@ -1932,8 +2104,12 @@ function buildPackagePluginCategoryDigestQuery(
     channel?: PackageChannel;
     isOfficial?: boolean;
     executesCode?: boolean;
+    sort?: "updated" | "installs";
   },
 ) {
+  if (args.sort === "installs") {
+    return buildPackagePluginCategoryInstallDigestQuery(ctx, args);
+  }
   const family = args.family;
   const channel = args.channel;
   const isOfficial = args.isOfficial;
@@ -2078,6 +2254,164 @@ function buildPackagePluginCategoryDigestQuery(
   return ctx.db
     .query("packagePluginCategorySearchDigest")
     .withIndex("by_active_category_updated", (q) =>
+      q.eq("softDeletedAt", undefined).eq("pluginCategory", args.category),
+    );
+}
+
+function buildPackagePluginCategoryInstallDigestQuery(
+  ctx: DbReaderCtx,
+  args: {
+    category: PluginCategorySlug;
+    family?: PackageFamily;
+    channel?: PackageChannel;
+    isOfficial?: boolean;
+    executesCode?: boolean;
+  },
+) {
+  const family = args.family;
+  const channel = args.channel;
+  const isOfficial = args.isOfficial;
+  const executesCode = args.executesCode;
+
+  if (family && channel && typeof executesCode === "boolean") {
+    return ctx.db
+      .query("packagePluginCategorySearchDigest")
+      .withIndex("by_active_family_channel_category_executes_installs", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("family", family)
+          .eq("channel", channel)
+          .eq("pluginCategory", args.category)
+          .eq("executesCode", executesCode),
+      );
+  }
+  if (family && typeof isOfficial === "boolean" && typeof executesCode === "boolean") {
+    return ctx.db
+      .query("packagePluginCategorySearchDigest")
+      .withIndex("by_active_family_official_category_executes_installs", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("family", family)
+          .eq("isOfficial", isOfficial)
+          .eq("pluginCategory", args.category)
+          .eq("executesCode", executesCode),
+      );
+  }
+  if (channel && typeof isOfficial === "boolean" && typeof executesCode === "boolean") {
+    return ctx.db
+      .query("packagePluginCategorySearchDigest")
+      .withIndex("by_active_channel_official_category_executes_installs", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("channel", channel)
+          .eq("isOfficial", isOfficial)
+          .eq("pluginCategory", args.category)
+          .eq("executesCode", executesCode),
+      );
+  }
+  if (family && channel) {
+    return ctx.db
+      .query("packagePluginCategorySearchDigest")
+      .withIndex("by_active_family_channel_category_installs", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("family", family)
+          .eq("channel", channel)
+          .eq("pluginCategory", args.category),
+      );
+  }
+  if (family && typeof isOfficial === "boolean") {
+    return ctx.db
+      .query("packagePluginCategorySearchDigest")
+      .withIndex("by_active_family_official_category_installs", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("family", family)
+          .eq("isOfficial", isOfficial)
+          .eq("pluginCategory", args.category),
+      );
+  }
+  if (channel && typeof isOfficial === "boolean") {
+    return ctx.db
+      .query("packagePluginCategorySearchDigest")
+      .withIndex("by_active_channel_official_category_installs", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("channel", channel)
+          .eq("isOfficial", isOfficial)
+          .eq("pluginCategory", args.category),
+      );
+  }
+  if (family && typeof executesCode === "boolean") {
+    return ctx.db
+      .query("packagePluginCategorySearchDigest")
+      .withIndex("by_active_family_category_executes_installs", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("family", family)
+          .eq("pluginCategory", args.category)
+          .eq("executesCode", executesCode),
+      );
+  }
+  if (channel && typeof executesCode === "boolean") {
+    return ctx.db
+      .query("packagePluginCategorySearchDigest")
+      .withIndex("by_active_channel_category_executes_installs", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("channel", channel)
+          .eq("pluginCategory", args.category)
+          .eq("executesCode", executesCode),
+      );
+  }
+  if (typeof isOfficial === "boolean" && typeof executesCode === "boolean") {
+    return ctx.db
+      .query("packagePluginCategorySearchDigest")
+      .withIndex("by_active_official_category_executes_installs", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("isOfficial", isOfficial)
+          .eq("pluginCategory", args.category)
+          .eq("executesCode", executesCode),
+      );
+  }
+  if (family) {
+    return ctx.db
+      .query("packagePluginCategorySearchDigest")
+      .withIndex("by_active_family_category_installs", (q) =>
+        q.eq("softDeletedAt", undefined).eq("family", family).eq("pluginCategory", args.category),
+      );
+  }
+  if (channel) {
+    return ctx.db
+      .query("packagePluginCategorySearchDigest")
+      .withIndex("by_active_channel_category_installs", (q) =>
+        q.eq("softDeletedAt", undefined).eq("channel", channel).eq("pluginCategory", args.category),
+      );
+  }
+  if (typeof isOfficial === "boolean") {
+    return ctx.db
+      .query("packagePluginCategorySearchDigest")
+      .withIndex("by_active_official_category_installs", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("isOfficial", isOfficial)
+          .eq("pluginCategory", args.category),
+      );
+  }
+  if (typeof executesCode === "boolean") {
+    return ctx.db
+      .query("packagePluginCategorySearchDigest")
+      .withIndex("by_active_category_executes_installs", (q) =>
+        q
+          .eq("softDeletedAt", undefined)
+          .eq("pluginCategory", args.category)
+          .eq("executesCode", executesCode),
+      );
+  }
+  return ctx.db
+    .query("packagePluginCategorySearchDigest")
+    .withIndex("by_active_category_installs", (q) =>
       q.eq("softDeletedAt", undefined).eq("pluginCategory", args.category),
     );
 }
@@ -3280,6 +3614,8 @@ async function listPackagePageImpl(
   const channel = args.channel;
   const isOfficial = args.isOfficial;
   const category = isPluginCategorySlug(args.category) ? args.category : undefined;
+  const useFilteredInstallDigest =
+    args.sort === "installs" && (Boolean(category) || Boolean(args.capabilityTag));
   const decodedCursor = decodePublicPageCursor(args.paginationOpts.cursor);
   if (decodedCursor.done && decodedCursor.offset === 0) {
     return { page: collected, isDone: true, continueCursor: "" };
@@ -3307,7 +3643,10 @@ async function listPackagePageImpl(
         : await getPackageRecommendedIndexName(ctx, family)
       : null;
 
-  if (args.sort === "downloads" || args.sort === "installs" || recommendedIndexName) {
+  if (
+    (args.sort === "downloads" || args.sort === "installs" || recommendedIndexName) &&
+    !useFilteredInstallDigest
+  ) {
     let cursor = pageCursor;
     let pageOffset = offset;
     let pageSize: number | null = decodedCursor.pageSize ?? null;
@@ -3398,6 +3737,7 @@ async function listPackagePageImpl(
         channel,
         isOfficial,
         executesCode: args.executesCode,
+        sort: useFilteredInstallDigest ? "installs" : "updated",
       })
     : args.capabilityTag
       ? buildPackageCapabilityDigestQuery(ctx, {
@@ -3406,6 +3746,7 @@ async function listPackagePageImpl(
           channel,
           isOfficial,
           executesCode: args.executesCode,
+          sort: useFilteredInstallDigest ? "installs" : "updated",
         })
       : buildPackageDigestQuery(ctx, {
           family,
@@ -3715,10 +4056,12 @@ export const processPackageStatEventsInternal = internalMutation({
         stars: pkg.stats?.stars ?? 0,
         versions: pkg.stats?.versions ?? 0,
       };
+      const recommendationPatch = computePackageRecommendationPatch(nextStats);
       await ctx.db.patch(pkg._id, {
         stats: nextStats,
-        ...computePackageRecommendationPatch(nextStats),
+        ...recommendationPatch,
       });
+      await patchPackageSearchDigestStats(ctx, pkg._id, nextStats);
       packagesUpdated += 1;
     }
 

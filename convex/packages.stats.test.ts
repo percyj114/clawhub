@@ -195,19 +195,41 @@ describe("package stat events", () => {
       { _id: "packageStatEvents:3", packageId: "packages:two", kind: "download" },
     ];
     const patch = vi.fn();
+    const insert = vi.fn();
     const ctx = {
       db: {
-        query: vi.fn(() => ({
-          withIndex: vi.fn(() => ({
-            take: vi.fn(async () => events),
-          })),
-        })),
-        get: vi.fn(async (id: string) => ({
-          _id: id,
-          stats: { downloads: 10, installs: 1, stars: 2, versions: 3 },
-        })),
+        query: vi.fn((table: string) => {
+          if (table === "packageStatEvents") {
+            return {
+              withIndex: vi.fn(() => ({
+                take: vi.fn(async () => events),
+              })),
+            };
+          }
+          if (table === "packageSearchDigest") {
+            return {
+              withIndex: vi.fn(() => ({
+                unique: vi.fn().mockResolvedValue(null),
+              })),
+            };
+          }
+          if (
+            table === "packageCapabilitySearchDigest" ||
+            table === "packagePluginCategorySearchDigest"
+          ) {
+            return {
+              withIndex: vi.fn(() => ({
+                collect: vi.fn().mockResolvedValue([]),
+              })),
+            };
+          }
+          throw new Error(`Unexpected table: ${table}`);
+        }),
+        get: vi.fn(async (id: string) =>
+          makeStatsPackageDoc(id, { downloads: 10, installs: 1, stars: 2, versions: 3 }),
+        ),
         normalizeId: vi.fn(),
-        insert: vi.fn(),
+        insert,
         patch,
         replace: vi.fn(),
         delete: vi.fn(),
@@ -253,4 +275,130 @@ describe("package stat events", () => {
       expect.objectContaining({ processedAt: expect.any(Number) }),
     );
   });
+
+  it("syncs package search digest stats after processing install events", async () => {
+    const events = [{ _id: "packageStatEvents:1", packageId: "packages:one", kind: "install" }];
+    const patch = vi.fn();
+    const packageDoc = makeStatsPackageDoc("packages:one", {
+      downloads: 10,
+      installs: 1,
+      stars: 2,
+      versions: 3,
+      capabilityTags: ["tools"],
+    });
+    const ctx = {
+      db: {
+        query: vi.fn((table: string) => {
+          if (table === "packageStatEvents") {
+            return {
+              withIndex: vi.fn(() => ({
+                take: vi.fn(async () => events),
+              })),
+            };
+          }
+          if (table === "packageSearchDigest") {
+            return {
+              withIndex: vi.fn(() => ({
+                unique: vi.fn().mockResolvedValue({
+                  _id: "packageSearchDigest:one",
+                  packageId: "packages:one",
+                  stats: { downloads: 10, installs: 1, stars: 2, versions: 3 },
+                }),
+              })),
+            };
+          }
+          if (table === "packageCapabilitySearchDigest") {
+            return {
+              withIndex: vi.fn(() => ({
+                collect: vi.fn().mockResolvedValue([
+                  {
+                    _id: "packageCapabilitySearchDigest:one-tools",
+                    packageId: "packages:one",
+                    capabilityTag: "tools",
+                    ownerHandle: "owner",
+                    ownerKind: "user",
+                    stats: { downloads: 10, installs: 1, stars: 2, versions: 3 },
+                  },
+                ]),
+              })),
+            };
+          }
+          if (table === "packagePluginCategorySearchDigest") {
+            return {
+              withIndex: vi.fn(() => ({
+                collect: vi.fn().mockResolvedValue([]),
+              })),
+            };
+          }
+          throw new Error(`Unexpected table: ${table}`);
+        }),
+        get: vi.fn(async (id: string) => (id === "packages:one" ? packageDoc : null)),
+        normalizeId: vi.fn(),
+        insert: vi.fn(),
+        patch,
+        replace: vi.fn(),
+        delete: vi.fn(),
+        system: {
+          get: vi.fn(),
+          query: vi.fn(),
+        },
+      },
+      scheduler: {
+        runAfter: vi.fn(),
+      },
+    };
+
+    await processStatsHandler(ctx, { batchSize: 10 });
+
+    expect(patch).toHaveBeenCalledWith(
+      "packageSearchDigest:one",
+      expect.objectContaining({
+        stats: expect.objectContaining({ installs: 2 }),
+      }),
+    );
+    expect(patch).toHaveBeenCalledWith("packageCapabilitySearchDigest:one-tools", {
+      stats: { downloads: 10, installs: 2, stars: 2, versions: 3 },
+    });
+  });
 });
+
+function makeStatsPackageDoc(
+  id: string,
+  overrides: Partial<{
+    downloads: number;
+    installs: number;
+    stars: number;
+    versions: number;
+    capabilityTags: string[];
+  }> = {},
+) {
+  const name = id.replace("packages:", "demo-");
+  return {
+    _id: id,
+    name,
+    normalizedName: name,
+    displayName: name,
+    family: "code-plugin",
+    channel: "community",
+    isOfficial: false,
+    ownerUserId: "users:owner",
+    ownerPublisherId: undefined,
+    tags: {},
+    latestReleaseId: "packageReleases:demo-1",
+    latestVersionSummary: { version: "1.0.0" },
+    compatibility: null,
+    capabilities: null,
+    verification: null,
+    scanStatus: "clean",
+    capabilityTags: overrides.capabilityTags ?? [],
+    stats: {
+      downloads: overrides.downloads ?? 0,
+      installs: overrides.installs ?? 0,
+      stars: overrides.stars ?? 0,
+      versions: overrides.versions ?? 1,
+    },
+    createdAt: 1,
+    updatedAt: 1,
+    softDeletedAt: undefined,
+  };
+}

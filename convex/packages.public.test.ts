@@ -3485,6 +3485,36 @@ describe("packages public queries", () => {
     expect(indexNames).toEqual(["by_active_tag_executes_updated"]);
   });
 
+  it("uses capability digests for install-sorted capability listings", async () => {
+    const { ctx, indexNames, tableNames } = makeDigestCtx({
+      capabilityPages: [
+        {
+          page: [
+            makeDigest("tools-demo", {
+              family: "code-plugin",
+              capabilityTag: "tools",
+              capabilityTags: ["tools"],
+              stats: { downloads: 20, installs: 42, stars: 0, versions: 1 },
+            }),
+          ],
+          isDone: true,
+          continueCursor: "",
+        },
+      ],
+    });
+
+    const result = await listPublicPageHandler(ctx, {
+      family: "code-plugin",
+      capabilityTag: "tools",
+      sort: "installs",
+      paginationOpts: { cursor: null, numItems: 10 },
+    });
+
+    expect(result.page.map((entry) => entry.name)).toEqual(["tools-demo"]);
+    expect(tableNames).toEqual(["packageCapabilitySearchDigest"]);
+    expect(indexNames).toEqual(["by_active_family_tag_installs"]);
+  });
+
   it("uses plugin category digests for category-filtered listings", async () => {
     const { ctx, indexNames, tableNames } = makeDigestCtx({
       categoryPages: [
@@ -3511,6 +3541,36 @@ describe("packages public queries", () => {
     expect(result.page.map((entry) => entry.name)).toEqual(["api-demo"]);
     expect(tableNames).toEqual(["packagePluginCategorySearchDigest"]);
     expect(indexNames).toEqual(["by_active_category_executes_updated"]);
+  });
+
+  it("uses plugin category digests for install-sorted category listings", async () => {
+    const { ctx, indexNames, tableNames } = makeDigestCtx({
+      categoryPages: [
+        {
+          page: [
+            makeDigest("api-demo", {
+              family: "code-plugin",
+              pluginCategory: "data",
+              pluginCategoryTags: ["data"],
+              stats: { downloads: 20, installs: 42, stars: 0, versions: 1 },
+            }),
+          ],
+          isDone: true,
+          continueCursor: "",
+        },
+      ],
+    });
+
+    const result = await listPublicPageHandler(ctx, {
+      family: "code-plugin",
+      category: "data",
+      sort: "installs",
+      paginationOpts: { cursor: null, numItems: 10 },
+    });
+
+    expect(result.page.map((entry) => entry.name)).toEqual(["api-demo"]);
+    expect(tableNames).toEqual(["packagePluginCategorySearchDigest"]);
+    expect(indexNames).toEqual(["by_active_family_category_installs"]);
   });
 
   it("uses plugin category digests for category-filtered search", async () => {

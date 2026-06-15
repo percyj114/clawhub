@@ -1661,13 +1661,33 @@ const packageCapabilitySearchDigest = defineTable({
 })
   .index("by_package", ["packageId", "capabilityTag"])
   .index("by_active_tag_updated", ["softDeletedAt", "capabilityTag", "updatedAt"])
+  .index("by_active_tag_installs", [
+    "softDeletedAt",
+    "capabilityTag",
+    "stats.installs",
+    "updatedAt",
+  ])
   .index("by_active_tag_executes_updated", [
     "softDeletedAt",
     "capabilityTag",
     "executesCode",
     "updatedAt",
   ])
+  .index("by_active_tag_executes_installs", [
+    "softDeletedAt",
+    "capabilityTag",
+    "executesCode",
+    "stats.installs",
+    "updatedAt",
+  ])
   .index("by_active_family_tag_updated", ["softDeletedAt", "family", "capabilityTag", "updatedAt"])
+  .index("by_active_family_tag_installs", [
+    "softDeletedAt",
+    "family",
+    "capabilityTag",
+    "stats.installs",
+    "updatedAt",
+  ])
   .index("by_active_family_tag_executes_updated", [
     "softDeletedAt",
     "family",
@@ -1675,10 +1695,25 @@ const packageCapabilitySearchDigest = defineTable({
     "executesCode",
     "updatedAt",
   ])
+  .index("by_active_family_tag_executes_installs", [
+    "softDeletedAt",
+    "family",
+    "capabilityTag",
+    "executesCode",
+    "stats.installs",
+    "updatedAt",
+  ])
   .index("by_active_channel_tag_updated", [
     "softDeletedAt",
     "channel",
     "capabilityTag",
+    "updatedAt",
+  ])
+  .index("by_active_channel_tag_installs", [
+    "softDeletedAt",
+    "channel",
+    "capabilityTag",
+    "stats.installs",
     "updatedAt",
   ])
   .index("by_active_channel_tag_executes_updated", [
@@ -1688,10 +1723,25 @@ const packageCapabilitySearchDigest = defineTable({
     "executesCode",
     "updatedAt",
   ])
+  .index("by_active_channel_tag_executes_installs", [
+    "softDeletedAt",
+    "channel",
+    "capabilityTag",
+    "executesCode",
+    "stats.installs",
+    "updatedAt",
+  ])
   .index("by_active_official_tag_updated", [
     "softDeletedAt",
     "isOfficial",
     "capabilityTag",
+    "updatedAt",
+  ])
+  .index("by_active_official_tag_installs", [
+    "softDeletedAt",
+    "isOfficial",
+    "capabilityTag",
+    "stats.installs",
     "updatedAt",
   ])
   .index("by_active_official_tag_executes_updated", [
@@ -1701,11 +1751,27 @@ const packageCapabilitySearchDigest = defineTable({
     "executesCode",
     "updatedAt",
   ])
+  .index("by_active_official_tag_executes_installs", [
+    "softDeletedAt",
+    "isOfficial",
+    "capabilityTag",
+    "executesCode",
+    "stats.installs",
+    "updatedAt",
+  ])
   .index("by_active_family_channel_tag_updated", [
     "softDeletedAt",
     "family",
     "channel",
     "capabilityTag",
+    "updatedAt",
+  ])
+  .index("by_active_family_channel_tag_installs", [
+    "softDeletedAt",
+    "family",
+    "channel",
+    "capabilityTag",
+    "stats.installs",
     "updatedAt",
   ])
   .index("by_active_family_channel_tag_executes_updated", [
@@ -1716,11 +1782,28 @@ const packageCapabilitySearchDigest = defineTable({
     "executesCode",
     "updatedAt",
   ])
+  .index("by_active_family_channel_tag_executes_installs", [
+    "softDeletedAt",
+    "family",
+    "channel",
+    "capabilityTag",
+    "executesCode",
+    "stats.installs",
+    "updatedAt",
+  ])
   .index("by_active_family_official_tag_updated", [
     "softDeletedAt",
     "family",
     "isOfficial",
     "capabilityTag",
+    "updatedAt",
+  ])
+  .index("by_active_family_official_tag_installs", [
+    "softDeletedAt",
+    "family",
+    "isOfficial",
+    "capabilityTag",
+    "stats.installs",
     "updatedAt",
   ])
   .index("by_active_family_official_tag_executes_updated", [
@@ -1731,11 +1814,28 @@ const packageCapabilitySearchDigest = defineTable({
     "executesCode",
     "updatedAt",
   ])
+  .index("by_active_family_official_tag_executes_installs", [
+    "softDeletedAt",
+    "family",
+    "isOfficial",
+    "capabilityTag",
+    "executesCode",
+    "stats.installs",
+    "updatedAt",
+  ])
   .index("by_active_channel_official_tag_updated", [
     "softDeletedAt",
     "channel",
     "isOfficial",
     "capabilityTag",
+    "updatedAt",
+  ])
+  .index("by_active_channel_official_tag_installs", [
+    "softDeletedAt",
+    "channel",
+    "isOfficial",
+    "capabilityTag",
+    "stats.installs",
     "updatedAt",
   ])
   .index("by_active_channel_official_tag_executes_updated", [
@@ -1744,6 +1844,15 @@ const packageCapabilitySearchDigest = defineTable({
     "isOfficial",
     "capabilityTag",
     "executesCode",
+    "updatedAt",
+  ])
+  .index("by_active_channel_official_tag_executes_installs", [
+    "softDeletedAt",
+    "channel",
+    "isOfficial",
+    "capabilityTag",
+    "executesCode",
+    "stats.installs",
     "updatedAt",
   ]);
 
@@ -1775,16 +1884,36 @@ const packagePluginCategorySearchDigest = defineTable({
 })
   .index("by_package", ["packageId", "pluginCategory"])
   .index("by_active_category_updated", ["softDeletedAt", "pluginCategory", "updatedAt"])
+  .index("by_active_category_installs", [
+    "softDeletedAt",
+    "pluginCategory",
+    "stats.installs",
+    "updatedAt",
+  ])
   .index("by_active_category_executes_updated", [
     "softDeletedAt",
     "pluginCategory",
     "executesCode",
     "updatedAt",
   ])
+  .index("by_active_category_executes_installs", [
+    "softDeletedAt",
+    "pluginCategory",
+    "executesCode",
+    "stats.installs",
+    "updatedAt",
+  ])
   .index("by_active_family_category_updated", [
     "softDeletedAt",
     "family",
     "pluginCategory",
+    "updatedAt",
+  ])
+  .index("by_active_family_category_installs", [
+    "softDeletedAt",
+    "family",
+    "pluginCategory",
+    "stats.installs",
     "updatedAt",
   ])
   .index("by_active_family_category_executes_updated", [
@@ -1794,10 +1923,25 @@ const packagePluginCategorySearchDigest = defineTable({
     "executesCode",
     "updatedAt",
   ])
+  .index("by_active_family_category_executes_installs", [
+    "softDeletedAt",
+    "family",
+    "pluginCategory",
+    "executesCode",
+    "stats.installs",
+    "updatedAt",
+  ])
   .index("by_active_channel_category_updated", [
     "softDeletedAt",
     "channel",
     "pluginCategory",
+    "updatedAt",
+  ])
+  .index("by_active_channel_category_installs", [
+    "softDeletedAt",
+    "channel",
+    "pluginCategory",
+    "stats.installs",
     "updatedAt",
   ])
   .index("by_active_channel_category_executes_updated", [
@@ -1807,10 +1951,25 @@ const packagePluginCategorySearchDigest = defineTable({
     "executesCode",
     "updatedAt",
   ])
+  .index("by_active_channel_category_executes_installs", [
+    "softDeletedAt",
+    "channel",
+    "pluginCategory",
+    "executesCode",
+    "stats.installs",
+    "updatedAt",
+  ])
   .index("by_active_official_category_updated", [
     "softDeletedAt",
     "isOfficial",
     "pluginCategory",
+    "updatedAt",
+  ])
+  .index("by_active_official_category_installs", [
+    "softDeletedAt",
+    "isOfficial",
+    "pluginCategory",
+    "stats.installs",
     "updatedAt",
   ])
   .index("by_active_official_category_executes_updated", [
@@ -1820,11 +1979,27 @@ const packagePluginCategorySearchDigest = defineTable({
     "executesCode",
     "updatedAt",
   ])
+  .index("by_active_official_category_executes_installs", [
+    "softDeletedAt",
+    "isOfficial",
+    "pluginCategory",
+    "executesCode",
+    "stats.installs",
+    "updatedAt",
+  ])
   .index("by_active_family_channel_category_updated", [
     "softDeletedAt",
     "family",
     "channel",
     "pluginCategory",
+    "updatedAt",
+  ])
+  .index("by_active_family_channel_category_installs", [
+    "softDeletedAt",
+    "family",
+    "channel",
+    "pluginCategory",
+    "stats.installs",
     "updatedAt",
   ])
   .index("by_active_family_channel_category_executes_updated", [
@@ -1835,11 +2010,28 @@ const packagePluginCategorySearchDigest = defineTable({
     "executesCode",
     "updatedAt",
   ])
+  .index("by_active_family_channel_category_executes_installs", [
+    "softDeletedAt",
+    "family",
+    "channel",
+    "pluginCategory",
+    "executesCode",
+    "stats.installs",
+    "updatedAt",
+  ])
   .index("by_active_family_official_category_updated", [
     "softDeletedAt",
     "family",
     "isOfficial",
     "pluginCategory",
+    "updatedAt",
+  ])
+  .index("by_active_family_official_category_installs", [
+    "softDeletedAt",
+    "family",
+    "isOfficial",
+    "pluginCategory",
+    "stats.installs",
     "updatedAt",
   ])
   .index("by_active_family_official_category_executes_updated", [
@@ -1850,11 +2042,28 @@ const packagePluginCategorySearchDigest = defineTable({
     "executesCode",
     "updatedAt",
   ])
+  .index("by_active_family_official_category_executes_installs", [
+    "softDeletedAt",
+    "family",
+    "isOfficial",
+    "pluginCategory",
+    "executesCode",
+    "stats.installs",
+    "updatedAt",
+  ])
   .index("by_active_channel_official_category_updated", [
     "softDeletedAt",
     "channel",
     "isOfficial",
     "pluginCategory",
+    "updatedAt",
+  ])
+  .index("by_active_channel_official_category_installs", [
+    "softDeletedAt",
+    "channel",
+    "isOfficial",
+    "pluginCategory",
+    "stats.installs",
     "updatedAt",
   ])
   .index("by_active_channel_official_category_executes_updated", [
@@ -1863,6 +2072,15 @@ const packagePluginCategorySearchDigest = defineTable({
     "isOfficial",
     "pluginCategory",
     "executesCode",
+    "updatedAt",
+  ])
+  .index("by_active_channel_official_category_executes_installs", [
+    "softDeletedAt",
+    "channel",
+    "isOfficial",
+    "pluginCategory",
+    "executesCode",
+    "stats.installs",
     "updatedAt",
   ]);
 
