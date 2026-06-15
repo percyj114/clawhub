@@ -405,7 +405,7 @@ function PluginsIndex() {
   const activeSort: PluginSort =
     search.sort === "relevance" || search.sort === "newest" || search.sort === "name"
       ? "recommended"
-      : (search.sort ?? "recommended");
+      : (search.sort ?? (hasQuery ? "recommended" : getDefaultPluginBrowseSort(search)));
   const visibleItems = useMemo(
     () => (hasQuery ? sortPluginSearchItems(items, activeSort) : items),
     [activeSort, hasQuery, items],
