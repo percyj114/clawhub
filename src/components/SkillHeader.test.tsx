@@ -182,6 +182,19 @@ describe("SkillHeader", () => {
     expect(screen.queryByText("MIT-0")).toBeNull();
   });
 
+  it("uses top-level migrated install stats when present", () => {
+    const migratedSkill = {
+      ...skill,
+      stats: { ...skill.stats, installsAllTime: undefined },
+      statsInstallsAllTime: 42,
+    };
+
+    renderHeader({ skill: migratedSkill });
+
+    expect(screen.getByText("Installs")).toBeTruthy();
+    expect(screen.getByText("42")).toBeTruthy();
+  });
+
   it("shows the source repository for GitHub-backed skills", () => {
     renderHeader({
       skill: {
