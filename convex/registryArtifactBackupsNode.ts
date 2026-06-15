@@ -32,6 +32,9 @@ const UNKNOWN_SKILL_ARTIFACT_BYTES = 50 * 1024 * 1024;
 const MAX_PARALLEL_RETRY_ARTIFACT_BYTES = UNKNOWN_PACKAGE_ARTIFACT_BYTES;
 const STALE_BACKUP_JOB_MS = 24 * 60 * 60 * 1000;
 const RETRY_LEASE_TTL_MS = 20 * 60 * 1000;
+const INDEX_LEASE_TTL_MS = 5 * 60 * 1000;
+const INDEX_LEASE_RETRY_DELAY_MS = 250;
+const INDEX_LEASE_MAX_WAIT_MS = 30_000;
 
 type BackupPageItem =
   | {
@@ -156,7 +159,7 @@ export const backupSkillForPublishInternal = internalAction({
       if (args.versionId && !item) {
         return { skipped: true as const };
       }
-      await backupSkillVersionToObjectStorage(ctx, item ?? args);
+      await backupSkillVersionWithIndexLease(ctx, item ?? args);
       return { skipped: false as const };
     } catch (error) {
       if (args.versionId) {
@@ -216,7 +219,7 @@ export const backupPackageForPublishInternal = internalAction({
       if (!item) {
         return { skipped: true as const };
       }
-      await backupPackageReleaseToObjectStorage(ctx, item);
+      await backupPackageReleaseWithIndexLease(ctx, item);
       return { skipped: false as const };
     } catch (error) {
       await ctx.runMutation(
@@ -311,7 +314,7 @@ export async function seedRegistryArtifactBackupsInternalHandler(
         }
 
         if (!dryRun) {
-          await backupSkillVersionToObjectStorage(
+          await backupSkillVersionWithIndexLease(
             ctx,
             {
               skillId: item.skillId,
@@ -434,7 +437,7 @@ async function syncPackageReleaseBackups(
           continue;
         }
         if (!dryRun) {
-          await backupPackageReleaseToObjectStorage(ctx, item, context);
+          await backupPackageReleaseWithIndexLease(ctx, item, context);
           stats.packagesBackedUp += 1;
         }
       } catch (error) {
@@ -609,7 +612,7 @@ async function processRetryJobGroup(
         if (await hasMatchingPackageReleaseMeta(context, workItem.item)) {
           packageIndexRepairs.push(workItem);
         } else {
-          await backupPackageReleaseToObjectStorage(ctx, workItem.item, context);
+          await backupPackageReleaseWithIndexLease(ctx, workItem.item, context);
           await markRetryJobSucceeded(ctx, workItem.job);
           result.succeeded += 1;
         }
@@ -617,7 +620,7 @@ async function processRetryJobGroup(
         if (await hasMatchingSkillVersionMeta(context, workItem.item)) {
           skillIndexRepairs.push(workItem);
         } else {
-          await backupSkillVersionToObjectStorage(ctx, workItem.item, context);
+          await backupSkillVersionWithIndexLease(ctx, workItem.item, context);
           await markRetryJobSucceeded(ctx, workItem.job);
           result.succeeded += 1;
         }
@@ -667,6 +670,10 @@ async function flushPackageIndexRepairs(
       ctx,
       missing.map((workItem) => workItem.item),
       context,
+      {
+        withIndexWrite: (indexPath, write) =>
+          withRegistryArtifactBackupIndexLease(ctx, indexPath, write),
+      },
     );
     for (const workItem of missing) {
       await markRetryJobSucceeded(ctx, workItem.job);
@@ -706,6 +713,10 @@ async function flushSkillIndexRepairs(
       ctx,
       missing.map((workItem) => workItem.item),
       context,
+      {
+        withIndexWrite: (indexPath, write) =>
+          withRegistryArtifactBackupIndexLease(ctx, indexPath, write),
+      },
     );
     for (const workItem of missing) {
       await markRetryJobSucceeded(ctx, workItem.job);
@@ -892,6 +903,68 @@ function chunkRetryJobGroups(groups: RetryJobGroup[]) {
     chunks.push(current);
   }
   return chunks;
+}
+
+async function backupSkillVersionWithIndexLease(
+  ctx: ActionCtx,
+  item: Parameters<typeof backupSkillVersionToObjectStorage>[1],
+  context: RegistryArtifactBackupContext = getRegistryArtifactBackupContext(),
+) {
+  await backupSkillVersionToObjectStorage(ctx, item, context, {
+    withIndexWrite: (indexPath, write) =>
+      withRegistryArtifactBackupIndexLease(ctx, indexPath, write),
+  });
+}
+
+async function backupPackageReleaseWithIndexLease(
+  ctx: ActionCtx,
+  item: Parameters<typeof backupPackageReleaseToObjectStorage>[1],
+  context: RegistryArtifactBackupContext = getRegistryArtifactBackupContext(),
+) {
+  await backupPackageReleaseToObjectStorage(ctx, item, context, {
+    withIndexWrite: (indexPath, write) =>
+      withRegistryArtifactBackupIndexLease(ctx, indexPath, write),
+  });
+}
+
+async function withRegistryArtifactBackupIndexLease<T>(
+  ctx: ActionCtx,
+  indexPath: string,
+  run: () => Promise<T>,
+) {
+  const token = `index-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const deadline = Date.now() + INDEX_LEASE_MAX_WAIT_MS;
+  while (true) {
+    const lease = (await ctx.runMutation(
+      internal.registryArtifactBackups.tryAcquireRegistryArtifactBackupIndexLeaseInternal,
+      {
+        indexPath,
+        token,
+        ttlMs: INDEX_LEASE_TTL_MS,
+      },
+    )) as { acquired: boolean };
+    if (lease.acquired) break;
+    if (Date.now() >= deadline) {
+      throw new Error(`Registry artifact backup index ${indexPath} is busy`);
+    }
+    await sleep(INDEX_LEASE_RETRY_DELAY_MS);
+  }
+
+  try {
+    return await run();
+  } finally {
+    await ctx.runMutation(
+      internal.registryArtifactBackups.releaseRegistryArtifactBackupIndexLeaseInternal,
+      {
+        indexPath,
+        token,
+      },
+    );
+  }
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function getPackageBackupItemForRelease(
