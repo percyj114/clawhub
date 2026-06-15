@@ -6,7 +6,7 @@ import type { ReactNode } from "react";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
 import { getSkillBadges } from "../lib/badges";
 import { buildSkillCategoryBrowseHref, type SkillCategory } from "../lib/categories";
-import { formatSkillStatsTriplet } from "../lib/numberFormat";
+import { formatSkillStatsTriplet, type SkillStatsTriplet } from "../lib/numberFormat";
 import type { PublicPublisher, PublicSkill } from "../lib/publicUser";
 import { getRuntimeEnv } from "../lib/runtimeEnv";
 import { timeAgo } from "../lib/timeAgo";
@@ -75,6 +75,23 @@ function getGitHubRepositoryLink(skill: Doc<"skills"> | PublicSkill) {
       {repo}
     </a>
   );
+}
+
+function getSkillHeaderStats(skill: Doc<"skills"> | PublicSkill): SkillStatsTriplet {
+  return {
+    downloads:
+      "statsDownloads" in skill && typeof skill.statsDownloads === "number"
+        ? skill.statsDownloads
+        : skill.stats.downloads,
+    stars:
+      "statsStars" in skill && typeof skill.statsStars === "number"
+        ? skill.statsStars
+        : skill.stats.stars,
+    installsAllTime:
+      "statsInstallsAllTime" in skill && typeof skill.statsInstallsAllTime === "number"
+        ? skill.statsInstallsAllTime
+        : skill.stats.installsAllTime,
+  };
 }
 
 type SkillHeaderProps = {
@@ -149,7 +166,7 @@ export function SkillHeader({
   showArchiveMetadata = true,
   children,
 }: SkillHeaderProps) {
-  const formattedStats = formatSkillStatsTriplet(skill.stats);
+  const formattedStats = formatSkillStatsTriplet(getSkillHeaderStats(skill));
   const installOwnerId = owner?._id ?? skill.ownerPublisherId ?? skill.ownerUserId ?? null;
   const convexSiteUrl = getRuntimeEnv("VITE_CONVEX_SITE_URL") ?? "https://clawhub.ai";
   const downloadHref =
