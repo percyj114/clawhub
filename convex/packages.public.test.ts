@@ -49,6 +49,7 @@ import {
   applyAccountDeletionToOwnedPackagesBatchInternal,
   applyPublisherDeletionToOwnedPackagesBatchInternal,
   applyBanToOwnedPackagesBatchInternal,
+  hardDeletePackageInternal,
   revokePackagePublishTokensForPackageBatchInternal,
   restoreOwnedPackagesForUnbanBatchInternal,
   softDeletePackageInternal,
@@ -773,6 +774,17 @@ const softDeletePackageInternalHandler = (
       releaseCount: number;
       alreadyDeleted: boolean;
     }
+  >
+)._handler;
+const hardDeletePackageInternalHandler = (
+  hardDeletePackageInternal as unknown as WrappedHandler<
+    {
+      packageId: string;
+      actorUserId: string;
+      deletedAt: number;
+      source: "account.delete" | "publisher.delete";
+    },
+    { ok: true; packageId?: string; deleted: boolean; alreadyDeleted?: boolean }
   >
 )._handler;
 const applyBanToOwnedPackagesBatchInternalHandler = (
@@ -11265,6 +11277,7 @@ function makeOwnedPackageBatchCtx(options?: {
   pkg?: Record<string, unknown>;
   owner?: Record<string, unknown> | null;
   packageTokens?: Array<Record<string, unknown>>;
+  packageInstallMetricDedupes?: Array<Record<string, unknown>>;
   releases?: Array<Record<string, unknown>>;
   publisherPackages?: Array<Record<string, unknown>>;
   publishers?: Record<string, Record<string, unknown> | null>;
@@ -11285,11 +11298,13 @@ function makeOwnedPackageBatchCtx(options?: {
   ];
   const patch = vi.fn();
   const insert = vi.fn().mockResolvedValue("auditLogs:1");
+  const deleteDoc = vi.fn();
   const runAfter = vi.fn();
 
   return {
     patch,
     insert,
+    deleteDoc,
     runAfter,
     ctx: {
       scheduler: { runAfter },
@@ -11308,6 +11323,7 @@ function makeOwnedPackageBatchCtx(options?: {
               ? { _id: "users:owner", deletedAt: undefined, deactivatedAt: undefined }
               : options.owner;
           }
+          if (id === pkg._id) return pkg;
           if (options?.publishers && id in options.publishers) {
             return options.publishers[id];
           }
@@ -11376,6 +11392,7 @@ function makeOwnedPackageBatchCtx(options?: {
                   };
                   builder?.(queryBuilder);
                   return {
+                    collect: vi.fn(async () => packageTokens),
                     order: vi.fn(() => ({
                       take: vi.fn(async (limit: number) =>
                         packageTokens
@@ -11396,6 +11413,28 @@ function makeOwnedPackageBatchCtx(options?: {
             return {
               withIndex: vi.fn(() => ({
                 collect: vi.fn().mockResolvedValue(releases),
+              })),
+            };
+          }
+          if (
+            table === "securityScanJobs" ||
+            table === "packageReports" ||
+            table === "packageAppeals" ||
+            table === "packageBadges" ||
+            table === "packageTrustedPublishers" ||
+            table === "packagePublishUploadTickets" ||
+            table === "packageStatEvents"
+          ) {
+            return {
+              withIndex: vi.fn(() => ({
+                collect: vi.fn().mockResolvedValue([]),
+              })),
+            };
+          }
+          if (table === "packageInstallMetricDedupes") {
+            return {
+              withIndex: vi.fn(() => ({
+                collect: vi.fn().mockResolvedValue(options?.packageInstallMetricDedupes ?? []),
               })),
             };
           }
@@ -11427,7 +11466,7 @@ function makeOwnedPackageBatchCtx(options?: {
         insert,
         patch,
         replace: vi.fn(),
-        delete: vi.fn(),
+        delete: deleteDoc,
         normalizeId: vi.fn(),
       },
     },
@@ -12135,6 +12174,27 @@ describe("owned package sanction batches", () => {
       deletedAt: 3_000,
       source: "account.delete",
     });
+  });
+
+  it("deletes package install dedupe rows during package hard delete", async () => {
+    const { ctx, deleteDoc } = makeOwnedPackageBatchCtx({
+      packageInstallMetricDedupes: [
+        { _id: "packageInstallMetricDedupes:one" },
+        { _id: "packageInstallMetricDedupes:two" },
+      ],
+    });
+
+    const result = await hardDeletePackageInternalHandler(ctx as never, {
+      packageId: "packages:demo",
+      actorUserId: "users:owner",
+      deletedAt: 3_000,
+      source: "account.delete",
+    });
+
+    expect(result).toMatchObject({ ok: true, packageId: "packages:demo", deleted: true });
+    expect(deleteDoc).toHaveBeenCalledWith("packageInstallMetricDedupes:one");
+    expect(deleteDoc).toHaveBeenCalledWith("packageInstallMetricDedupes:two");
+    expect(deleteDoc).toHaveBeenCalledWith("packages:demo");
   });
 
   it("schedules hard deletes for account-deleted packages owned through the user's personal publisher", async () => {

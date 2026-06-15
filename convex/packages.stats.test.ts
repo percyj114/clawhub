@@ -23,10 +23,10 @@ const recordInstallHandler = (
   recordPackageInstallInternal as unknown as WrappedHandler<
     {
       packageId: string;
-      identityKind?: "user" | "ip";
-      identityHash?: string;
-      dayStart?: number;
-      occurredAt?: number;
+      identityKind: "user" | "ip";
+      identityHash: string;
+      dayStart: number;
+      occurredAt: number;
     },
     void
   >
@@ -74,13 +74,21 @@ describe("package stat events", () => {
     );
   });
 
-  it("records installs as append-only events", async () => {
+  it("records identity-backed installs as append-only events", async () => {
     const insert = vi.fn();
+    const unique = vi.fn().mockResolvedValue(null);
+    const queryBuilder = {
+      eq: vi.fn(() => queryBuilder),
+    };
+    const withIndex = vi.fn((_indexName: string, buildQuery: (q: unknown) => unknown) => {
+      buildQuery(queryBuilder);
+      return { unique };
+    });
 
     await recordInstallHandler(
       {
         db: {
-          query: vi.fn(),
+          query: vi.fn(() => ({ withIndex })),
           get: vi.fn(),
           normalizeId: vi.fn(),
           insert,
@@ -95,6 +103,10 @@ describe("package stat events", () => {
       },
       {
         packageId: "packages:one",
+        identityKind: "ip",
+        identityHash: "hash-ip",
+        dayStart: 86_400_000,
+        occurredAt: 86_500_000,
       },
     );
 
@@ -103,6 +115,7 @@ describe("package stat events", () => {
       expect.objectContaining({
         packageId: "packages:one",
         kind: "install",
+        occurredAt: 86_500_000,
         processedAt: undefined,
       }),
     );

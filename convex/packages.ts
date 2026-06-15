@@ -3609,45 +3609,40 @@ export const recordPackageDownloadInternal = internalMutation({
 export const recordPackageInstallInternal = internalMutation({
   args: {
     packageId: v.id("packages"),
-    identityKind: v.optional(v.union(v.literal("user"), v.literal("ip"))),
-    identityHash: v.optional(v.string()),
-    dayStart: v.optional(v.number()),
-    occurredAt: v.optional(v.number()),
+    identityKind: v.union(v.literal("user"), v.literal("ip")),
+    identityHash: v.string(),
+    dayStart: v.number(),
+    occurredAt: v.number(),
   },
   handler: async (ctx, args) => {
-    const identityKind = args.identityKind;
-    const identityHash = args.identityHash;
-    const dayStart = args.dayStart;
-    if (identityKind && identityHash && typeof dayStart === "number") {
-      const existing = await ctx.db
-        .query("packageInstallMetricDedupes")
-        .withIndex("by_target_metric_identity_day", (q) =>
-          q
-            .eq("targetKind", "package")
-            .eq("targetId", args.packageId)
-            .eq("metricKind", "install")
-            .eq("identityKind", identityKind)
-            .eq("identityHash", identityHash)
-            .eq("dayStart", dayStart),
-        )
-        .unique();
-      if (existing) return;
+    const existing = await ctx.db
+      .query("packageInstallMetricDedupes")
+      .withIndex("by_target_metric_identity_day", (q) =>
+        q
+          .eq("targetKind", "package")
+          .eq("targetId", args.packageId)
+          .eq("metricKind", "install")
+          .eq("identityKind", args.identityKind)
+          .eq("identityHash", args.identityHash)
+          .eq("dayStart", args.dayStart),
+      )
+      .unique();
+    if (existing) return;
 
-      await ctx.db.insert("packageInstallMetricDedupes", {
-        targetKind: "package",
-        targetId: args.packageId,
-        metricKind: "install",
-        identityKind,
-        identityHash,
-        dayStart,
-        createdAt: Date.now(),
-      });
-    }
+    await ctx.db.insert("packageInstallMetricDedupes", {
+      targetKind: "package",
+      targetId: args.packageId,
+      metricKind: "install",
+      identityKind: args.identityKind,
+      identityHash: args.identityHash,
+      dayStart: args.dayStart,
+      createdAt: Date.now(),
+    });
 
     await ctx.db.insert("packageStatEvents", {
       packageId: args.packageId,
       kind: "install",
-      occurredAt: args.occurredAt ?? Date.now(),
+      occurredAt: args.occurredAt,
       processedAt: undefined,
     });
   },
@@ -4026,6 +4021,14 @@ async function hardDeletePackageDoc(
     .withIndex("by_package", (q) => q.eq("packageId", pkg._id))
     .collect();
   for (const statEvent of statEvents) await ctx.db.delete(statEvent._id);
+
+  const installDedupes = await ctx.db
+    .query("packageInstallMetricDedupes")
+    .withIndex("by_target_metric_identity_day", (q) =>
+      q.eq("targetKind", "package").eq("targetId", pkg._id),
+    )
+    .collect();
+  for (const installDedupe of installDedupes) await ctx.db.delete(installDedupe._id);
 
   for (const release of releases) await ctx.db.delete(release._id);
   await ctx.db.delete(pkg._id);
