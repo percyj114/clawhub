@@ -3961,6 +3961,27 @@ async function hardDeletePackageDoc(
     source: "account.delete" | "publisher.delete";
   },
 ) {
+  const installDedupes = await ctx.db
+    .query("packageInstallMetricDedupes")
+    .withIndex("by_target_metric_identity_day", (q) =>
+      q.eq("targetKind", "package").eq("targetId", pkg._id),
+    )
+    .take(MAX_PUBLIC_LIST_PAGE_SIZE);
+  for (const installDedupe of installDedupes) await ctx.db.delete(installDedupe._id);
+  if (installDedupes.length === MAX_PUBLIC_LIST_PAGE_SIZE) {
+    await ctx.scheduler.runAfter(0, internal.packages.hardDeletePackageInternal, {
+      packageId: pkg._id,
+      actorUserId: params.actorUserId,
+      deletedAt: params.deletedAt,
+      source: params.source,
+    });
+    return {
+      ok: true as const,
+      packageId: pkg._id,
+      cleanupPending: true as const,
+    };
+  }
+
   const releases = await ctx.db
     .query("packageReleases")
     .withIndex("by_package", (q) => q.eq("packageId", pkg._id))
@@ -4021,27 +4042,6 @@ async function hardDeletePackageDoc(
     .withIndex("by_package", (q) => q.eq("packageId", pkg._id))
     .collect();
   for (const statEvent of statEvents) await ctx.db.delete(statEvent._id);
-
-  const installDedupes = await ctx.db
-    .query("packageInstallMetricDedupes")
-    .withIndex("by_target_metric_identity_day", (q) =>
-      q.eq("targetKind", "package").eq("targetId", pkg._id),
-    )
-    .take(MAX_PUBLIC_LIST_PAGE_SIZE);
-  for (const installDedupe of installDedupes) await ctx.db.delete(installDedupe._id);
-  if (installDedupes.length === MAX_PUBLIC_LIST_PAGE_SIZE) {
-    await ctx.scheduler.runAfter(0, internal.packages.hardDeletePackageInternal, {
-      packageId: pkg._id,
-      actorUserId: params.actorUserId,
-      deletedAt: params.deletedAt,
-      source: params.source,
-    });
-    return {
-      ok: true as const,
-      packageId: pkg._id,
-      cleanupPending: true as const,
-    };
-  }
 
   for (const release of releases) await ctx.db.delete(release._id);
   await ctx.db.delete(pkg._id);
