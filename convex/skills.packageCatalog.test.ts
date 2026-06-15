@@ -25,7 +25,7 @@ const listPackageCatalogPageHandler = (
       isOfficial?: boolean;
       executesCode?: boolean;
       capabilityTag?: string;
-      sort?: "updated" | "downloads" | "installs";
+      sort?: "updated" | "downloads" | "installs" | "recommended";
       paginationOpts: { cursor: string | null; numItems: number };
     },
     {
@@ -259,6 +259,54 @@ describe("skills package catalog queries", () => {
       expect.objectContaining({
         name: "installed-skill",
         stats: expect.objectContaining({ installs: 20 }),
+      }),
+    ]);
+  });
+
+  it("accepts recommended sort and uses the recommendation score index for package catalog rows", async () => {
+    const exportArgs = (listPackageCatalogPage as unknown as { exportArgs: () => string })
+      .exportArgs;
+    const exportedArgs = JSON.parse(exportArgs()) as {
+      value: {
+        sort?: {
+          fieldType?: {
+            value?: Array<{ value?: string }>;
+          };
+        };
+      };
+    };
+    expect(exportedArgs.value.sort?.fieldType?.value?.map((entry) => entry.value)).toContain(
+      "recommended",
+    );
+
+    const indexNames: string[] = [];
+    const result = await listPackageCatalogPageHandler(
+      makeCtx(
+        [
+          {
+            page: [
+              makeDigest("recommended-skill", {
+                recommendedScore: 400,
+                recommendedScoreVersion: 3,
+              }),
+            ],
+            isDone: true,
+            continueCursor: "",
+          },
+        ],
+        { indexNames },
+      ),
+      {
+        sort: "recommended",
+        paginationOpts: { cursor: null, numItems: 10 },
+      },
+    );
+
+    expect(indexNames).toEqual(["by_active_recommended_score"]);
+    expect(result.page).toEqual([
+      expect.objectContaining({
+        name: "recommended-skill",
+        family: "skill",
       }),
     ]);
   });

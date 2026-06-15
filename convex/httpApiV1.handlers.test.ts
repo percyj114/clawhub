@@ -8011,6 +8011,40 @@ describe("httpApiV1 handlers", () => {
     expect(runQuery).toHaveBeenCalledTimes(2);
   });
 
+  it("packages list recommended sort merges package and skill rows by recommendation score", async () => {
+    const pluginPackage = makeCatalogItem("plugin-downloaded", {
+      family: "code-plugin",
+      updatedAt: 200,
+      stats: { downloads: 1_000, installs: 0, stars: 0, versions: 1 },
+    });
+    const skillPackage = makeCatalogItem("skill-installed", {
+      family: "skill",
+      updatedAt: 100,
+      stats: { downloads: 1, installs: 500, stars: 0, versions: 1 },
+    });
+    const runQuery = vi.fn((_, args: Record<string, unknown>) => {
+      expect(args).toEqual(expect.objectContaining({ sort: "recommended" }));
+      if (Object.hasOwn(args, "viewerUserId")) {
+        return { page: [pluginPackage], isDone: true, continueCursor: "" };
+      }
+      return { page: [skillPackage], isDone: true, continueCursor: "" };
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.listPackagesV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages?limit=2&sort=recommended"),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.items.map((entry: { name: string }) => entry.name)).toEqual([
+      "skill-installed",
+      "plugin-downloaded",
+    ]);
+    expect(runQuery).toHaveBeenCalledTimes(2);
+  });
+
   it("plugins list defaults to plugin package families", async () => {
     const codePlugin = {
       name: "code-plugin",
