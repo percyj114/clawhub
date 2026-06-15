@@ -1527,9 +1527,6 @@ async function listPackages(
   const sortParam = parseEnumQueryParam(url.searchParams, "sort", PACKAGE_LIST_SORT_VALUES);
   if (!sortParam.ok) return text(sortParam.message, 400, rate.headers);
   const isLegacyDownloadsSort = sortParam.value === "downloads";
-  const effectiveSort = isLegacyDownloadsSort
-    ? "installs"
-    : (sortParam.value ?? options?.defaultSort);
   const cursor = isLegacyDownloadsSort
     ? rawCursor?.startsWith(LEGACY_DOWNLOADS_INSTALL_CURSOR_PREFIX)
       ? rawCursor.slice(LEGACY_DOWNLOADS_INSTALL_CURSOR_PREFIX.length)
@@ -1544,6 +1541,16 @@ async function listPackages(
   const effectiveFamily = family ?? familyParam.value;
   const includeSkills = options?.includeSkills ?? effectiveFamily === undefined;
   const highlightedOnly = featured.value === true || highlightedOnlyParam.value === true;
+  const filteredPluginDefaultSort =
+    options?.defaultSort === "recommended" &&
+    options.pluginFamilies?.length &&
+    !includeSkills &&
+    (category || capabilityTag)
+      ? "updated"
+      : options?.defaultSort;
+  const effectiveSort = isLegacyDownloadsSort
+    ? "installs"
+    : (sortParam.value ?? filteredPluginDefaultSort);
   if (category && (effectiveFamily === "skill" || (!effectiveFamily && includeSkills))) {
     return text(
       "Plugin category is only supported for plugin package endpoints",
