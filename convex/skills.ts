@@ -6164,6 +6164,13 @@ export const searchPackageCatalogPublic = query({
   },
 });
 
+export const hasMissingPackageCatalogRecommendationScoresInternal = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    return await hasMissingRecommendedScores(ctx, false, null);
+  },
+});
+
 export const searchPackageCatalogForHttpInternal = internalQuery({
   args: {
     query: v.string(),

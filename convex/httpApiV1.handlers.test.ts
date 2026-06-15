@@ -7774,6 +7774,7 @@ describe("httpApiV1 handlers", () => {
       stats: { downloads: 1, installs: 500, stars: 0, versions: 1 },
     });
     const runQuery = vi.fn((_, args: Record<string, unknown>) => {
+      if (Object.keys(args).length === 0) return false;
       expect(args).toEqual(expect.objectContaining({ sort: "recommended" }));
       if (Object.hasOwn(args, "viewerUserId")) {
         return { page: [pluginPackage], isDone: true, continueCursor: "" };
@@ -7793,7 +7794,43 @@ describe("httpApiV1 handlers", () => {
       "skill-installed",
       "plugin-downloaded",
     ]);
-    expect(runQuery).toHaveBeenCalledTimes(2);
+    expect(runQuery).toHaveBeenCalledTimes(4);
+  });
+
+  it("packages list recommended fallback merges package and skill rows by updated time", async () => {
+    const pluginPackage = makeCatalogItem("plugin-newer-low-score", {
+      family: "code-plugin",
+      updatedAt: 300,
+      stats: { downloads: 1, installs: 0, stars: 0, versions: 1 },
+    });
+    const skillPackage = makeCatalogItem("skill-older-high-score", {
+      family: "skill",
+      updatedAt: 200,
+      stats: { downloads: 100, installs: 100, stars: 10, versions: 1 },
+    });
+    const runQuery = vi.fn((_, args: Record<string, unknown>) => {
+      if (Object.keys(args).length === 0) return true;
+      if (Object.hasOwn(args, "viewerUserId")) {
+        expect(args).toEqual(expect.objectContaining({ sort: "updated" }));
+        return { page: [pluginPackage], isDone: false, continueCursor: "packages-next" };
+      }
+      expect(args).toEqual(expect.objectContaining({ sort: "updated" }));
+      return { page: [skillPackage], isDone: false, continueCursor: "skills-next" };
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.listPackagesV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages?limit=1&sort=recommended"),
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.items.map((entry: { name: string }) => entry.name)).toEqual([
+      "plugin-newer-low-score",
+    ]);
+    expect(json.nextCursor).toContain('"recommendedFallback":"updated"');
+    expect(runQuery).toHaveBeenCalledTimes(4);
   });
 
   it("plugins list defaults to plugin package families", async () => {
