@@ -8346,6 +8346,36 @@ describe("httpApiV1 handlers", () => {
     }
   });
 
+  it("plugins list defaults featured browse to updated sort", async () => {
+    const readinessCalls: unknown[] = [];
+    const runQuery = vi.fn((_, args: Record<string, unknown>) => {
+      if (hasPluginRecommendedScoreReadinessArgs(args)) {
+        readinessCalls.push(args);
+        return false;
+      }
+      return { page: [], isDone: true, continueCursor: "" };
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.listPluginsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/plugins?featured=true&limit=7"),
+    );
+
+    expect(response.status).toBe(200);
+    expect(readinessCalls).toEqual([]);
+    for (const [, args] of runQuery.mock.calls) {
+      if (hasPluginRecommendedScoreReadinessArgs(args)) continue;
+      expect(args).toEqual(
+        expect.objectContaining({
+          highlightedOnly: true,
+          sort: "updated",
+          paginationOpts: { cursor: null, numItems: 7 },
+        }),
+      );
+    }
+  });
+
   it("plugins list install sort forwards to both plugin families and merges by installs", async () => {
     const codePlugin = makeCatalogItem("code-installed", {
       family: "code-plugin",

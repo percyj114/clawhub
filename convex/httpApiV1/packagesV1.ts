@@ -1541,16 +1541,16 @@ async function listPackages(
   const effectiveFamily = family ?? familyParam.value;
   const includeSkills = options?.includeSkills ?? effectiveFamily === undefined;
   const highlightedOnly = featured.value === true || highlightedOnlyParam.value === true;
-  const filteredPluginDefaultSort =
+  const pluginDefaultSort =
     options?.defaultSort === "recommended" &&
     options.pluginFamilies?.length &&
     !includeSkills &&
-    (category || capabilityTag)
+    (highlightedOnly || category || capabilityTag)
       ? "updated"
       : options?.defaultSort;
   const effectiveSort = isLegacyDownloadsSort
     ? "installs"
-    : (sortParam.value ?? filteredPluginDefaultSort);
+    : (sortParam.value ?? pluginDefaultSort);
   if (category && (effectiveFamily === "skill" || (!effectiveFamily && includeSkills))) {
     return text(
       "Plugin category is only supported for plugin package endpoints",
