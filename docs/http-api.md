@@ -544,6 +544,7 @@ Query params:
 - `channel` (optional): `official`, `community`, or `private`
 - `isOfficial` (optional): `true` or `false`
 - `executesCode` (optional): `true` or `false`
+- `sort` (optional): `updated` (default), `recommended`, `installs`, `downloads`
 - `capabilityTag` (optional): capability filter for plugin packages
 - `category` (optional): plugin category filter. Supported only when the
   request is scoped to plugin packages (`/api/v1/plugins`,
