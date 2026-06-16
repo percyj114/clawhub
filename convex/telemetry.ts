@@ -60,21 +60,16 @@ export const reportCliInstallInternal = internalMutation({
       .withIndex("by_user_skill", (q) => q.eq("userId", args.userId).eq("skillId", skill._id))
       .unique();
     if (existing) {
-      const clearStartedAt = await getTelemetryClearStartedAt(ctx, args.userId);
-      if (isStaleForActiveClear(existing, clearStartedAt)) {
-        await clearAggregateInstall(ctx, skill._id, existing);
-      } else {
-        const wasInactive = existing.activeRoots <= 0;
-        await ctx.db.patch(existing._id, {
-          lastSeenAt: now,
-          activeRoots: Math.max(1, existing.activeRoots),
-          lastVersion: args.version,
-        });
-        if (wasInactive) {
-          await insertStatEvent(ctx, { skillId: skill._id, kind: "install_reactivate" });
-        }
-        return;
+      const wasInactive = existing.activeRoots <= 0;
+      await ctx.db.patch(existing._id, {
+        lastSeenAt: now,
+        activeRoots: Math.max(1, existing.activeRoots),
+        lastVersion: args.version,
+      });
+      if (wasInactive) {
+        await insertStatEvent(ctx, { skillId: skill._id, kind: "install_reactivate" });
       }
+      return;
     }
 
     await ctx.db.insert("userSkillInstalls", {
@@ -273,7 +268,7 @@ async function clearTelemetryForUser(
   ctx: MutationCtx,
   params: { userId: Id<"users">; clearStartedAt: number },
 ) {
-  const clearStartedAt = await upsertTelemetryClearState(ctx, params);
+  const { clearStartedAt } = params;
   const installs = await ctx.db
     .query("userSkillInstalls")
     .withIndex("by_user_lastSeenAt", (q) =>
@@ -344,8 +339,6 @@ async function clearTelemetryForUser(
     await scheduleClearUserTelemetry(ctx, params.userId, clearStartedAt);
     return;
   }
-
-  await clearTelemetryClearState(ctx, params.userId, clearStartedAt);
 }
 
 async function scheduleClearUserTelemetry(
@@ -357,55 +350,6 @@ async function scheduleClearUserTelemetry(
     userId,
     clearStartedAt,
   });
-}
-
-async function upsertTelemetryClearState(
-  ctx: MutationCtx,
-  params: { userId: Id<"users">; clearStartedAt: number },
-) {
-  const existing = await ctx.db
-    .query("userTelemetryClearState")
-    .withIndex("by_user", (q) => q.eq("userId", params.userId))
-    .unique();
-  if (!existing) {
-    await ctx.db.insert("userTelemetryClearState", {
-      userId: params.userId,
-      clearStartedAt: params.clearStartedAt,
-      updatedAt: params.clearStartedAt,
-    });
-    return params.clearStartedAt;
-  }
-
-  const clearStartedAt = Math.max(existing.clearStartedAt, params.clearStartedAt);
-  if (clearStartedAt !== existing.clearStartedAt) {
-    await ctx.db.patch(existing._id, {
-      clearStartedAt,
-      updatedAt: params.clearStartedAt,
-    });
-  }
-  return clearStartedAt;
-}
-
-async function getTelemetryClearStartedAt(ctx: MutationCtx, userId: Id<"users">) {
-  const existing = await ctx.db
-    .query("userTelemetryClearState")
-    .withIndex("by_user", (q) => q.eq("userId", userId))
-    .unique();
-  return existing?.clearStartedAt ?? null;
-}
-
-async function clearTelemetryClearState(
-  ctx: MutationCtx,
-  userId: Id<"users">,
-  clearStartedAt: number,
-) {
-  const existing = await ctx.db
-    .query("userTelemetryClearState")
-    .withIndex("by_user", (q) => q.eq("userId", userId))
-    .unique();
-  if (existing && existing.clearStartedAt <= clearStartedAt) {
-    await ctx.db.delete(existing._id);
-  }
 }
 
 async function markInstallTelemetrySeen(
@@ -423,11 +367,7 @@ async function markInstallTelemetrySeen(
         .eq("dayStart", dayStart),
     )
     .unique();
-  if (existing) {
-    const clearStartedAt = await getTelemetryClearStartedAt(ctx, params.userId);
-    if (clearStartedAt === null || existing.createdAt > clearStartedAt) return true;
-    await ctx.db.delete(existing._id);
-  }
+  if (existing) return true;
 
   await ctx.db.insert("installTelemetryDedupes", {
     userId: params.userId,
@@ -437,28 +377,6 @@ async function markInstallTelemetrySeen(
     createdAt: params.now,
   });
   return false;
-}
-
-type DocWithLastSeen = { lastSeenAt: number };
-
-function isStaleForActiveClear(row: DocWithLastSeen, clearStartedAt: number | null): boolean {
-  return clearStartedAt !== null && row.lastSeenAt <= clearStartedAt;
-}
-
-async function clearAggregateInstall(
-  ctx: MutationCtx,
-  skillId: Id<"skills">,
-  entry: { _id: Id<"userSkillInstalls">; activeRoots: number },
-) {
-  await insertStatEvent(ctx, {
-    skillId,
-    kind: "install_clear",
-    delta: {
-      allTime: -1,
-      current: entry.activeRoots > 0 ? -1 : 0,
-    },
-  });
-  await ctx.db.delete(entry._id);
 }
 
 async function upsertSingleRootInstall(
@@ -500,45 +418,35 @@ async function upsertRootSkillInstall(
     .unique();
 
   if (existing) {
-    const clearStartedAt = await getTelemetryClearStartedAt(ctx, params.userId);
-    if (isStaleForActiveClear(existing, clearStartedAt)) {
-      await ctx.db.delete(existing._id);
-    } else {
-      const wasRemoved = Boolean(existing.removedAt);
-      const aggregateInstall = wasRemoved
-        ? null
-        : await ctx.db
-            .query("userSkillInstalls")
-            .withIndex("by_user_skill", (q) =>
-              q.eq("userId", params.userId).eq("skillId", params.skillId),
-            )
-            .unique();
-      const aggregateWasStale =
-        aggregateInstall !== null && isStaleForActiveClear(aggregateInstall, clearStartedAt);
-      if (aggregateWasStale) {
-        await clearAggregateInstall(ctx, params.skillId, aggregateInstall);
-      }
-      await ctx.db.patch(existing._id, {
+    const wasRemoved = Boolean(existing.removedAt);
+    const aggregateInstall = wasRemoved
+      ? null
+      : await ctx.db
+          .query("userSkillInstalls")
+          .withIndex("by_user_skill", (q) =>
+            q.eq("userId", params.userId).eq("skillId", params.skillId),
+          )
+          .unique();
+    await ctx.db.patch(existing._id, {
+      lastSeenAt: params.now,
+      lastVersion: params.version ?? existing.lastVersion,
+      removedAt: undefined,
+    });
+    if (aggregateInstall) {
+      await ctx.db.patch(aggregateInstall._id, {
         lastSeenAt: params.now,
-        lastVersion: params.version ?? existing.lastVersion,
-        removedAt: undefined,
+        lastVersion: params.version ?? aggregateInstall.lastVersion,
       });
-      if (aggregateInstall && !aggregateWasStale) {
-        await ctx.db.patch(aggregateInstall._id, {
-          lastSeenAt: params.now,
-          lastVersion: params.version ?? aggregateInstall.lastVersion,
-        });
-      }
-      if (wasRemoved || !aggregateInstall || aggregateWasStale) {
-        await incrementActiveRoots(ctx, {
-          userId: params.userId,
-          skillId: params.skillId,
-          now: params.now,
-          version: params.version,
-        });
-      }
-      return;
     }
+    if (wasRemoved || !aggregateInstall) {
+      await incrementActiveRoots(ctx, {
+        userId: params.userId,
+        skillId: params.skillId,
+        now: params.now,
+        version: params.version,
+      });
+    }
+    return;
   }
 
   await ctx.db.insert("userSkillRootInstalls", {
@@ -566,17 +474,12 @@ async function upsertRoot(
     .withIndex("by_user_root", (q) => q.eq("userId", params.userId).eq("rootId", params.rootId))
     .unique();
   if (existing) {
-    const clearStartedAt = await getTelemetryClearStartedAt(ctx, params.userId);
-    if (isStaleForActiveClear(existing, clearStartedAt)) {
-      await ctx.db.delete(existing._id);
-    } else {
-      await ctx.db.patch(existing._id, {
-        label: params.label,
-        lastSeenAt: params.now,
-        expiredAt: undefined,
-      });
-      return;
-    }
+    await ctx.db.patch(existing._id, {
+      label: params.label,
+      lastSeenAt: params.now,
+      expiredAt: undefined,
+    });
+    return;
   }
   await ctx.db.insert("userSyncRoots", {
     userId: params.userId,
@@ -598,25 +501,20 @@ async function incrementActiveRoots(
     .unique();
 
   if (existing) {
-    const clearStartedAt = await getTelemetryClearStartedAt(ctx, params.userId);
-    if (isStaleForActiveClear(existing, clearStartedAt)) {
-      await clearAggregateInstall(ctx, params.skillId, existing);
-    } else {
-      const nextActive = Math.max(0, (existing.activeRoots ?? 0) + 1);
-      await ctx.db.patch(existing._id, {
-        activeRoots: nextActive,
-        lastSeenAt: params.now,
-        lastVersion: params.version ?? existing.lastVersion,
+    const nextActive = Math.max(0, (existing.activeRoots ?? 0) + 1);
+    await ctx.db.patch(existing._id, {
+      activeRoots: nextActive,
+      lastSeenAt: params.now,
+      lastVersion: params.version ?? existing.lastVersion,
+    });
+    if ((existing.activeRoots ?? 0) === 0 && nextActive > 0) {
+      await bumpSkillInstallCounts(ctx, {
+        skillId: params.skillId,
+        deltaAllTime: 0,
+        deltaCurrent: 1,
       });
-      if ((existing.activeRoots ?? 0) === 0 && nextActive > 0) {
-        await bumpSkillInstallCounts(ctx, {
-          skillId: params.skillId,
-          deltaAllTime: 0,
-          deltaCurrent: 1,
-        });
-      }
-      return;
     }
+    return;
   }
 
   await ctx.db.insert("userSkillInstalls", {

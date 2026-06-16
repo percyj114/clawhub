@@ -2463,12 +2463,6 @@ const installTelemetryDedupes = defineTable({
   .index("by_skill", ["skillId"])
   .index("by_day", ["dayStart"]);
 
-const userTelemetryClearState = defineTable({
-  userId: v.id("users"),
-  clearStartedAt: v.number(),
-  updatedAt: v.number(),
-}).index("by_user", ["userId"]);
-
 const reservedSlugs = defineTable({
   slug: v.string(),
   originalOwnerUserId: v.id("users"),
@@ -2660,7 +2654,6 @@ export default defineSchema({
   downloadMetricDedupes,
   packageInstallMetricDedupes,
   installTelemetryDedupes,
-  userTelemetryClearState,
   reservedSlugs,
   reservedHandles,
   githubBackupSyncState,

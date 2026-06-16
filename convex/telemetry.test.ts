@@ -252,9 +252,6 @@ describe("telemetry install events", () => {
               if (table === "installTelemetryDedupes" && indexName === "by_user_skill_root_day") {
                 return { unique: async () => null };
               }
-              if (table === "userTelemetryClearState" && indexName === "by_user") {
-                return { unique: async () => null };
-              }
               if (table === "userSkillInstalls" && indexName === "by_user_skill") {
                 return { unique: async () => existingInstall };
               }
@@ -301,9 +298,6 @@ describe("telemetry install events", () => {
                 return { unique: async () => skill };
               }
               if (table === "installTelemetryDedupes" && indexName === "by_user_skill_root_day") {
-                return { unique: async () => null };
-              }
-              if (table === "userTelemetryClearState" && indexName === "by_user") {
                 return { unique: async () => null };
               }
               if (table === "userSkillInstalls" && indexName === "by_user_skill") {
@@ -364,9 +358,6 @@ describe("telemetry install events", () => {
                   }),
                 };
               }
-              if (table === "userTelemetryClearState" && indexName === "by_user") {
-                return { unique: async () => null };
-              }
               throw new Error(`unexpected query ${table}.${indexName}`);
             },
           ),
@@ -386,94 +377,6 @@ describe("telemetry install events", () => {
 
     expect(insert).not.toHaveBeenCalled();
     expect(patch).not.toHaveBeenCalled();
-  });
-
-  it("records a reinstall when an active telemetry clear left a stale dedupe row", async () => {
-    vi.setSystemTime(86_500_000);
-    const skill = { _id: "skills:demo", slug: "demo" };
-    const staleDedupe = {
-      _id: "installTelemetryDedupes:stale",
-      userId: "users:one",
-      skillId: "skills:demo",
-      rootKey: "root",
-      dayStart: 86_400_000,
-      createdAt: 86_400_000,
-    };
-    const insert = vi.fn();
-    const patch = vi.fn();
-    const delete_ = vi.fn();
-    const ctx = {
-      db: {
-        query: vi.fn((table: string) => ({
-          withIndex: vi.fn(
-            (indexName: string, callback: (q: ReturnType<typeof makeIndexBuilder>) => unknown) => {
-              const builder = makeIndexBuilder();
-              callback(builder);
-              if (table === "skills" && indexName === "by_slug") {
-                return { unique: async () => skill };
-              }
-              if (table === "installTelemetryDedupes" && indexName === "by_user_skill_root_day") {
-                return { unique: async () => staleDedupe };
-              }
-              if (table === "userTelemetryClearState" && indexName === "by_user") {
-                expect(builder.eq).toHaveBeenCalledWith("userId", "users:one");
-                return {
-                  unique: async () => ({
-                    _id: "userTelemetryClearState:one",
-                    userId: "users:one",
-                    clearStartedAt: 86_450_000,
-                  }),
-                };
-              }
-              if (table === "userSyncRoots" && indexName === "by_user_root") {
-                return { unique: async () => null };
-              }
-              if (table === "userSkillRootInstalls" && indexName === "by_user_root_skill") {
-                return { unique: async () => null };
-              }
-              if (table === "userSkillInstalls" && indexName === "by_user_skill") {
-                return { unique: async () => null };
-              }
-              throw new Error(`unexpected query ${table}.${indexName}`);
-            },
-          ),
-        })),
-        insert,
-        patch,
-        delete: delete_,
-      },
-    };
-
-    await reportCliInstallHandler(ctx, {
-      userId: "users:one",
-      slug: "demo",
-      version: "1.0.1",
-      rootId: "root",
-      rootLabel: "~/skills",
-    });
-
-    expect(delete_).toHaveBeenCalledWith("installTelemetryDedupes:stale");
-    expect(insert).toHaveBeenCalledWith(
-      "installTelemetryDedupes",
-      expect.objectContaining({
-        userId: "users:one",
-        skillId: "skills:demo",
-        rootKey: "root",
-        createdAt: 86_500_000,
-      }),
-    );
-    expect(insert).toHaveBeenCalledWith(
-      "userSkillInstalls",
-      expect.objectContaining({
-        userId: "users:one",
-        skillId: "skills:demo",
-        activeRoots: 1,
-      }),
-    );
-    expect(insert).toHaveBeenCalledWith(
-      "skillStatEvents",
-      expect.objectContaining({ skillId: "skills:demo", kind: "install_new" }),
-    );
   });
 
   it("records the same skill in a different root on the same day", async () => {
@@ -507,9 +410,6 @@ describe("telemetry install events", () => {
                 return { unique: async () => null };
               }
               if (table === "userSkillRootInstalls" && indexName === "by_user_root_skill") {
-                return { unique: async () => null };
-              }
-              if (table === "userTelemetryClearState" && indexName === "by_user") {
                 return { unique: async () => null };
               }
               if (table === "userSkillInstalls" && indexName === "by_user_skill") {
@@ -590,9 +490,6 @@ describe("telemetry install events", () => {
               if (table === "userSkillRootInstalls" && indexName === "by_user_root_skill") {
                 return { unique: async () => existingRootInstall };
               }
-              if (table === "userTelemetryClearState" && indexName === "by_user") {
-                return { unique: async () => null };
-              }
               if (table === "userSkillInstalls" && indexName === "by_user_skill") {
                 expect(builder.eq).toHaveBeenCalledWith("userId", "users:one");
                 expect(builder.eq).toHaveBeenCalledWith("skillId", "skills:demo");
@@ -637,7 +534,7 @@ describe("telemetry install events", () => {
     );
   });
 
-  it("refreshes the aggregate install when an existing root reports without an active clear", async () => {
+  it("refreshes the aggregate install when an existing root reports again", async () => {
     vi.setSystemTime(172_900_000);
     const skill = { _id: "skills:demo", slug: "demo" };
     const existingRootInstall = {
@@ -679,9 +576,6 @@ describe("telemetry install events", () => {
               if (table === "userSkillRootInstalls" && indexName === "by_user_root_skill") {
                 return { unique: async () => existingRootInstall };
               }
-              if (table === "userTelemetryClearState" && indexName === "by_user") {
-                return { unique: async () => null };
-              }
               if (table === "userSkillInstalls" && indexName === "by_user_skill") {
                 return { unique: async () => existingAggregateInstall };
               }
@@ -713,144 +607,6 @@ describe("telemetry install events", () => {
     expect(insert).not.toHaveBeenCalledWith(
       "skillStatEvents",
       expect.objectContaining({ kind: expect.stringMatching(/^install_/) }),
-    );
-  });
-
-  it("recreates pre-clear install rows when a root reports during an active clear", async () => {
-    vi.setSystemTime(172_900_000);
-    const skill = { _id: "skills:demo", slug: "demo" };
-    const existingRoot = {
-      _id: "userSyncRoots:stale",
-      userId: "users:one",
-      rootId: "root",
-      label: "~/old-skills",
-      lastSeenAt: 172_800_000,
-    };
-    const existingRootInstall = {
-      _id: "userSkillRootInstalls:stale",
-      userId: "users:one",
-      rootId: "root",
-      skillId: "skills:demo",
-      lastSeenAt: 172_800_000,
-      lastVersion: "1.0.0",
-      removedAt: undefined,
-    };
-    const existingAggregateInstall = {
-      _id: "userSkillInstalls:stale",
-      userId: "users:one",
-      skillId: "skills:demo",
-      activeRoots: 1,
-      lastSeenAt: 172_800_000,
-      lastVersion: "1.0.0",
-    };
-    const insert = vi.fn();
-    const patch = vi.fn();
-    const delete_ = vi.fn();
-    const ctx = {
-      db: {
-        query: vi.fn((table: string) => ({
-          withIndex: vi.fn(
-            (indexName: string, callback: (q: ReturnType<typeof makeIndexBuilder>) => unknown) => {
-              callback(makeIndexBuilder());
-              if (table === "skills" && indexName === "by_slug") {
-                return { unique: async () => skill };
-              }
-              if (table === "installTelemetryDedupes" && indexName === "by_user_skill_root_day") {
-                return { unique: async () => null };
-              }
-              if (table === "userSyncRoots" && indexName === "by_user_root") {
-                return { unique: async () => existingRoot };
-              }
-              if (table === "userSkillRootInstalls" && indexName === "by_user_root_skill") {
-                return { unique: async () => existingRootInstall };
-              }
-              if (table === "userTelemetryClearState" && indexName === "by_user") {
-                return {
-                  unique: async () => ({
-                    _id: "userTelemetryClearState:one",
-                    userId: "users:one",
-                    clearStartedAt: 172_850_000,
-                  }),
-                };
-              }
-              if (table === "userSkillInstalls" && indexName === "by_user_skill") {
-                return { unique: async () => existingAggregateInstall };
-              }
-              throw new Error(`unexpected query ${table}.${indexName}`);
-            },
-          ),
-        })),
-        insert,
-        patch,
-        delete: delete_,
-      },
-    };
-
-    await reportCliInstallHandler(ctx, {
-      userId: "users:one",
-      slug: "demo",
-      version: "1.0.1",
-      rootId: "root",
-      rootLabel: "~/skills",
-    });
-
-    expect(delete_).toHaveBeenCalledWith("userSyncRoots:stale");
-    expect(delete_).toHaveBeenCalledWith("userSkillRootInstalls:stale");
-    expect(delete_).toHaveBeenCalledWith("userSkillInstalls:stale");
-    expect(insert).toHaveBeenCalledWith(
-      "userSyncRoots",
-      expect.objectContaining({
-        userId: "users:one",
-        rootId: "root",
-        label: "~/skills",
-        firstSeenAt: 172_900_000,
-        lastSeenAt: 172_900_000,
-      }),
-    );
-    expect(insert).toHaveBeenCalledWith(
-      "userSkillRootInstalls",
-      expect.objectContaining({
-        userId: "users:one",
-        rootId: "root",
-        skillId: "skills:demo",
-        firstSeenAt: 172_900_000,
-        lastSeenAt: 172_900_000,
-        lastVersion: "1.0.1",
-      }),
-    );
-    expect(insert).toHaveBeenCalledWith(
-      "userSkillInstalls",
-      expect.objectContaining({
-        userId: "users:one",
-        skillId: "skills:demo",
-        firstSeenAt: 172_900_000,
-        lastSeenAt: 172_900_000,
-        activeRoots: 1,
-        lastVersion: "1.0.1",
-      }),
-    );
-    expect(insert).toHaveBeenCalledWith(
-      "skillStatEvents",
-      expect.objectContaining({
-        skillId: "skills:demo",
-        kind: "install_clear",
-        delta: { allTime: -1, current: -1 },
-      }),
-    );
-    expect(insert).toHaveBeenCalledWith(
-      "skillStatEvents",
-      expect.objectContaining({
-        skillId: "skills:demo",
-        kind: "install_new",
-      }),
-    );
-    expect(patch).not.toHaveBeenCalledWith(
-      "userSkillRootInstalls:stale",
-      expect.objectContaining({ lastSeenAt: 172_900_000 }),
-    );
-    expect(patch).not.toHaveBeenCalledWith(
-      "userSkillInstalls:stale",
-      expect.objectContaining({ lastSeenAt: 172_900_000 }),
     );
   });
 
@@ -964,9 +720,6 @@ describe("telemetry install events", () => {
                   ],
                 };
               }
-              if (table === "userTelemetryClearState" && indexName === "by_user") {
-                return { unique: async () => null };
-              }
               throw new Error(`unexpected query ${table}.${indexName}`);
             },
           ),
@@ -1018,9 +771,6 @@ describe("telemetry install events", () => {
               if (table === "installTelemetryDedupes" && indexName === "by_user_createdAt") {
                 expect(builder.lte).toHaveBeenCalledWith("createdAt", expect.any(Number));
                 return { take: async () => dedupeRows };
-              }
-              if (table === "userTelemetryClearState" && indexName === "by_user") {
-                return { unique: async () => null };
               }
               throw new Error(`unexpected query ${table}.${indexName}`);
             },
@@ -1082,10 +832,6 @@ describe("telemetry install events", () => {
                 ) => {
                   const builder = makeIndexBuilder();
                   callback(builder);
-                  if (queriedTable === "userTelemetryClearState") {
-                    expect(indexName).toBe("by_user");
-                    return { unique: async () => null };
-                  }
                   expect(indexName).toBe("by_user_lastSeenAt");
                   expect(builder.eq).toHaveBeenCalledWith("userId", "users:one");
                   expect(builder.lte).toHaveBeenCalledWith("lastSeenAt", expect.any(Number));
