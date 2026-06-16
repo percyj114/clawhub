@@ -92,7 +92,6 @@ function formatRetryDelay(retryAfterSeconds: number | null) {
 }
 
 function parsePluginSort(value: unknown): LegacyPluginSort | undefined {
-  if (value === "downloads") return "installs";
   if (
     value === "recommended" ||
     value === "relevance" ||

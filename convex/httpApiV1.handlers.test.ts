@@ -8101,17 +8101,8 @@ describe("httpApiV1 handlers", () => {
     }
   });
 
-  it("plugin and package lists normalize legacy downloads sorts and cursors to installs", async () => {
-    let emittedInstallCursor = false;
-    const runQuery = vi.fn((_, args: Record<string, unknown>) => {
-      if (Object.keys(args).length === 0) return 0;
-      expect(args).toEqual(expect.objectContaining({ sort: "installs" }));
-      if (!emittedInstallCursor) {
-        emittedInstallCursor = true;
-        return { page: [], isDone: false, continueCursor: "install-cursor" };
-      }
-      return { page: [], isDone: true, continueCursor: "" };
-    });
+  it("plugin and package lists reject removed downloads sort links", async () => {
+    const runQuery = vi.fn();
     const runMutation = vi.fn().mockResolvedValue(okRate());
 
     const packageResponse = await __handlers.listPackagesV1Handler(
@@ -8142,32 +8133,11 @@ describe("httpApiV1 handlers", () => {
       ),
     );
 
-    expect(packageResponse.status).toBe(200);
-    expect(pluginResponse.status).toBe(200);
-    const packageJson = await packageResponse.json();
-    expect(packageJson.nextCursor).toMatch(/^pkginstalls:/);
-    const paginationCursors = runQuery.mock.calls
-      .map(([, args]) => (args as { paginationOpts?: { cursor: string | null } }).paginationOpts)
-      .filter(Boolean)
-      .map((pagination) => pagination?.cursor ?? null);
-    expect(paginationCursors).toEqual(paginationCursors.map(() => null));
-
-    runQuery.mockClear();
-    await __handlers.listPackagesV1Handler(
-      makeCtx({ runQuery, runMutation }),
-      new Request(
-        `https://example.com/api/v1/packages?family=code-plugin&sort=downloads&cursor=${encodeURIComponent(
-          packageJson.nextCursor,
-        )}`,
-      ),
-    );
-    expect(runQuery).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        sort: "installs",
-        paginationOpts: { cursor: "install-cursor", numItems: 25 },
-      }),
-    );
+    expect(packageResponse.status).toBe(400);
+    expect(await packageResponse.text()).toBe("Invalid sort query parameter");
+    expect(pluginResponse.status).toBe(400);
+    expect(await pluginResponse.text()).toBe("Invalid sort query parameter");
+    expect(runQuery).not.toHaveBeenCalled();
   });
 
   it("plugins list install sort forwards to both plugin families and merges by installs", async () => {

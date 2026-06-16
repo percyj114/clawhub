@@ -312,7 +312,7 @@ function normalizeCapabilityTagSegment(value: string) {
 const PACKAGE_FAMILY_VALUES = ["skill", "code-plugin", "bundle-plugin"] as const;
 const PLUGIN_EXPORT_FAMILY_VALUES = ["code-plugin", "bundle-plugin"] as const;
 const PACKAGE_CHANNEL_VALUES = ["official", "community", "private"] as const;
-const PACKAGE_LIST_SORT_VALUES = ["updated", "downloads", "recommended", "installs"] as const;
+const PACKAGE_LIST_SORT_VALUES = ["updated", "recommended", "installs"] as const;
 const MAX_PLUGIN_EXPORT_FILE_COUNT = 10_000;
 const MAX_PLUGIN_EXPORT_PAGE_LIMIT = 250;
 const DEFAULT_PLUGIN_EXPORT_PAGE_LIMIT = 250;
@@ -1075,10 +1075,6 @@ function compareCatalogItemsForSort(
     );
     if (score !== 0) return score;
   }
-  if (sort === "downloads") {
-    const downloads = (b.stats?.downloads ?? 0) - (a.stats?.downloads ?? 0);
-    if (downloads !== 0) return downloads;
-  }
   if (sort === "installs") {
     const installs = (b.stats?.installs ?? 0) - (a.stats?.installs ?? 0);
     if (installs !== 0) return installs;
@@ -1503,17 +1499,8 @@ async function listPackages(
   if (!executesCode.ok) return text(executesCode.message, 400, rate.headers);
   const sortParam = parseEnumQueryParam(url.searchParams, "sort", PACKAGE_LIST_SORT_VALUES);
   if (!sortParam.ok) return text(sortParam.message, 400, rate.headers);
-  const isLegacyDownloadsSort = sortParam.value === "downloads";
-  const effectiveSort = isLegacyDownloadsSort
-    ? "installs"
-    : (sortParam.value ?? options?.defaultSort);
-  const cursor = isLegacyDownloadsSort
-    ? rawCursor?.startsWith(LEGACY_DOWNLOADS_INSTALL_CURSOR_PREFIX)
-      ? rawCursor.slice(LEGACY_DOWNLOADS_INSTALL_CURSOR_PREFIX.length)
-      : null
-    : rawCursor;
-  const nextCursor = (value: string | null) =>
-    isLegacyDownloadsSort && value ? `${LEGACY_DOWNLOADS_INSTALL_CURSOR_PREFIX}${value}` : value;
+  const effectiveSort = sortParam.value ?? options?.defaultSort;
+  const cursor = rawCursor;
   const category = url.searchParams.get("category")?.trim() || undefined;
   if (category && !isPluginCategorySlug(category)) {
     return text("Invalid plugin category", 400, rate.headers);
@@ -1544,7 +1531,7 @@ async function listPackages(
       paginationOpts: { cursor, numItems: limit },
     });
     return json(
-      { items: result.page, nextCursor: result.isDone ? null : nextCursor(result.continueCursor) },
+      { items: result.page, nextCursor: result.isDone ? null : result.continueCursor },
       200,
       rate.headers,
     );
@@ -1632,7 +1619,7 @@ async function listPackages(
     return json(
       {
         items,
-        nextCursor: isDoneAll ? null : nextCursor(encodeUnifiedCatalogCursor(nextState)),
+        nextCursor: isDoneAll ? null : encodeUnifiedCatalogCursor(nextState),
       },
       200,
       rate.headers,
@@ -1741,7 +1728,7 @@ async function listPackages(
     return json(
       {
         items,
-        nextCursor: isDoneAll ? null : nextCursor(encodePluginCatalogCursor(nextState)),
+        nextCursor: isDoneAll ? null : encodePluginCatalogCursor(nextState),
         ...(totalCount !== null ? { totalCount } : {}),
       },
       200,
@@ -1766,7 +1753,7 @@ async function listPackages(
     paginationOpts: { cursor, numItems: limit },
   } satisfies PackageListQueryArgs);
   return json(
-    { items: result.page, nextCursor: result.isDone ? null : nextCursor(result.continueCursor) },
+    { items: result.page, nextCursor: result.isDone ? null : result.continueCursor },
     200,
     rate.headers,
   );

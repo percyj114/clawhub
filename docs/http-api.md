@@ -545,7 +545,6 @@ Query params:
 - `isOfficial` (optional): `true` or `false`
 - `executesCode` (optional): `true` or `false`
 - `sort` (optional): `updated` (default), `recommended`, `installs`
-- Legacy alias: `downloads` is accepted and treated as `installs`
 - `capabilityTag` (optional): capability filter for plugin packages
 - `category` (optional): plugin category filter. Supported only when the
   request is scoped to plugin packages (`/api/v1/plugins`,

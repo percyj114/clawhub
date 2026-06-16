@@ -100,7 +100,7 @@ Public read:
 - `GET /api/v1/download?slug=&version=&tag=`
 - `GET /api/v1/packages?limit=&cursor=&sort=`
   - `sort`: `updated` (default), `recommended`, `installs`
-  - Legacy alias: `downloads` is accepted and treated as `installs`
+  - Invalid `sort` values return `400`
 - `GET /api/v1/plugins?limit=&cursor=&sort=`
   - `sort`: `recommended` (default), `installs`, `updated`
 - `GET /api/v1/plugins/search?q=...`

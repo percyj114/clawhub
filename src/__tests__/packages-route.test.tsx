@@ -157,7 +157,7 @@ describe("plugins route", () => {
     });
   });
 
-  it("normalizes legacy downloads sort links to installs", async () => {
+  it("drops removed downloads sort links to the plugin browse default", async () => {
     const route = await loadRoute();
     const validateSearch = route.__config.validateSearch as (
       search: Record<string, unknown>,
@@ -165,7 +165,7 @@ describe("plugins route", () => {
 
     expect(validateSearch({ sort: "downloads", cursor: "legacy-download-cursor" })).toEqual(
       expect.objectContaining({
-        sort: "installs",
+        sort: undefined,
         cursor: undefined,
       }),
     );
