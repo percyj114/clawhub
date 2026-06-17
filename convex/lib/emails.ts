@@ -108,6 +108,15 @@ function normalizeReasonInput(args: Pick<BanNotificationEmailArgs, "reason" | "t
 function summarizeBanReason(args: BanNotificationEmailArgs): BanReasonSummary {
   const normalized = normalizeReasonInput(args);
 
+  if (/\bpublisher[_\-\s]?abuse\b/.test(normalized)) {
+    return {
+      scannerLabel: null,
+      findingSummary: PUBLISHER_ABUSE_FINDING_SUMMARY,
+      policyReasonItems: PUBLISHER_ABUSE_POLICY_ITEMS,
+      omitTextAppealUrl: true,
+    };
+  }
+
   if (args.source === "autoban") {
     if (normalized.includes("virustotal") || normalized.includes("virus_total")) {
       return {
@@ -141,15 +150,6 @@ function summarizeBanReason(args: BanNotificationEmailArgs): BanReasonSummary {
     return {
       scannerLabel: null,
       findingSummary: "Publishing automation triggered ClawHub rate-limit abuse controls.",
-    };
-  }
-
-  if (/\bpublisher[_\-\s]?abuse\b/.test(normalized)) {
-    return {
-      scannerLabel: null,
-      findingSummary: PUBLISHER_ABUSE_FINDING_SUMMARY,
-      policyReasonItems: PUBLISHER_ABUSE_POLICY_ITEMS,
-      omitTextAppealUrl: true,
     };
   }
 

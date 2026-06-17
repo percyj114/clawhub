@@ -86,6 +86,13 @@ if (process.env.CLAWHUB_DISABLE_CRONS !== "1") {
     },
   );
 
+  crons.interval(
+    "publisher-abuse-autobans",
+    { hours: 24 },
+    internal.publisherAbuse.processPublisherAbuseAutobansInternal,
+    { batchSize: 1, maxPages: 50 },
+  );
+
   crons.interval("vt-pending-scans", { minutes: 5 }, internal.vt.pollPendingScans, {
     batchSize: 100,
   });

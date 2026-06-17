@@ -78,6 +78,9 @@ listing can return to public surfaces.
 
 Accounts that violate ClawHub policy may lose publishing access. Severe abuse can
 result in account bans, token revocation, hidden content, or removed listings.
+Publisher abuse signals that reach ClawHub's potential-ban threshold can trigger
+that account action automatically; lower-confidence review signals stay in the
+staff review queue.
 
 Deleted, banned, or disabled accounts cannot use ClawHub API tokens. If CLI auth
 starts failing after account action, sign in to the web UI to review account

@@ -128,6 +128,23 @@ describe("moderation notification email copy", () => {
     expect(email.html).not.toContain("publisher_abuse:");
   });
 
+  it("uses publisher-abuse copy for automated publisher-abuse bans", async () => {
+    const email = await buildBanNotificationEmail({
+      handle: "bulkpub",
+      source: "autoban",
+      reason: "publisher_abuse: potential ban candidate",
+      trigger: "publisher_abuse",
+    });
+
+    expect(email.context).toMatchObject({
+      scannerLabel: null,
+      findingSummary:
+        "Your account was identified by ClawHub's publisher abuse review workflow for activity that appears inconsistent with our Acceptable Usage policy.",
+    });
+    expect(email.text).toContain("Bulk or spam publishing");
+    expect(email.text).not.toContain("ClawHub security checks classified the uploaded skill");
+  });
+
   it("builds restored-account copy that explains tokens stay revoked", async () => {
     const email = await buildRestoredAccountEmail({
       handle: "restored",

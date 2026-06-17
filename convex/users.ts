@@ -44,7 +44,11 @@ const MAX_USER_SEARCH_SCAN = 5_000;
 const MIN_USER_SEARCH_SCAN = 500;
 const DEV_PERSONA_GITHUB_CREATED_AT = Date.UTC(2020, 0, 1);
 const AUTOBAN_AUDIT_MATCH_WINDOW_MS = 5_000;
-const BAN_AUDIT_ACTIONS = new Set(["user.ban", "user.autoban.malware"]);
+const BAN_AUDIT_ACTIONS = new Set([
+  "user.ban",
+  "user.autoban.malware",
+  "user.autoban.publisher_abuse",
+]);
 const BAN_APPEAL_AUTH_ACCOUNT_MATCH_LIMIT = 20;
 const MALICIOUS_ARTIFACT_FINDING_ACTION = "user.malicious_artifact.finding";
 const MALICIOUS_ARTIFACT_DISTINCT_BAN_THRESHOLD = 2;
@@ -101,6 +105,25 @@ type MaliciousArtifactKind = "skill" | "plugin";
 type MaliciousArtifactFinding = {
   artifactKind: MaliciousArtifactKind;
   artifactName: string;
+};
+type PublisherAbuseAutobanNomination = Doc<"publisherAbuseReviewNominations">;
+type PublisherAbuseAutobanNominationCheck =
+  | { ok: true; nomination: PublisherAbuseAutobanNomination }
+  | {
+      ok: false;
+      reason: "nomination_not_actionable";
+    };
+type ApplyUserBanArgs = {
+  target: Doc<"users">;
+  targetUserId: Id<"users">;
+  actorUserId: Id<"users">;
+  deletedByRole: "admin" | "moderator" | "user";
+  auditAction: "user.ban" | "user.autoban.publisher_abuse";
+  emailSource: "manual" | "autoban";
+  reasonRaw?: string;
+  hiddenBy?: Id<"users">;
+  emailTrigger?: string;
+  auditMetadata?: Record<string, unknown>;
 };
 
 async function scheduleBanNotificationEmail(
@@ -178,6 +201,56 @@ async function scheduleMaliciousArtifactNotificationEmail(
     version: args.version,
     trigger: args.trigger,
     findingSummary: args.findingSummary,
+  });
+}
+
+async function getActionablePublisherAbuseAutobanNomination(
+  ctx: Pick<MutationCtx, "db">,
+  args: {
+    nominationId: Id<"publisherAbuseReviewNominations">;
+    scoreId: Id<"publisherAbuseScores">;
+    ownerUserId: Id<"users">;
+  },
+): Promise<PublisherAbuseAutobanNominationCheck> {
+  const nomination = await ctx.db.get(args.nominationId);
+  if (!nomination) return { ok: false, reason: "nomination_not_actionable" };
+  if (nomination.status !== "pending") return { ok: false, reason: "nomination_not_actionable" };
+  if (nomination.label !== "potential_ban_candidate") {
+    return { ok: false, reason: "nomination_not_actionable" };
+  }
+  if (nomination.latestScoreId !== args.scoreId) {
+    return { ok: false, reason: "nomination_not_actionable" };
+  }
+  if (nomination.ownerUserId !== args.ownerUserId) {
+    return { ok: false, reason: "nomination_not_actionable" };
+  }
+  return { ok: true, nomination };
+}
+
+async function markPublisherAbuseAutobanNominationBanned(
+  ctx: Pick<MutationCtx, "db">,
+  args: {
+    nomination: PublisherAbuseAutobanNomination;
+    reason: string;
+    now: number;
+  },
+) {
+  await ctx.db.patch(args.nomination._id, {
+    status: "banned",
+    reviewedByUserId: undefined,
+    reviewedAt: args.now,
+    notes: args.reason,
+    updatedAt: args.now,
+  });
+  await ctx.db.insert("publisherAbuseReviewEvents", {
+    nominationId: args.nomination._id,
+    ownerKey: args.nomination.ownerKey,
+    scoreId: args.nomination.latestScoreId,
+    eventType: "triage_status_changed",
+    previousStatus: args.nomination.status,
+    nextStatus: "banned",
+    notes: args.reason,
+    createdAt: args.now,
   });
 }
 
@@ -1574,12 +1647,25 @@ async function banUserWithActor(
     throw new Error("Forbidden");
   }
 
+  return applyUserBan(ctx, {
+    target,
+    targetUserId,
+    actorUserId: actor._id,
+    deletedByRole: actor.role === "admin" ? "admin" : "moderator",
+    auditAction: "user.ban",
+    emailSource: "manual",
+    reasonRaw,
+    hiddenBy: actor._id,
+  });
+}
+
+async function applyUserBan(ctx: MutationCtx, args: ApplyUserBanArgs) {
   const now = Date.now();
-  const reason = reasonRaw?.trim();
+  const reason = args.reasonRaw?.trim();
   if (reason && reason.length > 500) {
     throw new Error("Reason too long (max 500 chars)");
   }
-  if (target.deactivatedAt) {
+  if (args.target.deactivatedAt) {
     return {
       ok: true as const,
       alreadyBanned: true,
@@ -1587,12 +1673,12 @@ async function banUserWithActor(
       deletedSkillComments: 0,
     };
   }
-  if (target.deletedAt) {
+  if (args.target.deletedAt) {
     await ctx.runMutation(internal.packages.applyBanToOwnedPackagesBatchInternal, {
-      ownerUserId: targetUserId,
-      bannedAt: target.deletedAt,
-      deletedBy: actor._id,
-      deletedByRole: actor.role === "admin" ? "admin" : "moderator",
+      ownerUserId: args.targetUserId,
+      bannedAt: args.target.deletedAt,
+      deletedBy: args.actorUserId,
+      deletedByRole: args.deletedByRole,
       cursor: undefined,
     });
     return {
@@ -1606,9 +1692,9 @@ async function banUserWithActor(
   const banSkillsResult = (await ctx.runMutation(
     internal.skills.applyBanToOwnedSkillsBatchInternal,
     {
-      ownerUserId: targetUserId,
+      ownerUserId: args.targetUserId,
       bannedAt: now,
-      hiddenBy: actor._id,
+      ...(args.hiddenBy ? { hiddenBy: args.hiddenBy } : {}),
       cursor: undefined,
     },
   )) as { hiddenCount?: number; scheduled?: boolean };
@@ -1617,7 +1703,7 @@ async function banUserWithActor(
 
   const tokens = await ctx.db
     .query("apiTokens")
-    .withIndex("by_user", (q) => q.eq("userId", targetUserId))
+    .withIndex("by_user", (q) => q.eq("userId", args.targetUserId))
     .collect();
   for (const token of tokens) {
     if (!token.revokedAt) {
@@ -1625,7 +1711,7 @@ async function banUserWithActor(
     }
   }
 
-  await ctx.db.patch(targetUserId, {
+  await ctx.db.patch(args.targetUserId, {
     deletedAt: now,
     role: "user",
     updatedAt: now,
@@ -1635,10 +1721,10 @@ async function banUserWithActor(
   const banPackagesResult = ((await ctx.runMutation(
     internal.packages.applyBanToOwnedPackagesBatchInternal,
     {
-      ownerUserId: targetUserId,
+      ownerUserId: args.targetUserId,
       bannedAt: now,
-      deletedBy: actor._id,
-      deletedByRole: actor.role === "admin" ? "admin" : "moderator",
+      deletedBy: args.actorUserId,
+      deletedByRole: args.deletedByRole,
       cursor: undefined,
     },
   )) ?? {}) as { deletedCount?: number; revokedTokenCount?: number; scheduled?: boolean };
@@ -1646,14 +1732,17 @@ async function banUserWithActor(
   const revokedPackagePublishTokens = banPackagesResult.revokedTokenCount ?? 0;
   const scheduledPackages = banPackagesResult.scheduled ?? false;
 
-  await ctx.runMutation(internal.telemetry.clearUserTelemetryInternal, { userId: targetUserId });
+  await ctx.runMutation(internal.telemetry.clearUserTelemetryInternal, {
+    userId: args.targetUserId,
+  });
 
   await ctx.db.insert("auditLogs", {
-    actorUserId: actor._id,
-    action: "user.ban",
+    actorUserId: args.actorUserId,
+    action: args.auditAction,
     targetType: "user",
-    targetId: targetUserId,
+    targetId: args.targetUserId,
     metadata: {
+      ...args.auditMetadata,
       hiddenSkills: hiddenCount,
       deletedPackages: deletedPackageCount,
       revokedPackagePublishTokens,
@@ -1665,10 +1754,11 @@ async function banUserWithActor(
   });
 
   await scheduleBanNotificationEmail(ctx, {
-    target,
+    target: args.target,
     bannedAt: now,
-    source: "manual",
+    source: args.emailSource,
     reason,
+    trigger: args.emailTrigger,
     hiddenArtifacts:
       scheduledSkills || scheduledPackages ? undefined : hiddenCount + deletedPackageCount,
   });
@@ -2391,6 +2481,79 @@ export const autobanMalwareAuthorInternal = internalMutation({
       deletedSkillComments: 0,
       scheduledSkills,
     };
+  },
+});
+
+/**
+ * Auto-ban a user whose publisher abuse nomination reached the potential-ban bucket.
+ * Skips moderators/admins. No actor required — this is a system-level action.
+ */
+export const autobanPublisherAbuseOwnerInternal = internalMutation({
+  args: {
+    ownerUserId: v.id("users"),
+    nominationId: v.id("publisherAbuseReviewNominations"),
+    scoreId: v.id("publisherAbuseScores"),
+    reason: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const target = await ctx.db.get(args.ownerUserId);
+    if (!target) return { ok: false as const, reason: "user_not_found" as const };
+    const reason = args.reason.trim();
+    if (!reason) return { ok: false as const, reason: "missing_reason" as const };
+    if (reason.length > 500) return { ok: false as const, reason: "reason_too_long" as const };
+
+    const nominationCheck = await getActionablePublisherAbuseAutobanNomination(ctx, args);
+    if (!nominationCheck.ok) {
+      return { ok: false as const, reason: nominationCheck.reason };
+    }
+    const nomination = nominationCheck.nomination;
+
+    const now = Date.now();
+    if (target.deactivatedAt) {
+      await markPublisherAbuseAutobanNominationBanned(ctx, { nomination, reason, now });
+      return { ok: true as const, alreadyBanned: true };
+    }
+    if (target.deletedAt) {
+      await ctx.runMutation(internal.packages.applyBanToOwnedPackagesBatchInternal, {
+        ownerUserId: args.ownerUserId,
+        bannedAt: target.deletedAt,
+        deletedBy: args.ownerUserId,
+        deletedByRole: "user",
+        cursor: undefined,
+      });
+      await markPublisherAbuseAutobanNominationBanned(ctx, { nomination, reason, now });
+      return { ok: true as const, alreadyBanned: true };
+    }
+
+    if (target.role === "admin" || target.role === "moderator") {
+      console.log(
+        `[autoban] Skipping publisher abuse candidate ${target.handle ?? args.ownerUserId}: role=${target.role}`,
+      );
+      return { ok: false as const, reason: "protected_role" as const };
+    }
+
+    const result = await applyUserBan(ctx, {
+      target,
+      targetUserId: args.ownerUserId,
+      actorUserId: args.ownerUserId,
+      deletedByRole: "user",
+      auditAction: "user.autoban.publisher_abuse",
+      emailSource: "autoban",
+      reasonRaw: reason,
+      emailTrigger: "publisher_abuse",
+      auditMetadata: {
+        nominationId: args.nominationId,
+        scoreId: args.scoreId,
+      },
+    });
+
+    console.warn(
+      `[autoban] Banned ${target.handle ?? args.ownerUserId} — publisher abuse nomination ${args.nominationId}`,
+    );
+
+    await markPublisherAbuseAutobanNominationBanned(ctx, { nomination, reason, now });
+
+    return result;
   },
 });
 

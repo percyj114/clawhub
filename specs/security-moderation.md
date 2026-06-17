@@ -43,8 +43,19 @@ See also: [acceptable-usage.md](./acceptable-usage.md) for the marketplace polic
 ## Publisher abuse scoring
 
 - Publisher abuse scoring is a staff review signal for bulk-publishing abuse.
-  It must not directly ban users; staff action goes through the publisher abuse
-  nomination review path.
+  The `review` label remains a calibration/manual-review signal. The
+  `potential_ban_candidate` label is an enforcement signal: scoring runs and
+  the daily backup sweep must automatically ban linked non-staff user accounts
+  through the account ban flow, including token revocation, owned listing hiding,
+  audit logging, and the normal suspension/appeal email.
+- Publisher abuse scoring must skip staff-linked and official publishers before
+  nominations are created. Publisher abuse autoban must process pending
+  `potential_ban_candidate` pressure nominations without waiting for the score
+  run to finish. It must not autoban `review` nominations, historical backfill
+  temporal nominations, partial current temporal nominations, or nominations
+  without a linked user account. Skipped pending nominations must be moved out of
+  pending status with an explanatory review event so the cron does not retry them
+  forever.
 - Catalog volume pressure is linear up to the 100-skill pivot and superlinear
   above it. Doubling an already-bulk catalog should raise review pressure
   meaningfully more than 2x while still allowing legitimate high-engagement
@@ -298,8 +309,9 @@ See also: [acceptable-usage.md](./acceptable-usage.md) for the marketplace polic
   appeals record the Discord reviewer id in audit metadata; the token must not
   authorize any other moderation action. Accepted appeals must use the same
   matching-ban restore behavior as admin unbans for skills and packages/plugins
-  and must only clear accounts with a current `user.ban` or
-  `user.autoban.malware` audit matching the ban timestamp.
+  and must only clear accounts with a current `user.ban`,
+  `user.autoban.malware`, or `user.autoban.publisher_abuse` audit matching
+  the ban timestamp.
   Package/plugin restore audit entries from this service path are actorless;
   reviewer provenance belongs on the `user.unban` service audit metadata, not
   on the restored user's package audit rows.

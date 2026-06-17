@@ -57,6 +57,17 @@ const MAX_TEMPORAL_DAILY_STAT_READS_PER_PAGE = 8_000;
 const MAX_TEMPORAL_DRY_RUN_CANDIDATES = 50;
 const MAX_TEMPORAL_EVIDENCE_SKILLS = 5;
 const MAX_TEMPORAL_STALE_NOMINATION_CLEARS = 250;
+const DEFAULT_AUTOBAN_BATCH_SIZE = 1;
+const MAX_AUTOBAN_BATCH_SIZE = 1;
+const DEFAULT_AUTOBAN_MAX_PAGES = 50;
+const MAX_AUTOBAN_MAX_PAGES = 250;
+const PUBLISHER_ABUSE_AUTOBAN_REASON = "publisher_abuse: potential ban candidate";
+const NON_CURRENT_TEMPORAL_AUTOBAN_SKIP_NOTE =
+  "Autoban skipped: temporal nomination is not from a complete current enforcement run.";
+const STALE_TEMPORAL_AUTOBAN_SKIP_NOTE =
+  "Autoban skipped: temporal nomination is not from the latest complete current enforcement run.";
+const MISSING_PUBLISHER_AUTOBAN_SKIP_NOTE =
+  "Autoban skipped: nomination has no linked publisher row; manual review required.";
 
 type TriageStatus = Doc<"publisherAbuseReviewNominations">["status"];
 type ScoreRun = Doc<"publisherAbuseScoreRuns">;
@@ -97,7 +108,7 @@ type PublisherMetricsDoc = Pick<
 
 type PublisherAbuseExclusionPublisher = Pick<
   Doc<"publishers">,
-  "_id" | "kind" | "deletedAt" | "deactivatedAt"
+  "_id" | "kind" | "linkedUserId" | "deletedAt" | "deactivatedAt"
 >;
 
 type TemporalSkillCandidate = {
@@ -135,6 +146,42 @@ type TemporalPublisherAggregate = {
   reasonCodes: string[];
   evidence: TemporalSkillCandidate[];
 };
+
+type PublisherAbuseAutobanUserResult =
+  | {
+      ok: false;
+      reason:
+        | "user_not_found"
+        | "protected_role"
+        | "missing_reason"
+        | "reason_too_long"
+        | "nomination_not_actionable";
+    }
+  | {
+      ok: true;
+      alreadyBanned: boolean;
+      deletedSkills?: number;
+      deletedSkillComments?: number;
+      scheduledSkills?: boolean;
+    };
+
+type PublisherAbuseAutobanPageResult = {
+  ok: true;
+  processed: number;
+  banned: number;
+  alreadyBanned: number;
+  skipped: number;
+  isDone: boolean;
+  cursor?: string;
+};
+
+type PublisherAbuseAutobanRunResult = PublisherAbuseAutobanPageResult & {
+  pages: number;
+};
+
+type PublisherAbuseAutobanEligibility =
+  | { kind: "ready" }
+  | { kind: "defer"; status: TriageStatus; notes: string };
 
 const temporalCohortBandValidator = v.union(v.literal("p95"), v.literal("p99"));
 
@@ -320,13 +367,21 @@ export const banPublisherAbuseOwner = mutation({
   },
 });
 
+export const autoBanPublisherAbuseCandidatesPageInternal = internalMutation({
+  args: {
+    batchSize: v.optional(v.number()),
+    cursor: v.optional(v.string()),
+  },
+  handler: autoBanPublisherAbuseCandidatesPageInternalHandler,
+});
+
 async function setPublisherAbuseReviewStatusWithActor(
   ctx: Pick<MutationCtx, "db">,
   args: {
     nomination: Doc<"publisherAbuseReviewNominations">;
     status: TriageStatus;
     notes: string | undefined;
-    actorUserId: Id<"users">;
+    actorUserId?: Id<"users">;
     now: number;
   },
 ) {
@@ -348,6 +403,186 @@ async function setPublisherAbuseReviewStatusWithActor(
     notes: args.notes,
     createdAt: args.now,
   });
+}
+
+async function getPublisherAbuseAutobanEligibility(
+  ctx: Pick<MutationCtx, "db">,
+  nomination: Doc<"publisherAbuseReviewNominations">,
+  score: ScoreDoc | null,
+): Promise<PublisherAbuseAutobanEligibility> {
+  const scoredByRun = await ctx.db.get(score?.runId ?? nomination.openedByRunId);
+  if (!scoredByRun) {
+    return {
+      kind: "defer",
+      status: "needs_policy_discussion",
+      notes: "Autoban skipped: score run no longer exists; manual review required.",
+    };
+  }
+  if (scoredByRun.modelVersion !== PUBLISHER_TEMPORAL_ABUSE_MODEL_VERSION) {
+    return { kind: "ready" };
+  }
+  if (scoredByRun.status !== "completed" || scoredByRun.phase !== "completed") {
+    return {
+      kind: "defer",
+      status: "candidate_for_future_action",
+      notes: NON_CURRENT_TEMPORAL_AUTOBAN_SKIP_NOTE,
+    };
+  }
+  if (scoredByRun.temporalMode === "current" && scoredByRun.temporalScanComplete === true) {
+    const latestCurrentRunId = await getLatestCompletedCurrentTemporalScoreRunId(ctx);
+    if (latestCurrentRunId === scoredByRun._id) return { kind: "ready" };
+    return {
+      kind: "defer",
+      status: "candidate_for_future_action",
+      notes: STALE_TEMPORAL_AUTOBAN_SKIP_NOTE,
+    };
+  }
+  return {
+    kind: "defer",
+    status: "candidate_for_future_action",
+    notes: NON_CURRENT_TEMPORAL_AUTOBAN_SKIP_NOTE,
+  };
+}
+
+async function getLatestCompletedCurrentTemporalScoreRunId(ctx: Pick<MutationCtx, "db">) {
+  const run = await ctx.db
+    .query("publisherAbuseScoreRuns")
+    .withIndex(
+      "by_model_version_and_status_and_phase_and_temporal_mode_and_temporal_scan_complete_and_started_at",
+      (q) =>
+        q
+          .eq("modelVersion", PUBLISHER_TEMPORAL_ABUSE_MODEL_VERSION)
+          .eq("status", "completed")
+          .eq("phase", "completed")
+          .eq("temporalMode", "current")
+          .eq("temporalScanComplete", true),
+    )
+    .order("desc")
+    .first();
+  return run?._id;
+}
+
+export async function autoBanPublisherAbuseCandidatesPageInternalHandler(
+  ctx: MutationCtx,
+  args: { batchSize?: number; cursor?: string },
+): Promise<PublisherAbuseAutobanPageResult> {
+  const batchSize = clampInt(
+    args.batchSize ?? DEFAULT_AUTOBAN_BATCH_SIZE,
+    1,
+    MAX_AUTOBAN_BATCH_SIZE,
+  );
+  const candidatePage = await ctx.db
+    .query("publisherAbuseReviewNominations")
+    .withIndex("by_status_and_label_and_last_scored_at", (q) =>
+      q.eq("status", "pending").eq("label", "potential_ban_candidate"),
+    )
+    .order("desc")
+    .paginate({ cursor: args.cursor ?? null, numItems: batchSize });
+
+  let banned = 0;
+  let alreadyBanned = 0;
+  let skipped = 0;
+  for (const nomination of candidatePage.page) {
+    const score = await ctx.db.get(nomination.latestScoreId);
+    const eligibility = await getPublisherAbuseAutobanEligibility(ctx, nomination, score);
+    if (eligibility.kind === "defer") {
+      await setPublisherAbuseReviewStatusWithActor(ctx, {
+        nomination,
+        status: eligibility.status,
+        notes: eligibility.notes,
+        now: Date.now(),
+      });
+      skipped += 1;
+      continue;
+    }
+
+    if (!nomination.ownerPublisherId) {
+      await setPublisherAbuseReviewStatusWithActor(ctx, {
+        nomination,
+        status: "needs_policy_discussion",
+        notes: MISSING_PUBLISHER_AUTOBAN_SKIP_NOTE,
+        now: Date.now(),
+      });
+      skipped += 1;
+      continue;
+    }
+
+    if (await isPublisherAbuseNominationExcluded(ctx, nomination)) {
+      await setPublisherAbuseReviewStatusWithActor(ctx, {
+        nomination,
+        status: "reviewed_no_action",
+        notes: "Autoban skipped: official publisher is excluded from publisher abuse enforcement.",
+        now: Date.now(),
+      });
+      skipped += 1;
+      continue;
+    }
+
+    if (!nomination.ownerUserId) {
+      await setPublisherAbuseReviewStatusWithActor(ctx, {
+        nomination,
+        status: "needs_policy_discussion",
+        notes: "Autoban skipped: nomination has no linked user account.",
+        now: Date.now(),
+      });
+      skipped += 1;
+      continue;
+    }
+
+    const reason = publisherAbuseAutobanReason(nomination, score);
+    const result: PublisherAbuseAutobanUserResult = await ctx.runMutation(
+      internal.users.autobanPublisherAbuseOwnerInternal,
+      {
+        ownerUserId: nomination.ownerUserId,
+        nominationId: nomination._id,
+        scoreId: nomination.latestScoreId,
+        reason,
+      },
+    );
+
+    if (result.ok) {
+      if (result.alreadyBanned) {
+        alreadyBanned += 1;
+      } else {
+        banned += 1;
+      }
+      continue;
+    }
+
+    if (result.reason === "nomination_not_actionable") {
+      skipped += 1;
+      continue;
+    }
+
+    const notes =
+      result.reason === "protected_role"
+        ? "Autoban skipped: staff accounts require manual review."
+        : `Autoban skipped: ${result.reason}.`;
+    await setPublisherAbuseReviewStatusWithActor(ctx, {
+      nomination,
+      status: "needs_policy_discussion",
+      notes,
+      now: Date.now(),
+    });
+    skipped += 1;
+  }
+
+  return {
+    ok: true,
+    processed: candidatePage.page.length,
+    banned,
+    alreadyBanned,
+    skipped,
+    isDone: candidatePage.isDone,
+    ...(candidatePage.isDone ? {} : { cursor: candidatePage.continueCursor }),
+  };
+}
+
+export async function processPublisherAbuseAutobansInternalHandler(
+  ctx: ActionCtx,
+  args: { batchSize?: number; maxPages?: number; cursor?: string },
+): Promise<PublisherAbuseAutobanRunResult> {
+  return await processPublisherAbuseAutobanPages(ctx, args);
 }
 
 function requireFreshPublisherAbuseReviewNomination(
@@ -503,6 +738,15 @@ export const runTemporalPublisherAbuseScanInternal = internalAction({
     actorUserId: v.optional(v.id("users")),
   },
   handler: runTemporalPublisherAbuseScanInternalHandler,
+});
+
+export const processPublisherAbuseAutobansInternal = internalAction({
+  args: {
+    batchSize: v.optional(v.number()),
+    maxPages: v.optional(v.number()),
+    cursor: v.optional(v.string()),
+  },
+  handler: processPublisherAbuseAutobansInternalHandler,
 });
 
 export async function collectPublisherAbuseScoresPageInternalHandler(
@@ -739,9 +983,18 @@ export async function runPublisherAbuseScoreRunInternalHandler(
   let pages = 0;
 
   if (state.status !== "running") {
+    if (state.status === "completed") {
+      await processPublisherAbuseAutobanPages(ctx, {});
+    }
     return { ok: true, runId: state.runId, pages, isDone: true };
   }
 
+  let completedRun:
+    | {
+        runId: Id<"publisherAbuseScoreRuns">;
+        pages: number;
+      }
+    | undefined;
   try {
     while (pages < maxPages) {
       let result: PageResult;
@@ -768,7 +1021,8 @@ export async function runPublisherAbuseScoreRunInternalHandler(
       pages += 1;
       state = { runId: result.runId, status: result.status, phase: result.phase };
       if (result.isDone && result.phase === "completed") {
-        return { ok: true, runId: result.runId, pages, isDone: true };
+        completedRun = { runId: result.runId, pages };
+        break;
       }
     }
   } catch (error) {
@@ -777,6 +1031,11 @@ export async function runPublisherAbuseScoreRunInternalHandler(
       errorMessage: errorMessageFromUnknown(error),
     });
     throw error;
+  }
+
+  if (completedRun) {
+    await processPublisherAbuseAutobanPages(ctx, {});
+    return { ok: true, runId: completedRun.runId, pages: completedRun.pages, isDone: true };
   }
 
   await ctx.scheduler.runAfter(
@@ -790,6 +1049,57 @@ export async function runPublisherAbuseScoreRunInternalHandler(
     },
   );
   return { ok: true, runId: state.runId, pages, isDone: false };
+}
+
+async function processPublisherAbuseAutobanPages(
+  ctx: Pick<ActionCtx, "runMutation" | "scheduler">,
+  args: { batchSize?: number; maxPages?: number; cursor?: string },
+): Promise<PublisherAbuseAutobanRunResult> {
+  const batchSize = clampInt(
+    args.batchSize ?? DEFAULT_AUTOBAN_BATCH_SIZE,
+    1,
+    MAX_AUTOBAN_BATCH_SIZE,
+  );
+  const maxPages = clampInt(args.maxPages ?? DEFAULT_AUTOBAN_MAX_PAGES, 1, MAX_AUTOBAN_MAX_PAGES);
+  let pages = 0;
+  let processed = 0;
+  let banned = 0;
+  let alreadyBanned = 0;
+  let skipped = 0;
+  let isDone = false;
+  let cursor = args.cursor;
+
+  while (pages < maxPages && !isDone) {
+    const result: PublisherAbuseAutobanPageResult = await ctx.runMutation(
+      internal.publisherAbuse.autoBanPublisherAbuseCandidatesPageInternal,
+      cursor ? { batchSize, cursor } : { batchSize },
+    );
+    pages += 1;
+    processed += result.processed;
+    banned += result.banned;
+    alreadyBanned += result.alreadyBanned;
+    skipped += result.skipped;
+    isDone = result.isDone;
+    cursor = result.cursor;
+  }
+
+  if (!isDone) {
+    await ctx.scheduler.runAfter(
+      ACTION_CONTINUATION_DELAY_MS,
+      internal.publisherAbuse.processPublisherAbuseAutobansInternal,
+      cursor ? { batchSize, maxPages, cursor } : { batchSize, maxPages },
+    );
+  }
+
+  return {
+    ok: true,
+    pages,
+    processed,
+    banned,
+    alreadyBanned,
+    skipped,
+    isDone,
+  };
 }
 
 export async function collectTemporalPublisherAbuseSkillCandidatesPageInternalHandler(
@@ -877,12 +1187,14 @@ export async function persistTemporalPublisherAbuseCandidatesInternalHandler(
 }> {
   const aggregates = aggregateTemporalPublisherCandidates(args.candidates);
   const runId = await createTemporalPublisherAbuseScoreRun(ctx, {
+    mode: args.mode,
     trigger: args.trigger,
     actorUserId: args.actorUserId,
     benchmark: args.benchmark,
   });
   const run = await ctx.db.get(runId);
   if (!run) throw new Error("Temporal publisher abuse score run not found");
+  const nominationRun = { ...run, temporalScanComplete: args.scanComplete } as ScoreRun;
 
   const now = Date.now();
   let nominations = 0;
@@ -940,7 +1252,7 @@ export async function persistTemporalPublisherAbuseCandidatesInternalHandler(
     const scoreId = await ctx.db.insert("publisherAbuseScores", scoreData);
     await upsertPublisherAbuseReviewNomination(ctx, {
       score: { _id: scoreId, _creationTime: now, ...scoreData } as ScoreDoc,
-      run,
+      run: nominationRun,
       now,
     });
     nominations += 1;
@@ -958,6 +1270,7 @@ export async function persistTemporalPublisherAbuseCandidatesInternalHandler(
   await ctx.db.patch(runId, {
     status: "completed",
     phase: "completed",
+    temporalScanComplete: args.scanComplete,
     scannedPublishers: sortedAggregates.length + clearedNominations,
     scoredPublishers: sortedAggregates.length + clearedNominations,
     finalizedScores: sortedAggregates.length + clearedNominations,
@@ -1091,6 +1404,9 @@ export async function runTemporalPublisherAbuseScanInternalHandler(
       scanComplete,
     },
   );
+  if (mode === "current" && scanComplete) {
+    await processPublisherAbuseAutobanPages(ctx, {});
+  }
   return {
     ok: true,
     dryRun,
@@ -1201,6 +1517,7 @@ async function createPublisherAbuseScoreRun(
 async function createTemporalPublisherAbuseScoreRun(
   ctx: Pick<MutationCtx, "db">,
   args: {
+    mode: TemporalAbuseMode;
     trigger: "cron" | "manual";
     actorUserId?: Id<"users">;
     benchmark?: TemporalAbuseCohortBenchmark;
@@ -1225,6 +1542,8 @@ async function createTemporalPublisherAbuseScoreRun(
     potentialBanCandidateCount: 0,
     sumLogPressure: 0,
     sumSquaredLogPressure: 0,
+    temporalMode: args.mode,
+    temporalScanComplete: false,
     temporalBenchmark: args.benchmark,
   });
 }
@@ -1365,7 +1684,10 @@ async function isPublisherExcludedFromPublisherAbuse(
 ) {
   if (!publisher) return false;
   if (publisher.kind !== "user" && publisher.kind !== "org") return false;
-  return await hasOfficialPublisherRow(ctx, publisher._id);
+  if (await hasOfficialPublisherRow(ctx, publisher._id)) return true;
+  if (!publisher.linkedUserId) return false;
+  const linkedUser = await ctx.db.get(publisher.linkedUserId);
+  return linkedUser?.role === "admin" || linkedUser?.role === "moderator";
 }
 
 async function isPublisherAbuseExcludedReviewItem(
@@ -1392,6 +1714,26 @@ async function requirePublisherAbuseNominationNotExcluded(
   const publisher = await ctx.db.get(nomination.ownerPublisherId);
   if (!(await isPublisherExcludedFromPublisherAbuse(ctx, publisher))) return;
   throw new Error("Official publisher abuse nominations cannot be acted on.");
+}
+
+async function isPublisherAbuseNominationExcluded(
+  ctx: Pick<QueryCtx | MutationCtx, "db">,
+  nomination: Doc<"publisherAbuseReviewNominations">,
+) {
+  if (!nomination.ownerPublisherId) return false;
+  const publisher = await ctx.db.get(nomination.ownerPublisherId);
+  return await isPublisherExcludedFromPublisherAbuse(ctx, publisher);
+}
+
+function publisherAbuseAutobanReason(
+  nomination: Doc<"publisherAbuseReviewNominations">,
+  score: ScoreDoc | null,
+) {
+  const reasons = score?.reasonCodes.length ? `: ${score.reasonCodes.slice(0, 5).join(", ")}` : "";
+  return truncateText(
+    `${PUBLISHER_ABUSE_AUTOBAN_REASON} (${nomination.modelVersion})${reasons}`,
+    MAX_BAN_REASON_LENGTH,
+  );
 }
 
 function summarizePublisherAbuseFinalizationCohort(run: ScoreRun) {
@@ -1518,7 +1860,8 @@ async function upsertPublisherAbuseReviewNomination(
   if (existing) {
     const shouldReopen =
       (isReopenableNominationStatus(existing.status) &&
-        isPublisherAbuseLabelEscalation(existing.label, args.score.label)) ||
+        (isPublisherAbuseLabelEscalation(existing.label, args.score.label) ||
+          isDeferredNominationForCurrentTemporalRun(existing.status, args.run))) ||
       (await isBannedNominationForActiveOwner(ctx, existing, args.score));
     await ctx.db.patch(existing._id, {
       latestScoreId: args.score._id,
@@ -1623,6 +1966,15 @@ function isReopenableNominationStatus(status: TriageStatus) {
     status === "false_positive" ||
     status === "needs_policy_discussion" ||
     status === "candidate_for_future_action"
+  );
+}
+
+function isDeferredNominationForCurrentTemporalRun(status: TriageStatus, run: ScoreRun) {
+  return (
+    status === "candidate_for_future_action" &&
+    run.modelVersion === PUBLISHER_TEMPORAL_ABUSE_MODEL_VERSION &&
+    run.temporalMode === "current" &&
+    run.temporalScanComplete === true
   );
 }
 
@@ -1909,7 +2261,7 @@ function summarizeUserForAbuseReview(user: Doc<"users">) {
 function normalizeBanReason(rawReason?: string) {
   const reason = rawReason?.trim();
   if (!reason) return undefined;
-  return reason.slice(0, MAX_BAN_REASON_LENGTH);
+  return truncateText(reason, MAX_BAN_REASON_LENGTH);
 }
 
 function publisherAbuseLabelSeverity(label: PublisherAbuseLabel) {
@@ -1922,6 +2274,11 @@ function errorMessageFromUnknown(error: unknown) {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
   return "Publisher abuse score run failed";
+}
+
+function truncateText(value: string, maxLength: number) {
+  if (value.length <= maxLength) return value;
+  return value.slice(0, maxLength).trimEnd();
 }
 
 function nonNegative(value: number | undefined) {

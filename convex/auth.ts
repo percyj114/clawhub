@@ -13,7 +13,11 @@ export const BANNED_REAUTH_MESSAGE =
 export const DELETED_ACCOUNT_REAUTH_MESSAGE =
   "This account has been permanently deleted and cannot be restored.";
 
-const REAUTH_BLOCKING_BAN_ACTIONS = new Set(["user.ban", "user.autoban.malware"]);
+const REAUTH_BLOCKING_BAN_ACTIONS = new Set([
+  "user.ban",
+  "user.autoban.malware",
+  "user.autoban.publisher_abuse",
+]);
 const DEV_PERSONAS = new Set(["owner", "user", "admin", "officialOrgMember", "abusePublisher"]);
 
 export function normalizeGitHubProfileId(profileId: unknown) {

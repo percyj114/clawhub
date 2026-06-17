@@ -1899,6 +1899,8 @@ const publisherAbuseScoreRuns = defineTable({
   sumSquaredLogPressure: v.number(),
   meanLogPressure: v.optional(v.number()),
   stdDevLogPressure: v.optional(v.number()),
+  temporalMode: v.optional(v.union(v.literal("current"), v.literal("backfill"))),
+  temporalScanComplete: v.optional(v.boolean()),
   temporalBenchmark: v.optional(
     v.object({
       sampleSize: v.number(),
@@ -1914,6 +1916,10 @@ const publisherAbuseScoreRuns = defineTable({
 })
   .index("by_status_and_updated_at", ["status", "updatedAt"])
   .index("by_model_version_and_started_at", ["modelVersion", "startedAt"])
+  .index(
+    "by_model_version_and_status_and_phase_and_temporal_mode_and_temporal_scan_complete_and_started_at",
+    ["modelVersion", "status", "phase", "temporalMode", "temporalScanComplete", "startedAt"],
+  )
   .index("by_started_at", ["startedAt"]);
 
 const publisherAbuseScores = defineTable({

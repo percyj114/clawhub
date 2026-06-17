@@ -6,11 +6,13 @@ const mocks = vi.hoisted(() => {
   const githubSkillSyncRef = Symbol("github-skill-source-sync");
   const registryArtifactBackupRetryRef = Symbol("registry-artifact-backup-retry");
   const installTelemetryDedupePruneRef = Symbol("install-telemetry-dedupe-prune");
+  const publisherAbuseAutobanRef = Symbol("publisher-abuse-autobans");
   return {
     interval,
     githubSkillSyncRef,
     registryArtifactBackupRetryRef,
     installTelemetryDedupePruneRef,
+    publisherAbuseAutobanRef,
   };
 });
 
@@ -38,6 +40,8 @@ vi.mock("./_generated/api", () => ({
     },
     publisherAbuse: {
       runPublisherAbuseScoreRunInternal: Symbol("publisher-abuse-score-refresh"),
+      runTemporalPublisherAbuseScanInternal: Symbol("publisher-temporal-abuse-scan"),
+      processPublisherAbuseAutobansInternal: mocks.publisherAbuseAutobanRef,
     },
     vt: {
       pollPendingScans: Symbol("vt-pending-scans"),
@@ -116,6 +120,17 @@ describe("crons", () => {
       { hours: 24 },
       mocks.installTelemetryDedupePruneRef,
       {},
+    );
+  });
+
+  it("runs publisher abuse autobans in one-account mutation pages", async () => {
+    await import("./crons");
+
+    expect(mocks.interval).toHaveBeenCalledWith(
+      "publisher-abuse-autobans",
+      { hours: 24 },
+      mocks.publisherAbuseAutobanRef,
+      { batchSize: 1, maxPages: 50 },
     );
   });
 });

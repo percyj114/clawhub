@@ -130,6 +130,19 @@ describe("handleDeletedUserSignIn", () => {
     expect(ctx.db.patch).not.toHaveBeenCalled();
   });
 
+  it("blocks users auto-banned for publisher abuse", async () => {
+    const { ctx } = makeCtx({
+      user: { deletedAt: 123, banReason: "publisher_abuse: potential ban candidate" },
+      banRecords: [{ action: "user.autoban.publisher_abuse" }],
+    });
+
+    await expect(
+      handleDeletedUserSignIn(ctx as never, { userId, existingUserId: userId }),
+    ).rejects.toThrow(BANNED_REAUTH_MESSAGE);
+
+    expect(ctx.db.patch).not.toHaveBeenCalled();
+  });
+
   it("does not leak the moderator ban reason in the sign-in error", async () => {
     const { ctx } = makeCtx({
       user: { deletedAt: 123, banReason: "Chargeback fraud" },
