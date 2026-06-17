@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  ACCOUNT_SUSPENDED_TEMPLATE,
   APPEALS_URL,
   buildAdminOneOffEmail,
   buildMaliciousArtifactEmail,
   buildBanNotificationEmail,
   buildPackageInspectorFindingsEmail,
   buildRestoredAccountEmail,
+  selectBanNotificationEmailTemplate,
 } from "./emails";
 
 function expectFooterLinksUnderlined(html: string) {
@@ -18,6 +20,16 @@ function expectFooterLinksUnderlined(html: string) {
 }
 
 describe("moderation notification email copy", () => {
+  it("selects the account-suspended template for automated publisher-abuse bans", () => {
+    expect(
+      selectBanNotificationEmailTemplate({
+        source: "autoban",
+        reason: "publisher_abuse: potential ban candidate",
+        trigger: "publisher_abuse",
+      }),
+    ).toBe(ACCOUNT_SUSPENDED_TEMPLATE);
+  });
+
   it("builds public-safe malicious skill context with appeal but no local scan guidance", async () => {
     const email = await buildBanNotificationEmail({
       handle: "gingiris",
@@ -136,6 +148,7 @@ describe("moderation notification email copy", () => {
       trigger: "publisher_abuse",
     });
 
+    expect(email.template).toBe("account-suspended");
     expect(email.context).toMatchObject({
       scannerLabel: null,
       findingSummary:
