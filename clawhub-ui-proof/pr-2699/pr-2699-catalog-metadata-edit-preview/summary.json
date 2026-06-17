@@ -1,0 +1,35 @@
+{
+  "baseline": "origin/main",
+  "candidate": "local pending UI preview; PR head 15e1e225eec7302f08318ce99f81d9c3e5ab5286",
+  "generatedAt": "2026-06-17T05:55:00Z",
+  "lanes": [
+    {
+      "localOutputDir": "/Users/jason/workspace/clawhub-taxonomy-local-seed/.artifacts/clawhub-ui-proof/pr-2699-catalog-metadata-edit-preview/candidate",
+      "name": "candidate",
+      "ref": "local pending UI preview",
+      "status": "pass",
+      "steps": [
+        {
+          "lane": "candidate",
+          "name": "Generate category and add lowercase topic chips",
+          "screenshot": "screenshots/generated-category-and-topic-chips.png",
+          "slug": "generated-category-and-topic-chips",
+          "status": "pass"
+        },
+        {
+          "lane": "candidate",
+          "name": "Save category and topic edits with live counts",
+          "screenshot": "screenshots/saved-catalog-metadata.png",
+          "slug": "saved-catalog-metadata",
+          "status": "pass"
+        }
+      ],
+      "videoPath": "/Users/jason/workspace/clawhub-taxonomy-local-seed/.artifacts/clawhub-ui-proof/pr-2699-catalog-metadata-edit-preview/candidate/full-run.mp4"
+    }
+  ],
+  "mode": "feature",
+  "outputDir": "/Users/jason/workspace/clawhub-taxonomy-local-seed/.artifacts/clawhub-ui-proof/pr-2699-catalog-metadata-edit-preview",
+  "provider": "local signed-in browser",
+  "scenario": "Catalog metadata edit controls (local preview; pending source update)",
+  "status": "pass"
+}
