@@ -49,6 +49,7 @@ const TEST_MODEL_CONFIG = {
   starsPerSkillPivot: 0.05,
   downloadsPerSkillPivot: 250,
   outputElasticity: 1.5,
+  engagementElasticity: 0.25,
   installTrustElasticity: 0.8,
   starTrustElasticity: 1,
   downloadDemandElasticity: 0.2,

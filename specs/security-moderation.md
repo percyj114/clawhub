@@ -51,6 +51,11 @@ See also: [acceptable-usage.md](./acceptable-usage.md) for the marketplace polic
 - At or above the pivot, catalog volume raises pressure multiplicatively while
   installs, stars, and downloads lower it. Legitimate high-adoption publishers
   with large catalogs should stay below review thresholds.
+- Engagement expectations scale sublinearly with catalog size. The scorer must
+  not require every extra skill to have the same per-skill installs/stars as the
+  first 200 skills; a few successful skills can lower pressure for the broader
+  catalog. Catalog size still raises pressure, so large low-adoption catalogs
+  remain eligible for review or ban-candidate labels.
 - Official publishers are excluded from publisher abuse scoring and
   enforcement. An excluded publisher must not contribute to score-run cohort
   statistics, receive a score label/rank, open or update a nomination, appear in

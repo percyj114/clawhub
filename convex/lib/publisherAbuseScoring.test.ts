@@ -18,7 +18,10 @@ describe("publisher abuse scoring", () => {
   it("uses the mature catalog pivot for publisher spam abuse checks", () => {
     expect(DEFAULT_PUBLISHER_ABUSE_MODEL_CONFIG.modelVersion).toBe("publisher-abuse-pressure.v4");
     expect(DEFAULT_PUBLISHER_ABUSE_MODEL_CONFIG.skillPivot).toBe(200);
-    expect(DEFAULT_PUBLISHER_ABUSE_MODEL_CONFIG.outputElasticity).toBe(1.5);
+    expect(DEFAULT_PUBLISHER_ABUSE_MODEL_CONFIG.outputElasticity).toBe(1.2);
+    expect(DEFAULT_PUBLISHER_ABUSE_MODEL_CONFIG.engagementElasticity).toBe(0.25);
+    expect(DEFAULT_PUBLISHER_ABUSE_MODEL_CONFIG.installTrustElasticity).toBe(1);
+    expect(DEFAULT_PUBLISHER_ABUSE_MODEL_CONFIG.starTrustElasticity).toBe(1.1);
   });
 
   it("uses the dry-run z-score thresholds", () => {
@@ -111,6 +114,56 @@ describe("publisher abuse scoring", () => {
     expect(byHandle.get("peand-rover")?.rank).toBeLessThan(byHandle.get("byungkyu")?.rank ?? 0);
   });
 
+  it("keeps high-adoption bulk publishers out of aggregate spam labels", () => {
+    const scored = scorePublisherAbuseCohort([
+      ...Array.from({ length: 200 }, (_, index) =>
+        publisher(`ordinary-${index}`, {
+          publishedSkills: 3,
+          totalInstalls: 30,
+          totalStars: 2,
+          totalDownloads: 600,
+        }),
+      ),
+      publisher("ivangdavila-shape", {
+        publishedSkills: 955,
+        totalInstalls: 84_756,
+        totalStars: 4_924,
+        totalDownloads: 2_347_109,
+      }),
+      publisher("harrylabsj-shape", {
+        publishedSkills: 600,
+        totalInstalls: 7_521,
+        totalStars: 17,
+        totalDownloads: 201_855,
+      }),
+      publisher("oomol-shape", {
+        publishedSkills: 582,
+        totalInstalls: 4_153,
+        totalStars: 0,
+        totalDownloads: 111_003,
+      }),
+      publisher("justoneapi-shape", {
+        publishedSkills: 224,
+        totalInstalls: 3_164,
+        totalStars: 0,
+        totalDownloads: 83_782,
+      }),
+      publisher("ai-gaoqian-shape", {
+        publishedSkills: 212,
+        totalInstalls: 855,
+        totalStars: 5,
+        totalDownloads: 24_362,
+      }),
+    ]);
+
+    const byHandle = new Map(scored.map((score) => [score.input.handleSnapshot, score]));
+    expect(byHandle.get("ivangdavila-shape")?.label).toBe("pass");
+    expect(byHandle.get("harrylabsj-shape")?.label).toBe("pass");
+    expect(byHandle.get("oomol-shape")?.label).toBe("potential_ban_candidate");
+    expect(byHandle.get("justoneapi-shape")?.label).toBe("review");
+    expect(byHandle.get("ai-gaoqian-shape")?.label).toBe("potential_ban_candidate");
+  });
+
   it("keeps below-pivot catalogs out of aggregate spam abuse labels", () => {
     const score199 = computePublisherAbuseRawScore(
       publisher("ordinary-199", {
@@ -181,7 +234,7 @@ describe("publisher abuse scoring", () => {
     expect(labelForPublisherAbuseScore(abovePivot, 3)).toBe("potential_ban_candidate");
   });
 
-  it("increases catalog pressure faster than skill count above the pivot", () => {
+  it("increases catalog pressure when catalog grows without matching adoption", () => {
     const score200 = computePublisherAbuseRawScore(
       publisher("bulk-200", {
         publishedSkills: 200,
@@ -193,14 +246,13 @@ describe("publisher abuse scoring", () => {
     const score400 = computePublisherAbuseRawScore(
       publisher("bulk-400", {
         publishedSkills: 400,
-        totalInstalls: 400,
-        totalStars: 10,
-        totalDownloads: 50_000,
+        totalInstalls: 200,
+        totalStars: 5,
+        totalDownloads: 25_000,
       }),
     );
 
     expect(score200.pressure).toBeGreaterThan(0);
-    expect(score400.pressure / score200.pressure).toBeCloseTo(2 ** 1.5);
     expect(score400.pressure / score200.pressure).toBeGreaterThan(2);
   });
 

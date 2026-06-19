@@ -10,6 +10,7 @@ export type PublisherAbuseModelConfig = {
   starsPerSkillPivot: number;
   downloadsPerSkillPivot: number;
   outputElasticity: number;
+  engagementElasticity?: number;
   installTrustElasticity: number;
   starTrustElasticity: number;
   downloadDemandElasticity: number;
@@ -105,9 +106,10 @@ export const DEFAULT_PUBLISHER_ABUSE_MODEL_CONFIG = {
   installsPerSkillPivot: 2,
   starsPerSkillPivot: 0.05,
   downloadsPerSkillPivot: 250,
-  outputElasticity: 1.5,
-  installTrustElasticity: 0.8,
-  starTrustElasticity: 1,
+  outputElasticity: 1.2,
+  engagementElasticity: 0.25,
+  installTrustElasticity: 1,
+  starTrustElasticity: 1.1,
   downloadDemandElasticity: 0.2,
   minInstallsPerSkill: 0.05,
   minStarsPerSkill: 0.02,
@@ -192,9 +194,9 @@ export function computePublisherAbuseRawScore(
   const pressure = computePublisherAbusePressure(
     {
       publishedSkills,
-      installsPerSkill,
-      starsPerSkill,
-      downloadsPerSkill,
+      totalInstalls,
+      totalStars,
+      totalDownloads,
     },
     config,
   );
@@ -223,20 +225,17 @@ export function computePublisherAbuseRawScore(
 export function computePublisherAbusePressure(
   input: {
     publishedSkills: number;
-    installsPerSkill: number;
-    starsPerSkill: number;
-    downloadsPerSkill: number;
+    totalInstalls: number;
+    totalStars: number;
+    totalDownloads: number;
   },
   config: PublisherAbuseModelConfig = DEFAULT_PUBLISHER_ABUSE_MODEL_CONFIG,
 ): number {
   if (input.publishedSkills <= 0) return 0;
   const skills = Math.max(1, input.publishedSkills);
   const skillPivot = Math.max(1, config.skillPivot);
-  const installsPerSkill = Math.max(config.minInstallsPerSkill, input.installsPerSkill);
   const installsPerSkillPivot = Math.max(config.minInstallsPerSkill, config.installsPerSkillPivot);
-  const starsPerSkill = Math.max(config.minStarsPerSkill, input.starsPerSkill);
   const starsPerSkillPivot = Math.max(config.minStarsPerSkill, config.starsPerSkillPivot);
-  const downloadsPerSkill = Math.max(config.minDownloadsPerSkill, input.downloadsPerSkill);
   const downloadsPerSkillPivot = Math.max(
     config.minDownloadsPerSkill,
     config.downloadsPerSkillPivot,
@@ -244,12 +243,28 @@ export function computePublisherAbusePressure(
 
   const skillOutputRatio = skills / skillPivot;
   const catalogPressure = skillOutputRatio ** config.outputElasticity;
+  const engagementScale = skillOutputRatio ** (config.engagementElasticity ?? 1);
+  const installBenchmark = installsPerSkillPivot * skillPivot * engagementScale;
+  const starBenchmark = starsPerSkillPivot * skillPivot * engagementScale;
+  const downloadBenchmark = downloadsPerSkillPivot * skillPivot * engagementScale;
+  const totalInstalls = Math.max(
+    config.minInstallsPerSkill * skillPivot * engagementScale,
+    input.totalInstalls,
+  );
+  const totalStars = Math.max(
+    config.minStarsPerSkill * skillPivot * engagementScale,
+    input.totalStars,
+  );
+  const totalDownloads = Math.max(
+    config.minDownloadsPerSkill * skillPivot * engagementScale,
+    input.totalDownloads,
+  );
 
   return (
     catalogPressure *
-    (installsPerSkillPivot / installsPerSkill) ** config.installTrustElasticity *
-    (starsPerSkillPivot / starsPerSkill) ** config.starTrustElasticity *
-    (downloadsPerSkillPivot / downloadsPerSkill) ** config.downloadDemandElasticity
+    (installBenchmark / totalInstalls) ** config.installTrustElasticity *
+    (starBenchmark / totalStars) ** config.starTrustElasticity *
+    (downloadBenchmark / totalDownloads) ** config.downloadDemandElasticity
   );
 }
 
