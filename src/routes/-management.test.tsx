@@ -386,6 +386,7 @@ describe("Management", () => {
     expect(screen.getByRole("link", { name: "Users" }).getAttribute("href")).toBe(
       "/management?view=users",
     );
+    expect(screen.queryByRole("link", { name: "System" })).toBeNull();
   });
 
   it("does not expose the users sidebar link to moderators", () => {
@@ -416,6 +417,57 @@ describe("Management", () => {
 
     expect(screen.getByRole("heading", { name: "Duplicate candidates" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Publisher abuse review" })).toBeNull();
+  });
+
+  it("lets admins toggle publisher abuse autobans from the abuse view", async () => {
+    searchState = { view: "abuse" };
+    const setAutobanEnabled = vi.fn(async () => ({
+      enabled: false,
+      updatedAt: 1716000000000,
+      updatedByUserId: "users:admin",
+    }));
+    useMutationMock.mockImplementation((mutation) =>
+      getFunctionName(mutation) === "publisherAbuse:setPublisherAbuseAutobanEnabled"
+        ? setAutobanEnabled
+        : vi.fn(),
+    );
+    useQueryMock.mockImplementation((query, args) => {
+      if (args === "skip") return undefined;
+      const name = getFunctionName(query);
+      if (name === "skills:listRecentVersions") return [];
+      if (name === "skills:listReportedSkills") return [];
+      if (name === "skills:listDuplicateCandidates") return [];
+      if (name === "publisherAbuse:listReviewDashboard") {
+        return {
+          latestRun: null,
+          pendingItems: [],
+          pendingPotentialBanCandidateItems: [],
+          pendingReviewItems: [],
+          recentResolvedItems: [],
+        };
+      }
+      if (name === "publisherAbuse:getPublisherAbuseAutobanSetting") {
+        return {
+          enabled: true,
+          updatedAt: 1715000000000,
+          updatedByUserId: "users:admin",
+        };
+      }
+      if (name === "users:list") return { items: [], total: 0 };
+      return undefined;
+    });
+
+    render(<Management />);
+
+    expect(screen.getByRole("heading", { name: "Publisher abuse review" })).toBeTruthy();
+    expect(screen.getByText("Auto-ban is on")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Turn off auto-ban" }));
+    fireEvent.click(screen.getByRole("button", { name: "Turn off auto-ban now" }));
+
+    await waitFor(() => {
+      expect(setAutobanEnabled).toHaveBeenCalledWith({ enabled: false });
+    });
   });
 
   it("keeps owner search available in the skill tools view", async () => {

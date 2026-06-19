@@ -8,6 +8,7 @@ import { internalAction } from "./functions";
 import {
   buildBanNotificationEmail,
   buildMaliciousArtifactEmail,
+  buildPublisherAbuseWarningEmail,
   buildRestoredAccountEmail,
   type NotificationArtifact,
 } from "./lib/emails";
@@ -18,6 +19,19 @@ const DEFAULT_REPLY_TO = "security@notifications.openclaw.ai";
 const notificationArtifactValidator = v.object({
   kind: v.union(v.literal("skill"), v.literal("plugin")),
   name: v.string(),
+});
+
+const publisherAbuseWarningScoreValidator = v.object({
+  modelVersion: v.string(),
+  publishedSkills: v.number(),
+  totalInstalls: v.number(),
+  totalStars: v.number(),
+  totalDownloads: v.number(),
+  installsPerSkill: v.number(),
+  starsPerSkill: v.number(),
+  downloadsPerSkill: v.number(),
+  zScore: v.number(),
+  reasonCodes: v.array(v.string()),
 });
 
 type SendEmailArgs = {
@@ -159,6 +173,34 @@ export const sendMaliciousArtifactNotificationInternal = internalAction({
     });
     return await sendTransactionalEmail({
       idempotencyKey: `malicious-artifact:${args.userId}:${args.findingAt}:${args.artifact.kind}:${args.artifact.name}:${args.version ?? ""}`,
+      to: args.to,
+      subject: email.subject,
+      text: email.text,
+      html: email.html,
+    });
+  },
+});
+
+export const sendPublisherAbuseWarningInternal = internalAction({
+  args: {
+    userId: v.id("users"),
+    to: v.string(),
+    handle: v.optional(v.string()),
+    publisherHandle: v.string(),
+    warningSentAt: v.number(),
+    deadlineAt: v.number(),
+    score: publisherAbuseWarningScoreValidator,
+  },
+  handler: async (_ctx, args) => {
+    const email = await buildPublisherAbuseWarningEmail({
+      handle: args.handle,
+      publisherHandle: args.publisherHandle,
+      warningSentAt: args.warningSentAt,
+      deadlineAt: args.deadlineAt,
+      score: args.score,
+    });
+    return await sendTransactionalEmail({
+      idempotencyKey: `publisher-abuse-warning:${args.userId}:${args.warningSentAt}`,
       to: args.to,
       subject: email.subject,
       text: email.text,

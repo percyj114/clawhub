@@ -7,12 +7,16 @@ const mocks = vi.hoisted(() => {
   const registryArtifactBackupRetryRef = Symbol("registry-artifact-backup-retry");
   const installTelemetryDedupePruneRef = Symbol("install-telemetry-dedupe-prune");
   const publisherAbuseAutobanRef = Symbol("publisher-abuse-autobans");
+  const publisherAbuseScoreRefreshRef = Symbol("publisher-abuse-score-refresh");
+  const publisherTemporalAbuseScanRef = Symbol("publisher-temporal-abuse-scan");
   return {
     interval,
     githubSkillSyncRef,
     registryArtifactBackupRetryRef,
     installTelemetryDedupePruneRef,
     publisherAbuseAutobanRef,
+    publisherAbuseScoreRefreshRef,
+    publisherTemporalAbuseScanRef,
   };
 });
 
@@ -39,8 +43,8 @@ vi.mock("./_generated/api", () => ({
       backfillPackageReleaseScansInternal: Symbol("package-scan-backfill"),
     },
     publisherAbuse: {
-      runPublisherAbuseScoreRunInternal: Symbol("publisher-abuse-score-refresh"),
-      runTemporalPublisherAbuseScanInternal: Symbol("publisher-temporal-abuse-scan"),
+      runPublisherAbuseScoreRunInternal: mocks.publisherAbuseScoreRefreshRef,
+      runTemporalPublisherAbuseScanInternal: mocks.publisherTemporalAbuseScanRef,
       processPublisherAbuseAutobansInternal: mocks.publisherAbuseAutobanRef,
     },
     vt: {
@@ -120,6 +124,35 @@ describe("crons", () => {
       { hours: 24 },
       mocks.installTelemetryDedupePruneRef,
       {},
+    );
+  });
+
+  it("runs publisher abuse scoring weekly", async () => {
+    await import("./crons");
+
+    expect(mocks.interval).toHaveBeenCalledWith(
+      "publisher-abuse-score-refresh",
+      { hours: 168 },
+      mocks.publisherAbuseScoreRefreshRef,
+      { batchSize: 250, maxPages: 5, trigger: "cron" },
+    );
+  });
+
+  it("runs publisher temporal abuse scanning weekly", async () => {
+    await import("./crons");
+
+    expect(mocks.interval).toHaveBeenCalledWith(
+      "publisher-temporal-abuse-scan",
+      { hours: 168 },
+      mocks.publisherTemporalAbuseScanRef,
+      {
+        mode: "current",
+        dryRun: false,
+        candidateLimit: 1000,
+        batchSize: 50,
+        maxPages: 20,
+        trigger: "cron",
+      },
     );
   });
 

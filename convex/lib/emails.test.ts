@@ -2,9 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   APPEALS_URL,
   buildAdminOneOffEmail,
-  buildMaliciousArtifactEmail,
   buildBanNotificationEmail,
+  buildMaliciousArtifactEmail,
   buildPackageInspectorFindingsEmail,
+  buildPublisherAbuseWarningEmail,
   buildRestoredAccountEmail,
 } from "./emails";
 
@@ -377,6 +378,40 @@ describe("moderation notification email copy", () => {
     expect(email.html).not.toContain("my-my-demo-plugin");
     expect(email.html).not.toContain("1.0.0-beta-beta");
     expect(email.html).not.toContain("11 issueses");
+  });
+
+  it("builds publisher abuse warning emails with a deadline and concrete score signals", async () => {
+    const email = await buildPublisherAbuseWarningEmail({
+      handle: "octocat",
+      publisherHandle: "bulkpub",
+      warningSentAt: Date.UTC(2026, 5, 19, 4, 0, 0),
+      deadlineAt: Date.UTC(2026, 5, 26, 4, 0, 0),
+      score: {
+        modelVersion: "publisher-abuse-pressure.v2",
+        publishedSkills: 143,
+        totalInstalls: 2,
+        totalStars: 0,
+        totalDownloads: 30,
+        installsPerSkill: 0.01,
+        starsPerSkill: 0,
+        downloadsPerSkill: 0.21,
+        zScore: 3.2,
+        reasonCodes: ["high_catalog_volume", "low_installs_per_skill"],
+      },
+    });
+
+    expect(email.subject).toBe("Action required: ClawHub publisher abuse warning");
+    expect(email.text).toContain("ClawHub's publisher abuse detection flagged @bulkpub.");
+    expect(email.text).toContain("Deadline: 2026-06-26 04:00:00 UTC");
+    expect(email.text).toContain("- Published skills: 143");
+    expect(email.text).toContain("- Total installs: 2");
+    expect(email.text).toContain("- Installs per skill: 0.01");
+    expect(email.text).toContain("- High Catalog Volume");
+    expect(email.text).toContain("- Low Installs Per Skill");
+    expect(email.text).toContain("Delete low-quality, duplicate, placeholder");
+    expect(email.html).toContain("Action required: publisher abuse warning");
+    expect(email.html).toContain("@bulkpub");
+    expect(email.html).toContain("2026-06-26 04:00:00 UTC");
   });
 
   it("builds a templated admin one-off email with escaped staff-authored content", async () => {

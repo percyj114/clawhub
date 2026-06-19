@@ -10,7 +10,7 @@ import {
   mutation,
   query,
 } from "./functions";
-import { assertModerator, requireUser, requireUserFromAction } from "./lib/access";
+import { assertAdmin, assertModerator, requireUser, requireUserFromAction } from "./lib/access";
 import { toDayKey } from "./lib/leaderboards";
 import { hasOfficialPublisherRow } from "./lib/officialPublishers";
 import {
@@ -61,6 +61,7 @@ const DEFAULT_AUTOBAN_BATCH_SIZE = 1;
 const MAX_AUTOBAN_BATCH_SIZE = 1;
 const DEFAULT_AUTOBAN_MAX_PAGES = 50;
 const MAX_AUTOBAN_MAX_PAGES = 250;
+const PUBLISHER_ABUSE_AUTOBAN_WARNING_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 const PUBLISHER_ABUSE_AUTOBAN_REASON = "publisher_abuse: potential ban candidate";
 const NON_CURRENT_TEMPORAL_AUTOBAN_SKIP_NOTE =
   "Autoban skipped: temporal nomination is not from a complete current enforcement run.";
@@ -68,6 +69,11 @@ const STALE_TEMPORAL_AUTOBAN_SKIP_NOTE =
   "Autoban skipped: temporal nomination is not from the latest complete current enforcement run.";
 const MISSING_PUBLISHER_AUTOBAN_SKIP_NOTE =
   "Autoban skipped: nomination has no linked publisher row; manual review required.";
+const STALE_PUBLISHER_LINK_AUTOBAN_SKIP_NOTE =
+  "Autoban skipped: publisher is not linked to the nominated user account; manual review required.";
+const MISSING_WARNING_EMAIL_AUTOBAN_SKIP_NOTE =
+  "Autoban warning skipped: linked user has no email address; manual review required.";
+const PUBLISHER_ABUSE_AUTOBAN_SETTING_KEY = "publisherAbuseAutobanEnabled" as const;
 
 type TriageStatus = Doc<"publisherAbuseReviewNominations">["status"];
 type ScoreRun = Doc<"publisherAbuseScoreRuns">;
@@ -168,6 +174,7 @@ type PublisherAbuseAutobanUserResult =
 type PublisherAbuseAutobanPageResult = {
   ok: true;
   processed: number;
+  warned: number;
   banned: number;
   alreadyBanned: number;
   skipped: number;
@@ -182,6 +189,10 @@ type PublisherAbuseAutobanRunResult = PublisherAbuseAutobanPageResult & {
 type PublisherAbuseAutobanEligibility =
   | { kind: "ready" }
   | { kind: "defer"; status: TriageStatus; notes: string };
+
+type PublisherAbuseAutobanSettingDoc = Doc<"systemSettings"> | null;
+
+type PublisherAbuseWarningTarget = Pick<Doc<"users">, "_id" | "email" | "handle" | "role">;
 
 const temporalCohortBandValidator = v.union(v.literal("p95"), v.literal("p99"));
 
@@ -327,6 +338,66 @@ export const getReviewNominationDetail = query({
   },
 });
 
+export const getPublisherAbuseAutobanSetting = query({
+  args: {},
+  handler: async (ctx) => {
+    const { user } = await requireUser(ctx);
+    assertModerator(user);
+
+    const setting = await getPublisherAbuseAutobanSettingDoc(ctx);
+    return summarizePublisherAbuseAutobanSetting(setting);
+  },
+});
+
+export const setPublisherAbuseAutobanEnabled = mutation({
+  args: {
+    enabled: v.boolean(),
+  },
+  handler: async (ctx, args) => {
+    const { user } = await requireUser(ctx);
+    assertAdmin(user);
+
+    const now = Date.now();
+    const existing = await getPublisherAbuseAutobanSettingDoc(ctx);
+    if (existing?.enabled === args.enabled) {
+      return summarizePublisherAbuseAutobanSetting(existing);
+    }
+
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        enabled: args.enabled,
+        updatedAt: now,
+        updatedByUserId: user._id,
+      });
+    } else {
+      await ctx.db.insert("systemSettings", {
+        key: PUBLISHER_ABUSE_AUTOBAN_SETTING_KEY,
+        enabled: args.enabled,
+        updatedAt: now,
+        updatedByUserId: user._id,
+      });
+    }
+
+    await ctx.db.insert("auditLogs", {
+      actorUserId: user._id,
+      action: "publisher_abuse.autoban_setting.set",
+      targetType: "system",
+      targetId: PUBLISHER_ABUSE_AUTOBAN_SETTING_KEY,
+      metadata: {
+        previousEnabled: existing?.enabled ?? true,
+        nextEnabled: args.enabled,
+      },
+      createdAt: now,
+    });
+
+    return {
+      enabled: args.enabled,
+      updatedAt: now,
+      updatedByUserId: user._id,
+    };
+  },
+});
+
 export const banPublisherAbuseOwner = mutation({
   args: {
     nominationId: v.id("publisherAbuseReviewNominations"),
@@ -444,18 +515,87 @@ async function getPublisherAbuseAutobanEligibility(
   };
 }
 
+function isPublisherAbuseWarningReadyForBan(
+  nomination: Doc<"publisherAbuseReviewNominations">,
+  now: number,
+) {
+  if (!nomination.warningSentAt || !nomination.warningExpiresAt || !nomination.warningScoreId) {
+    return false;
+  }
+  if (nomination.warningExpiresAt > now) return false;
+  return nomination.latestScoreId !== nomination.warningScoreId;
+}
+
+async function warnPublisherAbuseAutobanCandidate(
+  ctx: Pick<MutationCtx, "db" | "scheduler">,
+  args: {
+    nomination: Doc<"publisherAbuseReviewNominations">;
+    publisher: Doc<"publishers">;
+    score: ScoreDoc | null;
+    targetUser: PublisherAbuseWarningTarget;
+    now: number;
+  },
+) {
+  const to = args.targetUser.email?.trim();
+  if (!to) throw new Error("Publisher abuse warning target has no email");
+
+  const warningExpiresAt = args.now + PUBLISHER_ABUSE_AUTOBAN_WARNING_GRACE_MS;
+  const warningRunId = args.score?.runId ?? args.nomination.openedByRunId;
+  await ctx.db.patch(args.nomination._id, {
+    warningSentAt: args.now,
+    warningExpiresAt,
+    warningScoreId: args.nomination.latestScoreId,
+    warningRunId,
+    updatedAt: args.now,
+  });
+  await ctx.db.insert("publisherAbuseReviewEvents", {
+    nominationId: args.nomination._id,
+    ownerKey: args.nomination.ownerKey,
+    runId: warningRunId,
+    scoreId: args.nomination.latestScoreId,
+    eventType: "autoban_warning_sent",
+    notes: "Publisher abuse warning email sent before automatic enforcement.",
+    createdAt: args.now,
+  });
+  await ctx.scheduler.runAfter(0, internal.emailsNode.sendPublisherAbuseWarningInternal, {
+    userId: args.targetUser._id,
+    to,
+    handle: args.targetUser.handle,
+    publisherHandle: args.publisher.handle,
+    warningSentAt: args.now,
+    deadlineAt: warningExpiresAt,
+    score: summarizePublisherAbuseWarningScore(args.nomination, args.score),
+  });
+}
+
+function summarizePublisherAbuseWarningScore(
+  nomination: Doc<"publisherAbuseReviewNominations">,
+  score: ScoreDoc | null,
+) {
+  return {
+    modelVersion: nomination.modelVersion,
+    publishedSkills: score?.publishedSkills ?? 0,
+    totalInstalls: score?.totalInstalls ?? 0,
+    totalStars: score?.totalStars ?? 0,
+    totalDownloads: score?.totalDownloads ?? 0,
+    installsPerSkill: score?.installsPerSkill ?? 0,
+    starsPerSkill: score?.starsPerSkill ?? 0,
+    downloadsPerSkill: score?.downloadsPerSkill ?? 0,
+    zScore: score?.zScore ?? 0,
+    reasonCodes: score?.reasonCodes ?? [],
+  };
+}
+
 async function getLatestCompletedCurrentTemporalScoreRunId(ctx: Pick<MutationCtx, "db">) {
   const run = await ctx.db
     .query("publisherAbuseScoreRuns")
-    .withIndex(
-      "by_model_version_and_status_and_phase_and_temporal_mode_and_temporal_scan_complete_and_started_at",
-      (q) =>
-        q
-          .eq("modelVersion", PUBLISHER_TEMPORAL_ABUSE_MODEL_VERSION)
-          .eq("status", "completed")
-          .eq("phase", "completed")
-          .eq("temporalMode", "current")
-          .eq("temporalScanComplete", true),
+    .withIndex("by_model_status_phase_temporal_complete_started_at", (q) =>
+      q
+        .eq("modelVersion", PUBLISHER_TEMPORAL_ABUSE_MODEL_VERSION)
+        .eq("status", "completed")
+        .eq("phase", "completed")
+        .eq("temporalMode", "current")
+        .eq("temporalScanComplete", true),
     )
     .order("desc")
     .first();
@@ -480,9 +620,11 @@ export async function autoBanPublisherAbuseCandidatesPageInternalHandler(
     .paginate({ cursor: args.cursor ?? null, numItems: batchSize });
 
   let banned = 0;
+  let warned = 0;
   let alreadyBanned = 0;
   let skipped = 0;
   for (const nomination of candidatePage.page) {
+    const now = Date.now();
     const score = await ctx.db.get(nomination.latestScoreId);
     const eligibility = await getPublisherAbuseAutobanEligibility(ctx, nomination, score);
     if (eligibility.kind === "defer") {
@@ -490,7 +632,7 @@ export async function autoBanPublisherAbuseCandidatesPageInternalHandler(
         nomination,
         status: eligibility.status,
         notes: eligibility.notes,
-        now: Date.now(),
+        now,
       });
       skipped += 1;
       continue;
@@ -501,31 +643,93 @@ export async function autoBanPublisherAbuseCandidatesPageInternalHandler(
         nomination,
         status: "needs_policy_discussion",
         notes: MISSING_PUBLISHER_AUTOBAN_SKIP_NOTE,
-        now: Date.now(),
+        now,
       });
       skipped += 1;
       continue;
     }
 
-    if (await isPublisherAbuseNominationExcluded(ctx, nomination)) {
-      await setPublisherAbuseReviewStatusWithActor(ctx, {
-        nomination,
-        status: "reviewed_no_action",
-        notes: "Autoban skipped: official publisher is excluded from publisher abuse enforcement.",
-        now: Date.now(),
-      });
-      skipped += 1;
-      continue;
-    }
-
-    if (!nomination.ownerUserId) {
+    const publisher = await ctx.db.get(nomination.ownerPublisherId);
+    if (!publisher) {
       await setPublisherAbuseReviewStatusWithActor(ctx, {
         nomination,
         status: "needs_policy_discussion",
-        notes: "Autoban skipped: nomination has no linked user account.",
-        now: Date.now(),
+        notes: MISSING_PUBLISHER_AUTOBAN_SKIP_NOTE,
+        now,
       });
       skipped += 1;
+      continue;
+    }
+
+    if (await isPublisherExcludedFromPublisherAbuse(ctx, publisher)) {
+      await setPublisherAbuseReviewStatusWithActor(ctx, {
+        nomination,
+        status: "reviewed_no_action",
+        notes: "Autoban skipped: publisher is excluded from publisher abuse enforcement.",
+        now,
+      });
+      skipped += 1;
+      continue;
+    }
+
+    if (!nomination.ownerUserId || publisher.linkedUserId !== nomination.ownerUserId) {
+      await setPublisherAbuseReviewStatusWithActor(ctx, {
+        nomination,
+        status: "needs_policy_discussion",
+        notes: nomination.ownerUserId
+          ? STALE_PUBLISHER_LINK_AUTOBAN_SKIP_NOTE
+          : "Autoban skipped: nomination has no linked user account.",
+        now,
+      });
+      skipped += 1;
+      continue;
+    }
+
+    const targetUser = await ctx.db.get(nomination.ownerUserId);
+    if (!targetUser) {
+      await setPublisherAbuseReviewStatusWithActor(ctx, {
+        nomination,
+        status: "needs_policy_discussion",
+        notes: "Autoban skipped: user_not_found.",
+        now,
+      });
+      skipped += 1;
+      continue;
+    }
+
+    if (targetUser.role === "admin" || targetUser.role === "moderator") {
+      await setPublisherAbuseReviewStatusWithActor(ctx, {
+        nomination,
+        status: "needs_policy_discussion",
+        notes: "Autoban skipped: staff accounts require manual review.",
+        now,
+      });
+      skipped += 1;
+      continue;
+    }
+
+    const warnedCandidateIsReadyForBan = isPublisherAbuseWarningReadyForBan(nomination, now);
+    if (!warnedCandidateIsReadyForBan) {
+      if (!nomination.warningSentAt) {
+        if (!targetUser.email?.trim()) {
+          await setPublisherAbuseReviewStatusWithActor(ctx, {
+            nomination,
+            status: "needs_policy_discussion",
+            notes: MISSING_WARNING_EMAIL_AUTOBAN_SKIP_NOTE,
+            now,
+          });
+          skipped += 1;
+          continue;
+        }
+        await warnPublisherAbuseAutobanCandidate(ctx, {
+          nomination,
+          publisher,
+          score,
+          targetUser,
+          now,
+        });
+        warned += 1;
+      }
       continue;
     }
 
@@ -570,6 +774,7 @@ export async function autoBanPublisherAbuseCandidatesPageInternalHandler(
   return {
     ok: true,
     processed: candidatePage.page.length,
+    warned,
     banned,
     alreadyBanned,
     skipped,
@@ -628,6 +833,35 @@ export const startPublisherAbuseScoreRun = action({
     });
   },
 });
+
+export const getPublisherAbuseAutobanEnabledInternal = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    return await getPublisherAbuseAutobanEnabled(ctx);
+  },
+});
+
+async function getPublisherAbuseAutobanSettingDoc(
+  ctx: Pick<QueryCtx | MutationCtx, "db">,
+): Promise<PublisherAbuseAutobanSettingDoc> {
+  return await ctx.db
+    .query("systemSettings")
+    .withIndex("by_key", (q) => q.eq("key", PUBLISHER_ABUSE_AUTOBAN_SETTING_KEY))
+    .unique();
+}
+
+async function getPublisherAbuseAutobanEnabled(ctx: Pick<QueryCtx | MutationCtx, "db">) {
+  const setting = await getPublisherAbuseAutobanSettingDoc(ctx);
+  return setting?.enabled ?? true;
+}
+
+function summarizePublisherAbuseAutobanSetting(setting: PublisherAbuseAutobanSettingDoc) {
+  return {
+    enabled: setting?.enabled ?? true,
+    updatedAt: setting?.updatedAt ?? null,
+    updatedByUserId: setting?.updatedByUserId ?? null,
+  };
+}
 
 export const getOrStartPublisherAbuseScoreRunInternal = internalMutation({
   args: {
@@ -995,9 +1229,11 @@ export async function runPublisherAbuseScoreRunInternalHandler(
         pages: number;
       }
     | undefined;
+  let shouldProcessAutobans = false;
   try {
     while (pages < maxPages) {
       let result: PageResult;
+      const phaseAtPageStart = state.phase;
       if (state.phase === "collecting") {
         result = await ctx.runMutation(
           internal.publisherAbuse.collectPublisherAbuseScoresPageInternal,
@@ -1019,6 +1255,9 @@ export async function runPublisherAbuseScoreRunInternalHandler(
       }
 
       pages += 1;
+      if (phaseAtPageStart === "finalizing" && (result.nominations ?? 0) > 0) {
+        shouldProcessAutobans = true;
+      }
       state = { runId: result.runId, status: result.status, phase: result.phase };
       if (result.isDone && result.phase === "completed") {
         completedRun = { runId: result.runId, pages };
@@ -1048,13 +1287,33 @@ export async function runPublisherAbuseScoreRunInternalHandler(
       trigger: args.trigger ?? "cron",
     },
   );
+  if (shouldProcessAutobans) {
+    await processPublisherAbuseAutobanPages(ctx, {});
+  }
   return { ok: true, runId: state.runId, pages, isDone: false };
 }
 
 async function processPublisherAbuseAutobanPages(
-  ctx: Pick<ActionCtx, "runMutation" | "scheduler">,
+  ctx: Pick<ActionCtx, "runMutation" | "scheduler" | "runQuery">,
   args: { batchSize?: number; maxPages?: number; cursor?: string },
 ): Promise<PublisherAbuseAutobanRunResult> {
+  const autobanEnabled: boolean = await ctx.runQuery(
+    internal.publisherAbuse.getPublisherAbuseAutobanEnabledInternal,
+    {},
+  );
+  if (!autobanEnabled) {
+    return {
+      ok: true,
+      pages: 0,
+      processed: 0,
+      warned: 0,
+      banned: 0,
+      alreadyBanned: 0,
+      skipped: 0,
+      isDone: true,
+    };
+  }
+
   const batchSize = clampInt(
     args.batchSize ?? DEFAULT_AUTOBAN_BATCH_SIZE,
     1,
@@ -1063,6 +1322,7 @@ async function processPublisherAbuseAutobanPages(
   const maxPages = clampInt(args.maxPages ?? DEFAULT_AUTOBAN_MAX_PAGES, 1, MAX_AUTOBAN_MAX_PAGES);
   let pages = 0;
   let processed = 0;
+  let warned = 0;
   let banned = 0;
   let alreadyBanned = 0;
   let skipped = 0;
@@ -1076,6 +1336,7 @@ async function processPublisherAbuseAutobanPages(
     );
     pages += 1;
     processed += result.processed;
+    warned += result.warned;
     banned += result.banned;
     alreadyBanned += result.alreadyBanned;
     skipped += result.skipped;
@@ -1095,6 +1356,7 @@ async function processPublisherAbuseAutobanPages(
     ok: true,
     pages,
     processed,
+    warned,
     banned,
     alreadyBanned,
     skipped,
@@ -1135,6 +1397,9 @@ export async function collectTemporalPublisherAbuseSkillCandidatesPageInternalHa
   const candidates: TemporalSkillCandidate[] = [];
   for (const skill of page.page) {
     if (!skill.ownerPublisherId) continue;
+    const publisher = await ctx.db.get(skill.ownerPublisherId);
+    if (!publisher || (await isPublisherExcludedFromPublisherAbuse(ctx, publisher))) continue;
+
     const dailyStats = await ctx.db
       .query("skillDailyStats")
       .withIndex("by_skill_day", (q) =>
@@ -1146,8 +1411,6 @@ export async function collectTemporalPublisherAbuseSkillCandidatesPageInternalHa
         ? computeHistoricalSkillTemporalAbuseScore({ dailyStats })
         : computeCurrentSkillTemporalAbuseScore({ todayDay, dailyStats });
 
-    const publisher = await ctx.db.get(skill.ownerPublisherId);
-    if (!publisher || (await isPublisherExcludedFromPublisherAbuse(ctx, publisher))) continue;
     candidates.push({
       ownerKey: `publisher:${publisher._id}`,
       ownerPublisherId: publisher._id,
@@ -1713,16 +1976,7 @@ async function requirePublisherAbuseNominationNotExcluded(
   if (!nomination.ownerPublisherId) return;
   const publisher = await ctx.db.get(nomination.ownerPublisherId);
   if (!(await isPublisherExcludedFromPublisherAbuse(ctx, publisher))) return;
-  throw new Error("Official publisher abuse nominations cannot be acted on.");
-}
-
-async function isPublisherAbuseNominationExcluded(
-  ctx: Pick<QueryCtx | MutationCtx, "db">,
-  nomination: Doc<"publisherAbuseReviewNominations">,
-) {
-  if (!nomination.ownerPublisherId) return false;
-  const publisher = await ctx.db.get(nomination.ownerPublisherId);
-  return await isPublisherExcludedFromPublisherAbuse(ctx, publisher);
+  throw new Error("Excluded publisher abuse nominations cannot be acted on.");
 }
 
 function publisherAbuseAutobanReason(
@@ -1863,6 +2117,7 @@ async function upsertPublisherAbuseReviewNomination(
         (isPublisherAbuseLabelEscalation(existing.label, args.score.label) ||
           isDeferredNominationForCurrentTemporalRun(existing.status, args.run))) ||
       (await isBannedNominationForActiveOwner(ctx, existing, args.score));
+    const shouldClearWarning = shouldReopen || args.score.label !== "potential_ban_candidate";
     await ctx.db.patch(existing._id, {
       latestScoreId: args.score._id,
       label: args.score.label,
@@ -1871,6 +2126,14 @@ async function upsertPublisherAbuseReviewNomination(
       handleSnapshot: args.score.handleSnapshot,
       lastScoredAt: args.now,
       updatedAt: args.now,
+      ...(shouldClearWarning
+        ? {
+            warningSentAt: undefined,
+            warningExpiresAt: undefined,
+            warningScoreId: undefined,
+            warningRunId: undefined,
+          }
+        : {}),
       ...(shouldReopen
         ? {
             status: "pending" as const,
@@ -1946,6 +2209,10 @@ async function updateExistingPublisherAbuseReviewNominationForPass(
     handleSnapshot: args.score.handleSnapshot,
     lastScoredAt: args.now,
     updatedAt: args.now,
+    warningSentAt: undefined,
+    warningExpiresAt: undefined,
+    warningScoreId: undefined,
+    warningRunId: undefined,
   });
   await ctx.db.insert("publisherAbuseReviewEvents", {
     nominationId: existing._id,

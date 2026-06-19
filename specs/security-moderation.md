@@ -43,19 +43,26 @@ See also: [acceptable-usage.md](./acceptable-usage.md) for the marketplace polic
 ## Publisher abuse scoring
 
 - Publisher abuse scoring is a staff review signal for bulk-publishing abuse.
-  The `review` label remains a calibration/manual-review signal. The
-  `potential_ban_candidate` label is an enforcement signal: scoring runs and
-  the daily backup sweep must automatically ban linked non-staff user accounts
-  through the account ban flow, including token revocation, owned listing hiding,
-  audit logging, and the normal suspension/appeal email.
+  Scheduled pressure and temporal scoring runs weekly. The `review` label
+  remains a calibration/manual-review signal. The
+  `potential_ban_candidate` label is an enforcement signal: the first eligible
+  enforcement sweep must warn the linked non-staff user by email and persist the
+  warning score/run/deadline on the nomination. A later sweep may automatically
+  ban only after the warning deadline has passed and a newer score still places
+  the publisher in `potential_ban_candidate`. A stale warning by itself is not
+  enough to ban.
 - Publisher abuse scoring must skip staff-linked and official publishers before
   nominations are created. Publisher abuse autoban must process pending
   `potential_ban_candidate` pressure nominations without waiting for the score
-  run to finish. It must not autoban `review` nominations, historical backfill
-  temporal nominations, partial current temporal nominations, or nominations
-  without a linked user account. Skipped pending nominations must be moved out of
-  pending status with an explanatory review event so the cron does not retry them
+  run to finish. It must not warn or autoban `review` nominations, historical
+  backfill temporal nominations, partial current temporal nominations,
+  nominations without a linked user account, or candidates whose linked user has
+  no email address. Skipped pending nominations must be moved out of pending
+  status with an explanatory review event so the cron does not retry them
   forever.
+- Publisher abuse automatic bans must still use the account ban flow, including
+  token revocation, owned listing hiding, audit logging, and the normal
+  suspension/appeal email.
 - Catalog volume pressure is linear up to the 100-skill pivot and superlinear
   above it. Doubling an already-bulk catalog should raise review pressure
   meaningfully more than 2x while still allowing legitimate high-engagement

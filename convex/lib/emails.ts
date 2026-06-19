@@ -1,5 +1,6 @@
 export const APPEALS_URL = "https://appeals.openclaw.ai/";
 export const MODERATION_GUIDELINES_URL = "https://docs.openclaw.ai/clawhub/moderation";
+export const CLAWHUB_DASHBOARD_URL = "https://clawhub.ai/dashboard";
 export const MALICIOUS_REJECTION_ACCOUNT_WARNING =
   "Repeated malicious rejections may lead to account disablement.";
 const MAX_EMAIL_FINDING_SUMMARY_LENGTH = 280;
@@ -83,6 +84,27 @@ export type PackageInspectorFindingsEmailArgs = {
   packageName: string;
   version: string;
   findings: PackageInspectorEmailFinding[];
+};
+
+export type PublisherAbuseWarningScore = {
+  modelVersion: string;
+  publishedSkills: number;
+  totalInstalls: number;
+  totalStars: number;
+  totalDownloads: number;
+  installsPerSkill: number;
+  starsPerSkill: number;
+  downloadsPerSkill: number;
+  zScore: number;
+  reasonCodes: string[];
+};
+
+export type PublisherAbuseWarningEmailArgs = {
+  handle?: string;
+  publisherHandle: string;
+  warningSentAt?: number;
+  deadlineAt: number;
+  score: PublisherAbuseWarningScore;
 };
 
 export type AdminOneOffEmailArgs = {
@@ -178,6 +200,19 @@ function formatUtcTimestamp(value: number | undefined, fallback: string) {
     .toISOString()
     .replace("T", " ")
     .replace(/\.\d{3}Z$/, " UTC");
+}
+
+function formatEmailNumber(value: number) {
+  if (!Number.isFinite(value)) return "0";
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value);
+}
+
+function formatPublisherAbuseReasonCode(value: string) {
+  return value
+    .split("_")
+    .filter(Boolean)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
 }
 
 async function renderAccountSuspendedTemplate(args: {
@@ -476,6 +511,67 @@ export async function buildPackageInspectorFindingsEmail(args: PackageInspectorF
     subject,
     text: lines.join("\n"),
     html: rendered.html,
+  };
+}
+
+export async function buildPublisherAbuseWarningEmail(args: PublisherAbuseWarningEmailArgs) {
+  const publisherHandle = args.publisherHandle.trim().replace(/^@+/, "");
+  const publisherLabel = publisherHandle ? `@${publisherHandle}` : "your publisher";
+  const deadline = formatUtcTimestamp(args.deadlineAt, "the warning deadline");
+  const warningSentAt = formatUtcTimestamp(args.warningSentAt, "this warning");
+  const reasonLines =
+    args.score.reasonCodes.length > 0
+      ? args.score.reasonCodes.map((reason) => `- ${formatPublisherAbuseReasonCode(reason)}`)
+      : ["- Publisher abuse score exceeded the automatic enforcement tier"];
+  const body = [
+    `ClawHub's publisher abuse detection flagged ${publisherLabel}.`,
+    "",
+    "If this is not resolved before the deadline below, the account linked to this publisher may be suspended the next time the weekly abuse scan confirms the same issue.",
+    "",
+    `Warning sent: ${warningSentAt}`,
+    `Deadline: ${deadline}`,
+    "",
+    "Current signals:",
+    `- Published skills: ${formatEmailNumber(args.score.publishedSkills)}`,
+    `- Total installs: ${formatEmailNumber(args.score.totalInstalls)}`,
+    `- Total stars: ${formatEmailNumber(args.score.totalStars)}`,
+    `- Total downloads: ${formatEmailNumber(args.score.totalDownloads)}`,
+    `- Installs per skill: ${formatEmailNumber(args.score.installsPerSkill)}`,
+    `- Stars per skill: ${formatEmailNumber(args.score.starsPerSkill)}`,
+    `- Downloads per skill: ${formatEmailNumber(args.score.downloadsPerSkill)}`,
+    "",
+    "Why this triggered:",
+    ...reasonLines,
+    "",
+    "What to fix:",
+    "- Delete low-quality, duplicate, placeholder, or machine-generated listings.",
+    "- Consolidate near-identical skills or plugins.",
+    "- Keep only listings that are useful, maintained, and meaningfully different.",
+    "- Do not inflate installs, downloads, stars, or other engagement metrics.",
+  ].join("\n");
+  const subject = "Action required: ClawHub publisher abuse warning";
+
+  const html = await renderGenericOneOffTemplate({
+    recipientHandle: handleLabel(args.handle),
+    subject,
+    title: "Action required: publisher abuse warning",
+    body,
+    primaryActionLabel: "Open ClawHub dashboard",
+    primaryActionUrl: CLAWHUB_DASHBOARD_URL,
+  });
+
+  return {
+    subject,
+    text: [
+      greeting(args.handle),
+      "",
+      body,
+      "",
+      `Open ClawHub dashboard: ${CLAWHUB_DASHBOARD_URL}`,
+      "",
+      "ClawHub Security",
+    ].join("\n"),
+    html,
   };
 }
 

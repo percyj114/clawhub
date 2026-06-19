@@ -71,7 +71,6 @@ const MANAGEMENT_VIEWS = new Set<string>([
   "duplicates",
   "recent",
   "audit",
-  "system",
   "settings",
 ]);
 
@@ -219,6 +218,10 @@ export function Management() {
     api.publisherAbuse.listReviewDashboard,
     staff && abuseViewActive ? { limit: 150 } : "skip",
   );
+  const publisherAbuseAutobanSetting = useQuery(
+    api.publisherAbuse.getPublisherAbuseAutobanSetting,
+    staff && abuseViewActive ? {} : "skip",
+  );
 
   const setRole = useMutation(api.users.setRole);
   const banUser = useMutation(api.users.banUser);
@@ -234,6 +237,9 @@ export function Management() {
   const setSkillManualOverride = useMutation(api.skills.setSkillManualOverride);
   const clearSkillManualOverride = useMutation(api.skills.clearSkillManualOverride);
   const banPublisherAbuseOwnerMutation = useMutation(api.publisherAbuse.banPublisherAbuseOwner);
+  const setPublisherAbuseAutobanEnabled = useMutation(
+    api.publisherAbuse.setPublisherAbuseAutobanEnabled,
+  );
   const startPublisherAbuseScoreRun = useAction(api.publisherAbuse.startPublisherAbuseScoreRun);
 
   const [selectedDuplicate, setSelectedDuplicate] = useState("");
@@ -561,6 +567,26 @@ export function Management() {
     });
   };
 
+  const requestTogglePublisherAbuseAutoban = () => {
+    if (!publisherAbuseAutobanSetting) return;
+    const nextEnabled = !publisherAbuseAutobanSetting.enabled;
+    setConfirmRequest({
+      title: nextEnabled ? "Turn on auto-ban?" : "Turn off auto-ban?",
+      body: nextEnabled
+        ? "Scheduled publisher abuse sweeps will resume warning and banning potential-ban candidates."
+        : "Scheduled publisher abuse sweeps will stop warning or banning candidates. Manual bans stay available.",
+      confirmLabel: nextEnabled ? "Turn on auto-ban now" : "Turn off auto-ban now",
+      destructive: !nextEnabled,
+      onConfirm: () => {
+        void setPublisherAbuseAutobanEnabled({ enabled: nextEnabled })
+          .then(() => {
+            toast.success(nextEnabled ? "Auto-ban turned on." : "Auto-ban turned off.");
+          })
+          .catch((error) => toast.error(formatMutationError(error)));
+      },
+    });
+  };
+
   return (
     <main className="management-shell">
       <ManagementSidebar
@@ -586,6 +612,7 @@ export function Management() {
         {activeView === "abuse" ? (
           <AbusePage
             admin={admin}
+            autobanSetting={publisherAbuseAutobanSetting}
             currentUserId={me?._id ?? null}
             dashboard={publisherAbuseDashboard}
             detail={selectedPublisherAbuseDetail}
@@ -599,6 +626,7 @@ export function Management() {
             onChangeNotes={setPublisherAbuseNotes}
             onChangeSearch={setPublisherAbuseSearch}
             onChangeTab={setPublisherAbuseTab}
+            onToggleAutoban={requestTogglePublisherAbuseAutoban}
             onRefresh={() => {
               setConfirmRequest({
                 title: "Run a new abuse scan?",
@@ -736,12 +764,6 @@ export function Management() {
           <ManagementPlaceholder
             title="Audit log"
             description="Audit log exploration is still handled inside individual tools for now."
-          />
-        ) : null}
-        {activeView === "system" ? (
-          <ManagementPlaceholder
-            title="System"
-            description="System maintenance shortcuts can be added here without crowding moderation queues."
           />
         ) : null}
         {activeView === "settings" ? (
@@ -898,7 +920,6 @@ const MANAGEMENT_VIEW_LABELS: Record<ManagementView, string> = {
   duplicates: "Duplicate candidates",
   recent: "Recent pushes",
   audit: "Audit log",
-  system: "System",
   settings: "Settings",
 };
 

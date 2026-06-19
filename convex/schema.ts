@@ -1876,6 +1876,13 @@ const auditLogs = defineTable({
   .index("by_target", ["targetType", "targetId"])
   .index("by_target_createdAt", ["targetType", "targetId", "createdAt"]);
 
+const systemSettings = defineTable({
+  key: v.literal("publisherAbuseAutobanEnabled"),
+  enabled: v.boolean(),
+  updatedAt: v.number(),
+  updatedByUserId: v.optional(v.id("users")),
+}).index("by_key", ["key"]);
+
 const publisherAbuseScoreRuns = defineTable({
   modelVersion: v.string(),
   modelConfig: publisherAbuseModelConfigValidator,
@@ -1916,10 +1923,14 @@ const publisherAbuseScoreRuns = defineTable({
 })
   .index("by_status_and_updated_at", ["status", "updatedAt"])
   .index("by_model_version_and_started_at", ["modelVersion", "startedAt"])
-  .index(
-    "by_model_version_and_status_and_phase_and_temporal_mode_and_temporal_scan_complete_and_started_at",
-    ["modelVersion", "status", "phase", "temporalMode", "temporalScanComplete", "startedAt"],
-  )
+  .index("by_model_status_phase_temporal_complete_started_at", [
+    "modelVersion",
+    "status",
+    "phase",
+    "temporalMode",
+    "temporalScanComplete",
+    "startedAt",
+  ])
   .index("by_started_at", ["startedAt"]);
 
 const publisherAbuseScores = defineTable({
@@ -2018,6 +2029,10 @@ const publisherAbuseReviewNominations = defineTable({
   reviewedByUserId: v.optional(v.id("users")),
   reviewedAt: v.optional(v.number()),
   notes: v.optional(v.string()),
+  warningSentAt: v.optional(v.number()),
+  warningExpiresAt: v.optional(v.number()),
+  warningScoreId: v.optional(v.id("publisherAbuseScores")),
+  warningRunId: v.optional(v.id("publisherAbuseScoreRuns")),
   updatedAt: v.number(),
 })
   .index("by_owner_key_and_model_version", ["ownerKey", "modelVersion"])
@@ -2043,6 +2058,7 @@ const publisherAbuseReviewEvents = defineTable({
   eventType: v.union(
     v.literal("nomination_opened"),
     v.literal("nomination_score_updated"),
+    v.literal("autoban_warning_sent"),
     v.literal("triage_status_changed"),
   ),
   previousStatus: v.optional(publisherAbuseTriageStatusValidator),
@@ -2338,6 +2354,7 @@ export default defineSchema({
   officialPluginMigrations,
   stars,
   auditLogs,
+  systemSettings,
   publisherAbuseScoreRuns,
   publisherAbuseScores,
   publisherAbuseReviewNominations,

@@ -1,5 +1,14 @@
 import { Link } from "@tanstack/react-router";
-import { Ban, Copy, ExternalLink, RefreshCcw, Search } from "lucide-react";
+import {
+  Ban,
+  Copy,
+  ExternalLink,
+  Power,
+  RefreshCcw,
+  Search,
+  ShieldCheck,
+  ShieldOff,
+} from "lucide-react";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { Badge, type BadgeProps } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
@@ -27,6 +36,7 @@ import {
 
 export function AbusePage({
   admin,
+  autobanSetting,
   currentUserId,
   dashboard,
   detail,
@@ -43,8 +53,16 @@ export function AbusePage({
   onClose,
   onRefresh,
   onSelect,
+  onToggleAutoban,
 }: {
   admin: boolean;
+  autobanSetting:
+    | {
+        enabled: boolean;
+        updatedAt: number | null;
+        updatedByUserId: Id<"users"> | null;
+      }
+    | undefined;
   currentUserId: Id<"users"> | null;
   dashboard: PublisherAbuseReviewDashboard | undefined;
   detail: PublisherAbuseReviewDetail | undefined;
@@ -61,6 +79,7 @@ export function AbusePage({
   onClose: () => void;
   onRefresh: () => void;
   onSelect: (value: Id<"publisherAbuseReviewNominations">) => void;
+  onToggleAutoban: () => void;
 }) {
   const latestRun = dashboard?.latestRun ?? null;
   const selectedScore = selectedItem?.latestScore ?? null;
@@ -82,6 +101,15 @@ export function AbusePage({
           ? resolved
           : totalPending;
   const loaded = dashboard !== undefined;
+  const autobanLoaded = autobanSetting !== undefined;
+  const autobanEnabled = autobanSetting?.enabled ?? true;
+  const autobanStatusLabel = autobanLoaded
+    ? autobanEnabled
+      ? "Auto-ban is on"
+      : "Auto-ban is off"
+    : "Auto-ban loading";
+  const autobanToggleLabel = autobanEnabled ? "Turn off auto-ban" : "Turn on auto-ban";
+  const AutobanStatusIcon = autobanEnabled ? ShieldCheck : ShieldOff;
 
   return (
     <section className="pa" aria-labelledby="pa-title">
@@ -129,6 +157,22 @@ export function AbusePage({
               Run new scan
             </Button>
             <span className="pa-rescan-hint">Re-scores every publisher</span>
+          </div>
+          <div className="pa-autoban" aria-label="Publisher abuse auto-ban">
+            <span className={autobanEnabled ? "pa-autoban-status is-on" : "pa-autoban-status"}>
+              <AutobanStatusIcon size={14} />
+              {autobanStatusLabel}
+            </span>
+            <Button
+              type="button"
+              variant={autobanEnabled ? "destructive" : "primary"}
+              size="sm"
+              disabled={!admin || !autobanLoaded}
+              onClick={onToggleAutoban}
+            >
+              <Power size={14} />
+              {admin ? autobanToggleLabel : "Admins only"}
+            </Button>
           </div>
         </div>
       </header>
