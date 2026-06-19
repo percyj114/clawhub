@@ -6629,13 +6629,13 @@ describe("publisher abuse dry-run persistence", () => {
       ok: true,
       dryRun: true,
       mode: "current",
-      scannedSkills: 8_000,
+      scannedSkills: 1_000,
       highTemporalSkills: 0,
       flaggedPublishers: 0,
       nominations: 0,
     });
 
-    expect(ctx.runQuery).toHaveBeenCalledTimes(80);
+    expect(ctx.runQuery).toHaveBeenCalledTimes(10);
     expect(ctx.runMutation).not.toHaveBeenCalled();
   });
 
@@ -7058,6 +7058,101 @@ describe("publisher abuse dry-run persistence", () => {
         String(target).includes("persistTemporalPublisherAbuseCandidatesInternal"),
       ),
     ).toBe(false);
+  });
+
+  it("continues persisted current temporal finalization after one aggregate page", async () => {
+    const firstCandidate = temporalCandidate("skills:first", {
+      slug: "first",
+      displayName: "First",
+    });
+    firstCandidate.temporalScore.nearConversion = true;
+    firstCandidate.temporalScore.installDownloadExcessZScore7 = 60;
+    const secondCandidate = {
+      ...temporalCandidate("skills:second", {
+        slug: "second",
+        displayName: "Second",
+      }),
+      ownerKey: "publisher:publishers:second",
+      ownerPublisherId: "publishers:second",
+      ownerUserId: "users:second",
+      handleSnapshot: "second",
+    };
+    secondCandidate.temporalScore.nearConversion = true;
+    secondCandidate.temporalScore.installDownloadExcessZScore7 = 60;
+    const scheduler = { runAfter: vi.fn(async () => null) };
+    const ctx = {
+      scheduler,
+      runQuery: vi.fn(async (target: symbol) => {
+        const name = String(target);
+        if (name.includes("getPublisherAbuseScoreRunStateInternal")) {
+          return {
+            runId: "publisherAbuseScoreRuns:temporal",
+            status: "running",
+            phase: "finalizing",
+            finalizedScores: 0,
+          };
+        }
+        if (name.includes("listTemporalPublisherAbuseScanCandidatesPageInternal")) {
+          return {
+            candidates: [firstCandidate, secondCandidate],
+            isDone: true,
+          };
+        }
+        throw new Error(`unexpected query ${name}`);
+      }),
+      runMutation: vi.fn(async (target: symbol, _args?: unknown) => {
+        const name = String(target);
+        if (name.includes("persistTemporalPublisherAbuseAggregateInternal")) {
+          return { nominated: true, label: "potential_ban_candidate" };
+        }
+        if (name.includes("completePersistedTemporalPublisherAbuseScanInternal")) {
+          throw new Error("partial aggregate page should not complete the scan");
+        }
+        if (name.includes("cleanupTemporalPublisherAbuseScanCandidatesPageInternal")) {
+          throw new Error("partial aggregate page should not clean up candidates");
+        }
+        if (name.includes("autoBanPublisherAbuseCandidatesPageInternal")) {
+          throw new Error("partial aggregate page should not process autobans");
+        }
+        throw new Error(`unexpected mutation ${name}`);
+      }),
+    };
+
+    await expect(
+      temporalRunHandler(ctx, {
+        runId: "publisherAbuseScoreRuns:temporal",
+        mode: "current",
+        dryRun: false,
+        candidateLimit: 100,
+        batchSize: 1,
+        maxPages: 1,
+        todayDay: 100,
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      dryRun: false,
+      mode: "current",
+      highTemporalSkills: 2,
+      flaggedPublishers: 2,
+      nominations: 1,
+    });
+
+    const aggregateCalls = ctx.runMutation.mock.calls.filter(([target]) =>
+      String(target).includes("persistTemporalPublisherAbuseAggregateInternal"),
+    );
+    expect(aggregateCalls).toHaveLength(1);
+    expect(scheduler.runAfter).toHaveBeenCalledWith(60_000, expect.anything(), {
+      runId: "publisherAbuseScoreRuns:temporal",
+      mode: "current",
+      dryRun: false,
+      candidateLimit: 100,
+      batchSize: 1,
+      maxPages: 1,
+      todayDay: 100,
+      lookbackDays: undefined,
+      trigger: "cron",
+      actorUserId: undefined,
+    });
   });
 
   it("marks persisted current temporal scans failed when finalization throws", async () => {
@@ -8261,6 +8356,10 @@ describe("publisher abuse dry-run persistence", () => {
     ).resolves.toEqual({
       clearedNominations: 1,
       scannedPublishers: 20,
+      flaggedPublishers: 0,
+      nominatedPublishers: 0,
+      reviewCount: 0,
+      potentialBanCandidateCount: 0,
     });
 
     expect(insert).toHaveBeenCalledWith(
