@@ -178,8 +178,17 @@ export const RETENTION_POLICIES = {
   officialPluginMigrations: permanent("Official plugin migration state."),
   stars: permanent("User star records."),
   auditLogs: permanent("Audit logs are durable compliance/security history."),
+  systemSettings: permanent("Durable operator-controlled system settings."),
   publisherAbuseScoreRuns: permanent("Abuse scoring run history."),
   publisherAbuseScores: permanent("Abuse score history used for review decisions."),
+  publisherAbuseTemporalScanCandidates: ephemeral(
+    "Temporary temporal scan candidate pages are only needed while a persisted scan finalizes.",
+    {
+      expirationField: "createdAt",
+      prune: "publisherAbuse.cleanupTemporalPublisherAbuseScanCandidatesPageInternal",
+      retention: "Until the owning publisher abuse score run is finalized and cleaned up.",
+    },
+  ),
   publisherAbuseReviewNominations: permanent("Abuse review workflow state."),
   publisherAbuseReviewEvents: permanent("Abuse review event history."),
   vtScanLogs: permanent("VirusTotal scan log history."),
