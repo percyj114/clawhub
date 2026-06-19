@@ -57,6 +57,7 @@ const MAX_TEMPORAL_DAILY_STAT_READS_PER_PAGE = 8_000;
 const MAX_TEMPORAL_DRY_RUN_CANDIDATES = 50;
 const MAX_TEMPORAL_EVIDENCE_SKILLS = 5;
 const MAX_TEMPORAL_STALE_NOMINATION_CLEARS = 250;
+const FAILED_TEMPORAL_NOMINATION_CLEANUP_BATCH_SIZE = 100;
 const TEMPORAL_SCAN_CANDIDATE_CLEANUP_BATCH_SIZE = 500;
 const DEFAULT_AUTOBAN_BATCH_SIZE = 1;
 const MAX_AUTOBAN_BATCH_SIZE = 1;
@@ -76,7 +77,13 @@ const STALE_PUBLISHER_LINK_AUTOBAN_SKIP_NOTE =
   "Autoban skipped: publisher is not linked to the nominated user account; manual review required.";
 const MISSING_WARNING_EMAIL_AUTOBAN_SKIP_NOTE =
   "Autoban warning skipped: linked user has no email address; manual review required.";
+const FAILED_TEMPORAL_RUN_NOMINATION_NOTE =
+  "Publisher abuse temporal score run failed before completion; rerun required.";
 const PUBLISHER_ABUSE_AUTOBAN_SETTING_KEY = "publisherAbuseAutobanEnabled" as const;
+const FAILED_TEMPORAL_CLEANUP_LABELS = [
+  "potential_ban_candidate",
+  "review",
+] satisfies PendingPublisherAbuseReviewLabel[];
 
 type TriageStatus = Doc<"publisherAbuseReviewNominations">["status"];
 type ScoreRun = Doc<"publisherAbuseScoreRuns">;
@@ -1131,6 +1138,8 @@ export const markPublisherAbuseScoreRunFailedInternal = internalMutation({
   args: {
     runId: v.id("publisherAbuseScoreRuns"),
     errorMessage: v.string(),
+    cleanupLabel: v.optional(v.union(v.literal("potential_ban_candidate"), v.literal("review"))),
+    cleanupCursor: v.optional(v.string()),
   },
   handler: markPublisherAbuseScoreRunFailedInternalHandler,
 });
@@ -1452,21 +1461,147 @@ export async function finalizePublisherAbuseScoresPageInternalHandler(
 
 export async function markPublisherAbuseScoreRunFailedInternalHandler(
   ctx: MutationCtx,
-  args: { runId: Id<"publisherAbuseScoreRuns">; errorMessage: string },
+  args: {
+    runId: Id<"publisherAbuseScoreRuns">;
+    errorMessage: string;
+    cleanupLabel?: PendingPublisherAbuseReviewLabel;
+    cleanupCursor?: string;
+  },
 ): Promise<RunState> {
   const run = await ctx.db.get(args.runId);
   if (!run) throw new Error("Publisher abuse score run not found");
-  if (run.status !== "running") {
-    return { runId: run._id, status: run.status, phase: run.phase };
+  const now = Date.now();
+  const nextStatus = run.status === "running" ? "failed" : run.status;
+  if (run.status === "running") {
+    await ctx.db.patch(run._id, {
+      status: "failed",
+      errorMessage: args.errorMessage,
+      updatedAt: now,
+    });
   }
 
-  const now = Date.now();
-  await ctx.db.patch(run._id, {
-    status: "failed",
-    errorMessage: args.errorMessage,
-    updatedAt: now,
-  });
-  return { runId: run._id, status: "failed", phase: run.phase };
+  const shouldCleanupFailedTemporalRun =
+    run.modelVersion === PUBLISHER_TEMPORAL_ABUSE_MODEL_VERSION &&
+    (run.status === "running" || Boolean(args.cleanupLabel) || Boolean(args.cleanupCursor));
+  if (shouldCleanupFailedTemporalRun) {
+    await cleanupFailedTemporalPublisherAbuseRunPage(ctx, {
+      run,
+      errorMessage: args.errorMessage,
+      label: args.cleanupLabel ?? FAILED_TEMPORAL_CLEANUP_LABELS[0],
+      cursor: args.cleanupCursor,
+      now,
+    });
+    if (!args.cleanupLabel && !args.cleanupCursor) {
+      await cleanupTemporalPublisherAbuseScanCandidatesPageInternalHandler(ctx, { runId: run._id });
+    }
+  }
+
+  return { runId: run._id, status: nextStatus, phase: run.phase };
+}
+
+async function cleanupFailedTemporalPublisherAbuseRunPage(
+  ctx: Pick<MutationCtx, "db" | "scheduler">,
+  args: {
+    run: Doc<"publisherAbuseScoreRuns">;
+    errorMessage: string;
+    label: PendingPublisherAbuseReviewLabel;
+    cursor?: string;
+    now: number;
+  },
+) {
+  const page = await ctx.db
+    .query("publisherAbuseScores")
+    .withIndex("by_run_and_label_and_rank", (q) =>
+      q.eq("runId", args.run._id).eq("label", args.label),
+    )
+    .paginate({
+      cursor: args.cursor ?? null,
+      numItems: FAILED_TEMPORAL_NOMINATION_CLEANUP_BATCH_SIZE,
+    });
+
+  for (const score of page.page) {
+    const nomination = await ctx.db
+      .query("publisherAbuseReviewNominations")
+      .withIndex("by_owner_key_and_model_version", (q) =>
+        q.eq("ownerKey", score.ownerKey).eq("modelVersion", score.modelVersion),
+      )
+      .first();
+    if (!nomination || nomination.status !== "pending" || nomination.latestScoreId !== score._id) {
+      continue;
+    }
+
+    await ctx.db.patch(nomination._id, {
+      status: "candidate_for_future_action",
+      reviewedByUserId: undefined,
+      reviewedAt: args.now,
+      notes: FAILED_TEMPORAL_RUN_NOMINATION_NOTE,
+      warningSentAt: undefined,
+      warningExpiresAt: undefined,
+      warningScoreId: undefined,
+      warningRunId: undefined,
+      warningPendingAt: undefined,
+      warningPendingScoreId: undefined,
+      warningPendingRunId: undefined,
+      updatedAt: args.now,
+    });
+    await ctx.db.insert("publisherAbuseReviewEvents", {
+      nominationId: nomination._id,
+      ownerKey: nomination.ownerKey,
+      runId: args.run._id,
+      scoreId: score._id,
+      eventType: "triage_status_changed",
+      previousStatus: nomination.status,
+      nextStatus: "candidate_for_future_action",
+      notes: FAILED_TEMPORAL_RUN_NOMINATION_NOTE,
+      createdAt: args.now,
+    });
+  }
+
+  if (!page.isDone) {
+    await scheduleFailedTemporalPublisherAbuseRunCleanup(ctx, {
+      runId: args.run._id,
+      errorMessage: args.errorMessage,
+      label: args.label,
+      cursor: page.continueCursor,
+    });
+    return;
+  }
+
+  const nextLabel = nextFailedTemporalCleanupLabel(args.label);
+  if (nextLabel) {
+    await scheduleFailedTemporalPublisherAbuseRunCleanup(ctx, {
+      runId: args.run._id,
+      errorMessage: args.errorMessage,
+      label: nextLabel,
+    });
+  }
+}
+
+async function scheduleFailedTemporalPublisherAbuseRunCleanup(
+  ctx: Pick<MutationCtx, "scheduler">,
+  args: {
+    runId: Id<"publisherAbuseScoreRuns">;
+    errorMessage: string;
+    label: PendingPublisherAbuseReviewLabel;
+    cursor?: string;
+  },
+) {
+  await ctx.scheduler.runAfter(
+    0,
+    internal.publisherAbuse.markPublisherAbuseScoreRunFailedInternal,
+    {
+      runId: args.runId,
+      errorMessage: args.errorMessage,
+      cleanupLabel: args.label,
+      ...(args.cursor ? { cleanupCursor: args.cursor } : {}),
+    },
+  );
+}
+
+function nextFailedTemporalCleanupLabel(label: PendingPublisherAbuseReviewLabel) {
+  const currentIndex = FAILED_TEMPORAL_CLEANUP_LABELS.indexOf(label);
+  if (currentIndex < 0) return null;
+  return FAILED_TEMPORAL_CLEANUP_LABELS[currentIndex + 1] ?? null;
 }
 
 export async function runPublisherAbuseScoreRunInternalHandler(
@@ -2156,110 +2291,110 @@ export async function runTemporalPublisherAbuseScanInternalHandler(
   const todayDay = args.todayDay ?? toDayKey(Date.now());
 
   if (args.runId) {
-    let state: RunState = await ctx.runQuery(
-      internal.publisherAbuse.getPublisherAbuseScoreRunStateInternal,
-      { runId: args.runId },
-    );
-    let pages = 0;
-    let scannedSkills = 0;
-    let totalScannedSkills = state.scannedPublishers ?? 0;
-    while (
-      pages < maxPages &&
-      totalScannedSkills < candidateLimit &&
-      state.status === "running" &&
-      state.phase === "collecting"
-    ) {
-      const remainingScanLimit = candidateLimit - totalScannedSkills;
-      const result: PageResult = await ctx.runMutation(
-        internal.publisherAbuse.collectTemporalPublisherAbuseSkillCandidatesForRunPageInternal,
-        {
-          runId: args.runId,
-          batchSize: Math.min(batchSize, Math.max(1, remainingScanLimit)),
-          remainingScanLimit,
-          todayDay,
-          lookbackDays: args.lookbackDays,
-        },
-      );
-      pages += 1;
-      const pageScanned = result.scanned ?? 0;
-      scannedSkills += pageScanned;
-      totalScannedSkills = result.scannedPublishers ?? totalScannedSkills + pageScanned;
-      state = {
-        runId: result.runId,
-        status: result.status,
-        phase: result.phase,
-        scannedPublishers: result.scannedPublishers,
-        temporalScanComplete: result.temporalScanComplete,
-      };
-    }
-
-    if (
-      state.status === "running" &&
-      state.phase === "collecting" &&
-      totalScannedSkills >= candidateLimit
-    ) {
-      const result: PageResult = await ctx.runMutation(
-        internal.publisherAbuse.collectTemporalPublisherAbuseSkillCandidatesForRunPageInternal,
-        {
-          runId: args.runId,
-          batchSize: 1,
-          remainingScanLimit: 0,
-          todayDay,
-          lookbackDays: args.lookbackDays,
-        },
-      );
-      state = {
-        runId: result.runId,
-        status: result.status,
-        phase: result.phase,
-        scannedPublishers: result.scannedPublishers,
-        temporalScanComplete: result.temporalScanComplete,
-      };
-    }
-
-    if (state.status === "running" && state.phase === "collecting") {
-      await ctx.scheduler.runAfter(
-        ACTION_CONTINUATION_DELAY_MS,
-        internal.publisherAbuse.runTemporalPublisherAbuseScanInternal,
-        {
-          runId: args.runId,
-          mode,
-          dryRun,
-          candidateLimit,
-          batchSize,
-          maxPages,
-          todayDay,
-          lookbackDays: args.lookbackDays,
-          trigger: args.trigger ?? "cron",
-          actorUserId: args.actorUserId,
-        },
-      );
-      return {
-        ok: true,
-        dryRun,
-        mode,
-        scannedSkills,
-        highTemporalSkills: 0,
-        flaggedPublishers: 0,
-        nominations: 0,
-        benchmark: computeTemporalAbuseCohortBenchmark([]),
-      };
-    }
-
-    if (state.status !== "running" || state.phase !== "finalizing") {
-      return {
-        ok: true,
-        dryRun,
-        mode,
-        scannedSkills,
-        highTemporalSkills: 0,
-        flaggedPublishers: 0,
-        nominations: 0,
-        benchmark: computeTemporalAbuseCohortBenchmark([]),
-      };
-    }
-
     try {
+      let state: RunState = await ctx.runQuery(
+        internal.publisherAbuse.getPublisherAbuseScoreRunStateInternal,
+        { runId: args.runId },
+      );
+      let pages = 0;
+      let scannedSkills = 0;
+      let totalScannedSkills = state.scannedPublishers ?? 0;
+      while (
+        pages < maxPages &&
+        totalScannedSkills < candidateLimit &&
+        state.status === "running" &&
+        state.phase === "collecting"
+      ) {
+        const remainingScanLimit = candidateLimit - totalScannedSkills;
+        const result: PageResult = await ctx.runMutation(
+          internal.publisherAbuse.collectTemporalPublisherAbuseSkillCandidatesForRunPageInternal,
+          {
+            runId: args.runId,
+            batchSize: Math.min(batchSize, Math.max(1, remainingScanLimit)),
+            remainingScanLimit,
+            todayDay,
+            lookbackDays: args.lookbackDays,
+          },
+        );
+        pages += 1;
+        const pageScanned = result.scanned ?? 0;
+        scannedSkills += pageScanned;
+        totalScannedSkills = result.scannedPublishers ?? totalScannedSkills + pageScanned;
+        state = {
+          runId: result.runId,
+          status: result.status,
+          phase: result.phase,
+          scannedPublishers: result.scannedPublishers,
+          temporalScanComplete: result.temporalScanComplete,
+        };
+      }
+
+      if (
+        state.status === "running" &&
+        state.phase === "collecting" &&
+        totalScannedSkills >= candidateLimit
+      ) {
+        const result: PageResult = await ctx.runMutation(
+          internal.publisherAbuse.collectTemporalPublisherAbuseSkillCandidatesForRunPageInternal,
+          {
+            runId: args.runId,
+            batchSize: 1,
+            remainingScanLimit: 0,
+            todayDay,
+            lookbackDays: args.lookbackDays,
+          },
+        );
+        state = {
+          runId: result.runId,
+          status: result.status,
+          phase: result.phase,
+          scannedPublishers: result.scannedPublishers,
+          temporalScanComplete: result.temporalScanComplete,
+        };
+      }
+
+      if (state.status === "running" && state.phase === "collecting") {
+        await ctx.scheduler.runAfter(
+          ACTION_CONTINUATION_DELAY_MS,
+          internal.publisherAbuse.runTemporalPublisherAbuseScanInternal,
+          {
+            runId: args.runId,
+            mode,
+            dryRun,
+            candidateLimit,
+            batchSize,
+            maxPages,
+            todayDay,
+            lookbackDays: args.lookbackDays,
+            trigger: args.trigger ?? "cron",
+            actorUserId: args.actorUserId,
+          },
+        );
+        return {
+          ok: true,
+          dryRun,
+          mode,
+          scannedSkills,
+          highTemporalSkills: 0,
+          flaggedPublishers: 0,
+          nominations: 0,
+          benchmark: computeTemporalAbuseCohortBenchmark([]),
+        };
+      }
+
+      if (state.status !== "running" || state.phase !== "finalizing") {
+        return {
+          ok: true,
+          dryRun,
+          mode,
+          scannedSkills,
+          highTemporalSkills: 0,
+          flaggedPublishers: 0,
+          nominations: 0,
+          benchmark: computeTemporalAbuseCohortBenchmark([]),
+        };
+      }
+
       const result = await finishPersistedTemporalPublisherAbuseScan(ctx, {
         runId: args.runId,
         mode,

@@ -239,6 +239,13 @@ const completePersistedTemporalHandler = (
   >
 )._handler;
 
+const markScoreRunFailedHandler = (
+  publisherAbuse.markPublisherAbuseScoreRunFailedInternal as unknown as Wrapped<
+    { runId: string; errorMessage: string },
+    { runId: string; status: string; phase: string }
+  >
+)._handler;
+
 const getOrStartHandler = (
   publisherAbuse.getOrStartPublisherAbuseScoreRunInternal as unknown as Wrapped<
     { trigger: "cron" | "manual"; actorUserId?: string; forceNew?: boolean },
@@ -7119,6 +7126,60 @@ describe("publisher abuse dry-run persistence", () => {
     ).toBe(false);
   });
 
+  it("marks persisted current temporal scans failed when collection throws", async () => {
+    const collectionError = new Error("collection failed");
+    const ctx = {
+      scheduler: { runAfter: vi.fn(async () => null) },
+      runQuery: vi.fn(async (target: symbol) => {
+        const name = String(target);
+        if (name.includes("getPublisherAbuseScoreRunStateInternal")) {
+          return {
+            runId: "publisherAbuseScoreRuns:temporal",
+            status: "running",
+            phase: "collecting",
+            scannedPublishers: 50,
+          };
+        }
+        throw new Error(`unexpected query ${name}`);
+      }),
+      runMutation: vi.fn(async (target: symbol, _args?: unknown) => {
+        const name = String(target);
+        if (name.includes("collectTemporalPublisherAbuseSkillCandidatesForRunPageInternal")) {
+          throw collectionError;
+        }
+        if (name.includes("markPublisherAbuseScoreRunFailedInternal")) {
+          return {
+            runId: "publisherAbuseScoreRuns:temporal",
+            status: "failed",
+            phase: "collecting",
+          };
+        }
+        throw new Error(`unexpected mutation ${name}`);
+      }),
+    };
+
+    await expect(
+      temporalRunHandler(ctx, {
+        runId: "publisherAbuseScoreRuns:temporal",
+        mode: "current",
+        dryRun: false,
+        candidateLimit: 100,
+        batchSize: 50,
+        maxPages: 1,
+        todayDay: 100,
+      }),
+    ).rejects.toThrow("collection failed");
+
+    const failedCall = ctx.runMutation.mock.calls.find(([target]) =>
+      String(target).includes("markPublisherAbuseScoreRunFailedInternal"),
+    );
+    expect(failedCall?.[1]).toEqual({
+      runId: "publisherAbuseScoreRuns:temporal",
+      errorMessage: "collection failed",
+    });
+    expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
+  });
+
   it("does not finalize already completed persisted temporal scans again", async () => {
     const scheduler = { runAfter: vi.fn(async () => null) };
     const ctx = {
@@ -8216,6 +8277,164 @@ describe("publisher abuse dry-run persistence", () => {
         label: "pass",
       }),
     );
+  });
+
+  it("downgrades pending temporal nominations created by a failed persisted run", async () => {
+    const failedScore = {
+      ...makeScore({
+        _id: "publisherAbuseScores:failed",
+        runId: "publisherAbuseScoreRuns:temporal",
+        ownerKey: "publisher:publishers:failed",
+      }),
+      modelVersion: "publisher-abuse-temporal.v1",
+    };
+    const failedNomination = {
+      ...makeNomination({
+        _id: "publisherAbuseReviewNominations:failed",
+        ownerKey: failedScore.ownerKey,
+        latestScoreId: failedScore._id,
+        label: "potential_ban_candidate",
+      }),
+      modelVersion: "publisher-abuse-temporal.v1",
+      warningSentAt: 10,
+      warningExpiresAt: 20,
+      warningScoreId: failedScore._id,
+      warningRunId: "publisherAbuseScoreRuns:temporal",
+    };
+    const patch = vi.fn(async () => null);
+    const insert = vi.fn(async () => "publisherAbuseReviewEvents:event");
+    const deleteCandidate = vi.fn(async () => null);
+    const scheduler = { runAfter: vi.fn(async () => null) };
+    const db = {
+      get: vi.fn(async (id: string) => {
+        if (id === "publisherAbuseScoreRuns:temporal") {
+          return {
+            _id: "publisherAbuseScoreRuns:temporal",
+            modelVersion: "publisher-abuse-temporal.v1",
+            status: "running",
+            phase: "finalizing",
+          };
+        }
+        throw new Error(`unexpected get ${id}`);
+      }),
+      patch,
+      insert,
+      delete: deleteCandidate,
+      query: vi.fn((table: string) => {
+        if (table === "publisherAbuseScores") {
+          return {
+            withIndex: (
+              indexName: string,
+              build: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
+            ) => {
+              const constraints: Record<string, unknown> = {};
+              const q = {
+                eq(field: string, value: unknown) {
+                  constraints[field] = value;
+                  return q;
+                },
+              };
+              build(q);
+              expect(indexName).toBe("by_run_and_label_and_rank");
+              expect(constraints.runId).toBe("publisherAbuseScoreRuns:temporal");
+              return {
+                paginate: async () => ({
+                  page: constraints.label === "potential_ban_candidate" ? [failedScore] : [],
+                  isDone: true,
+                  continueCursor: "",
+                }),
+              };
+            },
+          };
+        }
+        if (table === "publisherAbuseReviewNominations") {
+          return {
+            withIndex: (
+              indexName: string,
+              build: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
+            ) => {
+              const constraints: Record<string, unknown> = {};
+              const q = {
+                eq(field: string, value: unknown) {
+                  constraints[field] = value;
+                  return q;
+                },
+              };
+              build(q);
+              expect(indexName).toBe("by_owner_key_and_model_version");
+              expect(constraints).toEqual({
+                ownerKey: failedScore.ownerKey,
+                modelVersion: "publisher-abuse-temporal.v1",
+              });
+              return { first: async () => failedNomination };
+            },
+          };
+        }
+        if (table === "publisherAbuseTemporalScanCandidates") {
+          return {
+            withIndex: (indexName: string) => {
+              expect(indexName).toBe("by_run");
+              return {
+                take: async () => [
+                  {
+                    _id: "publisherAbuseTemporalScanCandidates:failed",
+                    runId: "publisherAbuseScoreRuns:temporal",
+                  },
+                ],
+              };
+            },
+          };
+        }
+        throw new Error(`unexpected query ${table}`);
+      }),
+    };
+
+    await expect(
+      markScoreRunFailedHandler(
+        { db, scheduler },
+        {
+          runId: "publisherAbuseScoreRuns:temporal",
+          errorMessage: "complete failed",
+        },
+      ),
+    ).resolves.toEqual({
+      runId: "publisherAbuseScoreRuns:temporal",
+      status: "failed",
+      phase: "finalizing",
+    });
+
+    expect(patch).toHaveBeenCalledWith(
+      "publisherAbuseScoreRuns:temporal",
+      expect.objectContaining({
+        status: "failed",
+        errorMessage: "complete failed",
+      }),
+    );
+    expect(patch).toHaveBeenCalledWith(
+      failedNomination._id,
+      expect.objectContaining({
+        status: "candidate_for_future_action",
+        warningSentAt: undefined,
+        warningExpiresAt: undefined,
+        warningScoreId: undefined,
+        warningRunId: undefined,
+      }),
+    );
+    expect(insert).toHaveBeenCalledWith(
+      "publisherAbuseReviewEvents",
+      expect.objectContaining({
+        nominationId: failedNomination._id,
+        eventType: "triage_status_changed",
+        previousStatus: "pending",
+        nextStatus: "candidate_for_future_action",
+      }),
+    );
+    expect(deleteCandidate).toHaveBeenCalledWith("publisherAbuseTemporalScanCandidates:failed");
+    expect(scheduler.runAfter).toHaveBeenCalledWith(0, expect.anything(), {
+      runId: "publisherAbuseScoreRuns:temporal",
+      errorMessage: "complete failed",
+      cleanupLabel: "review",
+    });
   });
 });
 
