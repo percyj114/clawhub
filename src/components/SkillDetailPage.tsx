@@ -11,7 +11,11 @@ import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { api } from "../../convex/_generated/api";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
-import { getActivityTrendEndDay, isActivityTrend } from "../lib/activityTrend";
+import {
+  getActivityTrendEndDay,
+  getSkillActivityTrendForSlug,
+  isActivityTrend,
+} from "../lib/activityTrend";
 import {
   getUserFacingAuthError,
   isBannedAccountAuthError,
@@ -384,7 +388,7 @@ export function SkillDetailPage({
   const canonicalOwnerParam =
     typeof canonicalOwner === "string" ? canonicalOwner.trim().toLowerCase() : null;
   const queriedActivityTrend = useQuery(
-    api.skills.getActivityTrendForSlug,
+    getSkillActivityTrendForSlug,
     skill
       ? {
           slug: skill.slug,

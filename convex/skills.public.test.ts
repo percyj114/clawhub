@@ -601,6 +601,31 @@ describe("skills.getBySlug", () => {
     expect(result).toBeNull();
   });
 
+  it("returns daily activity trends for public skills", async () => {
+    const ctx = makeCtx({
+      skill: makeSkill(),
+      owner: makeOwner("users:1", "demo-owner"),
+      skillDailyStats: [
+        { day: 24, downloads: 4, installs: 2 },
+        { day: 25, downloads: 3, installs: 1 },
+      ],
+    });
+
+    const result = await getActivityTrendForSlugHandler(ctx, { slug: "demo", endDay: 25 } as never);
+
+    expect(result?.downloads.range).toBe("daily");
+    expect(result?.downloads.days).toBe(30);
+    expect(result?.downloads.total).toBe(7);
+    expect(result?.downloads.points).toHaveLength(30);
+    expect(result?.downloads.points[0]).toEqual({ day: -4, value: 0 });
+    expect(result?.downloads.points.at(-1)).toEqual({ day: 25, value: 3 });
+    expect(result?.installs.total).toBe(3);
+    expect(result?.installs.points.find((point) => point.day === 24)).toEqual({
+      day: 24,
+      value: 2,
+    });
+  });
+
   it("does not honor stale personal memberships for hidden skill owner views", async () => {
     vi.mocked(getAuthUserId).mockResolvedValue("users:stranger" as never);
     const ctx = makeCtx({

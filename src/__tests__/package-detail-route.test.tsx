@@ -770,6 +770,36 @@ describe("plugin detail route", () => {
     ).toBe(true);
   });
 
+  it("falls back to all-time plugin stats when activity graphs are unavailable", async () => {
+    loaderDataMock = {
+      ...loaderDataMock,
+      detail: {
+        package: {
+          ...loaderDataMock.detail.package!,
+          latestVersion: "1.0.0",
+          stats: { downloads: 1_234, installs: 9, stars: 0, versions: 1 },
+        },
+        owner: null,
+      },
+    };
+    useQueryMock.mockImplementation((query: unknown) => {
+      const functionName = getFunctionName(query as never);
+      if (functionName === "packages:getActivityTrendForName") return null;
+      return undefined;
+    });
+    const route = await loadRoute();
+    const Component = route.__config.component as ComponentType;
+    const { container } = render(<Component />);
+
+    expect(screen.getByText("Installs")).toBeTruthy();
+    expect(screen.getByText("9")).toBeTruthy();
+    expect(screen.getByText("Downloads")).toBeTruthy();
+    expect(screen.getByText("1.2k")).toBeTruthy();
+    expect(container.querySelectorAll(".metric-trend-card-skeleton")).toHaveLength(0);
+    expect(screen.queryByRole("img", { name: "Daily installs over the last 30 days" })).toBeNull();
+    expect(screen.queryByRole("img", { name: "Daily downloads over the last 30 days" })).toBeNull();
+  });
+
   it("shows plugin settings when the viewer can manage the plugin", async () => {
     useAuthStatusMock.mockReturnValue({
       isAuthenticated: true,

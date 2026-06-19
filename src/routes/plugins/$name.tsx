@@ -33,7 +33,11 @@ import { Alert, AlertDescription } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
-import { getActivityTrendEndDay, isActivityTrend } from "../../lib/activityTrend";
+import {
+  getActivityTrendEndDay,
+  getPackageActivityTrendForName,
+  isActivityTrend,
+} from "../../lib/activityTrend";
 import { formatRetryDelay } from "../../lib/formatRetryDelay";
 import { formatCompactStat } from "../../lib/numberFormat";
 import { buildPluginMeta } from "../../lib/og";
@@ -395,7 +399,7 @@ function PluginDetailPageContent({ name, loaderData }: PluginDetailPageProps) {
   ) as PluginInspectorValidationSummary | undefined;
   const activityTrendEndDay = getActivityTrendEndDay();
   const queriedActivityTrend = useQuery(
-    api.packages.getActivityTrendForName,
+    getPackageActivityTrendForName,
     detail.package ? { name: detail.package.name, endDay: activityTrendEndDay } : "skip",
   );
   const activityTrend = isActivityTrend(queriedActivityTrend) ? queriedActivityTrend : null;

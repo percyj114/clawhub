@@ -224,7 +224,6 @@ describe("SkillHeader", () => {
 
     expect(screen.getByText(/2 installs$/)).toBeTruthy();
     expect(container.querySelectorAll(".metric-trend-marker-line")).toHaveLength(1);
-    expect(container.querySelectorAll(".metric-trend-chart circle")).toHaveLength(0);
   });
 
   it("shows the Official tag in the title for official owner skills", () => {

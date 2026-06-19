@@ -1,3 +1,5 @@
+import { api } from "../../convex/_generated/api";
+
 export type MetricTrendPoint = {
   day: number;
   value: number;
@@ -14,6 +16,9 @@ export type ActivityTrend = {
   downloads: MetricTrend;
   installs: MetricTrend;
 };
+
+export const getSkillActivityTrendForSlug = api.skills.getActivityTrendForSlug;
+export const getPackageActivityTrendForName = api.packages.getActivityTrendForName;
 
 const DAY_MS = 86_400_000;
 
