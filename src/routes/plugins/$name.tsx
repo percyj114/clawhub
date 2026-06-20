@@ -41,11 +41,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../../components/ui/dialog";
-import {
-  getActivityTrendEndDay,
-  getPackageActivityTrendForName,
-  isActivityTrend,
-} from "../../lib/activityTrend";
+import { getActivityTrendEndDay } from "../../lib/activityTrend";
 import { formatRetryDelay } from "../../lib/formatRetryDelay";
 import { formatCompactStat } from "../../lib/numberFormat";
 import { buildPluginMeta } from "../../lib/og";
@@ -70,6 +66,7 @@ import {
 } from "../../lib/pluginRoutes";
 import { buildReadmeAssetBaseUrl } from "../../lib/readmeAssetBaseUrl";
 import { useAuthStatus } from "../../lib/useAuthStatus";
+import { useDeferredPackageActivityTrend } from "../../lib/useDeferredActivityTrend";
 
 type PluginDetailRateLimitState = {
   scope: "detail" | "metadata";
@@ -602,12 +599,9 @@ function PluginDetailPageContent({ name, loaderData }: PluginDetailPageProps) {
     detail.package ? { name: detail.package.name } : "skip",
   ) as PluginInspectorValidationSummary | undefined;
   const activityTrendEndDay = getActivityTrendEndDay();
-  const queriedActivityTrend = useQuery(
-    getPackageActivityTrendForName,
-    detail.package ? { name: detail.package.name, endDay: activityTrendEndDay } : "skip",
+  const { trend: activityTrend, loading: activityTrendLoading } = useDeferredPackageActivityTrend(
+    detail.package ? { name: detail.package.name, endDay: activityTrendEndDay } : null,
   );
-  const activityTrend = isActivityTrend(queriedActivityTrend) ? queriedActivityTrend : null;
-  const activityTrendLoading = Boolean(detail.package) && queriedActivityTrend === undefined;
   const inspectorFindings = useQuery(
     api.packages.listPackageInspectorWarningsForManager,
     manageContext ? { name: manageContext.package.name, limit: 100 } : "skip",

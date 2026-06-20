@@ -11,11 +11,7 @@ import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { api } from "../../convex/_generated/api";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
-import {
-  getActivityTrendEndDay,
-  getSkillActivityTrendForSlug,
-  isActivityTrend,
-} from "../lib/activityTrend";
+import { getActivityTrendEndDay } from "../lib/activityTrend";
 import {
   getUserFacingAuthError,
   isBannedAccountAuthError,
@@ -29,6 +25,7 @@ import type { SkillBySlugResult, SkillPageInitialData } from "../lib/skillPage";
 import { resolveGitHubSkillReadmeHref } from "../lib/skillReadmeLinks";
 import { clearAuthError, setAuthError } from "../lib/useAuthError";
 import { useAuthStatus } from "../lib/useAuthStatus";
+import { useDeferredSkillActivityTrend } from "../lib/useDeferredActivityTrend";
 import { DetailBody, DetailPageShell } from "./DetailPageShell";
 import { DetailSecuritySummary } from "./DetailSecuritySummary";
 import { GenericNotFoundPage } from "./GenericNotFoundPage";
@@ -387,18 +384,15 @@ export function SkillDetailPage({
   const activityTrendEndDay = getActivityTrendEndDay();
   const canonicalOwnerParam =
     typeof canonicalOwner === "string" ? canonicalOwner.trim().toLowerCase() : null;
-  const queriedActivityTrend = useQuery(
-    getSkillActivityTrendForSlug,
+  const { trend: activityTrend, loading: activityTrendLoading } = useDeferredSkillActivityTrend(
     skill
       ? {
           slug: skill.slug,
           endDay: activityTrendEndDay,
           ...(activityTrendOwnerHandle ? { ownerHandle: activityTrendOwnerHandle } : {}),
         }
-      : "skip",
+      : null,
   );
-  const activityTrend = isActivityTrend(queriedActivityTrend) ? queriedActivityTrend : null;
-  const activityTrendLoading = Boolean(skill) && queriedActivityTrend === undefined;
   const wantsCanonicalRedirect = Boolean(
     ownerParam &&
     ((result?.resolvedSlug && result.resolvedSlug !== slug) ||

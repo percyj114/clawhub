@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { getFunctionName } from "convex/server";
 import type { ReactNode } from "react";
 import { toast } from "sonner";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
 import { SkillDetailPage } from "../components/SkillDetailPage";
 
@@ -38,10 +38,13 @@ vi.mock("@convex-dev/auth/react", () => ({
 
 const useQueryMock = vi.fn();
 const useMutationMock = vi.fn();
+const convexQueryMock = vi.fn();
+const convexClientMock = { query: convexQueryMock };
 const getReadmeMock = vi.fn();
 
 vi.mock("convex/react", () => ({
   ConvexReactClient: class {},
+  useConvex: () => convexClientMock,
   useQuery: (...args: unknown[]) => useQueryMock(...args),
   useMutation: (...args: unknown[]) => useMutationMock(...args),
   useAction: () => getReadmeMock,
@@ -76,6 +79,7 @@ describe("SkillDetailPage", () => {
     window.location.hash = "";
     useQueryMock.mockReset();
     useMutationMock.mockReset();
+    convexQueryMock.mockReset();
     getReadmeMock.mockReset();
     navigateMock.mockReset();
     routerInvalidateMock.mockReset();
@@ -92,6 +96,11 @@ describe("SkillDetailPage", () => {
       if (args === "skip") return undefined;
       return undefined;
     });
+    convexQueryMock.mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("shows a loading indicator while loading", () => {
@@ -181,7 +190,7 @@ describe("SkillDetailPage", () => {
     expect(screen.queryByRole("button", { name: "Compare" })).toBeNull();
   });
 
-  it("loads skill activity graphs separately from loader-backed page content", async () => {
+  it("loads skill activity graphs through a deferred one-shot query", async () => {
     const activityTrend = {
       installs: {
         range: "daily" as const,
@@ -265,30 +274,31 @@ describe("SkillDetailPage", () => {
       readme: "# Weather",
       readmeError: null,
     };
-    useQueryMock.mockImplementation(() => undefined);
+    convexQueryMock.mockResolvedValueOnce(activityTrend);
 
     const { container, rerender } = render(
       <SkillDetailPage slug="weather" initialData={initialData} />,
     );
 
-    expect(await screen.findByRole("tab", { name: "Files" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Files" })).toBeTruthy();
     expect(screen.getByText("30-day Downloads")).toBeTruthy();
     expect(screen.queryByText("30-day Installs")).toBeNull();
     expect(container.querySelectorAll(".metric-trend-card-skeleton")).toHaveLength(1);
     expect(screen.queryByRole("img", { name: "Daily installs over the last 30 days" })).toBeNull();
+    expect(
+      useQueryMock.mock.calls.some(
+        ([query]) => getFunctionName(query as never) === "skills:getActivityTrendForSlug",
+      ),
+    ).toBe(false);
 
-    useQueryMock.mockImplementation((query: unknown) => {
-      const name = getFunctionName(query as never);
-      if (name === "skills:getActivityTrendForSlug") return activityTrend;
-      return undefined;
-    });
+    await waitFor(() => expect(convexQueryMock).toHaveBeenCalled());
     rerender(<SkillDetailPage slug="weather" initialData={initialData} />);
 
     expect(screen.queryByRole("img", { name: "Daily installs over the last 30 days" })).toBeNull();
     expect(screen.getByRole("img", { name: "Daily downloads over the last 30 days" })).toBeTruthy();
     expect(container.querySelectorAll(".metric-trend-card-skeleton")).toHaveLength(0);
     expect(
-      useQueryMock.mock.calls.some((call) => {
+      convexQueryMock.mock.calls.some((call) => {
         const query = call[0];
         const args = call[1];
         return (
@@ -306,7 +316,7 @@ describe("SkillDetailPage", () => {
     ).toBe(true);
   });
 
-  it("passes the loader owner id to activity trends when no public owner handle is available", () => {
+  it("passes the loader owner id to deferred activity trends when no public owner handle is available", async () => {
     const initialData = {
       result: {
         skill: {
@@ -361,8 +371,10 @@ describe("SkillDetailPage", () => {
 
     render(<SkillDetailPage slug="weather" canonicalOwner="users:1" initialData={initialData} />);
 
+    await waitFor(() => expect(convexQueryMock).toHaveBeenCalled());
+
     expect(
-      useQueryMock.mock.calls.some((call) => {
+      convexQueryMock.mock.calls.some((call) => {
         const query = call[0];
         const args = call[1];
         return (

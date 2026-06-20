@@ -5,7 +5,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { getFunctionName } from "convex/server";
 import type { AnchorHTMLAttributes, ComponentType, ReactNode } from "react";
 import { toast } from "sonner";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   fetchPackageDetail,
   fetchPackageFile,
@@ -22,6 +22,8 @@ const isRateLimitedPackageApiErrorMock = vi.fn(
 );
 const useQueryMock = vi.fn();
 const useMutationMock = vi.fn();
+const convexQueryMock = vi.fn();
+const convexClientMock = { query: convexQueryMock };
 const useAuthStatusMock = vi.fn();
 const routerInvalidateMock = vi.fn();
 let pathnameMock = "/plugins/demo-plugin";
@@ -92,6 +94,7 @@ vi.mock("@tanstack/react-router", () => ({
 }));
 
 vi.mock("convex/react", () => ({
+  useConvex: () => convexClientMock,
   useQuery: (...args: unknown[]) => useQueryMock(...args),
   useMutation: (...args: unknown[]) => useMutationMock(...args),
 }));
@@ -194,6 +197,8 @@ describe("plugin detail route", () => {
     useQueryMock.mockReturnValue(undefined);
     useMutationMock.mockReset();
     useMutationMock.mockReturnValue(vi.fn());
+    convexQueryMock.mockReset();
+    convexQueryMock.mockResolvedValue(null);
     useAuthStatusMock.mockReset();
     routerInvalidateMock.mockReset();
     vi.mocked(toast.error).mockReset();
@@ -203,6 +208,10 @@ describe("plugin detail route", () => {
       isLoading: false,
       me: null,
     });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("hides download actions when the plugin has no latest release", async () => {
@@ -859,7 +868,7 @@ describe("plugin detail route", () => {
     expect(screen.getByLabelText("Topics").textContent).toContain("Research");
   });
 
-  it("renders the plugin 30-day downloads graph from the activity query", async () => {
+  it("renders the plugin 30-day downloads graph from a deferred activity query", async () => {
     loaderDataMock = {
       ...loaderDataMock,
       detail: {
@@ -871,39 +880,21 @@ describe("plugin detail route", () => {
         owner: null,
       },
     };
-    useQueryMock.mockImplementation((query: unknown) => {
-      const functionName = getFunctionName(query as never);
-      if (functionName !== "packages:getActivityTrendForName") return undefined;
-      return {
-        installs: {
-          range: "daily",
-          days: 30,
-          total: 9,
-          points: [
-            { day: 20_451, value: 2 },
-            { day: 20_452, value: 1 },
-            { day: 20_453, value: 0 },
-            { day: 20_454, value: 2 },
-            { day: 20_455, value: 1 },
-            { day: 20_456, value: 0 },
-            { day: 20_457, value: 3 },
-          ],
-        },
-        downloads: {
-          range: "daily",
-          days: 30,
-          total: 14,
-          points: [
-            { day: 20_451, value: 2 },
-            { day: 20_452, value: 1 },
-            { day: 20_453, value: 0 },
-            { day: 20_454, value: 5 },
-            { day: 20_455, value: 3 },
-            { day: 20_456, value: 0 },
-            { day: 20_457, value: 3 },
-          ],
-        },
-      };
+    convexQueryMock.mockResolvedValueOnce({
+      downloads: {
+        range: "daily",
+        days: 30,
+        total: 14,
+        points: [
+          { day: 20_451, value: 2 },
+          { day: 20_452, value: 1 },
+          { day: 20_453, value: 0 },
+          { day: 20_454, value: 5 },
+          { day: 20_455, value: 3 },
+          { day: 20_456, value: 0 },
+          { day: 20_457, value: 3 },
+        ],
+      },
     });
     const route = await loadRoute();
     const Component = route.__config.component as ComponentType;
@@ -916,13 +907,19 @@ describe("plugin detail route", () => {
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
     expect(screen.getByText("30-day Downloads")).toBeTruthy();
+    expect(screen.queryByRole("img", { name: "Daily downloads over the last 30 days" })).toBeNull();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("img", { name: "Daily downloads over the last 30 days" }),
+      ).toBeTruthy(),
+    );
     expect(screen.getByText("14")).toBeTruthy();
     expect(screen.queryByText("30-day Installs")).toBeNull();
     expect(screen.queryByRole("img", { name: "Daily installs over the last 30 days" })).toBeNull();
     expect(screen.getByRole("img", { name: "Daily downloads over the last 30 days" })).toBeTruthy();
     expect(screen.getAllByRole("button", { name: "About activity counts" })).toHaveLength(1);
     expect(
-      useQueryMock.mock.calls.some(([query, args]) => {
+      convexQueryMock.mock.calls.some(([query, args]) => {
         return (
           getFunctionName(query as never) === "packages:getActivityTrendForName" &&
           typeof args === "object" &&
@@ -934,6 +931,11 @@ describe("plugin detail route", () => {
         );
       }),
     ).toBe(true);
+    expect(
+      useQueryMock.mock.calls.some(
+        ([query]) => getFunctionName(query as never) === "packages:getActivityTrendForName",
+      ),
+    ).toBe(false);
   });
 
   it("falls back to all-time plugin stats when activity graphs are unavailable", async () => {
@@ -948,14 +950,15 @@ describe("plugin detail route", () => {
         owner: null,
       },
     };
-    useQueryMock.mockImplementation((query: unknown) => {
-      const functionName = getFunctionName(query as never);
-      if (functionName === "packages:getActivityTrendForName") return null;
-      return undefined;
-    });
+    convexQueryMock.mockResolvedValueOnce(null);
     const route = await loadRoute();
     const Component = route.__config.component as ComponentType;
     const { container } = render(<Component />);
+
+    expect(container.querySelectorAll(".metric-trend-card-skeleton")).toHaveLength(1);
+    await waitFor(() =>
+      expect(container.querySelectorAll(".metric-trend-card-skeleton")).toHaveLength(0),
+    );
 
     expect(screen.getByText("Downloads")).toBeTruthy();
     expect(screen.getByText("1.2k")).toBeTruthy();
