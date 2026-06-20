@@ -1684,6 +1684,91 @@ describe("publisher abuse dry-run persistence", () => {
     );
   });
 
+  it("collects finite score rows for stored configs without engagement elasticity", async () => {
+    const legacyModelConfig: Partial<typeof TEST_MODEL_CONFIG> = { ...TEST_MODEL_CONFIG };
+    delete legacyModelConfig.engagementElasticity;
+    const insertedScores: unknown[] = [];
+    const insert = vi.fn(async (table: string, doc?: unknown) => {
+      if (table === "publisherAbuseScores") insertedScores.push(doc);
+      return `${table}:new`;
+    });
+    const patch = vi.fn(async () => null);
+    const ctx = {
+      db: {
+        get: vi.fn(async () => ({
+          _id: "publisherAbuseScoreRuns:run",
+          modelVersion: legacyModelConfig.modelVersion,
+          modelConfig: legacyModelConfig,
+          status: "running",
+          phase: "collecting",
+          collectCursor: undefined,
+          scannedPublishers: 0,
+          scoredPublishers: 0,
+          sumLogPressure: 0,
+          sumSquaredLogPressure: 0,
+        })),
+        insert,
+        patch,
+        query: vi.fn((table: string) => {
+          if (table === "publishers") {
+            return {
+              withIndex: () => ({
+                paginate: async () => ({
+                  page: [
+                    {
+                      _id: "publishers:legacy-config",
+                      handle: "legacy-config",
+                      linkedUserId: "users:legacy-config",
+                      publishedSkills: 250,
+                      publishedPackages: 0,
+                      totalInstalls: 25,
+                      totalStars: 1,
+                      totalDownloads: 10_000,
+                    },
+                  ],
+                  isDone: true,
+                  continueCursor: "",
+                }),
+              }),
+            };
+          }
+          if (table === "packages") {
+            return {
+              withIndex: () => ({
+                paginate: async () => ({
+                  page: [],
+                  isDone: true,
+                  continueCursor: "",
+                }),
+              }),
+            };
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
+      },
+    };
+
+    await expect(collectHandler(ctx, { runId: "publisherAbuseScoreRuns:run" })).resolves.toEqual(
+      expect.objectContaining({ isDone: false, scanned: 1, phase: "finalizing" }),
+    );
+
+    expect(insertedScores).toHaveLength(1);
+    const [insertedScore] = insertedScores;
+    if (typeof insertedScore !== "object" || insertedScore === null) {
+      throw new Error("Expected publisher abuse score insert");
+    }
+    const pressure = Object.getOwnPropertyDescriptor(insertedScore, "pressure")?.value;
+    const logPressure = Object.getOwnPropertyDescriptor(insertedScore, "logPressure")?.value;
+    expect(Number.isFinite(pressure)).toBe(true);
+    expect(Number.isFinite(logPressure)).toBe(true);
+    expect(insertedScore).toEqual(
+      expect.objectContaining({
+        ownerKey: "publisher:publishers:legacy-config",
+        handleSnapshot: "legacy-config",
+      }),
+    );
+  });
+
   it("excludes official publishers from abuse scoring even when they match abuse-pressure criteria", async () => {
     const insert = vi.fn(async (table: string) => `${table}:new`);
     const patch = vi.fn(async () => null);
