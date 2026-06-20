@@ -20,6 +20,7 @@ describe("publisher abuse scoring", () => {
     expect(DEFAULT_PUBLISHER_ABUSE_MODEL_CONFIG.skillPivot).toBe(200);
     expect(DEFAULT_PUBLISHER_ABUSE_MODEL_CONFIG.outputElasticity).toBe(1.2);
     expect(DEFAULT_PUBLISHER_ABUSE_MODEL_CONFIG.engagementElasticity).toBe(0.25);
+    expect(DEFAULT_PUBLISHER_ABUSE_MODEL_CONFIG.minPublishedSkillsForAggregateLabel).toBe(200);
     expect(DEFAULT_PUBLISHER_ABUSE_MODEL_CONFIG.installTrustElasticity).toBe(1);
     expect(DEFAULT_PUBLISHER_ABUSE_MODEL_CONFIG.starTrustElasticity).toBe(1.1);
   });
@@ -232,6 +233,26 @@ describe("publisher abuse scoring", () => {
 
     expect(labelForPublisherAbuseScore(belowPivot, 3)).toBe("pass");
     expect(labelForPublisherAbuseScore(abovePivot, 3)).toBe("potential_ban_candidate");
+  });
+
+  it("preserves legacy configs where the skill pivot was not a label floor", () => {
+    const legacyConfig = {
+      ...DEFAULT_PUBLISHER_ABUSE_MODEL_CONFIG,
+      modelVersion: "publisher-abuse-pressure.v2",
+      skillPivot: 100,
+      minPublishedSkillsForAggregateLabel: undefined,
+    };
+    const score99 = computePublisherAbuseRawScore(
+      publisher("legacy-99", {
+        publishedSkills: 99,
+        totalInstalls: 0,
+        totalStars: 0,
+        totalDownloads: 100,
+      }),
+      legacyConfig,
+    );
+
+    expect(labelForPublisherAbuseScore(score99, 3, legacyConfig)).toBe("potential_ban_candidate");
   });
 
   it("increases catalog pressure when catalog grows without matching adoption", () => {

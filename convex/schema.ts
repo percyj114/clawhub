@@ -479,6 +479,7 @@ const publisherAbuseModelConfigValidator = v.object({
   downloadsPerSkillPivot: v.number(),
   outputElasticity: v.number(),
   engagementElasticity: v.optional(v.number()),
+  minPublishedSkillsForAggregateLabel: v.optional(v.number()),
   installTrustElasticity: v.number(),
   starTrustElasticity: v.number(),
   downloadDemandElasticity: v.number(),

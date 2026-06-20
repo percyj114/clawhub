@@ -1770,6 +1770,95 @@ describe("publisher abuse dry-run persistence", () => {
     );
   });
 
+  it("preserves legacy stored config label semantics while finalizing score rows", async () => {
+    const legacyModelConfig: Partial<typeof TEST_MODEL_CONFIG> = { ...TEST_MODEL_CONFIG };
+    delete legacyModelConfig.engagementElasticity;
+    const insert = vi.fn(async (table: string) => `${table}:new`);
+    const patch = vi.fn(async () => null);
+    const ctx = {
+      db: {
+        get: vi.fn(async () => ({
+          _id: "publisherAbuseScoreRuns:legacy-run",
+          status: "running",
+          phase: "finalizing",
+          modelVersion: "publisher-abuse-pressure.v2",
+          modelConfig: legacyModelConfig,
+          scoredPublishers: 1,
+          finalizedScores: 0,
+          passCount: 0,
+          reviewCount: 0,
+          potentialBanCandidateCount: 0,
+          nominatedPublishers: 0,
+          sumLogPressure: 3,
+          sumSquaredLogPressure: 9,
+        })),
+        insert,
+        patch,
+        query: vi.fn((table: string) => {
+          if (table === "publisherAbuseScores") {
+            return {
+              withIndex: () => ({
+                order: () => ({
+                  paginate: async () => ({
+                    page: [
+                      {
+                        _id: "publisherAbuseScores:legacy-score",
+                        ownerKey: "publisher:publishers:legacy-score",
+                        ownerPublisherId: "publishers:legacy-score",
+                        ownerUserId: "users:legacy-score",
+                        handleSnapshot: "legacy-score",
+                        modelVersion: "publisher-abuse-pressure.v2",
+                        pressure: 1000,
+                        logPressure: 6,
+                        publishedSkills: 99,
+                        totalInstalls: 0,
+                        totalStars: 0,
+                        totalDownloads: 100,
+                        installsPerSkill: 0,
+                        starsPerSkill: 0,
+                        downloadsPerSkill: 1.01,
+                        reasonCodes: ["low_installs_per_skill"],
+                      },
+                    ],
+                    isDone: true,
+                    continueCursor: "",
+                  }),
+                }),
+              }),
+            };
+          }
+          if (table === "publisherAbuseReviewNominations") {
+            return {
+              withIndex: () => ({
+                first: async () => null,
+                take: async () => [],
+              }),
+            };
+          }
+          if (table === "officialPublishers") return makeEmptyOfficialPublishersQuery();
+          throw new Error(`unexpected table ${table}`);
+        }),
+      },
+    };
+
+    await expect(
+      finalizeHandler(ctx, { runId: "publisherAbuseScoreRuns:legacy-run" }),
+    ).resolves.toEqual(expect.objectContaining({ isDone: true, finalized: 1, nominations: 1 }));
+
+    expect(patch).toHaveBeenCalledWith(
+      "publisherAbuseScores:legacy-score",
+      expect.objectContaining({ label: "potential_ban_candidate", zScore: 3 }),
+    );
+    expect(insert).toHaveBeenCalledWith(
+      "publisherAbuseReviewNominations",
+      expect.objectContaining({
+        latestScoreId: "publisherAbuseScores:legacy-score",
+        modelVersion: "publisher-abuse-pressure.v2",
+        label: "potential_ban_candidate",
+      }),
+    );
+  });
+
   it("excludes official publishers from abuse scoring even when they match abuse-pressure criteria", async () => {
     const insert = vi.fn(async (table: string) => `${table}:new`);
     const patch = vi.fn(async () => null);
@@ -2997,6 +3086,7 @@ describe("publisher abuse dry-run persistence", () => {
       ...TEST_MODEL_CONFIG,
       modelVersion: "publisher-abuse-pressure.v4",
       skillPivot: 200,
+      minPublishedSkillsForAggregateLabel: 200,
     };
     const staleV2Nomination = makeNomination({
       _id: "publisherAbuseReviewNominations:stale-v2",
@@ -3134,6 +3224,7 @@ describe("publisher abuse dry-run persistence", () => {
       ...TEST_MODEL_CONFIG,
       modelVersion: "publisher-abuse-pressure.v4",
       skillPivot: 200,
+      minPublishedSkillsForAggregateLabel: 200,
     };
     const staleV2Nomination = makeNomination({
       _id: "publisherAbuseReviewNominations:stale-v2",

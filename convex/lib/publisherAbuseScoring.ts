@@ -11,6 +11,7 @@ export type PublisherAbuseModelConfig = {
   downloadsPerSkillPivot: number;
   outputElasticity: number;
   engagementElasticity?: number;
+  minPublishedSkillsForAggregateLabel?: number;
   installTrustElasticity: number;
   starTrustElasticity: number;
   downloadDemandElasticity: number;
@@ -108,6 +109,7 @@ export const DEFAULT_PUBLISHER_ABUSE_MODEL_CONFIG = {
   downloadsPerSkillPivot: 250,
   outputElasticity: 1.2,
   engagementElasticity: 0.25,
+  minPublishedSkillsForAggregateLabel: 200,
   installTrustElasticity: 1,
   starTrustElasticity: 1.1,
   downloadDemandElasticity: 0.2,
@@ -161,7 +163,8 @@ export function isPublisherAbuseCheckEligible(
   score: Pick<PublisherAbuseRawScore, "publishedSkills">,
   config: PublisherAbuseModelConfig = DEFAULT_PUBLISHER_ABUSE_MODEL_CONFIG,
 ) {
-  return score.publishedSkills >= Math.max(1, config.skillPivot);
+  const minPublishedSkills = Math.max(1, config.minPublishedSkillsForAggregateLabel ?? 1);
+  return score.publishedSkills >= minPublishedSkills;
 }
 
 export function computeTemporalPublisherAbuseZScore(input: {
