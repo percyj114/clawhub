@@ -846,15 +846,23 @@ type UnifiedCatalogCursorState = {
   packages: CatalogSourceCursorState;
   skills: CatalogSourceCursorState;
   recommendedFallback?: RecommendedFallbackSort;
+  legacyInstallSort?: LegacyInstallSortMarker;
 };
 
 type PluginCatalogCursorState = {
   codePlugins: CatalogSourceCursorState;
   bundlePlugins: CatalogSourceCursorState;
   recommendedFallback?: RecommendedFallbackSort;
+  legacyInstallSort?: LegacyInstallSortMarker;
 };
 
 type RecommendedFallbackSort = "updated" | "downloads";
+type LegacyInstallSortMarker = "downloads";
+
+type PackagePageCursorState = {
+  cursor: string | null;
+  legacyInstallSort?: LegacyInstallSortMarker;
+};
 
 type CatalogPageResult<T> = {
   page: T[];
@@ -892,6 +900,24 @@ function defaultCatalogSourceCursorState(): CatalogSourceCursorState {
   return { cursor: null, offset: 0, pageSize: null, done: false };
 }
 
+function readObjectField(input: unknown, field: string): unknown {
+  if (input === null || typeof input !== "object") return undefined;
+  return Object.getOwnPropertyDescriptor(input, field)?.value;
+}
+
+function normalizeCatalogSourceCursorState(input: unknown): CatalogSourceCursorState {
+  const cursor = readObjectField(input, "cursor");
+  const offset = readObjectField(input, "offset");
+  const pageSize = readObjectField(input, "pageSize");
+  const done = readObjectField(input, "done");
+  return {
+    cursor: typeof cursor === "string" ? cursor : null,
+    offset: typeof offset === "number" && offset > 0 ? offset : 0,
+    pageSize: typeof pageSize === "number" && pageSize > 0 ? pageSize : null,
+    done: done === true,
+  };
+}
+
 function encodeUnifiedCatalogCursor(state: UnifiedCatalogCursorState) {
   return `${UNIFIED_CATALOG_CURSOR_PREFIX}${JSON.stringify(state)}`;
 }
@@ -911,21 +937,17 @@ function decodeUnifiedCatalogCursor(raw: string | null | undefined): UnifiedCata
     };
   }
   try {
-    const parsed = JSON.parse(
-      raw.slice(UNIFIED_CATALOG_CURSOR_PREFIX.length),
-    ) as Partial<UnifiedCatalogCursorState>;
-    const normalize = (
-      input: Partial<CatalogSourceCursorState> | undefined,
-    ): CatalogSourceCursorState => ({
-      cursor: typeof input?.cursor === "string" ? input.cursor : null,
-      offset: typeof input?.offset === "number" && input.offset > 0 ? input.offset : 0,
-      pageSize: typeof input?.pageSize === "number" && input.pageSize > 0 ? input.pageSize : null,
-      done: input?.done === true,
-    });
+    const parsed: unknown = JSON.parse(raw.slice(UNIFIED_CATALOG_CURSOR_PREFIX.length));
+    const recommendedFallbackValue = readObjectField(parsed, "recommendedFallback");
+    const resetLegacyInstallCursorState = recommendedFallbackValue === "installs";
     return {
-      packages: normalize(parsed.packages),
-      skills: normalize(parsed.skills),
-      recommendedFallback: normalizeRecommendedFallbackSort(parsed.recommendedFallback),
+      packages: resetLegacyInstallCursorState
+        ? defaultCatalogSourceCursorState()
+        : normalizeCatalogSourceCursorState(readObjectField(parsed, "packages")),
+      skills: resetLegacyInstallCursorState
+        ? defaultCatalogSourceCursorState()
+        : normalizeCatalogSourceCursorState(readObjectField(parsed, "skills")),
+      recommendedFallback: normalizeRecommendedFallbackSort(recommendedFallbackValue),
     };
   } catch {
     return {
@@ -939,19 +961,44 @@ function encodePluginCatalogCursor(state: PluginCatalogCursorState) {
   return `${PLUGIN_CATALOG_CURSOR_PREFIX}${JSON.stringify(state)}`;
 }
 
+function encodePackagePageCursor(state: PackagePageCursorState) {
+  return `${PACKAGE_PAGE_CURSOR_PREFIX}${JSON.stringify(state)}`;
+}
+
+function parsePrefixedCursorPayload(raw: string | null | undefined, prefix: string): unknown {
+  if (!raw?.startsWith(prefix)) return null;
+  try {
+    return JSON.parse(raw.slice(prefix.length));
+  } catch {
+    return null;
+  }
+}
+
+function hasDownloadsMappedLegacyInstallCursor(raw: string | null | undefined, prefix: string) {
+  const payload = parsePrefixedCursorPayload(raw, prefix);
+  return readObjectField(payload, "legacyInstallSort") === "downloads";
+}
+
+function normalizeLegacyInstallAggregateCursor(raw: string | null, prefix: string) {
+  if (!raw) return null;
+  return hasDownloadsMappedLegacyInstallCursor(raw, prefix) ? raw : null;
+}
+
+function decodeLegacyInstallPageCursor(raw: string | null) {
+  const payload = parsePrefixedCursorPayload(raw, PACKAGE_PAGE_CURSOR_PREFIX);
+  if (readObjectField(payload, "legacyInstallSort") !== "downloads") return null;
+  const cursor = readObjectField(payload, "cursor");
+  return typeof cursor === "string" ? cursor : null;
+}
+
+function legacyInstallSortMarker(isLegacyInstallSortRequest: boolean) {
+  return isLegacyInstallSortRequest ? ("downloads" as const) : undefined;
+}
+
 function decodeMultiPluginCursor(
   raw: string | null | undefined,
   prefix: string,
 ): PluginCatalogCursorState {
-  const normalize = (
-    input: Partial<CatalogSourceCursorState> | undefined,
-  ): CatalogSourceCursorState => ({
-    cursor: typeof input?.cursor === "string" ? input.cursor : null,
-    offset: typeof input?.offset === "number" && input.offset > 0 ? input.offset : 0,
-    pageSize: typeof input?.pageSize === "number" && input.pageSize > 0 ? input.pageSize : null,
-    done: input?.done === true,
-  });
-
   if (!raw?.startsWith(prefix)) {
     return {
       codePlugins: {
@@ -962,11 +1009,17 @@ function decodeMultiPluginCursor(
     };
   }
   try {
-    const parsed = JSON.parse(raw.slice(prefix.length)) as Partial<PluginCatalogCursorState>;
+    const parsed: unknown = JSON.parse(raw.slice(prefix.length));
+    const recommendedFallbackValue = readObjectField(parsed, "recommendedFallback");
+    const resetLegacyInstallCursorState = recommendedFallbackValue === "installs";
     return {
-      codePlugins: normalize(parsed.codePlugins),
-      bundlePlugins: normalize(parsed.bundlePlugins),
-      recommendedFallback: normalizeRecommendedFallbackSort(parsed.recommendedFallback),
+      codePlugins: resetLegacyInstallCursorState
+        ? defaultCatalogSourceCursorState()
+        : normalizeCatalogSourceCursorState(readObjectField(parsed, "codePlugins")),
+      bundlePlugins: resetLegacyInstallCursorState
+        ? defaultCatalogSourceCursorState()
+        : normalizeCatalogSourceCursorState(readObjectField(parsed, "bundlePlugins")),
+      recommendedFallback: normalizeRecommendedFallbackSort(recommendedFallbackValue),
     };
   } catch {
     return {
@@ -1502,7 +1555,6 @@ async function listPackages(
   if (!highlightedOnlyParam.ok) return text(highlightedOnlyParam.message, 400, rate.headers);
   const sortParam = parseEnumQueryParam(url.searchParams, "sort", PACKAGE_LIST_SORT_VALUES);
   if (!sortParam.ok) return text(sortParam.message, 400, rate.headers);
-  const cursor = rawCursor;
   const rawCategory = url.searchParams.get("category")?.trim() || undefined;
   const category = resolvePluginCategoryFilter(rawCategory);
   const topic = url.searchParams.get("topic")?.trim().toLowerCase() || undefined;
@@ -1525,6 +1577,7 @@ async function listPackages(
     (highlightedOnly || category)
       ? RECOMMENDED_FALLBACK_SORT
       : options?.defaultSort;
+  const isLegacyInstallSortRequest = sortParam.value === "installs";
   const effectiveSort = normalizePublicPackageSort(sortParam.value ?? pluginDefaultSort);
   if (category && (effectiveFamily === "skill" || (!effectiveFamily && includeSkills))) {
     return text(
@@ -1535,6 +1588,9 @@ async function listPackages(
   }
 
   if (effectiveFamily === "skill") {
+    const cursor = isLegacyInstallSortRequest
+      ? decodeLegacyInstallPageCursor(rawCursor)
+      : rawCursor;
     const result = await runQueryRef<{
       page: CatalogListItem[];
       isDone: boolean;
@@ -1548,13 +1604,26 @@ async function listPackages(
       paginationOpts: { cursor, numItems: limit },
     });
     return json(
-      { items: result.page, nextCursor: result.isDone ? null : result.continueCursor },
+      {
+        items: result.page,
+        nextCursor: result.isDone
+          ? null
+          : isLegacyInstallSortRequest
+            ? encodePackagePageCursor({
+                cursor: result.continueCursor,
+                legacyInstallSort: "downloads",
+              })
+            : result.continueCursor,
+      },
       200,
       rate.headers,
     );
   }
 
   if (!effectiveFamily && includeSkills) {
+    const cursor = isLegacyInstallSortRequest
+      ? normalizeLegacyInstallAggregateCursor(rawCursor, UNIFIED_CATALOG_CURSOR_PREFIX)
+      : rawCursor;
     const decodedCursor = decodeUnifiedCatalogCursor(cursor);
     const isFreshRecommendedRequest = effectiveSort === "recommended" && !cursor;
     const [hasMissingPackageRecommendationScores, hasMissingSkillRecommendationScores] =
@@ -1650,6 +1719,7 @@ async function listPackages(
       packages: finalizeCatalogSource(packageSource),
       skills: finalizeCatalogSource(skillSource),
       recommendedFallback,
+      legacyInstallSort: legacyInstallSortMarker(isLegacyInstallSortRequest),
     };
     const isDoneAll =
       nextState.packages.done &&
@@ -1667,6 +1737,12 @@ async function listPackages(
   }
 
   if (!effectiveFamily && options?.pluginFamilies?.length) {
+    const shouldMarkDefaultDownloadCursor =
+      !sortParam.value && pluginDefaultSort === RECOMMENDED_FALLBACK_SORT;
+    const cursor =
+      isLegacyInstallSortRequest || shouldMarkDefaultDownloadCursor
+        ? normalizeLegacyInstallAggregateCursor(rawCursor, PLUGIN_CATALOG_CURSOR_PREFIX)
+        : rawCursor;
     const includeTotalCount =
       !includeSkills &&
       !category &&
@@ -1769,6 +1845,9 @@ async function listPackages(
       codePlugins: finalizeCatalogSource(codePluginSource),
       bundlePlugins: finalizeCatalogSource(bundlePluginSource),
       recommendedFallback,
+      legacyInstallSort: legacyInstallSortMarker(
+        isLegacyInstallSortRequest || shouldMarkDefaultDownloadCursor,
+      ),
     };
     const isDoneAll =
       nextState.codePlugins.done &&
@@ -1786,6 +1865,7 @@ async function listPackages(
     );
   }
 
+  const cursor = isLegacyInstallSortRequest ? decodeLegacyInstallPageCursor(rawCursor) : rawCursor;
   const result = await runQueryRef<{
     page: unknown[];
     isDone: boolean;
@@ -1804,7 +1884,17 @@ async function listPackages(
     paginationOpts: { cursor, numItems: limit },
   } satisfies PackageListQueryArgs);
   return json(
-    { items: result.page, nextCursor: result.isDone ? null : result.continueCursor },
+    {
+      items: result.page,
+      nextCursor: result.isDone
+        ? null
+        : isLegacyInstallSortRequest
+          ? encodePackagePageCursor({
+              cursor: result.continueCursor,
+              legacyInstallSort: "downloads",
+            })
+          : result.continueCursor,
+    },
     200,
     rate.headers,
   );

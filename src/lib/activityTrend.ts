@@ -14,7 +14,6 @@ export type MetricTrend = {
 
 export type ActivityTrend = {
   downloads: MetricTrend;
-  installs?: MetricTrend;
 };
 
 export const getSkillActivityTrendForSlug = api.skills.getActivityTrendForSlug;

@@ -778,6 +778,37 @@ describe("skills package catalog queries", () => {
     expect(result.continueCursor).toContain('"recommendedFallback":"updated"');
   });
 
+  it("resets legacy installs fallback cursors before using downloads", async () => {
+    const indexNames: string[] = [];
+    const fallbackCursor = `skillcat:${JSON.stringify({
+      cursor: "legacy-install-next",
+      offset: 2,
+      pageSize: 3,
+      done: false,
+      recommendedFallback: "installs",
+    })}`;
+    const result = await listPackageCatalogPageHandler(
+      makeCtx(
+        [
+          {
+            page: [makeDigest("download-fallback-skill")],
+            isDone: true,
+            continueCursor: "",
+          },
+        ],
+        { indexNames, missingRecommendedScores: true },
+      ),
+      {
+        sort: "recommended",
+        paginationOpts: { cursor: fallbackCursor, numItems: 1 },
+      },
+    );
+
+    expect(indexNames).toEqual(["by_active_stats_downloads"]);
+    expect(result.page).toEqual([expect.objectContaining({ name: "download-fallback-skill" })]);
+    expect(result.continueCursor).toBe("");
+  });
+
   it("searches skills with package-style lexical scoring", async () => {
     const result = await searchPackageCatalogPublicHandler(
       makeCtx([

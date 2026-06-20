@@ -1,10 +1,14 @@
 /* @vitest-environment node */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@convex-dev/auth/server", () => ({
-  getAuthUserId: vi.fn(),
-  authTables: {},
-}));
+vi.mock("@convex-dev/auth/server", async () => {
+  const actual =
+    await vi.importActual<typeof import("@convex-dev/auth/server")>("@convex-dev/auth/server");
+  return {
+    ...actual,
+    getAuthUserId: vi.fn(),
+  };
+});
 
 vi.mock("./lib/badges", () => ({
   getSkillBadgeMap: vi.fn(),
@@ -94,12 +98,6 @@ const getActivityTrendForSlugHandler = (
     },
     {
       downloads: {
-        range: "daily";
-        days: number;
-        total: number;
-        points: Array<{ day: number; value: number }>;
-      };
-      installs: {
         range: "daily";
         days: number;
         total: number;
@@ -619,11 +617,32 @@ describe("skills.getBySlug", () => {
     expect(result?.downloads.points).toHaveLength(30);
     expect(result?.downloads.points[0]).toEqual({ day: -4, value: 0 });
     expect(result?.downloads.points.at(-1)).toEqual({ day: 25, value: 3 });
-    expect(result?.installs.total).toBe(3);
-    expect(result?.installs.points.find((point) => point.day === 24)).toEqual({
-      day: 24,
-      value: 2,
-    });
+    expect(result && "installs" in result).toBe(false);
+  });
+
+  it("clamps future activity trend end days to the current UTC day", async () => {
+    const now = Date.UTC(2026, 5, 19, 12);
+    const todayDay = Math.floor(now / 86_400_000);
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+
+    try {
+      const ctx = makeCtx({
+        skill: makeSkill(),
+        owner: makeOwner("users:1", "demo-owner"),
+        skillDailyStats: [{ day: todayDay, downloads: 5, installs: 2 }],
+      });
+
+      const result = await getActivityTrendForSlugHandler(ctx, {
+        slug: "demo",
+        endDay: todayDay + 10,
+      } as never);
+
+      expect(result?.downloads.points.at(-1)).toEqual({ day: todayDay, value: 5 });
+      expect(result?.downloads.total).toBe(5);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not honor stale personal memberships for hidden skill owner views", async () => {

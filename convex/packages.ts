@@ -79,7 +79,9 @@ import {
   normalizePublishFiles,
   readStorageText,
   readOptionalTextFile,
+  shouldReadPluginManifestSummaryTextFile,
   summarizePackageForSearch,
+  type PluginManifestSummaryTextSource,
   toConvexSafeJsonValue,
 } from "./lib/packageRegistry";
 import { extractPackageDigestFields, upsertPackageSearchDigest } from "./lib/packageSearchDigest";
@@ -319,6 +321,64 @@ const skillSpectorAnalysisValidator = v.object({
 });
 
 const PACKAGE_DAILY_STATS_ROLLOUT_AT_ENV = "PACKAGE_DAILY_STATS_ROLLOUT_AT";
+const PACKAGE_STAT_EVENT_BATCH_SIZE = 100;
+export const PROCESSED_PACKAGE_STAT_EVENT_PRUNE_CONFIRMATION_TOKEN =
+  "PRUNE_PROCESSED_PACKAGE_STAT_EVENTS";
+const DEFAULT_PROCESSED_PACKAGE_STAT_EVENT_RETENTION_DAYS = 7;
+const MIN_PROCESSED_PACKAGE_STAT_EVENT_RETENTION_DAYS = 1;
+const MAX_PROCESSED_PACKAGE_STAT_EVENT_RETENTION_DAYS = 90;
+const DEFAULT_PROCESSED_PACKAGE_STAT_EVENT_PRUNE_BATCH_SIZE = 1_000;
+const MAX_PROCESSED_PACKAGE_STAT_EVENT_PRUNE_BATCH_SIZE = 5_000;
+const DEFAULT_PROCESSED_PACKAGE_STAT_EVENT_PRUNE_MAX_BATCHES = 20;
+const MAX_PROCESSED_PACKAGE_STAT_EVENT_PRUNE_MAX_BATCHES = 100;
+
+type ProcessedPackageStatEventPruneBatchResult = {
+  cutoffProcessedAt: number;
+  dryRun: boolean;
+  matched: number;
+  deleted: number;
+  hasMore: boolean;
+};
+
+type ProcessedPackageStatEventPruneResult = {
+  cutoffProcessedAt: number;
+  retentionDays: number;
+  dryRun: boolean;
+  batches: number;
+  matched: number;
+  deleted: number;
+  stoppedReason: "empty" | "max_batches";
+  scheduledContinuation: boolean;
+};
+
+function clampPackageStatInt(value: number, min: number, max: number) {
+  if (!Number.isFinite(value)) return min;
+  return Math.max(min, Math.min(Math.floor(value), max));
+}
+
+function normalizeProcessedPackageStatEventRetentionDays(retentionDays: number | undefined) {
+  return clampPackageStatInt(
+    retentionDays ?? DEFAULT_PROCESSED_PACKAGE_STAT_EVENT_RETENTION_DAYS,
+    MIN_PROCESSED_PACKAGE_STAT_EVENT_RETENTION_DAYS,
+    MAX_PROCESSED_PACKAGE_STAT_EVENT_RETENTION_DAYS,
+  );
+}
+
+function normalizeProcessedPackageStatEventPruneBatchSize(batchSize: number | undefined) {
+  return clampPackageStatInt(
+    batchSize ?? DEFAULT_PROCESSED_PACKAGE_STAT_EVENT_PRUNE_BATCH_SIZE,
+    1,
+    MAX_PROCESSED_PACKAGE_STAT_EVENT_PRUNE_BATCH_SIZE,
+  );
+}
+
+function normalizeProcessedPackageStatEventPruneMaxBatches(maxBatches: number | undefined) {
+  return clampPackageStatInt(
+    maxBatches ?? DEFAULT_PROCESSED_PACKAGE_STAT_EVENT_PRUNE_MAX_BATCHES,
+    1,
+    MAX_PROCESSED_PACKAGE_STAT_EVENT_PRUNE_MAX_BATCHES,
+  );
+}
 
 function getPackageDailyStatsRolloutTime() {
   const raw = process.env[PACKAGE_DAILY_STATS_ROLLOUT_AT_ENV]?.trim();
@@ -1798,6 +1858,29 @@ function buildPackagePluginCategoryDigestQuery(
   const channel = args.channel;
   const isOfficial = args.isOfficial;
   if (args.sort === "downloads") {
+    if (family && channel && typeof isOfficial === "boolean") {
+      return ctx.db
+        .query("packagePluginCategorySearchDigest")
+        .withIndex("by_active_family_channel_official_category_downloads", (q) =>
+          q
+            .eq("softDeletedAt", undefined)
+            .eq("family", family)
+            .eq("channel", channel)
+            .eq("isOfficial", isOfficial)
+            .eq("pluginCategory", args.category),
+        );
+    }
+    if (family && channel) {
+      return ctx.db
+        .query("packagePluginCategorySearchDigest")
+        .withIndex("by_active_family_channel_category_downloads", (q) =>
+          q
+            .eq("softDeletedAt", undefined)
+            .eq("family", family)
+            .eq("channel", channel)
+            .eq("pluginCategory", args.category),
+        );
+    }
     if (family && typeof isOfficial === "boolean") {
       return ctx.db
         .query("packagePluginCategorySearchDigest")
@@ -1809,11 +1892,32 @@ function buildPackagePluginCategoryDigestQuery(
             .eq("pluginCategory", args.category),
         );
     }
+    if (channel && typeof isOfficial === "boolean") {
+      return ctx.db
+        .query("packagePluginCategorySearchDigest")
+        .withIndex("by_active_channel_official_category_downloads", (q) =>
+          q
+            .eq("softDeletedAt", undefined)
+            .eq("channel", channel)
+            .eq("isOfficial", isOfficial)
+            .eq("pluginCategory", args.category),
+        );
+    }
     if (family) {
       return ctx.db
         .query("packagePluginCategorySearchDigest")
         .withIndex("by_active_family_category_downloads", (q) =>
           q.eq("softDeletedAt", undefined).eq("family", family).eq("pluginCategory", args.category),
+        );
+    }
+    if (channel) {
+      return ctx.db
+        .query("packagePluginCategorySearchDigest")
+        .withIndex("by_active_channel_category_downloads", (q) =>
+          q
+            .eq("softDeletedAt", undefined)
+            .eq("channel", channel)
+            .eq("pluginCategory", args.category),
         );
     }
     if (typeof isOfficial === "boolean") {
@@ -1980,6 +2084,65 @@ function buildPackageTopicDigestQuery(
   const channel = args.channel;
   const isOfficial = args.isOfficial;
   if (args.sort === "downloads") {
+    if (family && channel && typeof isOfficial === "boolean") {
+      return ctx.db
+        .query("packageTopicSearchDigest")
+        .withIndex("by_active_family_channel_official_topic_downloads", (q) =>
+          q
+            .eq("softDeletedAt", undefined)
+            .eq("family", family)
+            .eq("channel", channel)
+            .eq("isOfficial", isOfficial)
+            .eq("topic", args.topic),
+        );
+    }
+    if (family && channel) {
+      return ctx.db
+        .query("packageTopicSearchDigest")
+        .withIndex("by_active_family_channel_topic_downloads", (q) =>
+          q
+            .eq("softDeletedAt", undefined)
+            .eq("family", family)
+            .eq("channel", channel)
+            .eq("topic", args.topic),
+        );
+    }
+    if (family && typeof isOfficial === "boolean") {
+      return ctx.db
+        .query("packageTopicSearchDigest")
+        .withIndex("by_active_family_official_topic_downloads", (q) =>
+          q
+            .eq("softDeletedAt", undefined)
+            .eq("family", family)
+            .eq("isOfficial", isOfficial)
+            .eq("topic", args.topic),
+        );
+    }
+    if (channel && typeof isOfficial === "boolean") {
+      return ctx.db
+        .query("packageTopicSearchDigest")
+        .withIndex("by_active_channel_official_topic_downloads", (q) =>
+          q
+            .eq("softDeletedAt", undefined)
+            .eq("channel", channel)
+            .eq("isOfficial", isOfficial)
+            .eq("topic", args.topic),
+        );
+    }
+    if (family) {
+      return ctx.db
+        .query("packageTopicSearchDigest")
+        .withIndex("by_active_family_topic_downloads", (q) =>
+          q.eq("softDeletedAt", undefined).eq("family", family).eq("topic", args.topic),
+        );
+    }
+    if (channel) {
+      return ctx.db
+        .query("packageTopicSearchDigest")
+        .withIndex("by_active_channel_topic_downloads", (q) =>
+          q.eq("softDeletedAt", undefined).eq("channel", channel).eq("topic", args.topic),
+        );
+    }
     if (typeof isOfficial === "boolean") {
       return ctx.db
         .query("packageTopicSearchDigest")
@@ -3982,7 +4145,10 @@ type PackageDailyStatsDelta = {
 export const processPackageStatEventsInternal = internalMutation({
   args: { batchSize: v.optional(v.number()) },
   handler: async (ctx, args) => {
-    const batchSize = Math.max(1, Math.min(args.batchSize ?? 500, 1_000));
+    const batchSize = Math.max(
+      1,
+      Math.min(args.batchSize ?? PACKAGE_STAT_EVENT_BATCH_SIZE, PACKAGE_STAT_EVENT_BATCH_SIZE),
+    );
     const now = Date.now();
     const events = await ctx.db
       .query("packageStatEvents")
@@ -4057,6 +4223,117 @@ export const processPackageStatEventsInternal = internalMutation({
     return { processed: events.length, packagesUpdated };
   },
 });
+
+export const pruneProcessedPackageStatEventBatchInternal = internalMutation({
+  args: {
+    cutoffProcessedAt: v.number(),
+    dryRun: v.boolean(),
+    batchSize: v.optional(v.number()),
+    confirmationToken: v.optional(v.string()),
+  },
+  handler: async (ctx, args): Promise<ProcessedPackageStatEventPruneBatchResult> => {
+    if (
+      !args.dryRun &&
+      args.confirmationToken !== PROCESSED_PACKAGE_STAT_EVENT_PRUNE_CONFIRMATION_TOKEN
+    ) {
+      throw new Error(
+        `Apply requires confirmationToken=${PROCESSED_PACKAGE_STAT_EVENT_PRUNE_CONFIRMATION_TOKEN}`,
+      );
+    }
+
+    const batchSize = normalizeProcessedPackageStatEventPruneBatchSize(args.batchSize);
+    const events = await ctx.db
+      .query("packageStatEvents")
+      .withIndex("by_unprocessed", (q) =>
+        q.gt("processedAt", 0).lt("processedAt", args.cutoffProcessedAt),
+      )
+      .take(batchSize);
+
+    if (!args.dryRun) {
+      for (const event of events) {
+        await ctx.db.delete(event._id);
+      }
+    }
+
+    return {
+      cutoffProcessedAt: args.cutoffProcessedAt,
+      dryRun: args.dryRun,
+      matched: events.length,
+      deleted: args.dryRun ? 0 : events.length,
+      hasMore: events.length === batchSize,
+    };
+  },
+});
+
+export const pruneProcessedPackageStatEventsInternal: ReturnType<typeof internalAction> =
+  internalAction({
+    args: {
+      dryRun: v.optional(v.boolean()),
+      retentionDays: v.optional(v.number()),
+      batchSize: v.optional(v.number()),
+      maxBatches: v.optional(v.number()),
+      confirmationToken: v.optional(v.string()),
+    },
+    handler: async (ctx, args): Promise<ProcessedPackageStatEventPruneResult> => {
+      const dryRun = args.dryRun ?? false;
+      const retentionDays = normalizeProcessedPackageStatEventRetentionDays(args.retentionDays);
+      const batchSize = normalizeProcessedPackageStatEventPruneBatchSize(args.batchSize);
+      const maxBatches = normalizeProcessedPackageStatEventPruneMaxBatches(args.maxBatches);
+      const cutoffProcessedAt = Date.now() - retentionDays * 24 * 60 * 60 * 1_000;
+
+      let batches = 0;
+      let matched = 0;
+      let deleted = 0;
+      let hasMore = false;
+      let stoppedReason: "empty" | "max_batches" = "empty";
+      const batchLimit = dryRun ? 1 : maxBatches;
+
+      for (let index = 0; index < batchLimit; index += 1) {
+        const batch = (await ctx.runMutation(
+          internal.packages.pruneProcessedPackageStatEventBatchInternal,
+          {
+            cutoffProcessedAt,
+            dryRun,
+            batchSize,
+            confirmationToken: args.confirmationToken,
+          },
+        )) as ProcessedPackageStatEventPruneBatchResult;
+
+        batches += 1;
+        matched += batch.matched;
+        deleted += batch.deleted;
+        hasMore = batch.hasMore;
+
+        if (!batch.hasMore) {
+          stoppedReason = "empty";
+          break;
+        }
+
+        stoppedReason = "max_batches";
+      }
+
+      if (!dryRun && hasMore && stoppedReason === "max_batches") {
+        await ctx.scheduler.runAfter(0, internal.packages.pruneProcessedPackageStatEventsInternal, {
+          dryRun,
+          retentionDays,
+          batchSize,
+          maxBatches,
+          confirmationToken: args.confirmationToken,
+        });
+      }
+
+      return {
+        cutoffProcessedAt,
+        retentionDays,
+        dryRun,
+        batches,
+        matched,
+        deleted,
+        stoppedReason,
+        scheduledContinuation: !dryRun && hasMore && stoppedReason === "max_batches",
+      };
+    },
+  });
 
 export const getTrustedPublisherByPackageIdInternal = internalQuery({
   args: { packageId: v.id("packages") },
@@ -6714,9 +6991,10 @@ function normalizeStoredPluginCategoryOverride(categories: readonly string[] | u
   }
 }
 
-async function withSkillMarkdownTextsForManifestSummary(
+async function withManifestSummaryTexts(
   ctx: Pick<ActionCtx, "storage">,
   files: ReturnType<typeof normalizePublishFiles>,
+  sources: readonly PluginManifestSummaryTextSource[],
 ) {
   const summaryFiles: Array<
     (typeof files)[number] & {
@@ -6724,8 +7002,7 @@ async function withSkillMarkdownTextsForManifestSummary(
     }
   > = [];
   for (const file of files) {
-    const lower = file.path.toLowerCase();
-    if (lower === "skill.md" || lower.endsWith("/skill.md")) {
+    if (shouldReadPluginManifestSummaryTextFile(file.path, sources)) {
       summaryFiles.push({
         ...file,
         text: await readStorageText(ctx, file.storageId),
@@ -7037,11 +7314,26 @@ async function publishPackageImpl(
   const integritySha256 = await hashSkillFiles(
     files.map((file) => ({ path: file.path, sha256: file.sha256 })),
   );
+  const manifestSummaryTextSources: PluginManifestSummaryTextSource[] = [
+    { manifest: pluginManifest },
+    ...(bundleManifest
+      ? [
+          {
+            manifest: bundleManifest,
+            ...(bundleManifestEntry?.file.path
+              ? { manifestPath: bundleManifestEntry.file.path }
+              : {}),
+          },
+        ]
+      : []),
+  ];
   const pluginManifestSummary = derivePluginManifestSummary({
     pluginManifest,
+    ...(packageJson ? { packageJson } : {}),
     ...(bundleManifest ? { skillManifest: bundleManifest } : {}),
+    ...(bundleManifestEntry?.file.path ? { skillManifestPath: bundleManifestEntry.file.path } : {}),
     compatibility: codeArtifacts?.compatibility ?? bundleArtifacts?.compatibility,
-    files: await withSkillMarkdownTextsForManifestSummary(ctx, files),
+    files: await withManifestSummaryTexts(ctx, files, manifestSummaryTextSources),
   });
 
   const publishResult = await runMutationRef<{

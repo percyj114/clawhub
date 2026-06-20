@@ -326,6 +326,91 @@
           }
         }
       },
+      "PluginManifestSummary": {
+        "type": "object",
+        "properties": {
+          "schemaVersion": {
+            "type": "number"
+          },
+          "compatibility": {
+            "$ref": "#/components/schemas/PackageCompatibility"
+          },
+          "manifestIdentity": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "family": {
+                "type": "string"
+              }
+            }
+          },
+          "configFields": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "required": {
+                  "type": "boolean"
+                },
+                "sensitive": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "mcpServers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "bundledSkills": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "rootPath": {
+                  "type": "string"
+                },
+                "skillMdPath": {
+                  "type": "string"
+                },
+                "sha256": {
+                  "type": "string"
+                },
+                "size": {
+                  "type": "number"
+                }
+              }
+            }
+          }
+        }
+      },
       "PackageFileEntry": {
         "type": "object",
         "properties": {
@@ -502,6 +587,16 @@
                 "anyOf": [
                   {
                     "$ref": "#/components/schemas/PackageCompatibility"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "pluginManifestSummary": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/PluginManifestSummary"
                   },
                   {
                     "type": "null"
@@ -819,6 +914,16 @@
                   }
                 ]
               },
+              "pluginManifestSummary": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/PluginManifestSummary"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "verification": {
                 "anyOf": [
                   {
@@ -1034,15 +1139,21 @@
           "displayName": {
             "type": "string"
           },
-          "summary": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "tags": {
-            "$ref": "#/components/schemas/TagMap"
-          },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "topics": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tags": {
+          "$ref": "#/components/schemas/TagMap"
+        },
           "stats": {
             "$ref": "#/components/schemas/Stats"
           },
@@ -1063,15 +1174,21 @@
           "displayName": {
             "type": "string"
           },
-          "summary": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "tags": {
-            "$ref": "#/components/schemas/TagMap"
-          },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "topics": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tags": {
+          "$ref": "#/components/schemas/TagMap"
+        },
           "stats": {
             "$ref": "#/components/schemas/Stats"
           },
@@ -1470,6 +1587,20 @@
             }
           },
           {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "updated",
+                "recommended",
+                "downloads",
+                "installs"
+              ]
+            }
+          },
+          {
             "name": "channel",
             "in": "query",
             "required": false,
@@ -1541,6 +1672,20 @@
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "updated",
+                "recommended",
+                "downloads",
+                "installs"
+              ]
             }
           },
           {
@@ -1660,6 +1805,20 @@
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "updated",
+                "recommended",
+                "downloads",
+                "installs"
+              ]
             }
           },
           {
@@ -2469,6 +2628,20 @@
             }
           },
           {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "updated",
+                "recommended",
+                "downloads",
+                "installs"
+              ]
+            }
+          },
+          {
             "name": "channel",
             "in": "query",
             "required": false,
@@ -2737,6 +2910,7 @@
                 "updated",
                 "createdAt",
                 "newest",
+                "downloads",
                 "stars",
                 "rating",
                 "installsCurrent",

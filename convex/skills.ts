@@ -6153,6 +6153,11 @@ function normalizeSkillCatalogRecommendedFallbackSort(
     : undefined;
 }
 
+function readSkillCatalogCursorField(input: unknown, field: string): unknown {
+  if (input === null || typeof input !== "object") return undefined;
+  return Object.getOwnPropertyDescriptor(input, field)?.value;
+}
+
 function encodeSkillCatalogCursor(state: SkillCatalogCursorState) {
   if (state.done && state.offset === 0) return "";
   return `${SKILL_CATALOG_CURSOR_PREFIX}${JSON.stringify(state)}`;
@@ -6164,15 +6169,26 @@ function decodeSkillCatalogCursor(raw: string | null | undefined): SkillCatalogC
     return { cursor: raw, offset: 0, pageSize: null, done: false };
   }
   try {
-    const parsed = JSON.parse(
-      raw.slice(SKILL_CATALOG_CURSOR_PREFIX.length),
-    ) as Partial<SkillCatalogCursorState>;
+    const parsed: unknown = JSON.parse(raw.slice(SKILL_CATALOG_CURSOR_PREFIX.length));
+    const recommendedFallbackValue = readSkillCatalogCursorField(parsed, "recommendedFallback");
+    const resetLegacyInstallCursorState = recommendedFallbackValue === "installs";
+    const cursorValue = readSkillCatalogCursorField(parsed, "cursor");
+    const offsetValue = readSkillCatalogCursorField(parsed, "offset");
+    const pageSizeValue = readSkillCatalogCursorField(parsed, "pageSize");
+    const doneValue = readSkillCatalogCursorField(parsed, "done");
     return {
-      cursor: typeof parsed.cursor === "string" ? parsed.cursor : null,
-      offset: typeof parsed.offset === "number" && parsed.offset > 0 ? parsed.offset : 0,
-      pageSize: typeof parsed.pageSize === "number" && parsed.pageSize > 0 ? parsed.pageSize : null,
-      done: parsed.done === true,
-      recommendedFallback: normalizeSkillCatalogRecommendedFallbackSort(parsed.recommendedFallback),
+      cursor:
+        !resetLegacyInstallCursorState && typeof cursorValue === "string" ? cursorValue : null,
+      offset:
+        !resetLegacyInstallCursorState && typeof offsetValue === "number" && offsetValue > 0
+          ? offsetValue
+          : 0,
+      pageSize:
+        !resetLegacyInstallCursorState && typeof pageSizeValue === "number" && pageSizeValue > 0
+          ? pageSizeValue
+          : null,
+      done: !resetLegacyInstallCursorState && doneValue === true,
+      recommendedFallback: normalizeSkillCatalogRecommendedFallbackSort(recommendedFallbackValue),
     };
   } catch {
     return { cursor: null, offset: 0, pageSize: null, done: false };

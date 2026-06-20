@@ -6,10 +6,14 @@ import {
 } from "./lib/recommendationScore";
 import schema from "./schema";
 
-vi.mock("@convex-dev/auth/server", () => ({
-  getAuthUserId: vi.fn(),
-  authTables: {},
-}));
+vi.mock("@convex-dev/auth/server", async () => {
+  const actual =
+    await vi.importActual<typeof import("@convex-dev/auth/server")>("@convex-dev/auth/server");
+  return {
+    ...actual,
+    getAuthUserId: vi.fn(),
+  };
+});
 
 const { __test, listPublicPageV4 } = await import("./skills");
 

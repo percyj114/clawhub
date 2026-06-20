@@ -62,10 +62,14 @@ import {
   searchPublic,
 } from "./packages";
 
-vi.mock("@convex-dev/auth/server", () => ({
-  authTables: {},
-  getAuthUserId: vi.fn(),
-}));
+vi.mock("@convex-dev/auth/server", async () => {
+  const actual =
+    await vi.importActual<typeof import("@convex-dev/auth/server")>("@convex-dev/auth/server");
+  return {
+    ...actual,
+    getAuthUserId: vi.fn(),
+  };
+});
 
 type WrappedHandler<TArgs, TResult> = {
   _handler: (ctx: unknown, args: TArgs) => Promise<TResult>;
@@ -4097,6 +4101,33 @@ describe("packages public queries", () => {
     expect(indexNames).toEqual(["by_active_family_category_installs"]);
   });
 
+  it("uses channel-aware plugin category download indexes", async () => {
+    const { ctx, indexNames } = makeDigestCtx({
+      categoryPages: [
+        {
+          page: [
+            makeDigest("community-tools", {
+              channel: "community",
+              pluginCategory: "tools",
+              pluginCategoryTags: ["tools"],
+            }),
+          ],
+          isDone: true,
+          continueCursor: "",
+        },
+      ],
+    });
+
+    await listPublicPageHandler(ctx, {
+      channel: "community",
+      category: "tools",
+      sort: "downloads",
+      paginationOpts: { cursor: null, numItems: 10 },
+    });
+
+    expect(indexNames).toEqual(["by_active_channel_category_downloads"]);
+  });
+
   it("uses family-aware official category sort indexes for official-first sources", async () => {
     const { ctx, indexNames } = makeDigestCtx({
       categoryPages: [
@@ -4234,7 +4265,7 @@ describe("packages public queries", () => {
     ]);
   });
 
-  it("uses topic digest sort indexes for filtered listings", async () => {
+  it("uses family-aware topic digest sort indexes for filtered listings", async () => {
     const { ctx, indexNames } = makeDigestCtx({
       topicPages: [
         {
@@ -4246,12 +4277,13 @@ describe("packages public queries", () => {
     });
 
     await listPublicPageHandler(ctx, {
+      family: "code-plugin",
       topic: "calendar",
       sort: "downloads",
       paginationOpts: { cursor: null, numItems: 10 },
     });
 
-    expect(indexNames).toEqual(["by_active_topic_downloads"]);
+    expect(indexNames).toEqual(["by_active_family_topic_downloads"]);
   });
 
   it("keeps metadata recommendation fallback cursors on the updated digest index", async () => {
@@ -8363,6 +8395,377 @@ describe("packages public queries", () => {
       expect.anything(),
       expect.any(Object),
     );
+  });
+
+  it("stores MCP servers declared in a referenced manifest file", async () => {
+    const runMutation = vi.fn(async (_ref: unknown, args: unknown) => args);
+    const storedFiles = new Map<string, string>([
+      [
+        "storage:package",
+        JSON.stringify({
+          name: "demo-plugin",
+          openclaw: {
+            extensions: ["./dist/index.js"],
+            hostTargets: ["darwin-arm64", "linux-x64"],
+            environment: {},
+            compat: { pluginApi: "^1.0.0" },
+            build: { openclawVersion: "2026.3.14" },
+            configSchema: { type: "object" },
+          },
+        }),
+      ],
+      [
+        "storage:manifest",
+        JSON.stringify({
+          id: "demo.plugin",
+          mcpServers: "./.mcp.json",
+        }),
+      ],
+      [
+        "storage:mcp",
+        JSON.stringify({
+          mcpServers: {
+            filesystem: { command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem"] },
+            github: { command: "npx", args: ["-y", "@modelcontextprotocol/server-github"] },
+          },
+        }),
+      ],
+      ["storage:code", "export const demo = true;\n"],
+    ]);
+    const ctx = {
+      runQuery: vi
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          _id: "users:owner",
+          githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
+        })
+        .mockResolvedValueOnce({
+          _id: "users:owner",
+          githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
+        })
+        .mockResolvedValueOnce(null),
+      runMutation,
+      scheduler: {
+        runAfter: vi.fn(),
+      },
+      storage: {
+        get: vi.fn(async (storageId: string) => {
+          const content = storedFiles.get(storageId);
+          return content ? new Blob([content]) : null;
+        }),
+      },
+      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
+    };
+
+    const result = (await publishPackageForUserInternalHandler(ctx as never, {
+      actorUserId: "users:owner",
+      payload: {
+        name: "demo-plugin",
+        displayName: "Demo Plugin",
+        family: "code-plugin",
+        version: "1.0.0",
+        changelog: "init",
+        source: {
+          kind: "github",
+          url: "https://github.com/openclaw/demo-plugin",
+          repo: "openclaw/demo-plugin",
+          ref: "refs/tags/v1.0.0",
+          commit: "abc123",
+          path: ".",
+          importedAt: Date.now(),
+        },
+        files: [
+          {
+            path: "package.json",
+            size: 1,
+            storageId: "storage:package",
+            sha256: "package",
+            contentType: "application/json",
+          },
+          {
+            path: "openclaw.plugin.json",
+            size: 1,
+            storageId: "storage:manifest",
+            sha256: "manifest",
+            contentType: "application/json",
+          },
+          {
+            path: ".mcp.json",
+            size: 1,
+            storageId: "storage:mcp",
+            sha256: "mcp",
+            contentType: "application/json",
+          },
+          {
+            path: "dist/index.js",
+            size: 1,
+            storageId: "storage:code",
+            sha256: "code",
+            contentType: "application/javascript",
+          },
+        ],
+      },
+    })) as Record<string, unknown>;
+
+    expect(result.pluginManifestSummary).toMatchObject({
+      mcpServers: [{ name: "filesystem" }, { name: "github" }],
+    });
+  });
+
+  it("stores config fields declared in a referenced schema file", async () => {
+    const runMutation = vi.fn(async (_ref: unknown, args: unknown) => args);
+    const storedFiles = new Map<string, string>([
+      [
+        "storage:package",
+        JSON.stringify({
+          name: "demo-plugin",
+          openclaw: {
+            extensions: ["./dist/index.js"],
+            hostTargets: ["darwin-arm64", "linux-x64"],
+            environment: {},
+            compat: { pluginApi: "^1.0.0" },
+            build: { openclawVersion: "2026.3.14" },
+          },
+        }),
+      ],
+      [
+        "storage:manifest",
+        JSON.stringify({
+          id: "demo.plugin",
+          configSchema: "./config.schema.json",
+        }),
+      ],
+      [
+        "storage:config",
+        JSON.stringify({
+          type: "object",
+          required: ["EXAMPLE_PLUGIN_API_KEY"],
+          properties: {
+            EXAMPLE_PLUGIN_API_KEY: {
+              type: "string",
+              description: "API key used by the example plugin.",
+              format: "password",
+            },
+          },
+        }),
+      ],
+      ["storage:code", "export const demo = true;\n"],
+    ]);
+    const ctx = {
+      runQuery: vi
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          _id: "users:owner",
+          githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
+        })
+        .mockResolvedValueOnce({
+          _id: "users:owner",
+          githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
+        })
+        .mockResolvedValueOnce(null),
+      runMutation,
+      scheduler: {
+        runAfter: vi.fn(),
+      },
+      storage: {
+        get: vi.fn(async (storageId: string) => {
+          const content = storedFiles.get(storageId);
+          return content ? new Blob([content]) : null;
+        }),
+      },
+      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
+    };
+
+    const result = (await publishPackageForUserInternalHandler(ctx as never, {
+      actorUserId: "users:owner",
+      payload: {
+        name: "demo-plugin",
+        displayName: "Demo Plugin",
+        family: "code-plugin",
+        version: "1.0.0",
+        changelog: "init",
+        source: {
+          kind: "github",
+          url: "https://github.com/openclaw/demo-plugin",
+          repo: "openclaw/demo-plugin",
+          ref: "refs/tags/v1.0.0",
+          commit: "abc123",
+          path: ".",
+          importedAt: Date.now(),
+        },
+        files: [
+          {
+            path: "package.json",
+            size: 1,
+            storageId: "storage:package",
+            sha256: "package",
+            contentType: "application/json",
+          },
+          {
+            path: "openclaw.plugin.json",
+            size: 1,
+            storageId: "storage:manifest",
+            sha256: "manifest",
+            contentType: "application/json",
+          },
+          {
+            path: "config.schema.json",
+            size: 1,
+            storageId: "storage:config",
+            sha256: "config",
+            contentType: "application/json",
+          },
+          {
+            path: "dist/index.js",
+            size: 1,
+            storageId: "storage:code",
+            sha256: "code",
+            contentType: "application/javascript",
+          },
+        ],
+      },
+    })) as Record<string, unknown>;
+
+    expect(result.pluginManifestSummary).toMatchObject({
+      configFields: [
+        {
+          name: "EXAMPLE_PLUGIN_API_KEY",
+          description: "API key used by the example plugin.",
+          required: true,
+          sensitive: true,
+        },
+      ],
+    });
+  });
+
+  it("stores MCP servers declared in a bundle manifest referenced file", async () => {
+    const runMutation = vi.fn(async (_ref: unknown, args: unknown) => args);
+    const storedFiles = new Map<string, string>([
+      [
+        "storage:package",
+        JSON.stringify({
+          name: "demo-bundle",
+          version: "1.0.0",
+        }),
+      ],
+      [
+        "storage:manifest",
+        JSON.stringify({
+          id: "demo.bundle",
+        }),
+      ],
+      [
+        "storage:bundle-manifest",
+        JSON.stringify({
+          name: "Demo Bundle",
+          mcpServers: "./.mcp.json",
+          skills: ["skills"],
+        }),
+      ],
+      [
+        "storage:mcp",
+        JSON.stringify({
+          mcpServers: {
+            filesystem: { command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem"] },
+          },
+        }),
+      ],
+      ["storage:skill", "---\nname: Filesystem\n---\n# Filesystem\n"],
+      ["storage:runtime", "bundle"],
+    ]);
+    const ctx = {
+      runQuery: vi
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          _id: "users:owner",
+          githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
+        })
+        .mockResolvedValueOnce({
+          _id: "users:owner",
+          githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
+        })
+        .mockResolvedValueOnce(null),
+      runMutation,
+      scheduler: {
+        runAfter: vi.fn(),
+      },
+      storage: {
+        get: vi.fn(async (storageId: string) => {
+          const content = storedFiles.get(storageId);
+          return content ? new Blob([content]) : null;
+        }),
+      },
+      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
+    };
+
+    const result = (await publishPackageForUserInternalHandler(ctx as never, {
+      actorUserId: "users:owner",
+      payload: {
+        name: "demo-bundle",
+        displayName: "Demo Bundle",
+        family: "bundle-plugin",
+        version: "1.0.0",
+        changelog: "init",
+        bundle: { hostTargets: ["desktop"] },
+        files: [
+          {
+            path: "package.json",
+            size: 1,
+            storageId: "storage:package",
+            sha256: "package",
+            contentType: "application/json",
+          },
+          {
+            path: "openclaw.plugin.json",
+            size: 1,
+            storageId: "storage:manifest",
+            sha256: "manifest",
+            contentType: "application/json",
+          },
+          {
+            path: ".codex-plugin/plugin.json",
+            size: 1,
+            storageId: "storage:bundle-manifest",
+            sha256: "bundle-manifest",
+            contentType: "application/json",
+          },
+          {
+            path: ".mcp.json",
+            size: 1,
+            storageId: "storage:mcp",
+            sha256: "mcp",
+            contentType: "application/json",
+          },
+          {
+            path: "skills/filesystem/SKILL.md",
+            size: 1,
+            storageId: "storage:skill",
+            sha256: "skill",
+            contentType: "text/markdown",
+          },
+          {
+            path: "dist/plugin.wasm",
+            size: 1,
+            storageId: "storage:runtime",
+            sha256: "runtime",
+            contentType: "application/wasm",
+          },
+        ],
+      },
+    })) as Record<string, unknown>;
+
+    expect(result.pluginManifestSummary).toMatchObject({
+      mcpServers: [{ name: "filesystem" }],
+      bundledSkills: [
+        expect.objectContaining({
+          name: "Filesystem",
+          skillMdPath: "skills/filesystem/SKILL.md",
+        }),
+      ],
+    });
   });
 
   it("blocks plugin publishes when plugin inspector reports hard breakages", async () => {

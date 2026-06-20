@@ -183,16 +183,48 @@ describe("plugins route", () => {
     expect(redirectMock).not.toHaveBeenCalled();
   });
 
-  it("keeps downloads sort links and cursors in plugin browse", async () => {
+  it("keeps downloads sort links and cursors in filtered plugin browse", async () => {
     const route = await loadRoute();
     const validateSearch = route.__config.validateSearch as (
       search: Record<string, unknown>,
     ) => Record<string, unknown>;
 
-    expect(validateSearch({ sort: "downloads", cursor: "legacy-download-cursor" })).toEqual(
+    expect(
+      validateSearch({ category: "security", sort: "downloads", cursor: "download-cursor" }),
+    ).toEqual(
+      expect.objectContaining({
+        category: "security",
+        sort: "downloads",
+        cursor: "download-cursor",
+      }),
+    );
+  });
+
+  it("drops legacy filtered browse cursors with implicit sort", async () => {
+    const route = await loadRoute();
+    const validateSearch = route.__config.validateSearch as (
+      search: Record<string, unknown>,
+    ) => Record<string, unknown>;
+
+    expect(validateSearch({ category: "security", cursor: "legacy-install-cursor" })).toEqual(
+      expect.objectContaining({
+        category: "security",
+        sort: undefined,
+        cursor: undefined,
+      }),
+    );
+  });
+
+  it("drops legacy install sort cursors in plugin browse", async () => {
+    const route = await loadRoute();
+    const validateSearch = route.__config.validateSearch as (
+      search: Record<string, unknown>,
+    ) => Record<string, unknown>;
+
+    expect(validateSearch({ sort: "installs", cursor: "legacy-install-cursor" })).toEqual(
       expect.objectContaining({
         sort: "downloads",
-        cursor: "legacy-download-cursor",
+        cursor: undefined,
       }),
     );
   });
@@ -512,6 +544,41 @@ describe("plugins route", () => {
     };
     expect(lastCall.search({})).toEqual({
       cursor: "cursor:next",
+    });
+  });
+
+  it("keeps downloads sort in filtered next-page links", async () => {
+    searchMock = { category: "security" };
+    loaderDataMock = {
+      items: [
+        {
+          name: "demo-plugin",
+          displayName: "Demo Plugin",
+          family: "code-plugin",
+          channel: "community",
+          isOfficial: false,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+      nextCursor: "cursor:next",
+      rateLimited: false,
+      retryAfterSeconds: null,
+    };
+    const route = await loadRoute();
+    const Component = route.__config.component as ComponentType;
+
+    render(<Component />);
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+
+    expect(navigateMock).toHaveBeenCalled();
+    const lastCall = navigateMock.mock.calls.at(-1)?.[0] as {
+      search: (prev: Record<string, unknown>) => Record<string, unknown>;
+    };
+    expect(lastCall.search({ category: "security" })).toEqual({
+      category: "security",
+      cursor: "cursor:next",
+      sort: "downloads",
     });
   });
 

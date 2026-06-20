@@ -212,19 +212,17 @@ export async function loadPluginsPageData(
 
 export const Route = createFileRoute("/plugins/")({
   pendingComponent: PluginsIndexPending,
-  validateSearch: (search): PluginSearchState => ({
-    q: typeof search.q === "string" && search.q.trim() ? search.q.trim() : undefined,
-    category:
+  validateSearch: (search): PluginSearchState => {
+    const q = typeof search.q === "string" && search.q.trim() ? search.q.trim() : undefined;
+    const category =
       typeof search.category === "string"
         ? resolvePluginBrowseCategorySlug(search.category)
-        : undefined,
-    topic: typeof search.topic === "string" ? normalizeCatalogTopic(search.topic) : undefined,
-    cursor: typeof search.cursor === "string" && search.cursor ? search.cursor : undefined,
-    featured:
+        : undefined;
+    const featured =
       search.featured === true || search.featured === "true" || search.featured === "1"
         ? true
-        : undefined,
-    official:
+        : undefined;
+    const official =
       search.official === true ||
       search.official === "true" ||
       search.official === "1" ||
@@ -232,10 +230,28 @@ export const Route = createFileRoute("/plugins/")({
       search.verified === "true" ||
       search.verified === "1"
         ? true
-        : undefined,
-    sort: parsePluginSort(search.sort),
-    view: normalizePluginView(search.view),
-  }),
+        : undefined;
+    const legacyInstallSort = search.sort === "installs";
+    const noExplicitSort = search.sort === undefined;
+    const staleImplicitFilteredCursor =
+      noExplicitSort && !q && hasPersistentPluginBrowseFilter({ category, featured, official });
+    return {
+      q,
+      category,
+      topic: typeof search.topic === "string" ? normalizeCatalogTopic(search.topic) : undefined,
+      cursor:
+        !legacyInstallSort &&
+        !staleImplicitFilteredCursor &&
+        typeof search.cursor === "string" &&
+        search.cursor
+          ? search.cursor
+          : undefined,
+      featured,
+      official,
+      sort: parsePluginSort(search.sort),
+      view: normalizePluginView(search.view),
+    };
+  },
   beforeLoad: ({ search }) => {
     const hasQuery = Boolean(search.q?.trim());
     const incompatibleSort =
@@ -666,7 +682,14 @@ function PluginsIndex() {
                   type="button"
                   onClick={() => {
                     void navigate({
-                      search: (prev: PluginSearchState) => ({ ...prev, cursor: nextCursor }),
+                      search: (prev: PluginSearchState) => ({
+                        ...prev,
+                        cursor: nextCursor,
+                        sort:
+                          !prev.q && !prev.sort && hasPersistentPluginBrowseFilter(prev)
+                            ? getDefaultPluginBrowseSort(prev)
+                            : prev.sort,
+                      }),
                     });
                   }}
                 >

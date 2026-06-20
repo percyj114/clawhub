@@ -26,30 +26,15 @@ describe("download trend helpers", () => {
       day: 22,
       value: 8,
     });
-
-    expect(trend.installs.range).toBe("daily");
-    expect(trend.installs.days).toBe(ACTIVITY_TREND_DAYS);
-    expect(trend.installs.total).toBe(5);
-    expect(trend.installs.points.find((point) => point.day === 20)).toEqual({
-      day: 20,
-      value: 1,
-    });
-    expect(trend.installs.points.find((point) => point.day === 22)).toEqual({
-      day: 22,
-      value: 4,
-    });
   });
 
   it("shows zero 30-day activity when no daily rows exist", () => {
     const trend = buildDailyMetricTrends([], 25);
 
     expect(trend.downloads.total).toBe(0);
-    expect(trend.installs.total).toBe(0);
     expect(trend.downloads.points).toHaveLength(ACTIVITY_TREND_DAYS);
-    expect(trend.installs.points).toHaveLength(ACTIVITY_TREND_DAYS);
     expect(trend.downloads.points[0]?.day).toBe(-4);
     expect(trend.downloads.points.at(-1)?.day).toBe(25);
     expect(trend.downloads.points.every((point) => point.value === 0)).toBe(true);
-    expect(trend.installs.points.every((point) => point.value === 0)).toBe(true);
   });
 });

@@ -131,20 +131,6 @@ describe("SkillHeader", () => {
   it("shows the 30-day downloads graph from activity data", () => {
     renderHeader({
       activityTrend: {
-        installs: {
-          range: "daily",
-          days: 30,
-          total: 5,
-          points: [
-            { day: 20_451, value: 1 },
-            { day: 20_452, value: 0 },
-            { day: 20_453, value: 2 },
-            { day: 20_454, value: 1 },
-            { day: 20_455, value: 0 },
-            { day: 20_456, value: 1 },
-            { day: 20_457, value: 0 },
-          ],
-        },
         downloads: {
           range: "daily",
           days: 30,
@@ -183,16 +169,6 @@ describe("SkillHeader", () => {
   it("shows the nearest daily download graph point and line marker on hover", () => {
     const { container } = renderHeader({
       activityTrend: {
-        installs: {
-          range: "daily",
-          days: 30,
-          total: 5,
-          points: [
-            { day: 20_451, value: 1 },
-            { day: 20_452, value: 0 },
-            { day: 20_453, value: 2 },
-          ],
-        },
         downloads: {
           range: "daily",
           days: 30,

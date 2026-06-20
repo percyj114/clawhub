@@ -18,7 +18,6 @@ type MetricTrend = {
 
 export type DailyMetricTrends = {
   downloads: MetricTrend;
-  installs: MetricTrend;
 };
 
 export function getActivityTrendRange(now: number) {
@@ -37,15 +36,11 @@ export function clampActivityTrendEndDay(endDayValue: number, now: number) {
   return Math.min(Math.trunc(endDayValue), toDayKey(now));
 }
 
-function buildMetricTrend(
-  rows: DailyMetricRow[],
-  endDay: number,
-  field: "downloads" | "installs",
-): MetricTrend {
+function buildDownloadTrend(rows: DailyMetricRow[], endDay: number): MetricTrend {
   const { startDay } = getActivityTrendRangeForEndDay(endDay);
   const valuesByDay = new Map<number, number>();
   for (const row of rows) {
-    valuesByDay.set(row.day, Math.max(0, row[field]));
+    valuesByDay.set(row.day, Math.max(0, row.downloads));
   }
 
   const points = Array.from({ length: ACTIVITY_TREND_DAYS }, (_, index) => {
@@ -62,7 +57,6 @@ function buildMetricTrend(
 
 export function buildDailyMetricTrends(rows: DailyMetricRow[], endDay: number): DailyMetricTrends {
   return {
-    downloads: buildMetricTrend(rows, endDay, "downloads"),
-    installs: buildMetricTrend(rows, endDay, "installs"),
+    downloads: buildDownloadTrend(rows, endDay),
   };
 }

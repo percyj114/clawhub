@@ -8,15 +8,20 @@ import {
 } from "./lib/recommendationScore";
 import {
   getActivityTrendForName,
+  pruneProcessedPackageStatEventBatchInternal,
   processPackageStatEventsInternal,
   recordPackageDownloadInternal,
   recordPackageInstallInternal,
 } from "./packages";
 
-vi.mock("@convex-dev/auth/server", () => ({
-  getAuthUserId: vi.fn(),
-  authTables: {},
-}));
+vi.mock("@convex-dev/auth/server", async () => {
+  const actual =
+    await vi.importActual<typeof import("@convex-dev/auth/server")>("@convex-dev/auth/server");
+  return {
+    ...actual,
+    getAuthUserId: vi.fn(),
+  };
+});
 
 const { getAuthUserId } = await import("@convex-dev/auth/server");
 
@@ -51,17 +56,23 @@ const processStatsHandler = (
   >
 )._handler;
 
+const pruneProcessedPackageStatEventBatchHandler = (
+  pruneProcessedPackageStatEventBatchInternal as unknown as WrappedHandler<
+    {
+      cutoffProcessedAt: number;
+      dryRun: boolean;
+      batchSize?: number;
+      confirmationToken?: string;
+    },
+    { matched: number; deleted: number; hasMore: boolean }
+  >
+)._handler;
+
 const getActivityTrendHandler = (
   getActivityTrendForName as unknown as WrappedHandler<
     { name: string; endDay: number },
     {
       downloads: {
-        range: "daily";
-        days: number;
-        total: number;
-        points: Array<{ day: number; value: number }>;
-      };
-      installs: {
         range: "daily";
         days: number;
         total: number;
@@ -419,6 +430,111 @@ describe("package stat events", () => {
     );
   });
 
+  it("caps package stat batches after adding daily stat writes", async () => {
+    const events = Array.from({ length: 100 }, (_, index) => ({
+      _id: `packageStatEvents:${index}`,
+      packageId: `packages:${index}`,
+      kind: "download",
+      occurredAt: 86_400_000,
+    }));
+    const take = vi.fn(async () => events);
+    const patch = vi.fn();
+    const runAfter = vi.fn();
+    const ctx = {
+      db: {
+        query: vi.fn((tableName: string) => {
+          if (tableName === "packageStatEvents") {
+            return {
+              withIndex: vi.fn(() => ({ take })),
+            };
+          }
+          if (tableName === "packageDailyStats") {
+            return {
+              withIndex: vi.fn(() => ({ unique: vi.fn(async () => null) })),
+            };
+          }
+          throw new Error(`Unexpected query table ${tableName}`);
+        }),
+        get: vi.fn(async (id: string) => ({
+          _id: id,
+          stats: { downloads: 0, installs: 0, stars: 0, versions: 1 },
+        })),
+        normalizeId: vi.fn(),
+        insert: vi.fn(),
+        patch,
+        replace: vi.fn(),
+        delete: vi.fn(),
+        system: {
+          get: vi.fn(),
+          query: vi.fn(),
+        },
+      },
+      scheduler: {
+        runAfter,
+      },
+    };
+
+    const result = await processStatsHandler(ctx, { batchSize: 500 });
+
+    expect(take).toHaveBeenCalledWith(100);
+    expect(result).toEqual({ processed: 100, packagesUpdated: 100 });
+    expect(runAfter).toHaveBeenCalledWith(0, expect.anything(), { batchSize: 100 });
+    expect(patch).toHaveBeenCalledTimes(200);
+  });
+
+  it("prunes processed package stat events older than the cutoff", async () => {
+    const staleEvents = [
+      { _id: "packageStatEvents:old-1", processedAt: 1_000 },
+      { _id: "packageStatEvents:old-2", processedAt: 2_000 },
+    ];
+    const take = vi.fn(async () => staleEvents);
+    const deleteDoc = vi.fn();
+    const gt = vi.fn(() => ({ lt: vi.fn(() => "processed-range") }));
+    const ctx = {
+      db: {
+        query: vi.fn((tableName: string) => {
+          expect(tableName).toBe("packageStatEvents");
+          return {
+            withIndex: vi.fn((indexName: string, builder: (q: { gt: typeof gt }) => unknown) => {
+              expect(indexName).toBe("by_unprocessed");
+              expect(builder({ gt })).toBe("processed-range");
+              return { take };
+            }),
+          };
+        }),
+        delete: deleteDoc,
+        get: vi.fn(),
+        insert: vi.fn(),
+        normalizeId: vi.fn(),
+        patch: vi.fn(),
+        replace: vi.fn(),
+        system: {
+          get: vi.fn(),
+          query: vi.fn(),
+        },
+      },
+    };
+
+    const result = await pruneProcessedPackageStatEventBatchHandler(ctx, {
+      cutoffProcessedAt: 3_000,
+      dryRun: false,
+      batchSize: 2,
+      confirmationToken: "PRUNE_PROCESSED_PACKAGE_STAT_EVENTS",
+    });
+
+    expect(gt).toHaveBeenCalledWith("processedAt", 0);
+    expect(take).toHaveBeenCalledWith(2);
+    expect(deleteDoc).toHaveBeenCalledWith("packageStatEvents:old-1");
+    expect(deleteDoc).toHaveBeenCalledWith("packageStatEvents:old-2");
+    expect(result).toEqual({
+      cutoffProcessedAt: 3_000,
+      dryRun: false,
+      matched: 2,
+      deleted: 2,
+      hasMore: true,
+    });
+  });
+
   it("builds package activity from 30 daily package stat rows", async () => {
     const now = Date.UTC(2026, 6, 18) + 1;
     const { startDay, endDay } = getActivityTrendRange(now);
@@ -498,13 +614,7 @@ describe("package stat events", () => {
         day: endDay - 1,
         value: 2,
       });
-      expect(trend?.installs.range).toBe("daily");
-      expect(trend?.installs.days).toBe(ACTIVITY_TREND_DAYS);
-      expect(trend?.installs.total).toBe(4);
-      expect(trend?.installs.points.find((point) => point.day === endDay - 1)).toEqual({
-        day: endDay - 1,
-        value: 1,
-      });
+      expect(trend && "installs" in trend).toBe(false);
     } finally {
       vi.useRealTimers();
     }
@@ -781,7 +891,6 @@ describe("package stat events", () => {
       expect(getAuthUserId).toHaveBeenCalled();
       expect(get).toHaveBeenCalledWith("users:owner");
       expect(trend?.downloads.total).toBe(2);
-      expect(trend?.installs.total).toBe(1);
     } finally {
       vi.useRealTimers();
     }
