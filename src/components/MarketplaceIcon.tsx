@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties } from "react";
-import { getPluginCategoryBySlug, getSkillIconCategoryForSkill } from "../lib/categories";
+import { getSkillIconCategoryForSkill } from "../lib/categories";
 import { getCategoryIconComponent, UNRESOLVED_SKILL_CATEGORY_ICON } from "../lib/categoryIcons";
 import { MARKETPLACE_KIND_ICONS, type MarketplaceIconKind } from "../lib/marketplaceIcons";
 
@@ -7,7 +7,6 @@ type MarketplaceIconProps = {
   kind: MarketplaceIconKind;
   label: string;
   imageUrl?: string | null;
-  categorySlug?: string | null;
   /** Legacy skill custom-icon value. Ignored for rendering. */
   icon?: string | null;
   skill?: {
@@ -39,7 +38,6 @@ export function MarketplaceIcon({
   kind,
   label,
   imageUrl,
-  categorySlug,
   skill,
   size = "sm",
 }: MarketplaceIconProps) {
@@ -48,14 +46,11 @@ export function MarketplaceIcon({
     setFailedImageUrl(null);
   }, [imageUrl]);
 
-  const skillCategory = kind === "skill" && skill ? getSkillIconCategoryForSkill(skill) : null;
-  const pluginCategory = kind === "plugin" ? getPluginCategoryBySlug(categorySlug) : null;
+  const category = kind === "skill" && skill ? getSkillIconCategoryForSkill(skill) : null;
   const Icon =
     kind === "skill" && skill
-      ? (getCategoryIconComponent(skillCategory?.icon) ?? UNRESOLVED_SKILL_CATEGORY_ICON)
-      : kind === "plugin" && pluginCategory
-        ? (getCategoryIconComponent(pluginCategory.icon) ?? MARKETPLACE_KIND_ICONS.plugin)
-        : MARKETPLACE_KIND_ICONS[kind];
+      ? (getCategoryIconComponent(category?.icon) ?? UNRESOLVED_SKILL_CATEGORY_ICON)
+      : MARKETPLACE_KIND_ICONS[kind];
   const tone = hashTone(label);
   const visibleImageUrl = imageUrl && failedImageUrl !== imageUrl ? imageUrl : null;
 

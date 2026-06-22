@@ -13,10 +13,6 @@ export type UnifiedSkillResult = {
     slug: string;
     displayName: string;
     summary?: string | null;
-    categories?: string[] | null;
-    inferredCategories?: string[] | null;
-    latestVersionId?: string | null;
-    inferredFromVersionId?: string | null;
     ownerUserId: string;
     ownerPublisherId?: string | null;
     stats: { downloads: number; stars: number; versions?: number };
