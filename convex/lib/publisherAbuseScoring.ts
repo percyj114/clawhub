@@ -1,4 +1,4 @@
-export const PUBLISHER_ABUSE_MODEL_VERSION = "publisher-abuse-pressure.v2";
+export const PUBLISHER_ABUSE_MODEL_VERSION = "publisher-abuse-pressure.v4";
 export const PUBLISHER_TEMPORAL_ABUSE_MODEL_VERSION = "publisher-abuse-temporal.v1";
 
 export type PublisherAbuseLabel = "pass" | "review" | "potential_ban_candidate";
@@ -10,6 +10,8 @@ export type PublisherAbuseModelConfig = {
   starsPerSkillPivot: number;
   downloadsPerSkillPivot: number;
   outputElasticity: number;
+  engagementElasticity?: number;
+  minPublishedSkillsForAggregateLabel?: number;
   installTrustElasticity: number;
   starTrustElasticity: number;
   downloadDemandElasticity: number;
@@ -99,15 +101,17 @@ export type TemporalAbuseCohortBenchmark = {
 
 export const DEFAULT_PUBLISHER_ABUSE_MODEL_CONFIG = {
   modelVersion: PUBLISHER_ABUSE_MODEL_VERSION,
-  skillPivot: 100,
+  skillPivot: 200,
   // Two installs per skill is only a rough review calibration point. It can be
   // the author plus one friend, so it is not proof of legitimacy or abuse.
   installsPerSkillPivot: 2,
   starsPerSkillPivot: 0.05,
   downloadsPerSkillPivot: 250,
-  outputElasticity: 1.5,
-  installTrustElasticity: 0.8,
-  starTrustElasticity: 1,
+  outputElasticity: 1.2,
+  engagementElasticity: 0.25,
+  minPublishedSkillsForAggregateLabel: 200,
+  installTrustElasticity: 1,
+  starTrustElasticity: 1.1,
   downloadDemandElasticity: 0.2,
   minInstallsPerSkill: 0.05,
   minStarsPerSkill: 0.02,
@@ -137,6 +141,30 @@ export function labelForPublisherAbuseZScore(
   if (zScore >= config.potentialBanCandidateZThreshold) return "potential_ban_candidate";
   if (zScore >= config.reviewZThreshold) return "review";
   return "pass";
+}
+
+export function labelForPublisherAbuseScore(
+  score: Pick<PublisherAbuseRawScore, "publishedSkills">,
+  zScore: number,
+  config: PublisherAbuseModelConfig = DEFAULT_PUBLISHER_ABUSE_MODEL_CONFIG,
+): PublisherAbuseLabel {
+  if (!isPublisherAbuseCheckEligible(score, config)) return "pass";
+  if (zScore < config.reviewZThreshold) return "pass";
+  if (
+    zScore >= config.potentialBanCandidateZThreshold &&
+    isPublisherAbuseCheckEligible(score, config)
+  ) {
+    return "potential_ban_candidate";
+  }
+  return "review";
+}
+
+export function isPublisherAbuseCheckEligible(
+  score: Pick<PublisherAbuseRawScore, "publishedSkills">,
+  config: PublisherAbuseModelConfig = DEFAULT_PUBLISHER_ABUSE_MODEL_CONFIG,
+) {
+  const minPublishedSkills = Math.max(1, config.minPublishedSkillsForAggregateLabel ?? 1);
+  return score.publishedSkills >= minPublishedSkills;
 }
 
 export function computeTemporalPublisherAbuseZScore(input: {
@@ -169,9 +197,9 @@ export function computePublisherAbuseRawScore(
   const pressure = computePublisherAbusePressure(
     {
       publishedSkills,
-      installsPerSkill,
-      starsPerSkill,
-      downloadsPerSkill,
+      totalInstalls,
+      totalStars,
+      totalDownloads,
     },
     config,
   );
@@ -200,34 +228,51 @@ export function computePublisherAbuseRawScore(
 export function computePublisherAbusePressure(
   input: {
     publishedSkills: number;
-    installsPerSkill: number;
-    starsPerSkill: number;
-    downloadsPerSkill: number;
+    totalInstalls: number;
+    totalStars: number;
+    totalDownloads: number;
   },
   config: PublisherAbuseModelConfig = DEFAULT_PUBLISHER_ABUSE_MODEL_CONFIG,
 ): number {
   if (input.publishedSkills <= 0) return 0;
   const skills = Math.max(1, input.publishedSkills);
   const skillPivot = Math.max(1, config.skillPivot);
-  const installsPerSkill = Math.max(config.minInstallsPerSkill, input.installsPerSkill);
   const installsPerSkillPivot = Math.max(config.minInstallsPerSkill, config.installsPerSkillPivot);
-  const starsPerSkill = Math.max(config.minStarsPerSkill, input.starsPerSkill);
   const starsPerSkillPivot = Math.max(config.minStarsPerSkill, config.starsPerSkillPivot);
-  const downloadsPerSkill = Math.max(config.minDownloadsPerSkill, input.downloadsPerSkill);
   const downloadsPerSkillPivot = Math.max(
     config.minDownloadsPerSkill,
     config.downloadsPerSkillPivot,
   );
 
   const skillOutputRatio = skills / skillPivot;
-  const catalogPressure =
-    skillOutputRatio <= 1 ? skillOutputRatio : skillOutputRatio ** config.outputElasticity;
+  const usesWholePublisherEngagement = typeof config.engagementElasticity === "number";
+  const catalogPressure = usesWholePublisherEngagement
+    ? skillOutputRatio ** config.outputElasticity
+    : skillOutputRatio <= 1
+      ? skillOutputRatio
+      : skillOutputRatio ** config.outputElasticity;
+  const engagementScale = skillOutputRatio ** (config.engagementElasticity ?? 1);
+  const installBenchmark = installsPerSkillPivot * skillPivot * engagementScale;
+  const starBenchmark = starsPerSkillPivot * skillPivot * engagementScale;
+  const downloadBenchmark = downloadsPerSkillPivot * skillPivot * engagementScale;
+  const totalInstalls = Math.max(
+    config.minInstallsPerSkill * skillPivot * engagementScale,
+    input.totalInstalls,
+  );
+  const totalStars = Math.max(
+    config.minStarsPerSkill * skillPivot * engagementScale,
+    input.totalStars,
+  );
+  const totalDownloads = Math.max(
+    config.minDownloadsPerSkill * skillPivot * engagementScale,
+    input.totalDownloads,
+  );
 
   return (
     catalogPressure *
-    (installsPerSkillPivot / installsPerSkill) ** config.installTrustElasticity *
-    (starsPerSkillPivot / starsPerSkill) ** config.starTrustElasticity *
-    (downloadsPerSkillPivot / downloadsPerSkill) ** config.downloadDemandElasticity
+    (installBenchmark / totalInstalls) ** config.installTrustElasticity *
+    (starBenchmark / totalStars) ** config.starTrustElasticity *
+    (downloadBenchmark / totalDownloads) ** config.downloadDemandElasticity
   );
 }
 
@@ -236,20 +281,23 @@ export function scorePublisherAbuseCohort(
   config: PublisherAbuseModelConfig = DEFAULT_PUBLISHER_ABUSE_MODEL_CONFIG,
 ): PublisherAbuseScore[] {
   const rawScores = inputs.map((input) => computePublisherAbuseRawScore(input, config));
-  const mean = average(rawScores.map((score) => score.logPressure));
+  const scoredRawScores = rawScores.filter((score) => score.publishedSkills > 0);
+  const mean = average(scoredRawScores.map((score) => score.logPressure));
   const stdDev = standardDeviation(
-    rawScores.map((score) => score.logPressure),
+    scoredRawScores.map((score) => score.logPressure),
     mean,
   );
   const safeStdDev = stdDev === 0 ? 1 : stdDev;
 
   return rawScores
     .map((score) => {
-      const zScore = (score.logPressure - mean) / safeStdDev;
+      const zScore = isPublisherAbuseCheckEligible(score, config)
+        ? (score.logPressure - mean) / safeStdDev
+        : 0;
       return {
         ...score,
         zScore,
-        label: labelForPublisherAbuseZScore(zScore, config),
+        label: labelForPublisherAbuseScore(score, zScore, config),
         rank: 0,
       };
     })
@@ -453,6 +501,7 @@ function reasonCodesForPublisher(input: {
 }) {
   const codes: string[] = [];
   if (input.publishedSkills <= 0) return codes;
+  if (!isPublisherAbuseCheckEligible(input, input.config)) return codes;
   if (input.publishedSkills >= input.config.skillPivot) codes.push("high_catalog_volume");
   if (input.installsPerSkill < input.config.installsPerSkillPivot) {
     codes.push("low_installs_per_skill");

@@ -18,11 +18,12 @@ import {
   computeCurrentSkillTemporalAbuseScore,
   computeHistoricalSkillTemporalAbuseScore,
   computePublisherAbuseRawScore,
+  labelForPublisherAbuseScore,
   computeTemporalAbuseCohortBenchmark,
   computeTemporalPublisherAbuseZScore,
   DEFAULT_PUBLISHER_ABUSE_MODEL_CONFIG,
+  isPublisherAbuseCheckEligible,
   labelForTemporalPublisherAbuse,
-  labelForPublisherAbuseZScore,
   PUBLISHER_TEMPORAL_ABUSE_MODEL_VERSION,
   summarizePublisherAbuseLogPressure,
   type PublisherAbuseInput,
@@ -40,10 +41,10 @@ const MAX_MAX_PAGES = 50;
 const ACTION_CONTINUATION_DELAY_MS = 60_000;
 const MAX_ACTIVE_SKILL_FALLBACK_SCAN = 500;
 const MAX_ACTIVE_SKILL_FALLBACK_SCANS_PER_PAGE = 20;
+const MAX_OWNER_NOMINATION_VERSION_SCAN = 20;
 const MAX_REVIEW_DASHBOARD_SCAN_MULTIPLIER = 3;
 const MAX_REVIEW_DASHBOARD_SCORE_SCAN_MULTIPLIER = 32;
 const MAX_REVIEW_DASHBOARD_SCORE_SCAN = 2000;
-const MAX_BAN_REASON_LENGTH = 500;
 const DEFAULT_TEMPORAL_BATCH_SIZE = 50;
 const MAX_TEMPORAL_BATCH_SIZE = 100;
 const DEFAULT_TEMPORAL_CANDIDATE_LIMIT = 1000;
@@ -300,55 +301,9 @@ export const banPublisherAbuseOwner = mutation({
     }
     await requirePublisherAbuseNominationNotExcluded(ctx, nomination);
 
-    const reason = normalizeBanReason(args.reason);
-    await ctx.runMutation(internal.users.banUserInternal, {
-      actorUserId: user._id,
-      targetUserId: nomination.ownerUserId,
-      reason,
-    });
-
-    const now = Date.now();
-    await setPublisherAbuseReviewStatusWithActor(ctx, {
-      nomination,
-      status: "banned",
-      notes: reason,
-      actorUserId: user._id,
-      now,
-    });
-
-    return { ok: true, status: "banned" as const };
+    throw new Error("Publisher abuse bans are disabled while the scoring model is flag-only.");
   },
 });
-
-async function setPublisherAbuseReviewStatusWithActor(
-  ctx: Pick<MutationCtx, "db">,
-  args: {
-    nomination: Doc<"publisherAbuseReviewNominations">;
-    status: TriageStatus;
-    notes: string | undefined;
-    actorUserId: Id<"users">;
-    now: number;
-  },
-) {
-  await ctx.db.patch(args.nomination._id, {
-    status: args.status,
-    reviewedByUserId: args.status === "pending" ? undefined : args.actorUserId,
-    reviewedAt: args.status === "pending" ? undefined : args.now,
-    notes: args.notes,
-    updatedAt: args.now,
-  });
-  await ctx.db.insert("publisherAbuseReviewEvents", {
-    nominationId: args.nomination._id,
-    ownerKey: args.nomination.ownerKey,
-    actorUserId: args.actorUserId,
-    scoreId: args.nomination.latestScoreId,
-    eventType: "triage_status_changed",
-    previousStatus: args.nomination.status,
-    nextStatus: args.status,
-    notes: args.notes,
-    createdAt: args.now,
-  });
-}
 
 function requireFreshPublisherAbuseReviewNomination(
   nomination: Doc<"publisherAbuseReviewNominations">,
@@ -643,8 +598,10 @@ export async function finalizePublisherAbuseScoresPageInternalHandler(
       finalized += 1;
       continue;
     }
-    const zScore = (score.logPressure - meanLogPressure) / safeStdDev;
-    const label = labelForPublisherAbuseZScore(zScore, modelConfig);
+    const zScore = isPublisherAbuseCheckEligible(score, modelConfig)
+      ? (score.logPressure - meanLogPressure) / safeStdDev
+      : 0;
+    const label = labelForPublisherAbuseScore(score, zScore, modelConfig);
     const rank = rankedScoresSoFar + ranked + 1;
     labelCounts[label] += 1;
     ranked += 1;
@@ -1548,6 +1505,7 @@ async function upsertPublisherAbuseReviewNomination(
       nextStatus: shouldReopen ? "pending" : undefined,
       createdAt: args.now,
     });
+    await markStaleAggregatePublisherAbuseReviewNominationsAsPass(ctx, args);
     return existing._id;
   }
 
@@ -1575,7 +1533,36 @@ async function upsertPublisherAbuseReviewNomination(
     nextLabel: args.score.label,
     createdAt: args.now,
   });
+  await markStaleAggregatePublisherAbuseReviewNominationsAsPass(ctx, args);
   return nominationId;
+}
+
+async function markStaleAggregatePublisherAbuseReviewNominationsAsPass(
+  ctx: Pick<MutationCtx, "db">,
+  args: {
+    score: ScoreDoc;
+    run: ScoreRun;
+    now: number;
+  },
+) {
+  if (!isAggregatePublisherAbuseModelVersion(args.score.modelVersion)) return null;
+
+  const existingNominations = await ctx.db
+    .query("publisherAbuseReviewNominations")
+    .withIndex("by_owner_key_and_model_version", (q) => q.eq("ownerKey", args.score.ownerKey))
+    .take(MAX_OWNER_NOMINATION_VERSION_SCAN);
+
+  let updatedNominationId: Id<"publisherAbuseReviewNominations"> | null = null;
+  for (const existing of existingNominations) {
+    if (
+      !shouldClearStaleAggregatePublisherAbuseReviewNomination(existing, args.score.modelVersion)
+    ) {
+      continue;
+    }
+    await markPublisherAbuseReviewNominationAsPass(ctx, { ...args, existing });
+    updatedNominationId ??= existing._id;
+  }
+  return updatedNominationId;
 }
 
 async function updateExistingPublisherAbuseReviewNominationForPass(
@@ -1586,15 +1573,74 @@ async function updateExistingPublisherAbuseReviewNominationForPass(
     now: number;
   },
 ) {
-  const existing = await ctx.db
+  if (!isAggregatePublisherAbuseModelVersion(args.score.modelVersion)) {
+    const existing = await ctx.db
+      .query("publisherAbuseReviewNominations")
+      .withIndex("by_owner_key_and_model_version", (q) =>
+        q.eq("ownerKey", args.score.ownerKey).eq("modelVersion", args.score.modelVersion),
+      )
+      .first();
+    if (!existing) return null;
+    await markPublisherAbuseReviewNominationAsPass(ctx, { ...args, existing });
+    return existing._id;
+  }
+
+  const existingNominations = await ctx.db
     .query("publisherAbuseReviewNominations")
-    .withIndex("by_owner_key_and_model_version", (q) =>
-      q.eq("ownerKey", args.score.ownerKey).eq("modelVersion", args.score.modelVersion),
-    )
-    .first();
+    .withIndex("by_owner_key_and_model_version", (q) => q.eq("ownerKey", args.score.ownerKey))
+    .take(MAX_OWNER_NOMINATION_VERSION_SCAN);
 
-  if (!existing) return null;
+  let updatedNominationId: Id<"publisherAbuseReviewNominations"> | null = null;
+  for (const existing of existingNominations) {
+    if (
+      existing.modelVersion !== args.score.modelVersion &&
+      !shouldClearStaleAggregatePublisherAbuseReviewNomination(existing, args.score.modelVersion)
+    ) {
+      continue;
+    }
+    await markPublisherAbuseReviewNominationAsPass(ctx, { ...args, existing });
+    updatedNominationId ??= existing._id;
+  }
+  return updatedNominationId;
+}
 
+function shouldClearStaleAggregatePublisherAbuseReviewNomination(
+  nomination: Doc<"publisherAbuseReviewNominations">,
+  currentModelVersion: string,
+) {
+  const nominationVersion = aggregatePublisherAbuseModelVersionNumber(nomination.modelVersion);
+  const currentVersion = aggregatePublisherAbuseModelVersionNumber(currentModelVersion);
+  return (
+    nominationVersion !== null &&
+    currentVersion !== null &&
+    nominationVersion < currentVersion &&
+    nomination.status === "pending" &&
+    nomination.label !== "pass"
+  );
+}
+
+function isAggregatePublisherAbuseModelVersion(modelVersion: string) {
+  return modelVersion.startsWith("publisher-abuse-pressure.");
+}
+
+function aggregatePublisherAbuseModelVersionNumber(modelVersion: string) {
+  const match = /^publisher-abuse-pressure\.v(\d+)$/.exec(modelVersion);
+  const versionText = match?.[1];
+  if (!versionText) return null;
+  const version = Number(versionText);
+  return Number.isSafeInteger(version) ? version : null;
+}
+
+async function markPublisherAbuseReviewNominationAsPass(
+  ctx: Pick<MutationCtx, "db">,
+  args: {
+    existing: Doc<"publisherAbuseReviewNominations">;
+    score: ScoreDoc;
+    run: ScoreRun;
+    now: number;
+  },
+) {
+  const { existing } = args;
   await ctx.db.patch(existing._id, {
     latestScoreId: args.score._id,
     label: "pass",
@@ -1904,12 +1950,6 @@ function summarizeUserForAbuseReview(user: Doc<"users">) {
     deactivatedAt: user.deactivatedAt,
     banReason: user.banReason,
   };
-}
-
-function normalizeBanReason(rawReason?: string) {
-  const reason = rawReason?.trim();
-  if (!reason) return undefined;
-  return reason.slice(0, MAX_BAN_REASON_LENGTH);
 }
 
 function publisherAbuseLabelSeverity(label: PublisherAbuseLabel) {

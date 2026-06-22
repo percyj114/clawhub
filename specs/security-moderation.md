@@ -45,10 +45,20 @@ See also: [acceptable-usage.md](./acceptable-usage.md) for the marketplace polic
 - Publisher abuse scoring is a staff review signal for bulk-publishing abuse.
   It must not directly ban users; staff action goes through the publisher abuse
   nomination review path.
-- Catalog volume pressure is linear up to the 100-skill pivot and superlinear
-  above it. Doubling an already-bulk catalog should raise review pressure
-  meaningfully more than 2x while still allowing legitimate high-engagement
-  publishers to stay below review thresholds.
+- Publisher abuse enforcement is flag-only during the current rollout. The
+  scorer can open review and high-risk nominations, but the publisher-abuse
+  action path must not ban users until enforcement is explicitly re-enabled.
+- Aggregate publisher spam-abuse labels start at the 200-skill pivot. Below
+  that pivot, publishers can contribute to the population baseline, but they
+  cannot receive aggregate spam reason codes or be nominated by this score path.
+- At or above the pivot, catalog volume raises pressure multiplicatively while
+  installs, stars, and downloads lower it. Legitimate high-adoption publishers
+  with large catalogs should stay below review thresholds.
+- Engagement expectations scale sublinearly with catalog size. The scorer must
+  not require every extra skill to have the same per-skill installs/stars as the
+  first 200 skills; a few successful skills can lower pressure for the broader
+  catalog. Catalog size still raises pressure, so large low-adoption catalogs
+  remain eligible for review or ban-candidate labels.
 - Official publishers are excluded from publisher abuse scoring and
   enforcement. An excluded publisher must not contribute to score-run cohort
   statistics, receive a score label/rank, open or update a nomination, appear in
