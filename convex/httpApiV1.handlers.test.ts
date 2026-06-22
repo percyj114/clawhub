@@ -1780,18 +1780,16 @@ describe("httpApiV1 handlers", () => {
   });
 
   it("search rate limits", async () => {
-    const runMutation = vi.fn().mockResolvedValue(blockedRate());
     const response = await __handlers.searchSkillsV1Handler(
-      makeCtx({ runAction: vi.fn(), runMutation }),
+      makeCtx({ runAction: vi.fn(), rateLimitStatus: () => blockedRate() }),
       new Request("https://example.com/api/v1/search?q=test"),
     );
     expect(response.status).toBe(429);
   });
 
   it("429 Retry-After is a relative delay, not an absolute epoch", async () => {
-    const runMutation = vi.fn().mockResolvedValue(blockedRate());
     const response = await __handlers.searchSkillsV1Handler(
-      makeCtx({ runAction: vi.fn(), runMutation }),
+      makeCtx({ runAction: vi.fn(), rateLimitStatus: () => blockedRate() }),
       new Request("https://example.com/api/v1/search?q=test"),
     );
     expect(response.status).toBe(429);
@@ -12267,6 +12265,7 @@ describe("httpApiV1 handlers", () => {
   });
 
   it("npm mirror tarball downloads record package installs and download metrics", async () => {
+    vi.stubEnv("TRUST_FORWARDED_IPS", "true");
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
       if ("name" in args && !("paginationOpts" in args)) {
         return {
@@ -12684,6 +12683,7 @@ describe("httpApiV1 handlers", () => {
   });
 
   it("package download uses a package/ root without registry metadata", async () => {
+    vi.stubEnv("TRUST_FORWARDED_IPS", "true");
     const runMutation = vi.fn().mockResolvedValue(okRate());
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
       if ("name" in args) {
@@ -12838,6 +12838,7 @@ describe("httpApiV1 handlers", () => {
   });
 
   it("package downloads succeed and record download metrics", async () => {
+    vi.stubEnv("TRUST_FORWARDED_IPS", "true");
     const runMutation = vi.fn().mockResolvedValue(okRate());
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
       if ("name" in args) {

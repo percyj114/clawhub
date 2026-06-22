@@ -44,7 +44,10 @@ function makeRateLimitCtx(plan: MockRateLimitPlan) {
     const key = String(args.key);
     const source = key.startsWith("user:") ? plan.user : plan.ip;
     if (!source) throw new Error(`Missing rate limit source for ${key}`);
-    return { allowed: source.allowed, remaining: source.remaining };
+    return {
+      allowed: source.allowed,
+      remaining: Math.max(0, source.remaining - (source.allowed ? 1 : 0)),
+    };
   });
 
   return {
@@ -86,12 +89,23 @@ describe("getClientIp", () => {
     expect(getClientIp(request)).toBeNull();
   });
 
-  it("returns first ip from cf-connecting-ip", () => {
+  it("ignores cf-connecting-ip unless client ip headers are explicitly trusted", () => {
     const request = new Request("https://example.com", {
       headers: {
         "cf-connecting-ip": "203.0.113.1, 198.51.100.2",
       },
     });
+    delete process.env.TRUST_FORWARDED_IPS;
+    expect(getClientIp(request)).toBeNull();
+  });
+
+  it("returns first ip from cf-connecting-ip when trusted mode is enabled", () => {
+    const request = new Request("https://example.com", {
+      headers: {
+        "cf-connecting-ip": "203.0.113.1, 198.51.100.2",
+      },
+    });
+    process.env.TRUST_FORWARDED_IPS = "true";
     expect(getClientIp(request)).toBe("203.0.113.1");
   });
 
@@ -142,6 +156,8 @@ describe("RATE_LIMITS", () => {
 describe("applyRateLimit headers", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
   });
 
   it("returns delay-seconds Retry-After on 429 (not epoch)", async () => {
@@ -201,8 +217,74 @@ describe("applyRateLimit headers", () => {
     expect(headers.get("Retry-After")).toBeNull();
   });
 
-  it("converts shard write conflicts into a rate-limit response", async () => {
-    vi.spyOn(Date, "now").mockReturnValue(2_500_000);
+  it("retries counter write conflicts before returning headers", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(2_400_000);
+    const runMutation = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new Error(
+          'Document in table "rateLimitCounters" changed while this mutation was being run',
+        ),
+      )
+      .mockResolvedValueOnce({
+        allowed: true,
+        remaining: 18,
+      });
+    const ctx = {
+      runQuery: vi.fn().mockResolvedValue({
+        allowed: true,
+        remaining: 19,
+        limit: 20,
+        resetAt: 2_430_000,
+      }),
+      runMutation,
+    } as unknown as Parameters<typeof applyRateLimit>[0];
+    const request = new Request("https://example.com", {
+      headers: { "cf-connecting-ip": "203.0.113.1" },
+    });
+
+    const result = await applyRateLimit(ctx, request, "download");
+
+    expect(result.ok).toBe(true);
+    expect(runMutation).toHaveBeenCalledTimes(2);
+    if (!result.ok) return;
+    expect(new Headers(result.headers).get("X-RateLimit-Remaining")).toBe("18");
+  });
+
+  it("retries another active shard when one partition is full", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(2_450_000);
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const runMutation = vi.fn(async (_fn: unknown, args: Record<string, unknown>) => {
+      if (args.shard === 0) return { allowed: false, remaining: 0, shardExhausted: true };
+      if (args.shard === 1) return { allowed: true, remaining: 18 };
+      throw new Error(`Unexpected shard ${String(args.shard)}`);
+    });
+    const ctx = {
+      runQuery: vi.fn().mockResolvedValue({
+        allowed: true,
+        remaining: 19,
+        limit: 20,
+        resetAt: 2_480_000,
+      }),
+      runMutation,
+    } as unknown as Parameters<typeof applyRateLimit>[0];
+    const request = new Request("https://example.com", {
+      headers: { "cf-connecting-ip": "203.0.113.1" },
+    });
+
+    const result = await applyRateLimit(ctx, request, "download");
+
+    expect(result.ok).toBe(true);
+    expect(
+      runMutation.mock.calls.map(([, args]) => (args as Record<string, unknown>).shard),
+    ).toEqual([0, 1]);
+    if (!result.ok) return;
+    expect(new Headers(result.headers).get("X-RateLimit-Remaining")).toBe("18");
+  });
+
+  it("returns retryable unavailable response for persistent counter write conflicts", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(2_500_000);
     const ctx = {
       runQuery: vi.fn().mockResolvedValue({
         allowed: true,
@@ -222,12 +304,15 @@ describe("applyRateLimit headers", () => {
       headers: { "cf-connecting-ip": "203.0.113.1" },
     });
 
-    const result = await applyRateLimit(ctx, request, "download");
+    const resultPromise = applyRateLimit(ctx, request, "download");
+    await vi.runAllTimersAsync();
+    const result = await resultPromise;
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.response.status).toBe(429);
-    expect(result.response.headers.get("Retry-After")).toBe("30");
+    expect(result.response.status).toBe(503);
+    expect(result.response.headers.get("Retry-After")).toBe("1");
+    await expect(result.response.text()).resolves.toBe("Rate limit temporarily unavailable");
   });
 
   it("selects one of 16 active counter shards", async () => {
@@ -391,7 +476,7 @@ describe("applyRateLimit headers", () => {
     expect(result.response.headers.get("Retry-After")).toBe("30");
   });
 
-  it("scopes anonymous download fallback buckets when client ip is missing", async () => {
+  it("uses one anonymous download fallback bucket when client ip is missing", async () => {
     vi.spyOn(Date, "now").mockReturnValue(4_500_000);
     const ctx = makeRateLimitCtx({
       ip: {
@@ -401,21 +486,27 @@ describe("applyRateLimit headers", () => {
         resetAt: 4_530_000,
       },
     });
-    const request = new Request(
-      "https://example.com/api/v1/packages/tickflow-assist/download?version=0.2.10",
+
+    await applyRateLimit(
+      ctx,
+      new Request("https://example.com/api/v1/download?slug=first&version=1.0.0"),
+      "download",
+    );
+    await applyRateLimit(
+      ctx,
+      new Request("https://example.com/api/v1/packages/second-plugin/download?version=0.2.0"),
+      "download",
     );
 
-    const result = await applyRateLimit(ctx, request, "download");
-
-    expect(result.ok).toBe(true);
     const runMutation = (ctx as unknown as { runMutation: ReturnType<typeof vi.fn> }).runMutation;
-    const consumedKeys = runMutation.mock.calls.map(([, args]) => String(args.key));
-    expect(consumedKeys).toContain(
-      "ip:unknown:download:/api/v1/packages/tickflow-assist/download?version=0.2.10",
-    );
+    expect(runMutation.mock.calls.map(([, args]) => String(args.key))).toEqual([
+      "ip:unknown:download",
+      "ip:unknown:download",
+    ]);
   });
 
   it("scopes known-ip anonymous buckets by rate limit kind", async () => {
+    vi.stubEnv("TRUST_FORWARDED_IPS", "true");
     vi.spyOn(Date, "now").mockReturnValue(4_550_000);
     const readCtx = makeRateLimitCtx({
       ip: {
@@ -484,7 +575,7 @@ describe("applyRateLimit headers", () => {
     );
   });
 
-  it("scopes non-download missing-ip anonymous requests by rate limit kind", async () => {
+  it("uses one anonymous read fallback bucket when client ip is missing", async () => {
     vi.spyOn(Date, "now").mockReturnValue(4_600_000);
     const ctx = makeRateLimitCtx({
       ip: {
@@ -494,14 +585,23 @@ describe("applyRateLimit headers", () => {
         resetAt: 4_630_000,
       },
     });
-    const request = new Request("https://example.com/api/v1/search?q=demo");
 
-    const result = await applyRateLimit(ctx, request, "read");
+    await applyRateLimit(
+      ctx,
+      new Request("https://example.com/api/v1/search?q=demo"),
+      "read",
+    );
+    await applyRateLimit(
+      ctx,
+      new Request("https://example.com/api/v1/packages/second-plugin"),
+      "read",
+    );
 
-    expect(result.ok).toBe(true);
     const runMutation = (ctx as unknown as { runMutation: ReturnType<typeof vi.fn> }).runMutation;
-    const consumedKeys = runMutation.mock.calls.map(([, args]) => String(args.key));
-    expect(consumedKeys).toContain("ip:unknown:read");
+    expect(runMutation.mock.calls.map(([, args]) => String(args.key))).toEqual([
+      "ip:unknown:read",
+      "ip:unknown:read",
+    ]);
   });
 
   it("falls back to ip enforcement when bearer token is invalid", async () => {

@@ -58,8 +58,15 @@ export const consumeRateLimitInternal = internalMutation({
     const now = Date.now();
     const windowStart = Math.floor(now / args.windowMs) * args.windowMs;
     const resetAt = windowStart + args.windowMs;
-    const requestedShard = Number.isFinite(args.shard) ? Math.floor(args.shard ?? 0) : 0;
-    const shard = Math.max(0, Math.min(RATE_LIMIT_COUNTER_SHARDS - 1, requestedShard));
+    if (args.limit <= 0) {
+      return { allowed: false, remaining: 0 };
+    }
+
+    const shard = normalizeCounterShard(args.shard, args.limit);
+    const shardCapacity = getCounterShardCapacity(args.limit, shard);
+    if (shardCapacity <= 0) {
+      return { allowed: false, remaining: 0, shardExhausted: true };
+    }
 
     const existing = await ctx.db
       .query("rateLimitCounters")
@@ -68,31 +75,54 @@ export const consumeRateLimitInternal = internalMutation({
       )
       .first();
 
+    if (existing && existing.count >= shardCapacity) {
+      return { allowed: false, remaining: 0, shardExhausted: true };
+    }
+
+    const count = existing?.count ?? 0;
     if (!existing) {
       await ctx.db.insert("rateLimitCounters", {
         key: args.key,
         windowStart,
         shard,
-        count: 1,
+        count: count + 1,
         limit: args.limit,
         updatedAt: now,
         expiresAt: resetAt + RATE_LIMIT_COUNTER_RETENTION_BUFFER_MS,
       });
-      return { allowed: true, remaining: Math.max(0, args.limit - 1) };
+      return { allowed: true, remaining: Math.max(0, args.limit - count - 1) };
     }
 
     await ctx.db.patch(existing._id, {
-      count: existing.count + 1,
+      count: count + 1,
       limit: args.limit,
       updatedAt: now,
       expiresAt: resetAt + RATE_LIMIT_COUNTER_RETENTION_BUFFER_MS,
     });
     return {
       allowed: true,
-      remaining: Math.max(0, args.limit - 1),
+      remaining: Math.max(0, args.limit - count - 1),
     };
   },
 });
+
+function normalizeCounterShard(shard: number | undefined, limit: number) {
+  const activeShards = getActiveCounterShardCount(limit);
+  const requestedShard = Number.isFinite(shard) ? Math.floor(shard ?? 0) : 0;
+  return Math.max(0, Math.min(activeShards - 1, requestedShard));
+}
+
+function getActiveCounterShardCount(limit: number) {
+  if (limit <= 0) return 1;
+  return Math.max(1, Math.min(RATE_LIMIT_COUNTER_SHARDS, Math.floor(limit)));
+}
+
+function getCounterShardCapacity(limit: number, shard: number) {
+  if (limit <= 0) return 0;
+  const base = Math.floor(limit / RATE_LIMIT_COUNTER_SHARDS);
+  const remainder = limit % RATE_LIMIT_COUNTER_SHARDS;
+  return base + (shard < remainder ? 1 : 0);
+}
 
 export const pruneRateLimitCountersInternal = internalMutation({
   args: {

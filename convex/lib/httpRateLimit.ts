@@ -18,13 +18,34 @@ type RateLimitResult = {
   remaining: number;
   limit: number;
   resetAt: number;
+  unavailable?: boolean;
 };
+
+type RateLimitConsumeResult = {
+  allowed: boolean;
+  remaining: number;
+  shardExhausted?: boolean;
+};
+
+export type ApplyRateLimitResult =
+  | { ok: true; headers: HeadersInit }
+  | { ok: false; response: Response };
+
+const RATE_LIMIT_CONSUME_RETRY_DELAYS_MS = [5, 15, 35, 75, 150, 300, 600] as const;
+const preappliedRateLimitHeaders = new WeakMap<Request, HeadersInit>();
+
+export function markRateLimitApplied(request: Request, headers: HeadersInit): void {
+  preappliedRateLimitHeaders.set(request, headers);
+}
 
 export async function applyRateLimit(
   ctx: ActionCtx,
   request: Request,
   kind: keyof typeof RATE_LIMITS,
-): Promise<{ ok: true; headers: HeadersInit } | { ok: false; response: Response }> {
+): Promise<ApplyRateLimitResult> {
+  const preappliedHeaders = preappliedRateLimitHeaders.get(request);
+  if (preappliedHeaders) return { ok: true, headers: preappliedHeaders };
+
   const auth = await getOptionalApiTokenUser(ctx, request);
   const ip = getClientIp(request) ?? "unknown";
   const ipSource = getClientIpSource(request);
@@ -40,6 +61,7 @@ export async function applyRateLimit(
       userLimit,
     );
     const headers = rateHeaders(userResult);
+    if (userResult.unavailable) return rateLimitUnavailable(headers);
     if (!userResult.allowed) {
       console.info("rate_limit_denied", {
         kind,
@@ -71,10 +93,11 @@ export async function applyRateLimit(
   // Anonymous requests remain IP-enforced.
   const ipResult = await checkRateLimit(
     ctx,
-    getAnonymousRateLimitKey(request, kind, ip),
+    getAnonymousRateLimitKey(kind, ip),
     RATE_LIMITS[kind].ip,
   );
   const headers = rateHeaders(ipResult);
+  if (ipResult.unavailable) return rateLimitUnavailable(headers);
 
   if (!ipResult.allowed) {
     console.info("rate_limit_denied", {
@@ -104,10 +127,9 @@ export async function applyRateLimit(
   return { ok: true, headers };
 }
 
-function getAnonymousRateLimitKey(request: Request, kind: keyof typeof RATE_LIMITS, ip: string) {
+function getAnonymousRateLimitKey(kind: keyof typeof RATE_LIMITS, ip: string) {
   if (ip !== "unknown") return `ip:${ip}:${kind}`;
-  if (kind !== "download") return `ip:unknown:${kind}`;
-  return `ip:unknown:download:${getDownloadRateLimitScope(request)}`;
+  return `ip:unknown:${kind}`;
 }
 
 function getAuthenticatedRateLimitKey(userId: string, kind: keyof typeof RATE_LIMITS) {
@@ -121,11 +143,11 @@ function getAuthenticatedRateLimit(
   return user.role === "admin" ? RATE_LIMITS[kind].adminKey : RATE_LIMITS[kind].key;
 }
 
-export function getClientIp(request: Request) {
+export function getClientIp(request: Request): string | null {
+  if (!shouldTrustClientIpHeaders()) return null;
+
   const cfHeader = request.headers.get("cf-connecting-ip");
   if (cfHeader) return splitFirstIp(cfHeader);
-
-  if (!shouldTrustForwardedIps()) return null;
 
   const forwarded =
     request.headers.get("x-forwarded-for") ??
@@ -136,8 +158,8 @@ export function getClientIp(request: Request) {
 }
 
 function getClientIpSource(request: Request) {
+  if (!shouldTrustClientIpHeaders()) return "none";
   if (request.headers.get("cf-connecting-ip")) return "cf-connecting-ip";
-  if (!shouldTrustForwardedIps()) return "none";
   if (request.headers.get("x-forwarded-for")) return "x-forwarded-for";
   if (request.headers.get("x-real-ip")) return "x-real-ip";
   if (request.headers.get("fly-client-ip")) return "fly-client-ip";
@@ -160,33 +182,91 @@ async function checkRateLimit(
     return status;
   }
 
-  // Step 2: Consume with a mutation only when still allowed.
-  let result: { allowed: boolean; remaining: number };
-  try {
-    result = (await ctx.runMutation(internal.rateLimits.consumeRateLimitInternal, {
-      key,
-      limit,
-      windowMs: RATE_LIMIT_WINDOW_MS,
-      shard: Math.floor(Math.random() * RATE_LIMIT_COUNTER_SHARDS),
-    })) as { allowed: boolean; remaining: number };
-  } catch (error) {
-    if (isRateLimitWriteConflict(error)) {
+  // Step 2: Consume with a mutation only when still allowed. Shard-level
+  // capacities enforce the total quota without a single hot counter document.
+  const activeShardCount = getActiveCounterShardCount(limit);
+  const triedShards = new Set<number>();
+  for (let shardAttempt = 0; shardAttempt < activeShardCount; shardAttempt += 1) {
+    let shard = Math.floor(Math.random() * activeShardCount);
+    while (triedShards.has(shard)) shard = (shard + 1) % activeShardCount;
+    triedShards.add(shard);
+
+    let result: RateLimitConsumeResult;
+    for (let conflictAttempt = 0; ; conflictAttempt += 1) {
+      try {
+        result = (await ctx.runMutation(internal.rateLimits.consumeRateLimitInternal, {
+          key,
+          limit,
+          windowMs: RATE_LIMIT_WINDOW_MS,
+          shard,
+        })) as RateLimitConsumeResult;
+        break;
+      } catch (error) {
+        if (!isRateLimitWriteConflict(error)) throw error;
+        const delayMs = RATE_LIMIT_CONSUME_RETRY_DELAYS_MS[conflictAttempt];
+        if (delayMs === undefined) {
+          return {
+            allowed: false,
+            remaining: status.remaining,
+            limit: status.limit,
+            resetAt: Date.now() + 1000,
+            unavailable: true,
+          };
+        }
+        await sleep(delayMs);
+      }
+    }
+
+    if (result.allowed) {
       return {
-        allowed: false,
-        remaining: 0,
+        allowed: true,
+        remaining: Math.max(0, status.remaining - 1),
         limit: status.limit,
         resetAt: status.resetAt,
       };
     }
-    throw error;
+    if (!result.shardExhausted) break;
   }
 
+  return await checkRateLimitStatus(ctx, key, limit);
+}
+
+function rateLimitUnavailable(headers: HeadersInit): Extract<ApplyRateLimitResult, { ok: false }> {
+  console.warn("rate_limit_unavailable", {
+    reason: "counter_write_contention",
+  });
   return {
-    allowed: result.allowed,
-    remaining: Math.max(0, status.remaining - 1),
-    limit: status.limit,
-    resetAt: status.resetAt,
+    ok: false,
+    response: new Response("Rate limit temporarily unavailable", {
+      status: 503,
+      headers: mergeHeaders(
+        {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-store",
+          "Retry-After": "1",
+        },
+        headers,
+        corsHeaders(),
+      ),
+    }),
   };
+}
+
+function sleep(delayMs: number) {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+async function checkRateLimitStatus(ctx: ActionCtx, key: string, limit: number) {
+  return (await ctx.runQuery(internal.rateLimits.getRateLimitStatusInternal, {
+    key,
+    limit,
+    windowMs: RATE_LIMIT_WINDOW_MS,
+  })) as RateLimitResult;
+}
+
+function getActiveCounterShardCount(limit: number) {
+  if (limit <= 0) return 1;
+  return Math.max(1, Math.min(RATE_LIMIT_COUNTER_SHARDS, Math.floor(limit)));
 }
 
 function rateHeaders(result: RateLimitResult): HeadersInit {
@@ -220,32 +300,10 @@ function splitFirstIp(header: string | null) {
   return trimmed || null;
 }
 
-function getDownloadRateLimitScope(request: Request) {
-  try {
-    const url = new URL(request.url);
-    const path = normalizeRateLimitKeyPart(url.pathname.replace(/\/{2,}/g, "/") || "/");
-    const params = new URLSearchParams();
-
-    for (const name of ["slug", "version", "tag"] as const) {
-      const value = url.searchParams.get(name)?.trim();
-      if (value) params.set(name, normalizeRateLimitKeyPart(value));
-    }
-
-    const query = params.toString();
-    return query ? `${path}?${query}` : path;
-  } catch {
-    return "unknown";
-  }
-}
-
-function normalizeRateLimitKeyPart(value: string) {
-  return value.slice(0, 500);
-}
-
-function shouldTrustForwardedIps() {
+function shouldTrustClientIpHeaders() {
   const value = (process.env.TRUST_FORWARDED_IPS ?? "").trim().toLowerCase();
-  // Hardening default: CF-only. Forwarded headers are trivial to spoof unless you
-  // control the trusted proxy layer.
+  // Direct Convex HTTP endpoints can be reached without ClawHub's edge. Trust
+  // client IP headers only when the deployment is explicitly behind that edge.
   if (!value) return false;
   if (value === "1" || value === "true" || value === "yes") return true;
   return false;

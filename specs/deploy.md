@@ -131,6 +131,11 @@ Ensure Convex env is set (auth + embeddings):
 - Optional fallback: `GITHUB_TOKEN` (used when GitHub App auth is unavailable,
   and for arbitrary public repository lookups such as trusted-publisher setup)
 
+Do not set `TRUST_FORWARDED_IPS=true` while the Convex `*.convex.site` HTTP
+origin remains publicly reachable. That flag makes rate limits and download
+metrics trust forwarded client IP headers, so it is only safe behind a
+header-sanitizing edge that prevents direct origin requests.
+
 ## 2) Deploy web app (Vercel)
 
 Set env vars:

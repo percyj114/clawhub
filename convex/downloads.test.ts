@@ -55,7 +55,8 @@ describe("downloads helpers", () => {
     expect(__test.getDownloadIdentityValue(request, "users_123")).toBe("user:users_123");
   });
 
-  it("uses cf-connecting-ip for anonymous identity", () => {
+  it("uses cf-connecting-ip for anonymous identity when trusted headers are enabled", () => {
+    vi.stubEnv("TRUST_FORWARDED_IPS", "true");
     const request = new Request("https://example.com", {
       headers: { "cf-connecting-ip": "1.2.3.4" },
     });
@@ -76,6 +77,7 @@ describe("downloads helpers", () => {
   });
 
   it("schedules zip download stats outside the response path", async () => {
+    vi.stubEnv("TRUST_FORWARDED_IPS", "true");
     stubZipResponse();
 
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
@@ -435,6 +437,7 @@ describe("downloads helpers", () => {
   });
 
   it("returns zip downloads when download metering is scheduled", async () => {
+    vi.stubEnv("TRUST_FORWARDED_IPS", "true");
     stubZipResponse();
 
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {

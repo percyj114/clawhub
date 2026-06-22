@@ -54,13 +54,14 @@ import {
   contentRightsV1Http,
 } from "./httpApiV1";
 import { preflightHandler } from "./httpPreflight";
+import { installRateLimitedRoutes } from "./lib/httpRouteRateLimit";
 import {
   packageInspectorArtifactHttp,
   packageInspectorClaimHttp,
   packageInspectorResultsHttp,
 } from "./packageInspectorHttp";
 
-const http = httpRouter();
+const http = installRateLimitedRoutes(httpRouter());
 
 auth.addHttpRoutes(http);
 

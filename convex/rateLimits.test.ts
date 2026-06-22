@@ -21,7 +21,7 @@ const getStatusHandler = (
 const consumeHandler = (
   consumeRateLimitInternal as unknown as WrappedHandler<
     { key: string; limit: number; windowMs: number; shard?: number },
-    { allowed: boolean; remaining: number }
+    { allowed: boolean; remaining: number; shardExhausted?: boolean }
   >
 )._handler;
 
@@ -104,7 +104,92 @@ describe("rate limit sharding", () => {
     );
   });
 
-  it("clamps out-of-range shard inputs to the active counter shard range", async () => {
+  it("patches the selected shard while it is below its partition capacity", async () => {
+    const patch = vi.fn();
+    const withIndex = vi.fn((_index, builder) => {
+      builder({
+        eq: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            eq: vi.fn(),
+          })),
+        })),
+      });
+      return { first: vi.fn(async () => ({ _id: "rateLimitCounters:2", count: 1 })) };
+    });
+    const ctx = {
+      db: {
+        query: vi.fn(() => ({ withIndex })),
+        get: vi.fn(),
+        normalizeId: vi.fn(),
+        insert: vi.fn(),
+        patch,
+        replace: vi.fn(),
+        delete: vi.fn(),
+        system: {
+          get: vi.fn(),
+          query: vi.fn(),
+        },
+      },
+    };
+
+    const result = await consumeHandler(ctx, {
+      key: "ip:test",
+      limit: 20,
+      windowMs: 60_000,
+      shard: 2,
+    });
+
+    expect(result).toEqual({ allowed: true, remaining: 18 });
+    expect(withIndex).toHaveBeenCalledWith("by_key_window_shard", expect.any(Function));
+    expect(patch).toHaveBeenCalledWith(
+      "rateLimitCounters:2",
+      expect.objectContaining({ count: 2 }),
+    );
+  });
+
+  it("denies consumption when the selected shard exhausts its partition capacity", async () => {
+    const insert = vi.fn();
+    const patch = vi.fn();
+    const withIndex = vi.fn((_index, builder) => {
+      builder({
+        eq: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            eq: vi.fn(),
+          })),
+        })),
+      });
+      return { first: vi.fn(async () => ({ _id: "rateLimitCounters:7", count: 1 })) };
+    });
+    const ctx = {
+      db: {
+        query: vi.fn(() => ({ withIndex })),
+        get: vi.fn(),
+        normalizeId: vi.fn(),
+        insert,
+        patch,
+        replace: vi.fn(),
+        delete: vi.fn(),
+        system: {
+          get: vi.fn(),
+          query: vi.fn(),
+        },
+      },
+    };
+
+    const result = await consumeHandler(ctx, {
+      key: "ip:test",
+      limit: 20,
+      windowMs: 60_000,
+      shard: 7,
+    });
+
+    expect(result).toEqual({ allowed: false, remaining: 0, shardExhausted: true });
+    expect(withIndex).toHaveBeenCalledWith("by_key_window_shard", expect.any(Function));
+    expect(insert).not.toHaveBeenCalled();
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("clamps out-of-range shard inputs to active shards for small limits", async () => {
     const insert = vi.fn();
     const withIndex = vi.fn((_index, builder) => {
       builder({
@@ -132,17 +217,19 @@ describe("rate limit sharding", () => {
       },
     };
 
-    await consumeHandler(ctx, {
+    const result = await consumeHandler(ctx, {
       key: "ip:test",
-      limit: 20,
+      limit: 10,
       windowMs: 60_000,
       shard: 999,
     });
 
+    expect(result).toEqual({ allowed: true, remaining: 9 });
     expect(insert).toHaveBeenCalledWith(
       "rateLimitCounters",
       expect.objectContaining({
-        shard: 15,
+        shard: 9,
+        count: 1,
       }),
     );
   });
