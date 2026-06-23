@@ -267,6 +267,74 @@
   --diff-scrollbar-rgb: 115, 115, 115;
 }
 
+@media (prefers-color-scheme: light) {
+  [data-theme-family="claw"][data-theme-mode="system"] {
+    color-scheme: light;
+    --bg: #f9f9f9;
+    --bg-soft: #f9f9f9;
+    --surface: #ffffff;
+    --surface-muted: #ffffff;
+    --nav-bg: #f9f9f9;
+    --ink: #0a0a0a;
+    --ink-soft: #525252;
+    --accent: #dc2626;
+    --accent-fg: #ffffff;
+    --accent-deep: #b91c1c;
+    --accent-subtle: rgba(220, 38, 38, 0.08);
+    --line: rgba(0, 0, 0, 0.08);
+    --border-ui: rgba(0, 0, 0, 0.12);
+    --border-ui-hover: rgba(0, 0, 0, 0.18);
+    --border-ui-active: rgba(220, 38, 38, 0.6);
+
+    /* Status colors — light */
+    --status-success-bg: rgba(34, 197, 94, 0.1);
+    --status-success-fg: #16a34a;
+    --status-warning-bg: rgba(245, 158, 11, 0.1);
+    --status-warning-fg: #d97706;
+    --status-error-bg: rgba(239, 68, 68, 0.1);
+    --status-error-fg: #dc2626;
+    --official-bg: rgba(37, 99, 235, 0.1);
+    --official-fg: #2563eb;
+    --official-border: rgba(37, 99, 235, 0.26);
+
+    /* Form controls — light */
+    --input-border: rgba(0, 0, 0, 0.12);
+    --input-bg: #ffffff;
+    --input-placeholder: rgba(82, 82, 82, 0.6);
+    --input-focus-border: rgba(220, 38, 38, 0.5);
+    --input-focus-ring: rgba(220, 38, 38, 0.15);
+    --label-fg: rgba(10, 10, 10, 0.8);
+
+    /* Interactive states — light */
+    --hover-bg: rgba(0, 0, 0, 0.03);
+    --active-bg: rgba(220, 38, 38, 0.08);
+
+    /* Overlay — light */
+    --overlay-bg: rgba(250, 246, 241, 0.75);
+
+    /* Shadows — light */
+    --shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
+    --shadow-dialog: 0 24px 48px -12px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 0, 0, 0.05);
+    --shadow-hover: 0 8px 24px -4px rgba(0, 0, 0, 0.1);
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04);
+
+    /* Metric trend sparklines */
+    --metric-trend-line: color-mix(in srgb, #4a7fd0 84%, var(--ink));
+    --metric-trend-area: color-mix(in srgb, #4a7fd0 14%, transparent);
+    --metric-trend-marker: color-mix(in srgb, #4a7fd0 30%, transparent);
+
+    /* Diff viewer — muted, readable in light mode */
+    --diff-added: #16a34a;
+    --diff-added-strong: #15803d;
+    --diff-removed: #e57373;
+    --diff-removed-strong: #dc2626;
+    --diff-diagonal: #5252520a;
+    --diff-border: rgba(0, 0, 0, 0.08);
+    --diff-line-number: #9ca3af;
+    --diff-scrollbar-rgb: 115, 115, 115;
+  }
+}
+
 pre,
 code,
 .code-block {
