@@ -19,7 +19,10 @@ const listOfficialEntriesHandler = (
   >
 )._handler;
 const listOfficialSkillEntriesHandler = (
-  listOfficialSkillEntries as unknown as WrappedHandler<{ cursor: string | null }, unknown>
+  listOfficialSkillEntries as unknown as WrappedHandler<
+    { publisherId: string; cursor: string | null },
+    unknown
+  >
 )._handler;
 
 function makePackage(overrides: Record<string, unknown> = {}) {
@@ -95,9 +98,11 @@ function makeCtx(packages: unknown[], records: Record<string, unknown>) {
                   isDone: true,
                   continueCursor: "",
                 })),
+                take: vi.fn(async () => packages),
               })),
             };
           }),
+          take: vi.fn(async () => [{ publisherId: "publishers:1" }]),
         };
       }),
       get: vi.fn(async (id: string) => records[id] ?? null),
@@ -192,7 +197,7 @@ describe("catalog feed projection", () => {
         "publishers:1": { _id: "publishers:1", kind: "org", handle: "openclaw" },
         "skillVersions:1": makeSkillVersion(),
       }),
-      { cursor: null },
+      { publisherId: "publishers:1", cursor: null },
     )) as { entries: unknown[]; isDone: boolean };
 
     expect(result).toMatchObject({
@@ -228,7 +233,7 @@ describe("catalog feed projection", () => {
           llmAnalysis: { status: "complete", verdict: "malicious" },
         }),
       }),
-      { cursor: null },
+      { publisherId: "publishers:1", cursor: null },
     )) as { entries: unknown[]; isDone: boolean };
 
     expect(result.entries).toEqual([]);
@@ -252,7 +257,7 @@ describe("catalog feed projection", () => {
         "skillVersions:1": makeSkillVersion(),
         "skillVersions:no-hash": makeSkillVersion({ sha256hash: undefined }),
       }),
-      { cursor: null },
+      { publisherId: "publishers:1", cursor: null },
     )) as { entries: unknown[]; isDone: boolean };
 
     expect(result.entries).toEqual([]);

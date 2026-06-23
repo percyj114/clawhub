@@ -154,17 +154,27 @@ async function listFamilyEntries(
 async function buildSkillEntry(
   ctx: CatalogQueryCtx,
   skill: Doc<"skills">,
+  trustedOwner?: Doc<"publishers">,
 ): Promise<CatalogFeedSkillEntry | null> {
-  if (!isPublicSkillDoc(skill) || !skill.ownerPublisherId || !skill.latestVersionId) return null;
+  if (
+    !isPublicSkillDoc(skill) ||
+    !skill.ownerPublisherId ||
+    !skill.latestVersionId ||
+    (trustedOwner && skill.ownerPublisherId !== trustedOwner._id)
+  ) {
+    return null;
+  }
 
   const [owner, version] = await Promise.all([
-    ctx.db.get(skill.ownerPublisherId),
+    trustedOwner ?? ctx.db.get(skill.ownerPublisherId),
     ctx.db.get(skill.latestVersionId),
   ]);
   if (
     !owner ||
     owner.kind !== "org" ||
-    !(await isOfficialPublisher(ctx, owner)) ||
+    (trustedOwner
+      ? Boolean(owner.deletedAt || owner.deactivatedAt)
+      : !(await isOfficialPublisher(ctx, owner))) ||
     !version ||
     !isPublicSkillVersionAvailableForSkill(version, skill._id) ||
     getPublicSkillVersionDownloadBlock(getSkillFileModerationInfoFromSkill(skill), version) ||
@@ -204,19 +214,35 @@ async function buildSkillEntry(
   };
 }
 
-async function listOfficialSkillFeedEntries(ctx: CatalogQueryCtx, cursor: string | null) {
-  const page = await ctx.db
-    .query("skills")
-    .withIndex("by_active_updated", (q) => q.eq("softDeletedAt", undefined))
-    .order("desc")
-    .paginate({ cursor, numItems: CATALOG_FEED_PAGE_SIZE });
-  const entries: CatalogFeedSkillEntry[] = [];
-  for (const skill of page.page) {
-    const entry = await buildSkillEntry(ctx, skill);
-    if (entry) entries.push(entry);
-  }
-  return { entries, isDone: page.isDone, continueCursor: page.continueCursor };
-}
+export const listOfficialPublisherPage = internalQuery({
+  args: {
+    cursor: v.union(v.string(), v.null()),
+  },
+  handler: async (ctx, args) => {
+    const page = await ctx.db
+      .query("officialPublishers")
+      .withIndex("by_created")
+      .order("desc")
+      .paginate({ cursor: args.cursor, numItems: CATALOG_FEED_PAGE_SIZE });
+    const publishers: Doc<"publishers">[] = [];
+    for (const row of page.page) {
+      const publisher = await ctx.db.get(row.publisherId);
+      if (
+        publisher &&
+        publisher.kind === "org" &&
+        !publisher.deletedAt &&
+        !publisher.deactivatedAt
+      ) {
+        publishers.push(publisher);
+      }
+    }
+    return {
+      publishers,
+      isDone: page.isDone,
+      continueCursor: page.continueCursor,
+    };
+  },
+});
 
 export const listOfficialEntries = internalQuery({
   args: {
@@ -227,9 +253,39 @@ export const listOfficialEntries = internalQuery({
 
 export const listOfficialSkillEntries = internalQuery({
   args: {
+    publisherId: v.id("publishers"),
     cursor: v.union(v.string(), v.null()),
   },
-  handler: async (ctx, args) => await listOfficialSkillFeedEntries(ctx, args.cursor),
+  handler: async (ctx, args) => {
+    const owner = await ctx.db.get(args.publisherId);
+    if (
+      !owner ||
+      owner.kind !== "org" ||
+      owner.deletedAt ||
+      owner.deactivatedAt ||
+      !(await isOfficialPublisher(ctx, owner))
+    ) {
+      return { entries: [], isDone: true, continueCursor: "" };
+    }
+
+    const page = await ctx.db
+      .query("skills")
+      .withIndex("by_owner_publisher_active_updated", (q) =>
+        q.eq("ownerPublisherId", args.publisherId).eq("softDeletedAt", undefined),
+      )
+      .order("desc")
+      .paginate({ cursor: args.cursor, numItems: CATALOG_FEED_PAGE_SIZE });
+    const entries: CatalogFeedSkillEntry[] = [];
+    for (const skill of page.page) {
+      const entry = await buildSkillEntry(ctx, skill, owner);
+      if (entry) entries.push(entry);
+    }
+    return {
+      entries,
+      isDone: page.isDone,
+      continueCursor: page.continueCursor,
+    };
+  },
 });
 
 export const storePublication = internalMutation({
@@ -304,22 +360,39 @@ export const publish = internalAction({
       throw new Error(`Catalog feed exceeds ${MAX_CATALOG_FEED_ENTRIES} entries`);
     }
     const skillEntries: CatalogFeedSkillEntry[] = [];
-    let skillCursor: string | null = null;
-    let skillPageDone = false;
-    while (!skillPageDone) {
-      const skillPage: {
-        entries: CatalogFeedSkillEntry[];
+    const seenPublisherIds = new Set<string>();
+    let publisherCursor: string | null = null;
+    while (true) {
+      const publisherPage: {
+        publishers: Doc<"publishers">[];
         isDone: boolean;
         continueCursor: string;
-      } = await ctx.runQuery(internal.catalogFeed.listOfficialSkillEntries, {
-        cursor: skillCursor,
+      } = await ctx.runQuery(internal.catalogFeed.listOfficialPublisherPage, {
+        cursor: publisherCursor,
       });
-      skillEntries.push(...skillPage.entries);
-      if (skillEntries.length > MAX_CATALOG_FEED_ENTRIES) {
-        throw new Error(`Catalog skills feed exceeds ${MAX_CATALOG_FEED_ENTRIES} entries`);
+      for (const publisher of publisherPage.publishers) {
+        if (seenPublisherIds.has(publisher._id)) continue;
+        seenPublisherIds.add(publisher._id);
+        let skillCursor: string | null = null;
+        while (true) {
+          const skillPage: {
+            entries: CatalogFeedSkillEntry[];
+            isDone: boolean;
+            continueCursor: string;
+          } = await ctx.runQuery(internal.catalogFeed.listOfficialSkillEntries, {
+            publisherId: publisher._id,
+            cursor: skillCursor,
+          });
+          skillEntries.push(...skillPage.entries);
+          if (skillEntries.length > MAX_CATALOG_FEED_ENTRIES) {
+            throw new Error(`Catalog skills feed exceeds ${MAX_CATALOG_FEED_ENTRIES} entries`);
+          }
+          if (skillPage.isDone) break;
+          skillCursor = skillPage.continueCursor;
+        }
       }
-      skillPageDone = skillPage.isDone;
-      skillCursor = skillPage.continueCursor;
+      if (publisherPage.isDone) break;
+      publisherCursor = publisherPage.continueCursor;
     }
 
     const pluginResult: CatalogFeedPublicationResult = await ctx.runMutation(
