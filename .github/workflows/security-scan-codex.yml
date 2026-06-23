@@ -117,7 +117,7 @@ jobs:
         run: |
           docker run --rm \
             -v "$PWD/$CODEX_SECURITY_SCAN_DIAGNOSTICS_DIR:/scan:ro" \
-            ghcr.io/trufflesecurity/trufflehog:3.95.5 \
+            ghcr.io/trufflesecurity/trufflehog:3.95.5@sha256:56c25710275c4b8d74c4f1346a5e7c606fa7ff4afe996f680b288d0fae3fcd9c \
             filesystem /scan \
             --only-verified \
             --debug \

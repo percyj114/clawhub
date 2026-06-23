@@ -35,7 +35,9 @@ describe("security-scan-codex workflow", () => {
     expect(scanIndex).toBeGreaterThan(-1);
     expect(uploadIndex).toBeGreaterThan(-1);
     expect(scanIndex).toBeLessThan(uploadIndex);
-    expect(scanStep?.run).toContain("ghcr.io/trufflesecurity/trufflehog:3.95.5");
+    expect(scanStep?.run).toContain(
+      "ghcr.io/trufflesecurity/trufflehog:3.95.5@sha256:56c25710275c4b8d74c4f1346a5e7c606fa7ff4afe996f680b288d0fae3fcd9c",
+    );
     expect(scanStep?.run).toContain("filesystem /scan");
     expect(scanStep?.run).toContain("--only-verified");
     expect(scanStep?.run).toContain("--fail");
