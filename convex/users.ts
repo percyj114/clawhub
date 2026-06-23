@@ -60,6 +60,7 @@ const DEV_PERSONA_BANNED_REAUTH_MESSAGE =
 const ACCOUNT_RECOVERY_PURGE_LIMIT_DEFAULT = 25;
 const ACCOUNT_RECOVERY_PURGE_LIMIT_MAX = 100;
 const HOVER_STATS_COMPATIBILITY_ROW_LIMIT = 200;
+const MAX_STAFF_PUBLISHER_MEMBER_EXCLUSION_SCAN = 100;
 const accountRecoveryPurgeModeValidator = v.optional(
   v.union(v.literal("deactivated"), v.literal("legacyDeleted")),
 );
@@ -238,7 +239,28 @@ async function getActionablePublisherAbuseAutobanNomination(
   if (await hasOfficialPublisherRow(ctx, publisher._id)) {
     return { ok: false, reason: "nomination_not_actionable" };
   }
+  if (publisher.kind === "org" && (await hasStaffPublisherManager(ctx, publisher._id))) {
+    return { ok: false, reason: "nomination_not_actionable" };
+  }
   return { ok: true, nomination };
+}
+
+async function hasStaffPublisherManager(
+  ctx: Pick<MutationCtx, "db">,
+  publisherId: Id<"publishers">,
+) {
+  const members = await ctx.db
+    .query("publisherMembers")
+    .withIndex("by_publisher", (q) => q.eq("publisherId", publisherId))
+    .take(MAX_STAFF_PUBLISHER_MEMBER_EXCLUSION_SCAN + 1);
+  if (members.length > MAX_STAFF_PUBLISHER_MEMBER_EXCLUSION_SCAN) return true;
+
+  for (const member of members) {
+    if (member.role !== "owner" && member.role !== "admin") continue;
+    const user = await ctx.db.get(member.userId);
+    if (user?.role === "admin" || user?.role === "moderator") return true;
+  }
+  return false;
 }
 
 async function markPublisherAbuseAutobanNominationBanned(
