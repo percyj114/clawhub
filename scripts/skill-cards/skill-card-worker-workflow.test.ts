@@ -45,11 +45,15 @@ describe("skill-card-worker workflow", () => {
       "github-actions:${{ github.run_id }}:${{ github.run_attempt }}:${{ matrix.shard }}",
     );
     expect(job.env).not.toHaveProperty("OPENAI_API_KEY");
+    expect(job.env).not.toHaveProperty("SECURITY_SCAN_WORKER_TOKEN");
     expect(job.steps.find((step) => step.name === "Authenticate Codex CLI")?.env).toHaveProperty(
       "OPENAI_API_KEY",
     );
     expect(
       job.steps.find((step) => step.name === "Run Skill Card worker")?.env ?? {},
     ).not.toHaveProperty("OPENAI_API_KEY");
+    expect(job.steps.find((step) => step.name === "Run Skill Card worker")?.env).toHaveProperty(
+      "SECURITY_SCAN_WORKER_TOKEN",
+    );
   });
 });

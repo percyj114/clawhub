@@ -14,6 +14,13 @@ import {
   SKILL_SECURITY_EVALUATOR_SYSTEM_PROMPT,
 } from "../../convex/lib/securityPrompt";
 import { assertCodexWorkerExecutionAllowed, resolveCodexWorkerHome } from "../codex-worker-guard";
+import { createWorkerLogger } from "../lib/workerLogger";
+import {
+  maskGitHubActionsSecret,
+  maskKnownWorkerSecrets,
+  redactWorkerErrorMessage,
+  redactWorkerText,
+} from "../lib/workerRedaction";
 
 type ClaimedJob = {
   job: {
@@ -109,14 +116,7 @@ const MAX_STORED_SKILLSPECTOR_ISSUES = 25;
 const MAX_STORED_SKILLSPECTOR_TEXT_CHARS = 2_000;
 const MAX_STORED_SKILLSPECTOR_SHORT_TEXT_CHARS = 512;
 const DEFAULT_LEASE_MS = 60 * 60 * 1000;
-const BARE_SECRET_PATTERNS: RegExp[] = [
-  /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,
-  /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g,
-  /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/g,
-  /\bsk_live_[A-Za-z0-9]{16,}\b/g,
-  /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g,
-  /\bAIza[0-9A-Za-z_-]{35}\b/g,
-];
+const logger = createWorkerLogger({ name: "security-scan-worker" });
 
 const root = resolve(new URL("../..", import.meta.url).pathname);
 const schemaPath = join(root, "scripts/security/codex-scan-output.schema.json");
@@ -193,26 +193,7 @@ function safeDiagnosticPathSegment(value: string) {
 }
 
 function redactDiagnosticText(value: string, maxChars = MAX_DIAGNOSTIC_TEXT_CHARS) {
-  let redacted = value
-    .replace(/https?:\/\/[^\s"')<>]+/g, "[redacted-url]")
-    .replace(
-      /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi,
-      (_match, scheme: string) => `${scheme} [redacted-secret]`,
-    )
-    .replace(
-      /\b(token|secret|password|api[ _-]?key|authorization)(["']?\s*[:=]\s*["']?)[^\s"',}]+/gi,
-      (_match, key: string, separator: string) => `${key}${separator}[redacted-secret]`,
-    )
-    .replace(
-      /\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API[ _-]?KEY|AUTHORIZATION))(["']?\s*[:=]\s*["']?)[^\s"',}]+/gi,
-      (_match, key: string, separator: string) => `${key}${separator}[redacted-secret]`,
-    )
-    .replace(/\b[A-Za-z0-9_+/=-]{64,}\b/g, "[redacted-secret]");
-  for (const pattern of BARE_SECRET_PATTERNS) {
-    redacted = redacted.replace(pattern, "[redacted-secret]");
-  }
-  if (redacted.length <= maxChars) return redacted;
-  return `${redacted.slice(0, maxChars)}\n...[truncated ${redacted.length - maxChars} chars]`;
+  return redactWorkerText(value, maxChars);
 }
 
 function redactDiagnosticError(value: string) {
@@ -223,19 +204,7 @@ function redactDiagnosticError(value: string) {
 }
 
 function sanitizeWorkerErrorMessage(value: string) {
-  return redactDiagnosticError(value)
-    .replace(
-      /\b(?:token|secret|password|api[ _-]?key|authorization)\b(["']?\s*[:=]\s*["']?)?(?:Bearer|Basic)?\s*\[redacted-secret\]/gi,
-      "[redacted-secret]",
-    )
-    .replace(
-      /\b[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API[ _-]?KEY|AUTHORIZATION)\b(["']?\s*[:=]\s*["']?)?(?:Bearer|Basic)?\s*\[redacted-secret\]/g,
-      "[redacted-secret]",
-    )
-    .replace(
-      /\bX-(?:Amz|Goog)-(?:Signature|Credential|Security-Token|Algorithm)(["']?\s*[:=]\s*["']?)[^\s"',}]+/gi,
-      "[redacted-secret]",
-    );
+  return redactWorkerErrorMessage(redactDiagnosticError(value));
 }
 
 const DIAGNOSTIC_CONTENT_KEY_PATTERN =
@@ -433,6 +402,7 @@ function artifactDownloadDescription(kind: "file" | "clawpack", artifactPath: st
 }
 
 async function download(url: string, artifact: { kind: "file" | "clawpack"; path: string }) {
+  maskGitHubActionsSecret(url);
   const description = artifactDownloadDescription(artifact.kind, artifact.path);
   let response: Response;
   try {
@@ -1098,7 +1068,17 @@ export async function processJob(
       runId: process.env.GITHUB_RUN_ID,
     });
     status = "completed";
-    console.log(`completed ${job.job._id}: ${llmAnalysis.status}`);
+    logger.info(
+      {
+        durationMs: Date.now() - startedAt,
+        event: "security_scan_job_completed",
+        jobId: job.job._id,
+        scannerPhase: "complete",
+        status: llmAnalysis.status,
+        targetKind: job.job.targetKind,
+      },
+      "security scan job completed",
+    );
     return true;
   } catch (error) {
     errorMessage = sanitizeWorkerErrorMessage(
@@ -1110,8 +1090,17 @@ export async function processJob(
       leaseToken: job.job.leaseToken,
       error: errorMessage,
     })) as { retry?: boolean } | undefined;
-    console.error(
-      `failed ${job.job._id}: ${errorMessage}${failResult?.retry ? " (will retry)" : ""}`,
+    logger.error(
+      {
+        durationMs: Date.now() - startedAt,
+        event: "security_scan_job_failed",
+        jobId: job.job._id,
+        reason: errorMessage,
+        retry: Boolean(failResult?.retry),
+        scannerPhase: "process",
+        targetKind: job.job.targetKind,
+      },
+      "security scan job failed",
     );
     return false;
   } finally {
@@ -1132,7 +1121,14 @@ export async function processJob(
     } catch (diagnosticError) {
       const message =
         diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError);
-      console.error(`failed to write diagnostic for ${job.job._id}: ${message}`);
+      logger.error(
+        {
+          event: "security_scan_diagnostic_write_failed",
+          jobId: job.job._id,
+          reason: sanitizeWorkerErrorMessage(message),
+        },
+        "security scan diagnostic write failed",
+      );
     }
     await rm(workspace, { recursive: true, force: true });
   }
@@ -1146,7 +1142,14 @@ export async function claimCodexScanJobBatch(
   return results.flatMap((result) => {
     if (result.status === "fulfilled") return result.value;
     const message = result.reason instanceof Error ? result.reason.message : String(result.reason);
-    console.error(`failed to claim security scan job: ${message}`);
+    logger.error(
+      {
+        event: "security_scan_claim_failed",
+        reason: sanitizeWorkerErrorMessage(message),
+        scannerPhase: "claim",
+      },
+      "failed to claim security scan job",
+    );
     return [];
   });
 }
@@ -1154,6 +1157,7 @@ export async function claimCodexScanJobBatch(
 async function main() {
   const { batchLimit, maxJobs, maxRuntimeMs, leaseMs, diagnosticsRoot } = parseArgs();
   assertCodexWorkerExecutionAllowed(process.env);
+  maskKnownWorkerSecrets();
   const convexUrl = process.env.CONVEX_URL ?? process.env.VITE_CONVEX_URL;
   if (!convexUrl) throw new Error("CONVEX_URL or VITE_CONVEX_URL is required");
   const token = requireEnv("SECURITY_SCAN_WORKER_TOKEN");
@@ -1169,7 +1173,10 @@ async function main() {
   let totalCompleted = 0;
   let totalFailed = 0;
 
-  console.log(`diagnostics directory: ${diagnosticsRoot}`);
+  logger.info(
+    { diagnosticsRoot, event: "security_scan_diagnostics_directory", workerId },
+    "security scan diagnostics directory",
+  );
 
   while (Date.now() < claimDeadline) {
     const remainingJobs = maxJobs === undefined ? batchLimit : Math.max(0, maxJobs - totalClaimed);
@@ -1185,7 +1192,16 @@ async function main() {
           leaseMs,
         })) as ClaimedJob[],
     );
-    console.log(`claimed ${jobs.length} job(s)`);
+    logger.info(
+      {
+        claimed: jobs.length,
+        claimLimit,
+        event: "security_scan_jobs_claimed",
+        leaseMs,
+        workerId,
+      },
+      "claimed security scan jobs",
+    );
     if (jobs.length === 0) break;
 
     totalClaimed += jobs.length;
@@ -1198,10 +1214,16 @@ async function main() {
     if (jobs.length < claimLimit) break;
   }
 
-  console.log(
-    `worker summary: claimed=${totalClaimed} completed=${totalCompleted} failed=${totalFailed} elapsedMs=${
-      Date.now() - startedAt
-    }`,
+  logger.info(
+    {
+      elapsedMs: Date.now() - startedAt,
+      event: "security_scan_worker_summary",
+      totalClaimed,
+      totalCompleted,
+      totalFailed,
+      workerId,
+    },
+    "security scan worker summary",
   );
   if (totalFailed > 0) {
     process.exitCode = 1;

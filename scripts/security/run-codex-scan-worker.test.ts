@@ -86,14 +86,16 @@ describe("run-codex-scan-worker diagnostics", () => {
       ])
       .mockRejectedValueOnce(new Error("temporary claim failure"))
       .mockResolvedValueOnce([]);
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const stdoutWrite = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
     await expect(claimCodexScanJobBatch(3, claimOne)).resolves.toMatchObject([
       { job: { _id: "securityScanJobs:1" } },
     ]);
     expect(claimOne).toHaveBeenCalledTimes(3);
-    expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("temporary claim failure"));
-    consoleError.mockRestore();
+    const logged = stdoutWrite.mock.calls.map((call) => String(call[0])).join("");
+    expect(logged).toContain("security_scan_claim_failed");
+    expect(logged).toContain("temporary claim failure");
+    stdoutWrite.mockRestore();
   });
 
   it("blocks direct local Codex security worker runs without opt-in", () => {
@@ -557,7 +559,9 @@ describe("run-codex-scan-worker diagnostics", () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(new Response("forbidden", { status: 403 }));
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const previousGitHubActions = process.env.GITHUB_ACTIONS;
+    process.env.GITHUB_ACTIONS = "true";
+    const stdoutWrite = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const client = {
       action: vi.fn(async () => ({ retry: false })),
     };
@@ -596,14 +600,24 @@ describe("run-codex-scan-worker diagnostics", () => {
         error: "Download failed 403 for artifact file SKILL.md",
       }),
     );
-    const logged = consoleError.mock.calls.map((call) => call.join(" ")).join("\n");
+    const logged = stdoutWrite.mock.calls.map((call) => String(call[0])).join("\n");
+    expect(logged).toContain(
+      "::add-mask::https://signed.example.invalid/file?token=secret&X-Amz-Signature=abc123",
+    );
+    expect(logged).toContain("security_scan_job_failed");
     expect(logged).toContain("Download failed 403 for artifact file SKILL.md");
-    expect(logged).not.toContain("https://");
-    expect(logged).not.toContain("signed.example.invalid");
-    expect(logged).not.toContain("token=secret");
-    expect(logged).not.toContain("X-Amz-Signature");
+    const laterLogs = logged
+      .split("\n")
+      .filter((line) => !line.startsWith("::add-mask::"))
+      .join("\n");
+    expect(laterLogs).not.toContain("https://");
+    expect(laterLogs).not.toContain("signed.example.invalid");
+    expect(laterLogs).not.toContain("token=secret");
+    expect(laterLogs).not.toContain("X-Amz-Signature");
 
-    consoleError.mockRestore();
+    stdoutWrite.mockRestore();
+    if (previousGitHubActions === undefined) delete process.env.GITHUB_ACTIONS;
+    else process.env.GITHUB_ACTIONS = previousGitHubActions;
     fetchMock.mockRestore();
   });
 
