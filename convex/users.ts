@@ -60,7 +60,8 @@ const DEV_PERSONA_BANNED_REAUTH_MESSAGE =
 const ACCOUNT_RECOVERY_PURGE_LIMIT_DEFAULT = 25;
 const ACCOUNT_RECOVERY_PURGE_LIMIT_MAX = 100;
 const HOVER_STATS_COMPATIBILITY_ROW_LIMIT = 200;
-const MAX_STAFF_PUBLISHER_MEMBER_EXCLUSION_SCAN = 100;
+const MAX_STAFF_PUBLISHER_MANAGER_EXCLUSION_SCAN = 100;
+const STAFF_PUBLISHER_MANAGER_ROLES = ["owner", "admin"] as const;
 const accountRecoveryPurgeModeValidator = v.optional(
   v.union(v.literal("deactivated"), v.literal("legacyDeleted")),
 );
@@ -249,16 +250,16 @@ async function hasStaffPublisherManager(
   ctx: Pick<MutationCtx, "db">,
   publisherId: Id<"publishers">,
 ) {
-  const members = await ctx.db
-    .query("publisherMembers")
-    .withIndex("by_publisher", (q) => q.eq("publisherId", publisherId))
-    .take(MAX_STAFF_PUBLISHER_MEMBER_EXCLUSION_SCAN + 1);
-  if (members.length > MAX_STAFF_PUBLISHER_MEMBER_EXCLUSION_SCAN) return true;
+  for (const role of STAFF_PUBLISHER_MANAGER_ROLES) {
+    const members = await ctx.db
+      .query("publisherMembers")
+      .withIndex("by_publisher_and_role", (q) => q.eq("publisherId", publisherId).eq("role", role))
+      .take(MAX_STAFF_PUBLISHER_MANAGER_EXCLUSION_SCAN + 1);
 
-  for (const member of members) {
-    if (member.role !== "owner" && member.role !== "admin") continue;
-    const user = await ctx.db.get(member.userId);
-    if (user?.role === "admin" || user?.role === "moderator") return true;
+    for (const member of members) {
+      const user = await ctx.db.get(member.userId);
+      if (user?.role === "admin" || user?.role === "moderator") return true;
+    }
   }
   return false;
 }

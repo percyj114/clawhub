@@ -57,7 +57,8 @@ const MAX_TEMPORAL_DAILY_STAT_READS_PER_PAGE = 8_000;
 const MAX_TEMPORAL_DRY_RUN_CANDIDATES = 50;
 const MAX_TEMPORAL_EVIDENCE_SKILLS = 5;
 const MAX_TEMPORAL_STALE_NOMINATION_CLEARS = 250;
-const MAX_STAFF_PUBLISHER_MEMBER_EXCLUSION_SCAN = 100;
+const MAX_STAFF_PUBLISHER_MANAGER_EXCLUSION_SCAN = 100;
+const STAFF_PUBLISHER_MANAGER_ROLES = ["owner", "admin"] as const;
 const FAILED_TEMPORAL_NOMINATION_CLEANUP_BATCH_SIZE = 100;
 const TEMPORAL_SCAN_CANDIDATE_CLEANUP_BATCH_SIZE = 500;
 const DEFAULT_AUTOBAN_BATCH_SIZE = 1;
@@ -3189,16 +3190,16 @@ async function hasStaffPublisherManager(
   ctx: Pick<QueryCtx | MutationCtx, "db">,
   publisherId: Id<"publishers">,
 ) {
-  const members = await ctx.db
-    .query("publisherMembers")
-    .withIndex("by_publisher", (q) => q.eq("publisherId", publisherId))
-    .take(MAX_STAFF_PUBLISHER_MEMBER_EXCLUSION_SCAN + 1);
-  if (members.length > MAX_STAFF_PUBLISHER_MEMBER_EXCLUSION_SCAN) return true;
+  for (const role of STAFF_PUBLISHER_MANAGER_ROLES) {
+    const members = await ctx.db
+      .query("publisherMembers")
+      .withIndex("by_publisher_and_role", (q) => q.eq("publisherId", publisherId).eq("role", role))
+      .take(MAX_STAFF_PUBLISHER_MANAGER_EXCLUSION_SCAN + 1);
 
-  for (const member of members) {
-    if (member.role !== "owner" && member.role !== "admin") continue;
-    const user = await ctx.db.get(member.userId);
-    if (user?.role === "admin" || user?.role === "moderator") return true;
+    for (const member of members) {
+      const user = await ctx.db.get(member.userId);
+      if (user?.role === "admin" || user?.role === "moderator") return true;
+    }
   }
   return false;
 }

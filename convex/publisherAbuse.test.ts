@@ -489,7 +489,7 @@ function makeEmptyOfficialPublishersQuery() {
 function makeEmptyPublisherMembersQuery() {
   return {
     withIndex: (indexName: string) => {
-      expect(indexName).toBe("by_publisher");
+      expect(indexName).toBe("by_publisher_and_role");
       return {
         take: async () => [],
       };
@@ -4376,6 +4376,13 @@ describe("publisher abuse dry-run persistence", () => {
       displayName: "Community Bulk",
       linkedUserId: "users:community-bulk",
     };
+    const largeCommunityOrgPublisher = {
+      ...officialOrgPublisher,
+      _id: "publishers:large-community-bulk",
+      handle: "large-community-bulk",
+      displayName: "Large Community Bulk",
+      linkedUserId: "users:large-community-bulk",
+    };
     const staffPublisher = {
       ...officialOrgPublisher,
       _id: "publishers:staff-bulk",
@@ -4402,6 +4409,9 @@ describe("publisher abuse dry-run persistence", () => {
             };
           }
           if (id === "users:staff") return { _id: "users:staff", role: "moderator" };
+          if (id.startsWith("users:large-community-admin-")) {
+            return { _id: id, role: "user" };
+          }
           return null;
         }),
         insert,
@@ -4411,7 +4421,12 @@ describe("publisher abuse dry-run persistence", () => {
             return {
               withIndex: () => ({
                 paginate: async () => ({
-                  page: [officialOrgPublisher, staffPublisher, communityOrgPublisher],
+                  page: [
+                    officialOrgPublisher,
+                    staffPublisher,
+                    communityOrgPublisher,
+                    largeCommunityOrgPublisher,
+                  ],
                   isDone: true,
                   continueCursor: "",
                 }),
@@ -4446,22 +4461,52 @@ describe("publisher abuse dry-run persistence", () => {
               },
             };
           }
-          if (table === "publisherMembers") return makeEmptyPublisherMembersQuery();
+          if (table === "publisherMembers") {
+            return {
+              withIndex: (
+                indexName: string,
+                build: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
+              ) => {
+                expect(indexName).toBe("by_publisher_and_role");
+                const constraints: Record<string, unknown> = {};
+                const q = {
+                  eq(field: string, value: unknown) {
+                    constraints[field] = value;
+                    return q;
+                  },
+                };
+                build(q);
+                return {
+                  take: async () =>
+                    constraints.publisherId === largeCommunityOrgPublisher._id &&
+                    constraints.role === "admin"
+                      ? Array.from({ length: 101 }, (_, index) => ({
+                          _id: `publisherMembers:large-community-admin-${index}`,
+                          publisherId: largeCommunityOrgPublisher._id,
+                          userId: `users:large-community-admin-${index}`,
+                          role: "admin",
+                        }))
+                      : [],
+                };
+              },
+            };
+          }
           throw new Error(`unexpected table ${table}`);
         }),
       },
     };
 
     await expect(collectHandler(ctx, { runId: "publisherAbuseScoreRuns:run" })).resolves.toEqual(
-      expect.objectContaining({ isDone: false, scanned: 3, phase: "finalizing" }),
+      expect.objectContaining({ isDone: false, scanned: 4, phase: "finalizing" }),
     );
 
     expect(officialLookupIds).toEqual([
       officialOrgPublisher._id,
       staffPublisher._id,
       communityOrgPublisher._id,
+      largeCommunityOrgPublisher._id,
     ]);
-    expect(insert).toHaveBeenCalledTimes(1);
+    expect(insert).toHaveBeenCalledTimes(2);
     expect(insert).toHaveBeenCalledWith(
       "publisherAbuseScores",
       expect.objectContaining({
@@ -4471,6 +4516,13 @@ describe("publisher abuse dry-run persistence", () => {
         totalInstalls: officialOrgPublisher.totalInstalls,
         totalStars: officialOrgPublisher.totalStars,
         totalDownloads: officialOrgPublisher.totalDownloads,
+      }),
+    );
+    expect(insert).toHaveBeenCalledWith(
+      "publisherAbuseScores",
+      expect.objectContaining({
+        ownerPublisherId: largeCommunityOrgPublisher._id,
+        handleSnapshot: largeCommunityOrgPublisher.handle,
       }),
     );
     expect(insert).not.toHaveBeenCalledWith(
@@ -4488,8 +4540,8 @@ describe("publisher abuse dry-run persistence", () => {
     expect(patch).toHaveBeenCalledWith(
       "publisherAbuseScoreRuns:run",
       expect.objectContaining({
-        scannedPublishers: 3,
-        scoredPublishers: 1,
+        scannedPublishers: 4,
+        scoredPublishers: 2,
       }),
     );
   });
@@ -7818,7 +7870,7 @@ describe("publisher abuse dry-run persistence", () => {
           if (table === "publisherMembers") {
             return {
               withIndex: (indexName: string, callback: (q: typeof indexBuilder) => unknown) => {
-                expect(indexName).toBe("by_publisher");
+                expect(indexName).toBe("by_publisher_and_role");
                 callback(indexBuilder);
                 return {
                   take: async (numItems: number) => {

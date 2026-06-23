@@ -471,11 +471,14 @@ function makeBanCtx(
         build?.(q);
         const publisherId =
           typeof constraints.publisherId === "string" ? constraints.publisherId : "";
+        const role = typeof constraints.role === "string" ? constraints.role : "";
         return {
           take: vi
             .fn()
             .mockResolvedValue(
-              publisherMembers.filter((member) => member.publisherId === publisherId),
+              publisherMembers.filter(
+                (member) => member.publisherId === publisherId && member.role === role,
+              ),
             ),
         };
       }
@@ -3610,6 +3613,99 @@ describe("users.autobanPublisherAbuseOwnerInternal", () => {
     expect(patch).not.toHaveBeenCalled();
     expect(insert).not.toHaveBeenCalled();
     expect(runAfter).not.toHaveBeenCalled();
+  });
+
+  it("bans large non-staff org publisher candidates", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+    const { ctx, get, patch, insert, runMutation, runAfter } = makeBanCtx({
+      publisherMembers: Array.from({ length: 101 }, (_, index) => ({
+        _id: `publisherMembers:community-admin-${index}`,
+        publisherId: "publishers:candidate",
+        userId: `users:community-admin-${index}`,
+        role: "admin",
+      })),
+    });
+
+    get.mockImplementation(async (id: string) => {
+      if (id === "users:target") {
+        return {
+          _id: "users:target",
+          role: "user",
+          handle: "target-user",
+          email: "target@example.com",
+        };
+      }
+      if (id.startsWith("users:community-admin-")) {
+        return { _id: id, role: "user" };
+      }
+      if (id === "publisherAbuseReviewNominations:candidate") {
+        return publisherAbuseAutobanNomination();
+      }
+      if (id === "publishers:candidate") {
+        return {
+          _id: "publishers:candidate",
+          kind: "org",
+          linkedUserId: "users:target",
+        };
+      }
+      return null;
+    });
+    runMutation
+      .mockResolvedValueOnce({ hiddenCount: 3, scheduled: false })
+      .mockResolvedValueOnce({ deletedCount: 2, revokedTokenCount: 1, scheduled: false })
+      .mockResolvedValueOnce(undefined);
+
+    const handler = (
+      autobanPublisherAbuseOwnerInternal as unknown as {
+        _handler: (
+          ctx: unknown,
+          args: {
+            ownerUserId: string;
+            nominationId: string;
+            scoreId: string;
+            reason: string;
+          },
+        ) => Promise<unknown>;
+      }
+    )._handler;
+
+    await expect(
+      handler(ctx, {
+        ownerUserId: "users:target",
+        nominationId: "publisherAbuseReviewNominations:candidate",
+        scoreId: "publisherAbuseScores:candidate",
+        reason: "publisher_abuse: potential ban candidate",
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      alreadyBanned: false,
+      deletedSkills: 3,
+    });
+
+    expect(patch).toHaveBeenCalledWith("users:target", {
+      deletedAt: 1_700_000_000_000,
+      role: "user",
+      updatedAt: 1_700_000_000_000,
+      banReason: "publisher_abuse: potential ban candidate",
+    });
+    expect(insert).toHaveBeenCalledWith(
+      "auditLogs",
+      expect.objectContaining({
+        action: "user.autoban.publisher_abuse",
+        targetType: "user",
+        targetId: "users:target",
+      }),
+    );
+    expect(runAfter).toHaveBeenCalledWith(0, expect.anything(), {
+      userId: "users:target",
+      bannedAt: 1_700_000_000_000,
+      to: "target@example.com",
+      handle: "target-user",
+      source: "autoban",
+      reason: "publisher_abuse: potential ban candidate",
+      trigger: "publisher_abuse",
+      hiddenArtifacts: 5,
+    });
   });
 
   it("reruns package cleanup for already-banned publisher abuse owners", async () => {

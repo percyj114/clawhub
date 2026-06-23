@@ -261,6 +261,7 @@ const publisherMembers = defineTable({
   updatedAt: v.number(),
 })
   .index("by_publisher", ["publisherId"])
+  .index("by_publisher_and_role", ["publisherId", "role"])
   .index("by_user", ["userId"])
   .index("by_publisher_user", ["publisherId", "userId"]);
 
