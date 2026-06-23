@@ -4580,6 +4580,117 @@ describe("publisher abuse dry-run persistence", () => {
     );
   });
 
+  it("bounds staff manager exclusion reads during pressure score collection", async () => {
+    const publishers = Array.from({ length: 501 }, (_, index) => ({
+      _id: `publishers:org-${index}`,
+      kind: "org",
+      handle: `org-${index}`,
+      displayName: `Org ${index}`,
+      linkedUserId: undefined,
+      publishedSkills: 1_200,
+      publishedPackages: 0,
+      totalInstalls: 4,
+      totalStars: 0,
+      totalDownloads: 80,
+    }));
+    const insert = vi.fn(async (table: string) => `${table}:new`);
+    const patch = vi.fn(async () => null);
+    const managerUserLookups: string[] = [];
+    const publisherMemberTakeSizes: number[] = [];
+
+    const ctx = {
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === "publisherAbuseScoreRuns:run") {
+            return {
+              _id: "publisherAbuseScoreRuns:run",
+              modelVersion: TEST_MODEL_CONFIG.modelVersion,
+              modelConfig: TEST_MODEL_CONFIG,
+              status: "running",
+              phase: "collecting",
+              collectCursor: undefined,
+              scannedPublishers: 0,
+              scoredPublishers: 0,
+              sumLogPressure: 0,
+              sumSquaredLogPressure: 0,
+            };
+          }
+          if (id.startsWith("users:org-manager-")) {
+            managerUserLookups.push(id);
+            return { _id: id, role: "user" };
+          }
+          return null;
+        }),
+        insert,
+        patch,
+        query: vi.fn((table: string) => {
+          if (table === "publishers") {
+            return {
+              withIndex: () => ({
+                paginate: async () => ({
+                  page: publishers,
+                  isDone: true,
+                  continueCursor: "",
+                }),
+              }),
+            };
+          }
+          if (table === "officialPublishers") return makeEmptyOfficialPublishersQuery();
+          if (table === "publisherMembers") {
+            return {
+              withIndex: (
+                indexName: string,
+                build: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
+              ) => {
+                expect(indexName).toBe("by_publisher_and_role");
+                const constraints: Record<string, unknown> = {};
+                const q = {
+                  eq(field: string, value: unknown) {
+                    constraints[field] = value;
+                    return q;
+                  },
+                };
+                build(q);
+                return {
+                  take: async (numItems: number) => {
+                    publisherMemberTakeSizes.push(numItems);
+                    if (constraints.role !== "admin") return [];
+                    const publisherId = String(constraints.publisherId);
+                    return [0, 1].map((memberIndex) => ({
+                      _id: `publisherMembers:${publisherId}:${memberIndex}`,
+                      publisherId,
+                      userId: `users:org-manager-${publisherId}-${memberIndex}`,
+                      role: "admin",
+                    }));
+                  },
+                };
+              },
+            };
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
+      },
+    };
+
+    await expect(
+      collectHandler(ctx, {
+        runId: "publisherAbuseScoreRuns:run",
+        batchSize: publishers.length,
+      }),
+    ).resolves.toEqual(expect.objectContaining({ isDone: false, scanned: publishers.length }));
+
+    expect(managerUserLookups).toHaveLength(1000);
+    expect(publisherMemberTakeSizes).toHaveLength(1000);
+    expect(insert).toHaveBeenCalledTimes(500);
+    expect(patch).toHaveBeenCalledWith(
+      "publisherAbuseScoreRuns:run",
+      expect.objectContaining({
+        scannedPublishers: publishers.length,
+        scoredPublishers: 500,
+      }),
+    );
+  });
+
   it("uses the run's stored model config while collecting score rows", async () => {
     const storedModelConfig = {
       ...TEST_MODEL_CONFIG,

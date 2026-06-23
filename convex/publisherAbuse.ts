@@ -58,6 +58,7 @@ const MAX_TEMPORAL_DRY_RUN_CANDIDATES = 50;
 const MAX_TEMPORAL_EVIDENCE_SKILLS = 5;
 const MAX_TEMPORAL_STALE_NOMINATION_CLEARS = 250;
 const MAX_STAFF_PUBLISHER_MANAGER_EXCLUSION_SCAN = 100;
+const MAX_STAFF_PUBLISHER_MANAGER_EXCLUSION_READS_PER_PAGE = 2_000;
 const STAFF_PUBLISHER_MANAGER_ROLES = ["owner", "admin"] as const;
 const FAILED_TEMPORAL_NOMINATION_CLEANUP_BATCH_SIZE = 100;
 const TEMPORAL_SCAN_CANDIDATE_CLEANUP_BATCH_SIZE = 500;
@@ -166,6 +167,11 @@ type TemporalPublisherAggregate = {
   totalInstalls: number;
   reasonCodes: string[];
   evidence: TemporalSkillCandidate[];
+};
+
+type StaffPublisherManagerExclusionBudget = {
+  remainingDocReads: number;
+  userStaffCache: Map<Id<"users">, boolean>;
 };
 
 type PublisherAbuseAutobanUserResult =
@@ -1304,6 +1310,7 @@ export async function collectPublisherAbuseScoresPageInternalHandler(
   const activeSkillFallbackBudget: ActiveSkillFallbackBudget = {
     remainingScans: MAX_ACTIVE_SKILL_FALLBACK_SCANS_PER_PAGE,
   };
+  const staffManagerExclusionBudget = createStaffPublisherManagerExclusionBudget();
   const publisherSkillMetricsOptions: PublisherSkillMetricsOptions =
     run.trigger === "cron"
       ? {
@@ -1317,7 +1324,9 @@ export async function collectPublisherAbuseScoresPageInternalHandler(
           activeSkillFallbackBudget,
         };
   for (const publisher of page.page) {
-    if (await isPublisherExcludedFromPublisherAbuse(ctx, publisher)) continue;
+    if (await isPublisherExcludedFromPublisherAbuse(ctx, publisher, staffManagerExclusionBudget)) {
+      continue;
+    }
     const input = await publisherInputFromPublisher(ctx, publisher, publisherSkillMetricsOptions);
     if (!input) continue;
     const rawScore = computePublisherAbuseRawScore(input, modelConfig);
@@ -1812,10 +1821,16 @@ export async function collectTemporalPublisherAbuseSkillCandidatesPageInternalHa
     .paginate({ cursor: args.cursor ?? null, numItems: batchSize });
 
   const candidates: TemporalSkillCandidate[] = [];
+  const staffManagerExclusionBudget = createStaffPublisherManagerExclusionBudget();
   for (const skill of page.page) {
     if (!skill.ownerPublisherId) continue;
     const publisher = await ctx.db.get(skill.ownerPublisherId);
-    if (!publisher || (await isPublisherExcludedFromPublisherAbuse(ctx, publisher))) continue;
+    if (
+      !publisher ||
+      (await isPublisherExcludedFromPublisherAbuse(ctx, publisher, staffManagerExclusionBudget))
+    ) {
+      continue;
+    }
 
     const dailyStats = await ctx.db
       .query("skillDailyStats")
@@ -3174,6 +3189,7 @@ async function publisherInputFromPublisher(
 async function isPublisherExcludedFromPublisherAbuse(
   ctx: Pick<QueryCtx | MutationCtx, "db">,
   publisher: PublisherAbuseExclusionPublisher | null | undefined,
+  staffManagerExclusionBudget?: StaffPublisherManagerExclusionBudget,
 ) {
   if (!publisher) return false;
   if (publisher.kind !== "user" && publisher.kind !== "org") return false;
@@ -3183,24 +3199,53 @@ async function isPublisherExcludedFromPublisherAbuse(
     if (linkedUser?.role === "admin" || linkedUser?.role === "moderator") return true;
   }
   if (publisher.kind !== "org") return false;
-  return await hasStaffPublisherManager(ctx, publisher._id);
+  return await hasStaffPublisherManager(ctx, publisher._id, staffManagerExclusionBudget);
+}
+
+function createStaffPublisherManagerExclusionBudget(): StaffPublisherManagerExclusionBudget {
+  return {
+    remainingDocReads: MAX_STAFF_PUBLISHER_MANAGER_EXCLUSION_READS_PER_PAGE,
+    userStaffCache: new Map(),
+  };
 }
 
 async function hasStaffPublisherManager(
   ctx: Pick<QueryCtx | MutationCtx, "db">,
   publisherId: Id<"publishers">,
+  budget?: StaffPublisherManagerExclusionBudget,
 ) {
   for (const role of STAFF_PUBLISHER_MANAGER_ROLES) {
+    const memberTakeLimit = budget
+      ? Math.min(MAX_STAFF_PUBLISHER_MANAGER_EXCLUSION_SCAN + 1, budget.remainingDocReads)
+      : MAX_STAFF_PUBLISHER_MANAGER_EXCLUSION_SCAN + 1;
+    if (memberTakeLimit <= 0) return true;
+
     const members = await ctx.db
       .query("publisherMembers")
       .withIndex("by_publisher_and_role", (q) => q.eq("publisherId", publisherId).eq("role", role))
-      .take(MAX_STAFF_PUBLISHER_MANAGER_EXCLUSION_SCAN + 1);
+      .take(memberTakeLimit);
+    if (budget) budget.remainingDocReads -= members.length;
     if (members.length > MAX_STAFF_PUBLISHER_MANAGER_EXCLUSION_SCAN) return true;
+    const possiblyTruncatedByBudget =
+      memberTakeLimit < MAX_STAFF_PUBLISHER_MANAGER_EXCLUSION_SCAN + 1 &&
+      members.length === memberTakeLimit;
 
     for (const member of members) {
+      const cached = budget?.userStaffCache.get(member.userId);
+      if (cached !== undefined) {
+        if (cached) return true;
+        continue;
+      }
+      if (budget) {
+        if (budget.remainingDocReads <= 0) return true;
+        budget.remainingDocReads -= 1;
+      }
       const user = await ctx.db.get(member.userId);
-      if (user?.role === "admin" || user?.role === "moderator") return true;
+      const isStaff = user?.role === "admin" || user?.role === "moderator";
+      budget?.userStaffCache.set(member.userId, isStaff);
+      if (isStaff) return true;
     }
+    if (possiblyTruncatedByBudget) return true;
   }
   return false;
 }
