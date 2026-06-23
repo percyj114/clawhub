@@ -486,6 +486,17 @@ function makeEmptyOfficialPublishersQuery() {
   };
 }
 
+function makeEmptyPublisherMembersQuery() {
+  return {
+    withIndex: (indexName: string) => {
+      expect(indexName).toBe("by_publisher");
+      return {
+        take: async () => [],
+      };
+    },
+  };
+}
+
 function makeAutoBanNominationQuery(
   nominations: unknown[],
   options: { isDone?: boolean; continueCursor?: string; expectedCursor?: string | null } = {},
@@ -3778,6 +3789,7 @@ describe("publisher abuse dry-run persistence", () => {
           },
         };
       }
+      if (table === "publisherMembers") return makeEmptyPublisherMembersQuery();
       if (table === "publisherAbuseReviewEvents") {
         return {
           withIndex: () => ({
@@ -4434,6 +4446,7 @@ describe("publisher abuse dry-run persistence", () => {
               },
             };
           }
+          if (table === "publisherMembers") return makeEmptyPublisherMembersQuery();
           throw new Error(`unexpected table ${table}`);
         }),
       },
@@ -5738,6 +5751,7 @@ describe("publisher abuse dry-run persistence", () => {
               }),
             };
           }
+          if (table === "publisherMembers") return makeEmptyPublisherMembersQuery();
           throw new Error(`unexpected table ${table}`);
         }),
       },
@@ -7727,6 +7741,103 @@ describe("publisher abuse dry-run persistence", () => {
               },
             };
           }
+          throw new Error(`unexpected table ${table}`);
+        }),
+      },
+    };
+
+    await expect(
+      collectTemporalHandler(ctx, {
+        mode: "current",
+        batchSize: 1,
+        todayDay: 100,
+      }),
+    ).resolves.toEqual({
+      cursor: undefined,
+      isDone: true,
+      scannedSkills: 1,
+      candidates: [],
+    });
+  });
+
+  it("skips staff-owned org publishers during temporal candidate collection", async () => {
+    const indexBuilder = {
+      eq: vi.fn(() => indexBuilder),
+      gte: vi.fn(() => indexBuilder),
+      lte: vi.fn(() => indexBuilder),
+    };
+    const staffOrgPublisher = {
+      _id: "publishers:staff-labs",
+      kind: "org",
+      handle: "staff-labs",
+      linkedUserId: undefined,
+    };
+    const ctx = {
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === staffOrgPublisher._id) return staffOrgPublisher;
+          if (id === "users:staff-owner") {
+            return { _id: "users:staff-owner", role: "moderator" };
+          }
+          throw new Error(`unexpected get ${id}`);
+        }),
+        query: vi.fn((table: string) => {
+          if (table === "skills") {
+            return {
+              withIndex: (indexName: string, callback: (q: typeof indexBuilder) => unknown) => {
+                expect(indexName).toBe("by_active_stats_downloads");
+                callback(indexBuilder);
+                return {
+                  order: () => ({
+                    paginate: async () => ({
+                      page: [
+                        {
+                          _id: "skills:staff-org-spike",
+                          ownerPublisherId: staffOrgPublisher._id,
+                          slug: "staff-org-spike",
+                          displayName: "Staff Org Spike",
+                          softDeletedAt: undefined,
+                          statsDownloads: 10_000,
+                          statsInstallsAllTime: 0,
+                          stats: {
+                            downloads: 10_000,
+                            stars: 0,
+                            installsCurrent: 0,
+                            installsAllTime: 0,
+                          },
+                        },
+                      ],
+                      isDone: true,
+                      continueCursor: "",
+                    }),
+                  }),
+                };
+              },
+            };
+          }
+          if (table === "publisherMembers") {
+            return {
+              withIndex: (indexName: string, callback: (q: typeof indexBuilder) => unknown) => {
+                expect(indexName).toBe("by_publisher");
+                callback(indexBuilder);
+                return {
+                  take: async (numItems: number) => {
+                    expect(numItems).toBe(101);
+                    return [
+                      {
+                        _id: "publisherMembers:staff-owner",
+                        publisherId: staffOrgPublisher._id,
+                        userId: "users:staff-owner",
+                        role: "owner",
+                      },
+                    ];
+                  },
+                };
+              },
+            };
+          }
+          if (table === "skillDailyStats") throw new Error("staff org publisher was scanned");
+          if (table === "officialPublishers") return makeEmptyOfficialPublishersQuery();
           throw new Error(`unexpected table ${table}`);
         }),
       },

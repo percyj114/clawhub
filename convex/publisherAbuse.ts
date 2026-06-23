@@ -57,6 +57,7 @@ const MAX_TEMPORAL_DAILY_STAT_READS_PER_PAGE = 8_000;
 const MAX_TEMPORAL_DRY_RUN_CANDIDATES = 50;
 const MAX_TEMPORAL_EVIDENCE_SKILLS = 5;
 const MAX_TEMPORAL_STALE_NOMINATION_CLEARS = 250;
+const MAX_STAFF_PUBLISHER_MEMBER_EXCLUSION_SCAN = 100;
 const FAILED_TEMPORAL_NOMINATION_CLEANUP_BATCH_SIZE = 100;
 const TEMPORAL_SCAN_CANDIDATE_CLEANUP_BATCH_SIZE = 500;
 const DEFAULT_AUTOBAN_BATCH_SIZE = 1;
@@ -3176,9 +3177,30 @@ async function isPublisherExcludedFromPublisherAbuse(
   if (!publisher) return false;
   if (publisher.kind !== "user" && publisher.kind !== "org") return false;
   if (await hasOfficialPublisherRow(ctx, publisher._id)) return true;
-  if (!publisher.linkedUserId) return false;
-  const linkedUser = await ctx.db.get(publisher.linkedUserId);
-  return linkedUser?.role === "admin" || linkedUser?.role === "moderator";
+  if (publisher.linkedUserId) {
+    const linkedUser = await ctx.db.get(publisher.linkedUserId);
+    if (linkedUser?.role === "admin" || linkedUser?.role === "moderator") return true;
+  }
+  if (publisher.kind !== "org") return false;
+  return await hasStaffPublisherManager(ctx, publisher._id);
+}
+
+async function hasStaffPublisherManager(
+  ctx: Pick<QueryCtx | MutationCtx, "db">,
+  publisherId: Id<"publishers">,
+) {
+  const members = await ctx.db
+    .query("publisherMembers")
+    .withIndex("by_publisher", (q) => q.eq("publisherId", publisherId))
+    .take(MAX_STAFF_PUBLISHER_MEMBER_EXCLUSION_SCAN + 1);
+  if (members.length > MAX_STAFF_PUBLISHER_MEMBER_EXCLUSION_SCAN) return true;
+
+  for (const member of members) {
+    if (member.role !== "owner" && member.role !== "admin") continue;
+    const user = await ctx.db.get(member.userId);
+    if (user?.role === "admin" || user?.role === "moderator") return true;
+  }
+  return false;
 }
 
 async function isPublisherAbuseExcludedReviewItem(
