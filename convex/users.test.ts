@@ -414,10 +414,12 @@ function makeListCtx(
 function makeBanCtx(
   options: {
     auditLogs?: Array<Record<string, unknown>>;
+    officialPublisherIds?: string[];
   } = {},
 ) {
   const patch = vi.fn();
   const auditLogs = options.auditLogs ?? [];
+  const officialPublisherIds = new Set(options.officialPublisherIds ?? []);
   const insert = vi.fn(async (table: string, value: Record<string, unknown>) => {
     if (table === "auditLogs") auditLogs.unshift(value);
     return `${table}:inserted`;
@@ -427,11 +429,35 @@ function makeBanCtx(
   const runAfter = vi.fn();
   const apiTokens = [{ _id: "apiTokens:1", revokedAt: undefined }];
   const query = vi.fn((table: string) => ({
-    withIndex: (_index: string, _cb: unknown) => {
+    withIndex: (
+      _index: string,
+      build?: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
+    ) => {
       if (table === "auditLogs") {
         return { order: vi.fn(() => ({ take: vi.fn().mockResolvedValue(auditLogs) })) };
       }
       if (table === "apiTokens") return { collect: vi.fn().mockResolvedValue(apiTokens) };
+      if (table === "officialPublishers") {
+        const constraints: Record<string, unknown> = {};
+        const q = {
+          eq(field: string, value: unknown) {
+            constraints[field] = value;
+            return q;
+          },
+        };
+        build?.(q);
+        const publisherId =
+          typeof constraints.publisherId === "string" ? constraints.publisherId : "";
+        return {
+          unique: vi
+            .fn()
+            .mockResolvedValue(
+              officialPublisherIds.has(publisherId)
+                ? { _id: `officialPublishers:${publisherId}`, publisherId }
+                : null,
+            ),
+        };
+      }
       throw new Error(`Unexpected table ${table}`);
     },
   }));
@@ -3393,6 +3419,66 @@ describe("users.autobanPublisherAbuseOwnerInternal", () => {
       }
       if (id === "publishers:candidate") {
         return { _id: "publishers:candidate", linkedUserId: "users:new-owner" };
+      }
+      return null;
+    });
+    runMutation
+      .mockResolvedValueOnce({ hiddenCount: 3, scheduled: false })
+      .mockResolvedValueOnce({ deletedCount: 2, revokedTokenCount: 1, scheduled: false })
+      .mockResolvedValueOnce(undefined);
+
+    const handler = (
+      autobanPublisherAbuseOwnerInternal as unknown as {
+        _handler: (
+          ctx: unknown,
+          args: {
+            ownerUserId: string;
+            nominationId: string;
+            scoreId: string;
+            reason: string;
+          },
+        ) => Promise<unknown>;
+      }
+    )._handler;
+
+    await expect(
+      handler(ctx, {
+        ownerUserId: "users:target",
+        nominationId: "publisherAbuseReviewNominations:candidate",
+        scoreId: "publisherAbuseScores:candidate",
+        reason: "publisher_abuse: potential ban candidate",
+      }),
+    ).resolves.toEqual({ ok: false, reason: "nomination_not_actionable" });
+
+    expect(runMutation).not.toHaveBeenCalled();
+    expect(patch).not.toHaveBeenCalled();
+    expect(insert).not.toHaveBeenCalled();
+    expect(runAfter).not.toHaveBeenCalled();
+  });
+
+  it("does not ban when the publisher became official before final autoban", async () => {
+    const { ctx, get, patch, insert, runMutation, runAfter } = makeBanCtx({
+      officialPublisherIds: ["publishers:candidate"],
+    });
+
+    get.mockImplementation(async (id: string) => {
+      if (id === "users:target") {
+        return {
+          _id: "users:target",
+          role: "user",
+          handle: "target-user",
+          email: "target@example.com",
+        };
+      }
+      if (id === "publisherAbuseReviewNominations:candidate") {
+        return publisherAbuseAutobanNomination();
+      }
+      if (id === "publishers:candidate") {
+        return {
+          _id: "publishers:candidate",
+          kind: "user",
+          linkedUserId: "users:target",
+        };
       }
       return null;
     });

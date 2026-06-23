@@ -11,6 +11,7 @@ import {
 } from "./lib/access";
 import { isLocalDevAuthEnabled } from "./lib/devAuth";
 import { syncGitHubProfile } from "./lib/githubAccount";
+import { hasOfficialPublisherRow } from "./lib/officialPublishers";
 import { toPublicUser } from "./lib/public";
 import {
   formatReservedPublicOwnerHandleMessage,
@@ -232,6 +233,9 @@ async function getActionablePublisherAbuseAutobanNomination(
     publisher.deactivatedAt ||
     publisher.linkedUserId !== args.ownerUserId
   ) {
+    return { ok: false, reason: "nomination_not_actionable" };
+  }
+  if (await hasOfficialPublisherRow(ctx, publisher._id)) {
     return { ok: false, reason: "nomination_not_actionable" };
   }
   return { ok: true, nomination };
