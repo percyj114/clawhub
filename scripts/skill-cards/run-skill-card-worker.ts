@@ -535,6 +535,7 @@ async function main() {
         },
         "failed to claim skill card jobs",
       );
+      totalFailed += 1;
       break;
     }
     logger.info(

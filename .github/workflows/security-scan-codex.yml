@@ -98,6 +98,7 @@ jobs:
 
       - name: Run Codex security worker
         env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           SECURITY_SCAN_WORKER_TOKEN: ${{ secrets.SECURITY_SCAN_WORKER_TOKEN }}
         run: |
           bun scripts/security/run-codex-scan-worker.ts \
