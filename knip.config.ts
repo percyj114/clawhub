@@ -34,6 +34,7 @@ const config = {
     ".": {
       entry: [
         "src/router.tsx!",
+        "src/server.ts!",
         "src/routes/**/*.{ts,tsx}!",
         "src/styles.css!",
         "server/**/*.{ts,tsx}!",

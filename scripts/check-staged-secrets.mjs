@@ -78,6 +78,15 @@ function scanContent(path, content) {
   return findings;
 }
 
+function redactSecrets(value) {
+  let redacted = value;
+  for (const { pattern } of SECRET_PATTERNS) {
+    const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+    redacted = redacted.replace(new RegExp(pattern.source, flags), "[REDACTED]");
+  }
+  return redacted;
+}
+
 const stagedPaths = getStagedPaths();
 const findings = [];
 
@@ -106,7 +115,7 @@ console.error(
 );
 console.error("");
 for (const finding of findings) {
-  console.error(`- ${finding.path}: ${finding.reason}`);
+  console.error(`- ${redactSecrets(finding.path)}: ${finding.reason}`);
   console.error("  [REDACTED]");
 }
 console.error("");
