@@ -114,10 +114,16 @@ jobs:
       - name: Scan Codex security diagnostics for verified secrets
         id: diagnostics_secret_scan
         if: ${{ !cancelled() }}
-        uses: trufflesecurity/trufflehog@v3.95.5
-        with:
-          path: ${{ env.CODEX_SECURITY_SCAN_DIAGNOSTICS_DIR }}
-          extra_args: --only-verified --debug
+        run: |
+          docker run --rm \
+            -v "$PWD/$CODEX_SECURITY_SCAN_DIAGNOSTICS_DIR:/scan:ro" \
+            ghcr.io/trufflesecurity/trufflehog:3.95.5 \
+            filesystem /scan \
+            --only-verified \
+            --debug \
+            --fail \
+            --no-update \
+            --github-actions
 
       - name: Upload Codex security diagnostics
         if: ${{ !cancelled() && steps.diagnostics_secret_scan.outcome == 'success' }}

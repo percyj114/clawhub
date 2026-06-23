@@ -8,6 +8,7 @@ type WorkflowStep = {
   id?: string;
   if?: string;
   name?: string;
+  run?: string;
   uses?: string;
   with?: Record<string, unknown>;
 };
@@ -34,13 +35,10 @@ describe("security-scan-codex workflow", () => {
     expect(scanIndex).toBeGreaterThan(-1);
     expect(uploadIndex).toBeGreaterThan(-1);
     expect(scanIndex).toBeLessThan(uploadIndex);
-    expect(scanStep).toMatchObject({
-      uses: "trufflesecurity/trufflehog@v3.95.5",
-      with: {
-        path: "${{ env.CODEX_SECURITY_SCAN_DIAGNOSTICS_DIR }}",
-        extra_args: "--only-verified --debug",
-      },
-    });
+    expect(scanStep?.run).toContain("ghcr.io/trufflesecurity/trufflehog:3.95.5");
+    expect(scanStep?.run).toContain("filesystem /scan");
+    expect(scanStep?.run).toContain("--only-verified");
+    expect(scanStep?.run).toContain("--fail");
     expect(uploadStep?.if).toBe(
       "${{ !cancelled() && steps.diagnostics_secret_scan.outcome == 'success' }}",
     );
