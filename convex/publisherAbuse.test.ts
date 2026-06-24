@@ -6670,6 +6670,63 @@ describe("publisher abuse dry-run persistence", () => {
     });
   });
 
+  it("carries the autoban cursor through continuations when front pages are not ready", async () => {
+    const scheduler = { runAfter: vi.fn(async () => null) };
+    const runMutation = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        processed: 1,
+        warned: 0,
+        banned: 0,
+        alreadyBanned: 0,
+        skipped: 0,
+        isDone: false,
+        cursor: "after-waiting-1",
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        processed: 1,
+        warned: 0,
+        banned: 0,
+        alreadyBanned: 0,
+        skipped: 0,
+        isDone: false,
+        cursor: "after-waiting-2",
+      });
+    const ctx = {
+      scheduler,
+      runQuery: vi.fn<(_: unknown, args: Record<string, never>) => Promise<boolean>>(
+        async () => true,
+      ),
+      runMutation,
+    };
+
+    await expect(
+      processPublisherAbuseAutobansHandler(ctx, { batchSize: 1, maxPages: 2 }),
+    ).resolves.toEqual({
+      ok: true,
+      pages: 2,
+      processed: 2,
+      warned: 0,
+      banned: 0,
+      alreadyBanned: 0,
+      skipped: 0,
+      isDone: false,
+    });
+
+    expect(runMutation).toHaveBeenNthCalledWith(1, expect.anything(), { batchSize: 1 });
+    expect(runMutation).toHaveBeenNthCalledWith(2, expect.anything(), {
+      batchSize: 1,
+      cursor: "after-waiting-1",
+    });
+    expect(scheduler.runAfter).toHaveBeenCalledWith(60_000, expect.anything(), {
+      batchSize: 1,
+      maxPages: 2,
+      cursor: "after-waiting-2",
+    });
+  });
+
   it("does not process publisher abuse autobans when the kill switch is disabled", async () => {
     const ctx = {
       scheduler: { runAfter: vi.fn(async () => null) },
