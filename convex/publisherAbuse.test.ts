@@ -1965,6 +1965,68 @@ describe("publisher abuse dry-run persistence", () => {
     });
   });
 
+  it("clears pending warnings before email delivery when the linked user became staff", async () => {
+    const patch = vi.fn(async () => null);
+    const ctx = {
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === "publisherAbuseReviewNominations:candidate") {
+            return {
+              ...makeNomination({
+                _id: "publisherAbuseReviewNominations:candidate",
+                ownerKey: "publisher:publishers:candidate",
+                ownerPublisherId: "publishers:candidate",
+                ownerUserId: "users:candidate",
+                latestScoreId: "publisherAbuseScores:candidate",
+                status: "pending",
+                label: "potential_ban_candidate",
+              }),
+              warningPendingAt: 100,
+              warningPendingScoreId: "publisherAbuseScores:candidate",
+              warningPendingRunId: "publisherAbuseScoreRuns:latest",
+            };
+          }
+          if (id === "publishers:candidate") {
+            return {
+              _id: "publishers:candidate",
+              kind: "user",
+              linkedUserId: "users:candidate",
+            };
+          }
+          if (id === "users:candidate") {
+            return {
+              _id: "users:candidate",
+              role: "moderator",
+            };
+          }
+          return null;
+        }),
+        patch,
+        query: vi.fn((table: string) => {
+          if (table === "officialPublishers") return makeEmptyOfficialPublishersQuery();
+          if (table === "systemSettings") return makePublisherAbuseAutobanSettingQuery(null);
+          throw new Error(`unexpected table ${table}`);
+        }),
+      },
+    };
+
+    await expect(
+      claimPublisherAbusePendingWarningInternalHandler(ctx, {
+        nominationId: "publisherAbuseReviewNominations:candidate",
+        runId: "publisherAbuseScoreRuns:latest",
+        scoreId: "publisherAbuseScores:candidate",
+        warningPendingAt: 100,
+      }),
+    ).resolves.toEqual({ ok: false, reason: "nomination_not_actionable" });
+
+    expect(patch).toHaveBeenCalledWith("publisherAbuseReviewNominations:candidate", {
+      warningPendingAt: undefined,
+      warningPendingScoreId: undefined,
+      warningPendingRunId: undefined,
+      updatedAt: expect.any(Number),
+    });
+  });
+
   it("does not ban warned candidates when the newer score was created before the deadline", async () => {
     const nomination = {
       ...makeNomination({
@@ -4591,6 +4653,135 @@ describe("publisher abuse dry-run persistence", () => {
     );
   });
 
+  it("excludes org publishers when a staff manager is on a later pressure-score page", async () => {
+    const insert = vi.fn(async (table: string) => `${table}:new`);
+    const patch = vi.fn(async () => null);
+    const orgPublisher = {
+      _id: "publishers:large-staff-org",
+      kind: "org",
+      handle: "large-staff-org",
+      displayName: "Large Staff Org",
+      linkedUserId: undefined,
+      publishedSkills: 1_200,
+      publishedPackages: 0,
+      totalInstalls: 4,
+      totalStars: 0,
+      totalDownloads: 80,
+    };
+    const managerLookups: string[] = [];
+    const memberCursors: Array<string | null> = [];
+    const ctx = {
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === "publisherAbuseScoreRuns:run") {
+            return {
+              _id: "publisherAbuseScoreRuns:run",
+              modelVersion: TEST_MODEL_CONFIG.modelVersion,
+              modelConfig: TEST_MODEL_CONFIG,
+              status: "running",
+              phase: "collecting",
+              collectCursor: undefined,
+              scannedPublishers: 0,
+              scoredPublishers: 0,
+              sumLogPressure: 0,
+              sumSquaredLogPressure: 0,
+            };
+          }
+          if (id.startsWith("users:large-staff-org-owner-")) {
+            managerLookups.push(id);
+            return { _id: id, role: id.endsWith("-100") ? "moderator" : "user" };
+          }
+          return null;
+        }),
+        insert,
+        patch,
+        query: vi.fn((table: string) => {
+          if (table === "publishers") {
+            return {
+              withIndex: () => ({
+                paginate: async () => ({
+                  page: [orgPublisher],
+                  isDone: true,
+                  continueCursor: "",
+                }),
+              }),
+            };
+          }
+          if (table === "officialPublishers") return makeEmptyOfficialPublishersQuery();
+          if (table === "publisherMembers") {
+            return {
+              withIndex: (
+                indexName: string,
+                build: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
+              ) => {
+                expect(indexName).toBe("by_publisher_and_role");
+                const constraints: Record<string, unknown> = {};
+                const q = {
+                  eq(field: string, value: unknown) {
+                    constraints[field] = value;
+                    return q;
+                  },
+                };
+                build(q);
+                return {
+                  paginate: async ({
+                    cursor,
+                    numItems,
+                  }: {
+                    cursor: string | null;
+                    numItems: number;
+                  }) => {
+                    expect(constraints).toEqual({
+                      publisherId: orgPublisher._id,
+                      role: "owner",
+                    });
+                    memberCursors.push(cursor);
+                    expect(numItems).toBe(100);
+                    const members = Array.from({ length: 101 }, (_, index) => ({
+                      _id: `publisherMembers:large-staff-org-owner-${index}`,
+                      publisherId: orgPublisher._id,
+                      userId: `users:large-staff-org-owner-${index}`,
+                      role: "owner",
+                    }));
+                    const offset = cursor ? Number(cursor) : 0;
+                    const page = members.slice(offset, offset + numItems);
+                    const nextOffset = offset + page.length;
+                    return {
+                      page,
+                      isDone: nextOffset >= members.length,
+                      continueCursor: String(nextOffset),
+                    };
+                  },
+                };
+              },
+            };
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
+      },
+    };
+
+    await expect(collectHandler(ctx, { runId: "publisherAbuseScoreRuns:run" })).resolves.toEqual(
+      expect.objectContaining({ isDone: false, scanned: 1, phase: "finalizing" }),
+    );
+
+    expect(memberCursors).toEqual([null, "100"]);
+    expect(managerLookups).toContain("users:large-staff-org-owner-100");
+    expect(insert).not.toHaveBeenCalledWith(
+      "publisherAbuseScores",
+      expect.objectContaining({
+        ownerPublisherId: orgPublisher._id,
+      }),
+    );
+    expect(patch).toHaveBeenCalledWith(
+      "publisherAbuseScoreRuns:run",
+      expect.objectContaining({
+        scannedPublishers: 1,
+        scoredPublishers: 0,
+      }),
+    );
+  });
+
   it("bounds staff manager exclusion reads during pressure score collection", async () => {
     const publishers = Array.from({ length: 501 }, (_, index) => ({
       _id: `publishers:org-${index}`,
@@ -6354,6 +6545,13 @@ describe("publisher abuse dry-run persistence", () => {
                   _id: "publisherAbuseReviewNominations:existing",
                   ownerKey: "publisher:publishers:recovered",
                   label: "review",
+                  warningSentAt: 10,
+                  warningExpiresAt: 20,
+                  warningScoreId: "publisherAbuseScores:old-warning",
+                  warningRunId: "publisherAbuseScoreRuns:old-warning",
+                  warningPendingAt: 30,
+                  warningPendingScoreId: "publisherAbuseScores:pending-warning",
+                  warningPendingRunId: "publisherAbuseScoreRuns:pending-warning",
                 }),
               }),
             };
@@ -6375,6 +6573,13 @@ describe("publisher abuse dry-run persistence", () => {
         latestScoreId: "publisherAbuseScores:pass-score",
         label: "pass",
         handleSnapshot: "recovered",
+        warningSentAt: undefined,
+        warningExpiresAt: undefined,
+        warningScoreId: undefined,
+        warningRunId: undefined,
+        warningPendingAt: undefined,
+        warningPendingScoreId: undefined,
+        warningPendingRunId: undefined,
       }),
     );
     expect(insert).toHaveBeenCalledWith(
@@ -8090,6 +8295,136 @@ describe("publisher abuse dry-run persistence", () => {
       scannedSkills: 1,
       candidates: [],
     });
+  });
+
+  it("skips temporal org candidates when a staff manager is on a later page", async () => {
+    const indexBuilder = {
+      eq: vi.fn(() => indexBuilder),
+      gte: vi.fn(() => indexBuilder),
+      lte: vi.fn(() => indexBuilder),
+    };
+    const staffOrgPublisher = {
+      _id: "publishers:large-staff-labs",
+      kind: "org",
+      handle: "large-staff-labs",
+      linkedUserId: undefined,
+    };
+    const memberCursors: Array<string | null> = [];
+    const managerLookups: string[] = [];
+    const ctx = {
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === staffOrgPublisher._id) return staffOrgPublisher;
+          if (id.startsWith("users:large-staff-owner-")) {
+            managerLookups.push(id);
+            return { _id: id, role: id.endsWith("-100") ? "admin" : "user" };
+          }
+          throw new Error(`unexpected get ${id}`);
+        }),
+        query: vi.fn((table: string) => {
+          if (table === "skills") {
+            return {
+              withIndex: (indexName: string, callback: (q: typeof indexBuilder) => unknown) => {
+                expect(indexName).toBe("by_active_stats_downloads");
+                callback(indexBuilder);
+                return {
+                  order: () => ({
+                    paginate: async () => ({
+                      page: [
+                        {
+                          _id: "skills:large-staff-org-spike",
+                          ownerPublisherId: staffOrgPublisher._id,
+                          slug: "large-staff-org-spike",
+                          displayName: "Large Staff Org Spike",
+                          softDeletedAt: undefined,
+                          statsDownloads: 10_000,
+                          statsInstallsAllTime: 0,
+                          stats: {
+                            downloads: 10_000,
+                            stars: 0,
+                            installsCurrent: 0,
+                            installsAllTime: 0,
+                          },
+                        },
+                      ],
+                      isDone: true,
+                      continueCursor: "",
+                    }),
+                  }),
+                };
+              },
+            };
+          }
+          if (table === "publisherMembers") {
+            return {
+              withIndex: (
+                indexName: string,
+                callback: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
+              ) => {
+                expect(indexName).toBe("by_publisher_and_role");
+                const constraints: Record<string, unknown> = {};
+                const q = {
+                  eq(field: string, value: unknown) {
+                    constraints[field] = value;
+                    return q;
+                  },
+                };
+                callback(q);
+                return {
+                  paginate: async ({
+                    cursor,
+                    numItems,
+                  }: {
+                    cursor: string | null;
+                    numItems: number;
+                  }) => {
+                    expect(constraints).toEqual({
+                      publisherId: staffOrgPublisher._id,
+                      role: "owner",
+                    });
+                    expect(numItems).toBe(100);
+                    memberCursors.push(cursor);
+                    const members = Array.from({ length: 101 }, (_, index) => ({
+                      _id: `publisherMembers:large-staff-owner-${index}`,
+                      publisherId: staffOrgPublisher._id,
+                      userId: `users:large-staff-owner-${index}`,
+                      role: "owner",
+                    }));
+                    const offset = cursor ? Number(cursor) : 0;
+                    const page = members.slice(offset, offset + numItems);
+                    const nextOffset = offset + page.length;
+                    return {
+                      page,
+                      isDone: nextOffset >= members.length,
+                      continueCursor: String(nextOffset),
+                    };
+                  },
+                };
+              },
+            };
+          }
+          if (table === "skillDailyStats") throw new Error("staff org publisher was scanned");
+          if (table === "officialPublishers") return makeEmptyOfficialPublishersQuery();
+          throw new Error(`unexpected table ${table}`);
+        }),
+      },
+    };
+
+    await expect(
+      collectTemporalHandler(ctx, {
+        mode: "current",
+        batchSize: 1,
+        todayDay: 100,
+      }),
+    ).resolves.toEqual({
+      cursor: undefined,
+      isDone: true,
+      scannedSkills: 1,
+      candidates: [],
+    });
+
+    expect(memberCursors).toEqual([null, "100"]);
+    expect(managerLookups).toContain("users:large-staff-owner-100");
   });
 
   it("persists temporal abuse candidates into the existing publisher review queue", async () => {

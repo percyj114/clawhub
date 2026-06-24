@@ -469,6 +469,56 @@ describe("Management", () => {
     });
   });
 
+  it("lets admins re-enable publisher abuse autobans from the abuse view", async () => {
+    searchState = { view: "abuse" };
+    const setAutobanEnabled = vi.fn(async () => ({
+      enabled: true,
+      updatedAt: 1716000000000,
+      updatedByUserId: "users:admin",
+    }));
+    useMutationMock.mockImplementation((mutation) =>
+      getFunctionName(mutation) === "publisherAbuse:setPublisherAbuseAutobanEnabled"
+        ? setAutobanEnabled
+        : vi.fn(),
+    );
+    useQueryMock.mockImplementation((query, args) => {
+      if (args === "skip") return undefined;
+      const name = getFunctionName(query);
+      if (name === "skills:listRecentVersions") return [];
+      if (name === "skills:listReportedSkills") return [];
+      if (name === "skills:listDuplicateCandidates") return [];
+      if (name === "publisherAbuse:listReviewDashboard") {
+        return {
+          latestRun: null,
+          pendingItems: [],
+          pendingPotentialBanCandidateItems: [],
+          pendingReviewItems: [],
+          recentResolvedItems: [],
+        };
+      }
+      if (name === "publisherAbuse:getPublisherAbuseAutobanSetting") {
+        return {
+          enabled: false,
+          updatedAt: 1715000000000,
+          updatedByUserId: "users:admin",
+        };
+      }
+      if (name === "users:list") return { items: [], total: 0 };
+      return undefined;
+    });
+
+    render(<Management />);
+
+    expect(screen.getByText("Auto-ban is off")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Turn on auto-ban" }));
+    fireEvent.click(screen.getByRole("button", { name: "Turn on auto-ban now" }));
+
+    await waitFor(() => {
+      expect(setAutobanEnabled).toHaveBeenCalledWith({ enabled: true });
+    });
+  });
+
   it("keeps owner search available in the skill tools view", async () => {
     searchState = { view: "skills", skill: "owned-skill" };
     const currentOwner = makeManagementUser("users:owner", "owner");
