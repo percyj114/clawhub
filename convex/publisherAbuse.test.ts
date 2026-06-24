@@ -4899,12 +4899,18 @@ describe("publisher abuse dry-run persistence", () => {
 
     expect(managerUserLookups).toHaveLength(1000);
     expect(publisherMemberTakeSizes).toHaveLength(1000);
-    expect(insert).toHaveBeenCalledTimes(501);
+    expect(insert).toHaveBeenCalledTimes(500);
+    expect(insert).not.toHaveBeenCalledWith(
+      "publisherAbuseScores",
+      expect.objectContaining({
+        ownerPublisherId: "publishers:org-500",
+      }),
+    );
     expect(patch).toHaveBeenCalledWith(
       "publisherAbuseScoreRuns:run",
       expect.objectContaining({
         scannedPublishers: publishers.length,
-        scoredPublishers: 501,
+        scoredPublishers: 500,
       }),
     );
   });

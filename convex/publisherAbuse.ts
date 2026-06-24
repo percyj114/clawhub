@@ -3217,7 +3217,7 @@ async function hasStaffPublisherManager(
   for (const role of STAFF_PUBLISHER_MANAGER_ROLES) {
     let cursor: string | null = null;
     do {
-      if (budget?.remainingDocReads !== undefined && budget.remainingDocReads <= 0) return false;
+      if (budget?.remainingDocReads !== undefined && budget.remainingDocReads <= 0) return true;
       const memberTakeLimit = Math.min(
         MAX_STAFF_PUBLISHER_MANAGER_EXCLUSION_SCAN,
         budget?.remainingDocReads ?? MAX_STAFF_PUBLISHER_MANAGER_EXCLUSION_SCAN,
@@ -3237,7 +3237,7 @@ async function hasStaffPublisherManager(
           continue;
         }
         if (budget) {
-          if (budget.remainingDocReads <= 0) return false;
+          if (budget.remainingDocReads <= 0) return true;
           budget.remainingDocReads -= 1;
         }
         const user = await ctx.db.get(member.userId);
