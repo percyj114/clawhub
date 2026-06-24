@@ -4016,6 +4016,111 @@ describe("publisher abuse dry-run persistence", () => {
     );
   });
 
+  it("bounds staff manager exclusion reads in publisher abuse detail views", async () => {
+    vi.mocked(requireUser).mockResolvedValue({
+      userId: "users:moderator",
+      user: { _id: "users:moderator", role: "moderator" },
+    } as never);
+    const run = makeCompletedPressureScoreRun();
+    const publisher = {
+      _id: "publishers:large-community",
+      kind: "org",
+      handle: "large-community",
+      displayName: "Large Community",
+      linkedUserId: "users:large-community",
+    };
+    const nomination = makeNomination({
+      _id: "publisherAbuseReviewNominations:large-community",
+      ownerKey: "publisher:publishers:large-community",
+      ownerPublisherId: publisher._id,
+      ownerUserId: "users:large-community",
+      latestScoreId: "publisherAbuseScores:large-community",
+    });
+    const score = makeScore({
+      _id: "publisherAbuseScores:large-community",
+      ownerKey: nomination.ownerKey,
+      ownerPublisherId: publisher._id,
+      runId: run._id,
+    });
+    const managerMembers = Array.from({ length: 2_001 }, (_, index) => ({
+      _id: `publisherMembers:large-community-owner-${index}`,
+      publisherId: publisher._id,
+      userId: `users:large-community-owner-${index}`,
+      role: "owner",
+    }));
+    const managerPageCalls: Array<{ cursor: string | null; numItems: number }> = [];
+    const userLookups: string[] = [];
+    const ctx = {
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === nomination._id) return nomination;
+          if (id === score._id) return score;
+          if (id === publisher._id) return publisher;
+          if (id === run._id) return run;
+          if (id === "users:large-community") {
+            return { _id: "users:large-community", role: "user" };
+          }
+          if (id.startsWith("users:large-community-owner-")) {
+            userLookups.push(id);
+            return { _id: id, role: "user" };
+          }
+          return null;
+        }),
+        query: vi.fn((table: string) => {
+          if (table === "officialPublishers") return makeEmptyOfficialPublishersQuery();
+          if (table === "publisherMembers") {
+            return {
+              withIndex: (
+                indexName: string,
+                build: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
+              ) => {
+                expect(indexName).toBe("by_publisher_and_role");
+                const constraints: Record<string, unknown> = {};
+                const q = {
+                  eq(field: string, value: unknown) {
+                    constraints[field] = value;
+                    return q;
+                  },
+                };
+                build(q);
+                expect(constraints.publisherId).toBe(publisher._id);
+                return {
+                  paginate: async ({
+                    cursor,
+                    numItems,
+                  }: {
+                    cursor: string | null;
+                    numItems: number;
+                  }) => {
+                    managerPageCalls.push({ cursor, numItems });
+                    const members = constraints.role === "owner" ? managerMembers : [];
+                    const offset = cursor ? Number(cursor) : 0;
+                    const page = members.slice(offset, offset + numItems);
+                    const nextOffset = offset + page.length;
+                    return {
+                      page,
+                      isDone: nextOffset >= members.length,
+                      continueCursor: String(nextOffset),
+                    };
+                  },
+                };
+              },
+            };
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
+      },
+    };
+
+    await expect(
+      getReviewNominationDetailHandler(ctx, { nominationId: nomination._id }),
+    ).resolves.toBeNull();
+
+    expect(managerPageCalls).toHaveLength(10);
+    expect(managerPageCalls.every((call) => call.numItems === 100)).toBe(true);
+    expect(userLookups).toHaveLength(1_000);
+  });
+
   it("uses nomination order while the latest score run is failed", async () => {
     vi.mocked(requireUser).mockResolvedValue({
       userId: "users:moderator",

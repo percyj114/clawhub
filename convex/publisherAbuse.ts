@@ -3229,13 +3229,14 @@ async function hasStaffPublisherManager(
   publisherId: Id<"publishers">,
   budget?: StaffPublisherManagerExclusionBudget,
 ) {
+  const scanBudget = budget ?? createStaffPublisherManagerExclusionBudget();
   for (const role of STAFF_PUBLISHER_MANAGER_ROLES) {
     let cursor: string | null = null;
     do {
-      if (budget?.remainingDocReads !== undefined && budget.remainingDocReads <= 0) return true;
+      if (scanBudget.remainingDocReads <= 0) return true;
       const memberTakeLimit = Math.min(
         MAX_STAFF_PUBLISHER_MANAGER_EXCLUSION_SCAN,
-        budget?.remainingDocReads ?? MAX_STAFF_PUBLISHER_MANAGER_EXCLUSION_SCAN,
+        scanBudget.remainingDocReads,
       );
       const page = await ctx.db
         .query("publisherMembers")
@@ -3243,21 +3244,19 @@ async function hasStaffPublisherManager(
           q.eq("publisherId", publisherId).eq("role", role),
         )
         .paginate({ cursor, numItems: memberTakeLimit });
-      if (budget) budget.remainingDocReads -= page.page.length;
+      scanBudget.remainingDocReads -= page.page.length;
 
       for (const member of page.page) {
-        const cached = budget?.userStaffCache.get(member.userId);
+        const cached = scanBudget.userStaffCache.get(member.userId);
         if (cached !== undefined) {
           if (cached) return true;
           continue;
         }
-        if (budget) {
-          if (budget.remainingDocReads <= 0) return true;
-          budget.remainingDocReads -= 1;
-        }
+        if (scanBudget.remainingDocReads <= 0) return true;
+        scanBudget.remainingDocReads -= 1;
         const user = await ctx.db.get(member.userId);
         const isStaff = user?.role === "admin" || user?.role === "moderator";
-        budget?.userStaffCache.set(member.userId, isStaff);
+        scanBudget.userStaffCache.set(member.userId, isStaff);
         if (isStaff) return true;
       }
       cursor = page.isDone ? null : page.continueCursor;
