@@ -702,9 +702,7 @@ describe("Management", () => {
 
     expect(screen.getByText("Triage note")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Ban user" })).toBeTruthy();
-    expect(
-      screen.getByPlaceholderText("Why are you taking this action? (optional)"),
-    ).toBeTruthy();
+    expect(screen.getByPlaceholderText("Why are you taking this action? (optional)")).toBeTruthy();
   });
 
   it("closes the abuse drawer when search hides the selected nomination", async () => {
@@ -912,9 +910,7 @@ describe("Management", () => {
 
     expect(screen.getByText("Triage note")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Ban user" })).toBeTruthy();
-    expect(
-      screen.getByPlaceholderText("Why are you taking this action? (optional)"),
-    ).toBeTruthy();
+    expect(screen.getByPlaceholderText("Why are you taking this action? (optional)")).toBeTruthy();
     expect(banPublisherAbuseOwner).not.toHaveBeenCalled();
     expect(banUser).not.toHaveBeenCalled();
   });

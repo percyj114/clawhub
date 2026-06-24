@@ -50,6 +50,7 @@ describe("publisher abuse scoring", () => {
   it("preserves legacy stored configs without engagement elasticity", () => {
     const legacyConfig = {
       ...DEFAULT_PUBLISHER_ABUSE_MODEL_CONFIG,
+      skillPivot: 100,
       engagementElasticity: undefined,
       minPublishedSkillsForAggregateLabel: undefined,
     };
