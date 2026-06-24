@@ -71,6 +71,7 @@ import type * as lib_githubSkillSync from "../lib/githubSkillSync.js";
 import type * as lib_globalStats from "../lib/globalStats.js";
 import type * as lib_httpHeaders from "../lib/httpHeaders.js";
 import type * as lib_httpRateLimit from "../lib/httpRateLimit.js";
+import type * as lib_httpRouteRateLimit from "../lib/httpRouteRateLimit.js";
 import type * as lib_httpUtils from "../lib/httpUtils.js";
 import type * as lib_installResolver from "../lib/installResolver.js";
 import type * as lib_leaderboards from "../lib/leaderboards.js";
@@ -219,6 +220,7 @@ declare const fullApi: ApiFromModules<{
   "lib/globalStats": typeof lib_globalStats;
   "lib/httpHeaders": typeof lib_httpHeaders;
   "lib/httpRateLimit": typeof lib_httpRateLimit;
+  "lib/httpRouteRateLimit": typeof lib_httpRouteRateLimit;
   "lib/httpUtils": typeof lib_httpUtils;
   "lib/installResolver": typeof lib_installResolver;
   "lib/leaderboards": typeof lib_leaderboards;

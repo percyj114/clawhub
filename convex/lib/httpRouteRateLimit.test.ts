@@ -108,6 +108,8 @@ describe("rateLimitedHttpAction", () => {
       expect.anything(),
       expect.objectContaining({ limit: RATE_LIMITS.read.ip }),
     );
+    expect(response.headers.get("RateLimit-Limit")).toBe(String(RATE_LIMITS.read.ip));
+    expect(response.headers.get("RateLimit-Limit")).not.toContain(",");
   });
 
   it("allows explicit route opt-outs", async () => {
@@ -302,5 +304,4 @@ describe("installRateLimitedRoutes", () => {
       expect.objectContaining({ limit: RATE_LIMITS.export.ip }),
     );
   });
-
 });

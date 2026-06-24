@@ -586,11 +586,7 @@ describe("applyRateLimit headers", () => {
       },
     });
 
-    await applyRateLimit(
-      ctx,
-      new Request("https://example.com/api/v1/search?q=demo"),
-      "read",
-    );
+    await applyRateLimit(ctx, new Request("https://example.com/api/v1/search?q=demo"), "read");
     await applyRateLimit(
       ctx,
       new Request("https://example.com/api/v1/packages/second-plugin"),
