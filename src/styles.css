@@ -1296,6 +1296,16 @@ code {
   outline: none;
 }
 
+[data-theme-resolved="light"]
+  .user-dropdown-content
+  [data-slot="dropdown-menu-item"]:not(.user-dropdown-theme-button):where(
+    :hover,
+    :focus,
+    [data-highlighted]
+  ) {
+  background: var(--hover-bg);
+}
+
 .user-dropdown-theme-row {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -17951,6 +17961,11 @@ body:has(.browse-page-borderless-header) .navbar {
   color: var(--ink);
 }
 
+[data-theme-resolved="light"] .stars-view-tabs .publisher-filter-tab.is-active,
+[data-theme-resolved="light"] .audits-tab[data-active="true"] {
+  background: var(--hover-bg);
+}
+
 .audits-table-shell {
   overflow: hidden;
   border: 1px solid var(--line);
@@ -28153,6 +28168,10 @@ a[class*="rounded-full"] {
   --clawhub-segmented-fg-hover: var(--hv2-text-secondary);
   --clawhub-segmented-fg-active: var(--hv2-text);
   --clawhub-segmented-active-bg: color-mix(in srgb, var(--hv2-text) 10%, transparent);
+}
+
+[data-theme-resolved="light"] .publisher-profile-tab-bar .clawhub-segmented {
+  --clawhub-segmented-active-bg: var(--hover-bg);
 }
 
 .app-shell:has(.home-v2-main) main.home-v2-main {
