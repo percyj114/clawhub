@@ -106,8 +106,21 @@ jobs:
             printf '%s\n' '- `$(bun pm bin)/convex ai-files status`'
           } > "$body_file"
 
-          if gh pr view "$UPDATE_BRANCH" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh pr edit "$UPDATE_BRANCH" \
+          if ! open_pr_number="$(
+            gh pr list \
+              --repo "$GITHUB_REPOSITORY" \
+              --state open \
+              --head "$UPDATE_BRANCH" \
+              --base main \
+              --json number \
+              --jq '.[0].number'
+          )"; then
+            echo "failed to look up open pull requests for $UPDATE_BRANCH" >&2
+            exit 1
+          fi
+
+          if [[ -n "$open_pr_number" ]]; then
+            gh pr edit "$open_pr_number" \
               --repo "$GITHUB_REPOSITORY" \
               --title "[automation] Update Convex AI files" \
               --body-file "$body_file"
