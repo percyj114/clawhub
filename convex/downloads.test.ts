@@ -1,24 +1,25 @@
+import type { RateLimitArgs, RateLimitReturns } from "@convex-dev/rate-limiter";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ActionCtx } from "./_generated/server";
 import { __test, downloadZipHandler } from "./downloads";
 
-type RateLimitArgs = { key: string; limit: number; windowMs: number };
-
 function isRateLimitArgs(args: unknown): args is RateLimitArgs {
   if (!args || typeof args !== "object") return false;
   const value = args as Record<string, unknown>;
+  const config = value.config as Record<string, unknown> | undefined;
   return (
-    typeof value.key === "string" &&
-    typeof value.limit === "number" &&
-    typeof value.windowMs === "number"
+    typeof value.name === "string" &&
+    (!("key" in value) || typeof value.key === "string") &&
+    !!config &&
+    typeof config === "object" &&
+    (config.kind === "fixed window" || config.kind === "token bucket") &&
+    typeof config.rate === "number" &&
+    typeof config.period === "number"
   );
 }
 
-const okRate = () => ({
-  allowed: true,
-  remaining: 10,
-  limit: 100,
-  resetAt: Date.now() + 60_000,
+const okRate = (): RateLimitReturns => ({
+  ok: true,
 });
 
 function stubZipResponse() {
@@ -55,7 +56,8 @@ describe("downloads helpers", () => {
     expect(__test.getDownloadIdentityValue(request, "users_123")).toBe("user:users_123");
   });
 
-  it("uses cf-connecting-ip for anonymous identity", () => {
+  it("uses cf-connecting-ip for anonymous identity when trusted headers are enabled", () => {
+    vi.stubEnv("TRUST_FORWARDED_IPS", "true");
     const request = new Request("https://example.com", {
       headers: { "cf-connecting-ip": "1.2.3.4" },
     });
@@ -76,10 +78,10 @@ describe("downloads helpers", () => {
   });
 
   it("schedules zip download stats outside the response path", async () => {
+    vi.stubEnv("TRUST_FORWARDED_IPS", "true");
     stubZipResponse();
 
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
-      if (isRateLimitArgs(args)) return okRate();
       if ("slug" in args) {
         return {
           skill: {
@@ -152,7 +154,6 @@ describe("downloads helpers", () => {
 
   it("threads owner handle through the skill lookup", async () => {
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
-      if (isRateLimitArgs(args)) return okRate();
       if ("slug" in args) {
         return {
           skill: {
@@ -202,7 +203,6 @@ describe("downloads helpers", () => {
 
   it("does not serve a tag that points at another skill's version", async () => {
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
-      if (isRateLimitArgs(args)) return okRate();
       if ("slug" in args) {
         return {
           skill: {
@@ -262,7 +262,6 @@ describe("downloads helpers", () => {
 
   it("returns ownerHandle guidance when a slug-only download is ambiguous", async () => {
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
-      if (isRateLimitArgs(args)) return okRate();
       if ("slug" in args) return { skill: null, ambiguous: true };
       return null;
     });
@@ -290,7 +289,6 @@ describe("downloads helpers", () => {
 
   it("blocks the exact requested skill version when its ClawScan verdict is malicious", async () => {
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
-      if (isRateLimitArgs(args)) return okRate();
       if ("slug" in args) {
         return {
           skill: {
@@ -369,7 +367,6 @@ describe("downloads helpers", () => {
     stubZipResponse();
 
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
-      if (isRateLimitArgs(args)) return okRate();
       if ("tokenHash" in args) {
         return { _id: "apiTokens:1", revokedAt: undefined };
       }
@@ -435,10 +432,10 @@ describe("downloads helpers", () => {
   });
 
   it("returns zip downloads when download metering is scheduled", async () => {
+    vi.stubEnv("TRUST_FORWARDED_IPS", "true");
     stubZipResponse();
 
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
-      if (isRateLimitArgs(args)) return okRate();
       if ("slug" in args) {
         return {
           skill: {
@@ -497,6 +494,7 @@ describe("downloads helpers", () => {
   it.each(["clean", "suspicious"] as const)(
     "returns a metered public GitHub handoff descriptor for %s scan without scan metadata",
     async (scanStatus) => {
+      vi.stubEnv("TRUST_FORWARDED_IPS", "true");
       const commit = "1".repeat(40);
       const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
         if (isRateLimitArgs(args)) return okRate();

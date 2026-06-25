@@ -23,6 +23,7 @@ import {
 } from "./lib/publisherCatalogDisplay";
 import {
   canAccessPublisherOwnerScope,
+  assertPublisherHandleAllowed,
   ensurePersonalPublisherForUser,
   getActiveUserByHandleOrPersonalPublisher,
   getOwnerPublisher,
@@ -32,6 +33,7 @@ import {
   getPersonalPublisherForUser,
   isPublisherActive,
   isPublisherRoleAllowed,
+  isReservedOpenClawPublisherHandle,
   PUBLISHER_HANDLE_PATTERN,
   PUBLISHER_HANDLE_REQUIREMENTS_MESSAGE,
   normalizePublisherHandle,
@@ -50,6 +52,9 @@ const MAX_PUBLISHER_HANDLE_PREFIX_CANDIDATES = 100;
 const PUBLISHER_LIST_PREVIEW_LIMIT = 3;
 const GITHUB_AUTH_ACCOUNT_RECOVERY_MATCH_LIMIT = 10;
 const PERSONAL_PUBLISHER_RECOVERY_OWNER_MIGRATION_LIMIT = 100;
+const PUBLISHER_IMAGE_UPLOAD_TTL_MS = 15 * 60_000;
+const PUBLISHER_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
+const PUBLISHER_IMAGE_CONTENT_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const publisherRoleValidator = v.union(
   v.literal("owner"),
   v.literal("admin"),
@@ -139,11 +144,17 @@ type PublisherListCounts = {
   organizations: number;
 };
 
-function validateHandle(rawHandle: string) {
+function validateHandle(
+  rawHandle: string,
+  options?: { allowReservedOpenClawPublisherHandle?: boolean },
+) {
   const handle = normalizePublisherHandle(rawHandle);
   if (!handle) throw new ConvexError("Handle is required");
   if (!PUBLISHER_HANDLE_PATTERN.test(handle)) {
     throw new ConvexError(PUBLISHER_HANDLE_REQUIREMENTS_MESSAGE);
+  }
+  if (!options?.allowReservedOpenClawPublisherHandle) {
+    assertPublisherHandleAllowed(handle);
   }
   if (isReservedPublicOwnerHandle(handle)) {
     throw new ConvexError(formatReservedPublicOwnerHandleMessage(handle));
@@ -845,6 +856,13 @@ async function resolveAvailableUserHandle(
   throw new ConvexError(`Unable to find an available fallback handle for "@${baseHandle}"`);
 }
 
+function deriveLegacyOrgFallbackHandle(orgHandle: string, explicitFallbackHandle?: string) {
+  return (
+    explicitFallbackHandle ??
+    (isReservedOpenClawPublisherHandle(orgHandle) ? "user" : `${orgHandle}-user`)
+  );
+}
+
 async function migrateLegacyPublisherHandleToOrgWithActor(
   ctx: Pick<MutationCtx, "db">,
   args: {
@@ -858,8 +876,10 @@ async function migrateLegacyPublisherHandleToOrgWithActor(
   if (!actor || actor.deletedAt || actor.deactivatedAt) throw new ConvexError("Unauthorized");
   assertAdmin(actor);
 
-  const orgHandle = validateHandle(args.handle);
-  const fallbackBase = validateHandle(args.fallbackUserHandle ?? `${orgHandle}-user`);
+  const orgHandle = validateHandle(args.handle, { allowReservedOpenClawPublisherHandle: true });
+  const fallbackBase = validateHandle(
+    deriveLegacyOrgFallbackHandle(orgHandle, args.fallbackUserHandle),
+  );
   const now = Date.now();
 
   const handlePublisher = await getPublisherByHandle(ctx, orgHandle);
@@ -1017,7 +1037,7 @@ async function ensureOrgPublisherHandleWithActor(
   if (!actor || actor.deletedAt || actor.deactivatedAt) throw new ConvexError("Unauthorized");
   assertAdmin(actor);
 
-  const handle = validateHandle(args.handle);
+  const handle = validateHandle(args.handle, { allowReservedOpenClawPublisherHandle: true });
   const now = Date.now();
   const existingPublisher = await getPublisherByHandle(ctx, handle);
   const existingUser = await getUserByHandle(ctx, handle);
@@ -2010,7 +2030,10 @@ export const listMine = query({
           : null;
         if (!publicPublisher) return null;
         return {
-          publisher: publicPublisher,
+          publisher: {
+            ...publicPublisher,
+            imageStorageId: publisher?.imageStorageId,
+          },
           role: publisher?.kind === "user" ? "owner" : membership.role,
         };
       }),
@@ -2030,7 +2053,10 @@ export const listMine = query({
       !visiblePublishers.some((entry) => entry.publisher._id === personalPublisher._id)
     ) {
       visiblePublishers.unshift({
-        publisher: personalPublisher,
+        publisher: {
+          ...personalPublisher,
+          imageStorageId: personalPublisherDoc?.imageStorageId,
+        },
         role: "owner",
       });
     }
@@ -2427,6 +2453,39 @@ export const deleteOrg = mutation({
   },
 });
 
+export const createImageUpload = mutation({
+  args: {
+    publisherId: v.id("publishers"),
+  },
+  handler: async (ctx, args) => {
+    const { userId } = await requireUser(ctx);
+    const publisher = await ctx.db.get(args.publisherId);
+    if (!publisher || publisher.deletedAt || publisher.deactivatedAt) {
+      throw new ConvexError("Publisher not found");
+    }
+    if (publisher.kind !== "org") {
+      throw new ConvexError("Only org publishers can have a logo");
+    }
+
+    const membership = await getPublisherMembership(ctx, publisher._id, userId);
+    if (!membership || !isPublisherRoleAllowed(membership.role, ["admin"])) {
+      throw new ConvexError("Forbidden");
+    }
+
+    const now = Date.now();
+    const uploadTicket = await ctx.db.insert("publisherImageUploadTickets", {
+      publisherId: publisher._id,
+      userId,
+      createdAt: now,
+      expiresAt: now + PUBLISHER_IMAGE_UPLOAD_TTL_MS,
+    });
+    return {
+      uploadUrl: await ctx.storage.generateUploadUrl(),
+      uploadTicket,
+    };
+  },
+});
+
 export const hardDeletePublisherRowsInternal = internalMutation({
   args: { publisherId: v.id("publishers") },
   handler: async (ctx, args) => {
@@ -2440,6 +2499,8 @@ export const updateProfile = mutation({
     displayName: v.string(),
     bio: v.optional(v.string()),
     image: v.optional(v.string()),
+    imageStorageId: v.optional(v.id("_storage")),
+    imageUploadTicket: v.optional(v.id("publisherImageUploadTickets")),
   },
   handler: async (ctx, args) => {
     const { userId } = await requireUser(ctx);
@@ -2459,10 +2520,61 @@ export const updateProfile = mutation({
     const displayName = args.displayName.trim() || publisher.handle;
     const bio = args.bio?.trim() || undefined;
     const image = args.image?.trim() || undefined;
-    if (image) {
+    const hasImageUpload = Boolean(args.imageUploadTicket);
+    if (hasImageUpload && !args.imageStorageId) {
+      throw new ConvexError("Image upload is incomplete");
+    }
+    if (!hasImageUpload && args.image !== undefined && image !== publisher.image) {
+      throw new ConvexError("Logo changes require an uploaded image");
+    }
+    let imageStorageId = args.imageStorageId;
+    if (
+      !hasImageUpload &&
+      !imageStorageId &&
+      image &&
+      image === publisher.image &&
+      publisher.imageStorageId
+    ) {
+      imageStorageId = publisher.imageStorageId;
+    }
+    let imageUrl = image;
+    if (hasImageUpload) {
+      const ticket = await ctx.db.get(args.imageUploadTicket!);
+      if (
+        !ticket ||
+        ticket.publisherId !== publisher._id ||
+        ticket.userId !== userId ||
+        ticket.usedAt ||
+        ticket.expiresAt <= Date.now()
+      ) {
+        throw new ConvexError("Image upload is missing or expired");
+      }
+      const metadata = await ctx.db.system.get("_storage", args.imageStorageId!);
+      if (
+        !metadata ||
+        metadata._creationTime < ticket.createdAt ||
+        metadata.size > PUBLISHER_IMAGE_MAX_BYTES ||
+        !metadata.contentType ||
+        !PUBLISHER_IMAGE_CONTENT_TYPES.has(metadata.contentType)
+      ) {
+        throw new ConvexError("Logo must be a PNG, JPEG, or WebP image smaller than 2 MB");
+      }
+      const uploadedImageUrl = await ctx.storage.getUrl(args.imageStorageId!);
+      if (!uploadedImageUrl) throw new ConvexError("Uploaded logo is no longer available");
+      imageUrl = uploadedImageUrl;
+      await ctx.db.patch(ticket._id, {
+        usedAt: Date.now(),
+        storageId: args.imageStorageId,
+      });
+    } else if (imageStorageId && imageStorageId !== publisher.imageStorageId) {
+      throw new ConvexError("Image storage does not belong to this publisher");
+    } else if (imageStorageId) {
+      imageUrl = publisher.image;
+    }
+    if (imageUrl) {
       let parsed: URL;
       try {
-        parsed = new URL(image);
+        parsed = new URL(imageUrl);
       } catch {
         throw new ConvexError("Image must be a valid URL");
       }
@@ -2475,9 +2587,17 @@ export const updateProfile = mutation({
     await ctx.db.patch(publisher._id, {
       displayName,
       bio,
-      image,
+      image: imageUrl,
+      imageStorageId,
       updatedAt: now,
     });
+    if (
+      publisher.imageStorageId &&
+      publisher.imageStorageId !== imageStorageId &&
+      publisher.imageStorageId !== args.imageStorageId
+    ) {
+      await ctx.storage.delete(publisher.imageStorageId);
+    }
     await ctx.db.insert("auditLogs", {
       actorUserId: userId,
       action: "publisher.profile.update",
@@ -2486,7 +2606,8 @@ export const updateProfile = mutation({
       metadata: {
         displayName,
         bio,
-        image,
+        image: imageUrl,
+        imageStorageId,
       },
       createdAt: now,
     });

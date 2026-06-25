@@ -32,25 +32,36 @@ function makeRateLimitCtx(plan: MockRateLimitPlan) {
         role: plan.userRole ?? "user",
       };
     }
-    if ("key" in args && "limit" in args && "windowMs" in args) {
-      const key = String(args.key);
-      if (key.startsWith("ip:")) return plan.ip;
-      if (key.startsWith("user:")) return plan.user;
-    }
     throw new Error(`Unexpected runQuery args: ${JSON.stringify(args)}`);
   });
 
   const runMutation = vi.fn(async (_fn: unknown, args: Record<string, unknown>) => {
+    if ("name" in args && "key" in args && !("config" in args)) {
+      return { action: "updated", expiresAt: Date.now() + 86_400_000 };
+    }
+    if (!("name" in args && "config" in args)) {
+      throw new Error(`Unexpected runMutation args: ${JSON.stringify(args)}`);
+    }
     const key = String(args.key);
     const source = key.startsWith("user:") ? plan.user : plan.ip;
     if (!source) throw new Error(`Missing rate limit source for ${key}`);
-    return { allowed: source.allowed, remaining: source.remaining };
+    if (source.allowed) {
+      source.remaining = Math.max(0, source.remaining - 1);
+      return { ok: true };
+    }
+    return { ok: false, retryAfter: Math.max(1, source.resetAt - Date.now()) };
   });
 
   return {
     runQuery,
     runMutation,
   } as unknown as Parameters<typeof applyRateLimit>[0];
+}
+
+function componentRateLimitCalls(runMutation: ReturnType<typeof vi.fn>) {
+  return runMutation.mock.calls.filter(([, args]) => {
+    return Boolean(args && typeof args === "object" && "config" in args);
+  }) as [unknown, Record<string, unknown>][];
 }
 
 describe("getClientIp", () => {
@@ -86,12 +97,23 @@ describe("getClientIp", () => {
     expect(getClientIp(request)).toBeNull();
   });
 
-  it("returns first ip from cf-connecting-ip", () => {
+  it("ignores cf-connecting-ip unless client ip headers are explicitly trusted", () => {
     const request = new Request("https://example.com", {
       headers: {
         "cf-connecting-ip": "203.0.113.1, 198.51.100.2",
       },
     });
+    delete process.env.TRUST_FORWARDED_IPS;
+    expect(getClientIp(request)).toBeNull();
+  });
+
+  it("returns first ip from cf-connecting-ip when trusted mode is enabled", () => {
+    const request = new Request("https://example.com", {
+      headers: {
+        "cf-connecting-ip": "203.0.113.1, 198.51.100.2",
+      },
+    });
+    process.env.TRUST_FORWARDED_IPS = "true";
     expect(getClientIp(request)).toBe("203.0.113.1");
   });
 
@@ -142,20 +164,20 @@ describe("RATE_LIMITS", () => {
 describe("applyRateLimit headers", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
   });
 
   it("returns delay-seconds Retry-After on 429 (not epoch)", async () => {
     vi.spyOn(Date, "now").mockReturnValue(1_000_000);
-    const runMutation = vi.fn();
-    const ctx = {
-      runQuery: vi.fn().mockResolvedValue({
+    const ctx = makeRateLimitCtx({
+      ip: {
         allowed: false,
         remaining: 0,
-        limit: 20,
+        limit: RATE_LIMITS.download.ip,
         resetAt: 1_030_500,
-      }),
-      runMutation,
-    } as unknown as Parameters<typeof applyRateLimit>[0];
+      },
+    });
     const request = new Request("https://example.com", {
       headers: { "cf-connecting-ip": "203.0.113.1" },
     });
@@ -167,23 +189,18 @@ describe("applyRateLimit headers", () => {
     expect(result.response.headers.get("Retry-After")).toBe("31");
     expect(result.response.headers.get("X-RateLimit-Reset")).toBe("1031");
     expect(result.response.headers.get("RateLimit-Reset")).toBe("31");
-    expect(runMutation).not.toHaveBeenCalled();
   });
 
   it("includes rate-limit headers without Retry-After when allowed", async () => {
     vi.spyOn(Date, "now").mockReturnValue(2_000_000);
-    const ctx = {
-      runQuery: vi.fn().mockResolvedValue({
+    const ctx = makeRateLimitCtx({
+      ip: {
         allowed: true,
         remaining: 19,
-        limit: 20,
+        limit: RATE_LIMITS.download.ip,
         resetAt: 2_015_000,
-      }),
-      runMutation: vi.fn().mockResolvedValue({
-        allowed: true,
-        remaining: 18,
-      }),
-    } as unknown as Parameters<typeof applyRateLimit>[0];
+      },
+    });
     const request = new Request("https://example.com", {
       headers: { "cf-connecting-ip": "203.0.113.1" },
     });
@@ -192,30 +209,22 @@ describe("applyRateLimit headers", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const headers = new Headers(result.headers);
-    expect(headers.get("X-RateLimit-Limit")).toBe("20");
-    expect(headers.get("X-RateLimit-Remaining")).toBe("18");
-    expect(headers.get("X-RateLimit-Reset")).toBe("2015");
-    expect(headers.get("RateLimit-Limit")).toBe("20");
-    expect(headers.get("RateLimit-Remaining")).toBe("18");
-    expect(headers.get("RateLimit-Reset")).toBe("15");
+    expect(headers.get("X-RateLimit-Limit")).toBe(String(RATE_LIMITS.download.ip));
+    expect(headers.get("X-RateLimit-Remaining")).toBeNull();
+    expect(headers.get("X-RateLimit-Reset")).toBe("2040");
+    expect(headers.get("RateLimit-Limit")).toBe(String(RATE_LIMITS.download.ip));
+    expect(headers.get("RateLimit-Remaining")).toBeNull();
+    expect(headers.get("RateLimit-Reset")).toBe("40");
     expect(headers.get("Retry-After")).toBeNull();
   });
 
-  it("converts shard write conflicts into a rate-limit response", async () => {
+  it("returns retryable unavailable response when component counter writes conflict", async () => {
     vi.spyOn(Date, "now").mockReturnValue(2_500_000);
     const ctx = {
-      runQuery: vi.fn().mockResolvedValue({
-        allowed: true,
-        remaining: 19,
-        limit: 20,
-        resetAt: 2_530_000,
-      }),
       runMutation: vi
         .fn()
         .mockRejectedValue(
-          new Error(
-            'Document in table "rateLimitCounters" changed while this mutation was being run',
-          ),
+          new Error('Document in table "rateLimits" changed while this mutation was being run'),
         ),
     } as unknown as Parameters<typeof applyRateLimit>[0];
     const request = new Request("https://example.com", {
@@ -226,13 +235,38 @@ describe("applyRateLimit headers", () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.response.status).toBe(429);
-    expect(result.response.headers.get("Retry-After")).toBe("30");
+    expect(result.response.status).toBe(503);
+    expect(result.response.headers.get("Retry-After")).toBe("1");
+    await expect(result.response.text()).resolves.toBe("Rate limit temporarily unavailable");
   });
 
-  it("selects one of 16 active counter shards", async () => {
+  it("returns retryable unavailable response when metadata key writes conflict", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(2_550_000);
+    const ctx = {
+      runMutation: vi
+        .fn()
+        .mockRejectedValue(
+          new Error(
+            'Document in table "httpRateLimitKeys" changed while this mutation was being run',
+          ),
+        ),
+    } as unknown as Parameters<typeof applyRateLimit>[0];
+
+    const result = await applyRateLimit(
+      ctx,
+      new Request("https://example.com/api/v1/packages/demo"),
+      "read",
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.response.status).toBe(503);
+    expect(result.response.headers.get("Retry-After")).toBe("1");
+    await expect(result.response.text()).resolves.toBe("Rate limit temporarily unavailable");
+  });
+
+  it("configures component-backed HTTP limits with 16 shards", async () => {
     vi.spyOn(Date, "now").mockReturnValue(2_600_000);
-    vi.spyOn(Math, "random").mockReturnValue(0.999);
     const ctx = makeRateLimitCtx({
       ip: {
         allowed: true,
@@ -249,8 +283,111 @@ describe("applyRateLimit headers", () => {
 
     expect(result.ok).toBe(true);
     const runMutation = (ctx as unknown as { runMutation: ReturnType<typeof vi.fn> }).runMutation;
-    const [, args] = runMutation.mock.calls[0] as [unknown, Record<string, unknown>];
-    expect(args.shard).toBe(15);
+    const [, args] = componentRateLimitCalls(runMutation)[0];
+    expect(args).toMatchObject({
+      name: "downloadIp",
+      key: "ip:unknown:download",
+      config: expect.objectContaining({
+        kind: "fixed window",
+        rate: RATE_LIMITS.download.ip,
+        period: 60_000,
+        start: 0,
+        shards: 16,
+      }),
+    });
+  });
+
+  it("passes component key metadata after an allowed limiter check", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(2_650_000);
+    const ctx = makeRateLimitCtx({
+      ip: {
+        allowed: true,
+        remaining: 19,
+        limit: RATE_LIMITS.download.ip,
+        resetAt: 2_700_000,
+      },
+    });
+
+    const result = await applyRateLimit(
+      ctx,
+      new Request("https://example.com/api/v1/download?slug=demo"),
+      "download",
+    );
+
+    expect(result.ok).toBe(true);
+    const runMutation = (ctx as unknown as { runMutation: ReturnType<typeof vi.fn> }).runMutation;
+    expect(componentRateLimitCalls(runMutation).map(([, args]) => args)).toContainEqual(
+      expect.objectContaining({
+        config: expect.any(Object),
+        name: "downloadIp",
+        key: "ip:unknown:download",
+        now: 2_650_000,
+        ttlMs: 86_400_000,
+      }),
+    );
+  });
+
+  it("passes component key metadata after a denied limiter check", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(2_660_000);
+    const ctx = makeRateLimitCtx({
+      ip: {
+        allowed: false,
+        remaining: 0,
+        limit: RATE_LIMITS.download.ip,
+        resetAt: 2_690_000,
+      },
+    });
+
+    const result = await applyRateLimit(
+      ctx,
+      new Request("https://example.com/api/v1/download?slug=demo"),
+      "download",
+    );
+
+    expect(result.ok).toBe(false);
+    const runMutation = (ctx as unknown as { runMutation: ReturnType<typeof vi.fn> }).runMutation;
+    expect(componentRateLimitCalls(runMutation).map(([, args]) => args)).toContainEqual(
+      expect.objectContaining({
+        config: expect.any(Object),
+        name: "downloadIp",
+        key: "ip:unknown:download",
+        now: 2_660_000,
+        ttlMs: 86_400_000,
+      }),
+    );
+  });
+
+  it("does not shard low-rate export ip buckets", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(2_700_000);
+    const ctx = makeRateLimitCtx({
+      ip: {
+        allowed: true,
+        remaining: 9,
+        limit: RATE_LIMITS.export.ip,
+        resetAt: 2_740_000,
+      },
+    });
+
+    const result = await applyRateLimit(
+      ctx,
+      new Request("https://example.com/api/v1/skills/export"),
+      "export",
+    );
+
+    expect(result.ok).toBe(true);
+    const runMutation = (ctx as unknown as { runMutation: ReturnType<typeof vi.fn> }).runMutation;
+    const [, args] = componentRateLimitCalls(runMutation)[0];
+    expect(args).toMatchObject({
+      name: "exportIp",
+      key: "ip:unknown:export",
+      config: expect.objectContaining({
+        kind: "fixed window",
+        rate: RATE_LIMITS.export.ip,
+        period: 60_000,
+        start: 0,
+        shards: 1,
+      }),
+    });
   });
 
   it("allows authenticated users when user bucket is healthy and shared ip bucket is exhausted", async () => {
@@ -280,8 +417,8 @@ describe("applyRateLimit headers", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const headers = new Headers(result.headers);
-    expect(headers.get("X-RateLimit-Limit")).toBe("120");
-    expect(headers.get("X-RateLimit-Remaining")).toBe("41");
+    expect(headers.get("X-RateLimit-Limit")).toBe(String(RATE_LIMITS.download.key));
+    expect(headers.get("X-RateLimit-Remaining")).toBeNull();
     expect(headers.get("Retry-After")).toBeNull();
   });
 
@@ -311,7 +448,7 @@ describe("applyRateLimit headers", () => {
     const result = await applyRateLimit(ctx, request, "download");
     expect(result.ok).toBe(true);
     const runMutation = (ctx as unknown as { runMutation: ReturnType<typeof vi.fn> }).runMutation;
-    const consumedKeys = runMutation.mock.calls.map(([, args]) => String(args.key));
+    const consumedKeys = componentRateLimitCalls(runMutation).map(([, args]) => String(args.key));
     expect(consumedKeys.some((key) => key.startsWith("user:"))).toBe(true);
     expect(consumedKeys.some((key) => key.startsWith("ip:"))).toBe(false);
   });
@@ -343,14 +480,12 @@ describe("applyRateLimit headers", () => {
     const result = await applyRateLimit(ctx, request, "write");
 
     expect(result.ok).toBe(true);
-    const runQuery = (ctx as unknown as { runQuery: ReturnType<typeof vi.fn> }).runQuery;
-    const rateLimitStatusCalls = runQuery.mock.calls
-      .map(([, args]) => args as Record<string, unknown>)
-      .filter((args) => "key" in args && "limit" in args);
-    expect(rateLimitStatusCalls).toContainEqual(
+    const runMutation = (ctx as unknown as { runMutation: ReturnType<typeof vi.fn> }).runMutation;
+    expect(componentRateLimitCalls(runMutation).map(([, args]) => args)).toContainEqual(
       expect.objectContaining({
+        name: "writeAdminKey",
         key: "user:users_123:write",
-        limit: RATE_LIMITS.write.adminKey,
+        config: expect.objectContaining({ rate: RATE_LIMITS.write.adminKey }),
       }),
     );
     if (!result.ok) return;
@@ -386,12 +521,12 @@ describe("applyRateLimit headers", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.response.status).toBe(429);
-    expect(result.response.headers.get("X-RateLimit-Limit")).toBe("120");
+    expect(result.response.headers.get("X-RateLimit-Limit")).toBe(String(RATE_LIMITS.download.key));
     expect(result.response.headers.get("X-RateLimit-Remaining")).toBe("0");
     expect(result.response.headers.get("Retry-After")).toBe("30");
   });
 
-  it("scopes anonymous download fallback buckets when client ip is missing", async () => {
+  it("uses one anonymous download fallback bucket when client ip is missing", async () => {
     vi.spyOn(Date, "now").mockReturnValue(4_500_000);
     const ctx = makeRateLimitCtx({
       ip: {
@@ -401,21 +536,27 @@ describe("applyRateLimit headers", () => {
         resetAt: 4_530_000,
       },
     });
-    const request = new Request(
-      "https://example.com/api/v1/packages/tickflow-assist/download?version=0.2.10",
+
+    await applyRateLimit(
+      ctx,
+      new Request("https://example.com/api/v1/download?slug=first&version=1.0.0"),
+      "download",
+    );
+    await applyRateLimit(
+      ctx,
+      new Request("https://example.com/api/v1/packages/second-plugin/download?version=0.2.0"),
+      "download",
     );
 
-    const result = await applyRateLimit(ctx, request, "download");
-
-    expect(result.ok).toBe(true);
     const runMutation = (ctx as unknown as { runMutation: ReturnType<typeof vi.fn> }).runMutation;
-    const consumedKeys = runMutation.mock.calls.map(([, args]) => String(args.key));
-    expect(consumedKeys).toContain(
-      "ip:unknown:download:/api/v1/packages/tickflow-assist/download?version=0.2.10",
-    );
+    expect(componentRateLimitCalls(runMutation).map(([, args]) => String(args.key))).toEqual([
+      "ip:unknown:download",
+      "ip:unknown:download",
+    ]);
   });
 
   it("scopes known-ip anonymous buckets by rate limit kind", async () => {
+    vi.stubEnv("TRUST_FORWARDED_IPS", "true");
     vi.spyOn(Date, "now").mockReturnValue(4_550_000);
     const readCtx = makeRateLimitCtx({
       ip: {
@@ -444,10 +585,10 @@ describe("applyRateLimit headers", () => {
       .runMutation;
     const downloadMutation = (downloadCtx as unknown as { runMutation: ReturnType<typeof vi.fn> })
       .runMutation;
-    expect(readMutation.mock.calls.map(([, args]) => String(args.key))).toContain(
+    expect(componentRateLimitCalls(readMutation).map(([, args]) => String(args.key))).toContain(
       "ip:203.0.113.1:read",
     );
-    expect(downloadMutation.mock.calls.map(([, args]) => String(args.key))).toContain(
+    expect(componentRateLimitCalls(downloadMutation).map(([, args]) => String(args.key))).toContain(
       "ip:203.0.113.1:download",
     );
   });
@@ -479,12 +620,12 @@ describe("applyRateLimit headers", () => {
 
     expect(result.ok).toBe(true);
     const runMutation = (ctx as unknown as { runMutation: ReturnType<typeof vi.fn> }).runMutation;
-    expect(runMutation.mock.calls.map(([, args]) => String(args.key))).toContain(
+    expect(componentRateLimitCalls(runMutation).map(([, args]) => String(args.key))).toContain(
       "user:users_123:download",
     );
   });
 
-  it("scopes non-download missing-ip anonymous requests by rate limit kind", async () => {
+  it("uses one anonymous read fallback bucket when client ip is missing", async () => {
     vi.spyOn(Date, "now").mockReturnValue(4_600_000);
     const ctx = makeRateLimitCtx({
       ip: {
@@ -494,14 +635,19 @@ describe("applyRateLimit headers", () => {
         resetAt: 4_630_000,
       },
     });
-    const request = new Request("https://example.com/api/v1/search?q=demo");
 
-    const result = await applyRateLimit(ctx, request, "read");
+    await applyRateLimit(ctx, new Request("https://example.com/api/v1/search?q=demo"), "read");
+    await applyRateLimit(
+      ctx,
+      new Request("https://example.com/api/v1/packages/second-plugin"),
+      "read",
+    );
 
-    expect(result.ok).toBe(true);
     const runMutation = (ctx as unknown as { runMutation: ReturnType<typeof vi.fn> }).runMutation;
-    const consumedKeys = runMutation.mock.calls.map(([, args]) => String(args.key));
-    expect(consumedKeys).toContain("ip:unknown:read");
+    expect(componentRateLimitCalls(runMutation).map(([, args]) => String(args.key))).toEqual([
+      "ip:unknown:read",
+      "ip:unknown:read",
+    ]);
   });
 
   it("falls back to ip enforcement when bearer token is invalid", async () => {
@@ -526,7 +672,7 @@ describe("applyRateLimit headers", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.response.status).toBe(429);
-    expect(result.response.headers.get("X-RateLimit-Limit")).toBe("20");
+    expect(result.response.headers.get("X-RateLimit-Limit")).toBe(String(RATE_LIMITS.download.ip));
     expect(result.response.headers.get("Retry-After")).toBe("30");
   });
 });

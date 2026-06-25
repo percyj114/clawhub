@@ -87,6 +87,14 @@ export const RETENTION_POLICIES = {
   }),
   publishers: permanent("Canonical publisher profiles."),
   publisherMembers: permanent("Canonical publisher membership records."),
+  publisherImageUploadTickets: ephemeral(
+    "Organization logo upload tickets expire shortly after creation.",
+    {
+      expirationField: "expiresAt",
+      prune: "usage-time validation plus pending retention cleanup",
+      retention: "Organization logo upload ticket TTL.",
+    },
+  ),
   officialPublishers: permanent("Manual official publisher assignments."),
   githubSkillSources: permanent("Tracked GitHub source configuration."),
   githubSkillContents: derived("Cached GitHub source content snapshots.", "githubSkillSources"),
@@ -126,6 +134,10 @@ export const RETENTION_POLICIES = {
     retention: "Processed and older than 7 days.",
   }),
   packageDailyStats: permanent("Daily aggregate package stats are product analytics."),
+  packageLeaderboards: derived(
+    "Package trending snapshots can be rebuilt from packageDailyStats.",
+    "packageDailyStats",
+  ),
   packageTrustedPublishers: permanent("Trusted publishing configuration."),
   packagePublishTokens: ephemeral("Package publish tokens expire and can be revoked.", {
     expirationField: "expiresAt",
@@ -193,12 +205,15 @@ export const RETENTION_POLICIES = {
     prune: "usage-time expiry plus pending retention cleanup",
     retention: "Device code TTL.",
   }),
-  rateLimitCounters: ephemeral("Active rate-limit counters expire after their rate-limit window.", {
-    expirationField: "expiresAt",
-    expirationIndex: "by_expires_at",
-    prune: "rateLimits.pruneRateLimitCountersInternal",
-    retention: "Rate-limit window plus buffer.",
-  }),
+  httpRateLimitKeys: ephemeral(
+    "Component-backed HTTP rate-limit key metadata is operational cleanup state.",
+    {
+      expirationField: "expiresAt",
+      expirationIndex: "by_expires_at",
+      prune: "rateLimits.pruneHttpRateLimitKeysInternal",
+      retention: "Idle component key window plus buffer before component reset.",
+    },
+  ),
   downloadMetricDedupes: ephemeral(
     "Download dedupe rows are only needed for recent metric windows.",
     {

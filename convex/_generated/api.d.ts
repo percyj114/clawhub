@@ -73,7 +73,9 @@ import type * as lib_githubSkillScans from "../lib/githubSkillScans.js";
 import type * as lib_githubSkillSync from "../lib/githubSkillSync.js";
 import type * as lib_globalStats from "../lib/globalStats.js";
 import type * as lib_httpHeaders from "../lib/httpHeaders.js";
+import type * as lib_httpPathSegments from "../lib/httpPathSegments.js";
 import type * as lib_httpRateLimit from "../lib/httpRateLimit.js";
+import type * as lib_httpRouteRateLimit from "../lib/httpRouteRateLimit.js";
 import type * as lib_httpUtils from "../lib/httpUtils.js";
 import type * as lib_installResolver from "../lib/installResolver.js";
 import type * as lib_leaderboards from "../lib/leaderboards.js";
@@ -95,7 +97,6 @@ import type * as lib_publisherAbuseScoring from "../lib/publisherAbuseScoring.js
 import type * as lib_publisherCatalogDisplay from "../lib/publisherCatalogDisplay.js";
 import type * as lib_publisherStats from "../lib/publisherStats.js";
 import type * as lib_publishers from "../lib/publishers.js";
-import type * as lib_rateLimitConfig from "../lib/rateLimitConfig.js";
 import type * as lib_recommendationScore from "../lib/recommendationScore.js";
 import type * as lib_reporting from "../lib/reporting.js";
 import type * as lib_reservedHandles from "../lib/reservedHandles.js";
@@ -132,6 +133,7 @@ import type * as packageInspectorHttp from "../packageInspectorHttp.js";
 import type * as packageInspectorNode from "../packageInspectorNode.js";
 import type * as packagePublishTokens from "../packagePublishTokens.js";
 import type * as packages from "../packages.js";
+import type * as packageLeaderboards from "../packageLeaderboards.js";
 import type * as publisherAbuse from "../publisherAbuse.js";
 import type * as publisherAbuseDevSeed from "../publisherAbuseDevSeed.js";
 import type * as publishers from "../publishers.js";
@@ -226,7 +228,9 @@ declare const fullApi: ApiFromModules<{
   "lib/githubSkillSync": typeof lib_githubSkillSync;
   "lib/globalStats": typeof lib_globalStats;
   "lib/httpHeaders": typeof lib_httpHeaders;
+  "lib/httpPathSegments": typeof lib_httpPathSegments;
   "lib/httpRateLimit": typeof lib_httpRateLimit;
+  "lib/httpRouteRateLimit": typeof lib_httpRouteRateLimit;
   "lib/httpUtils": typeof lib_httpUtils;
   "lib/installResolver": typeof lib_installResolver;
   "lib/leaderboards": typeof lib_leaderboards;
@@ -248,7 +252,6 @@ declare const fullApi: ApiFromModules<{
   "lib/publisherCatalogDisplay": typeof lib_publisherCatalogDisplay;
   "lib/publisherStats": typeof lib_publisherStats;
   "lib/publishers": typeof lib_publishers;
-  "lib/rateLimitConfig": typeof lib_rateLimitConfig;
   "lib/recommendationScore": typeof lib_recommendationScore;
   "lib/reporting": typeof lib_reporting;
   "lib/reservedHandles": typeof lib_reservedHandles;
@@ -285,6 +288,7 @@ declare const fullApi: ApiFromModules<{
   packageInspectorNode: typeof packageInspectorNode;
   packagePublishTokens: typeof packagePublishTokens;
   packages: typeof packages;
+  packageLeaderboards: typeof packageLeaderboards;
   publisherAbuse: typeof publisherAbuse;
   publisherAbuseDevSeed: typeof publisherAbuseDevSeed;
   publishers: typeof publishers;
@@ -336,4 +340,5 @@ export declare const internal: FilterApi<
 
 export declare const components: {
   migrations: import("@convex-dev/migrations/_generated/component.js").ComponentApi<"migrations">;
+  rateLimiter: import("@convex-dev/rate-limiter/_generated/component.js").ComponentApi<"rateLimiter">;
 };

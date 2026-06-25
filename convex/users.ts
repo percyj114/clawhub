@@ -26,6 +26,7 @@ import {
   getPersonalPublisherForUser,
   getPersonalPublisherForUserOrFallback,
   getUserByHandleOrPersonalPublisher,
+  isReservedOpenClawPublisherHandle,
 } from "./lib/publishers";
 import {
   getPackagePublisherContribution,
@@ -864,6 +865,10 @@ function appendHandleSuffix(base: string, suffix: number) {
   return `${base.slice(0, maxBaseLength)}${suffixText}`;
 }
 
+function getSafePersonalHandleFallbackBase(handle: string | undefined) {
+  return isReservedOpenClawPublisherHandle(handle) ? "user" : handle;
+}
+
 async function resolveAvailableHandle(
   ctx: MutationCtx,
   preferredHandle: string | undefined,
@@ -886,6 +891,7 @@ async function canUserClaimHandle(
   const normalizedHandle = normalizeReservedHandle(handle);
   if (!normalizedHandle) return false;
   if (isReservedPublicOwnerHandle(normalizedHandle)) return false;
+  if (isReservedOpenClawPublisherHandle(normalizedHandle)) return false;
   if (await isHandleReservedForAnotherUser(ctx, normalizedHandle, userId)) return false;
 
   const publisher = await getPublisherByHandle(ctx, normalizedHandle);
@@ -916,16 +922,17 @@ async function computeEnsureUpdates(ctx: MutationCtx, user: Doc<"users">) {
       : undefined;
   if (!derivedHandle && (!existingHandle || !existingHandleClaimable)) {
     const emailFallback = normalizeHandle(user.email?.split("@")[0]);
+    const safeEmailFallback = getSafePersonalHandleFallbackBase(emailFallback);
     const emailFallbackHandle =
       emailFallback && emailFallback !== requestedHandle
-        ? await resolveAvailableHandle(ctx, emailFallback, user._id)
+        ? await resolveAvailableHandle(ctx, safeEmailFallback, user._id)
         : undefined;
+    const preferredFallbackBase = requestedHandle ?? existingHandle ?? githubLogin ?? emailFallback;
+    const fallbackBase = isReservedOpenClawPublisherHandle(preferredFallbackBase)
+      ? (safeEmailFallback ?? "user")
+      : preferredFallbackBase;
     derivedHandle =
-      (await resolveAvailableHandle(
-        ctx,
-        requestedHandle ?? existingHandle ?? githubLogin ?? emailFallback,
-        user._id,
-      )) ?? emailFallbackHandle;
+      (await resolveAvailableHandle(ctx, fallbackBase, user._id)) ?? emailFallbackHandle;
   }
   const baseHandle = derivedHandle ?? (existingHandleClaimable ? existingHandle : undefined);
 

@@ -39,8 +39,6 @@ jobs:
         shard: [0, 1, 2, 3]
     env:
       CONVEX_URL: ${{ vars.CONVEX_URL || vars.VITE_CONVEX_URL || 'https://wry-manatee-359.convex.cloud' }}
-      # Shared Convex worker credential used by security and Skill Card workers.
-      SECURITY_SCAN_WORKER_TOKEN: ${{ secrets.SECURITY_SCAN_WORKER_TOKEN }}
       SKILL_CARD_WORKER_LIMIT: ${{ github.event.inputs['batch-limit'] || '4' }}
       SKILL_CARD_WORKER_MAX_JOBS: ${{ github.event.inputs['max-jobs'] || '' }}
       SKILL_CARD_WORKER_MAX_RUNTIME_MINUTES: ${{ github.event.inputs['max-runtime-minutes'] || '40' }}
@@ -49,29 +47,15 @@ jobs:
       SKILL_CARD_WORKER_ID: "github-actions:${{ github.run_id }}:${{ github.run_attempt }}:${{ matrix.shard }}"
       NVIDIA_TRUSTWORTHY_AI_DIR: ${{ github.workspace }}/.artifacts/nvidia-trustworthy-ai
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           repository: NVIDIA/Trustworthy-AI
           ref: fb5867e9070b4080d28818242e20334e10ac55fc
           path: .artifacts/nvidia-trustworthy-ai
 
       - uses: ./.github/actions/setup-bun
-
-      - name: Check configuration
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          set -euo pipefail
-          if [[ -z "$SECURITY_SCAN_WORKER_TOKEN" ]]; then
-            echo "::error::SECURITY_SCAN_WORKER_TOKEN is required"
-            exit 1
-          fi
-          if [[ -z "$OPENAI_API_KEY" ]]; then
-            echo "::error::OPENAI_API_KEY is required"
-            exit 1
-          fi
 
       - name: Install Codex CLI and renderer dependencies
         run: |
@@ -88,6 +72,9 @@ jobs:
         run: printf '%s' "$OPENAI_API_KEY" | codex login --with-api-key
 
       - name: Run Skill Card worker
+        env:
+          # Shared Convex worker credential used by security and Skill Card workers.
+          SECURITY_SCAN_WORKER_TOKEN: ${{ secrets.SECURITY_SCAN_WORKER_TOKEN }}
         run: |
           args=(
             --batch-limit "$SKILL_CARD_WORKER_LIMIT"

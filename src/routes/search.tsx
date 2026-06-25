@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { Search, X } from "lucide-react";
+import { Plus, Search, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { PluginListItem } from "../components/PluginListItem";
 import { PublisherListItem } from "../components/PublisherListItem";
@@ -285,6 +285,13 @@ function SearchEmptyState({
         <a className="search-empty-action" href={browseHref}>
           {browseLabel}
         </a>
+        <a
+          className="search-empty-action"
+          href={`/add?kind=${activeType === "plugins" ? "plugin" : "skill"}`}
+        >
+          <Plus size={14} aria-hidden="true" />
+          {activeType === "plugins" ? "Add a plugin" : "Add a skill or plugin"}
+        </a>
       </div>
     </Card>
   );
@@ -303,7 +310,7 @@ function SearchResultSection({ children, title }: { children: React.ReactNode; t
 
 function SkillResultRow({ result }: { result: UnifiedSkillResult }) {
   const skill = result.skill as unknown as PublicSkill;
-  return <SkillListItem skill={skill} ownerHandle={result.ownerHandle} />;
+  return <SkillListItem skill={skill} ownerHandle={result.ownerHandle} owner={result.owner} />;
 }
 
 function PluginResultRow({ result }: { result: UnifiedPluginResult }) {

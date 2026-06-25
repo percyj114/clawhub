@@ -20,6 +20,20 @@ if (process.env.CLAWHUB_DISABLE_CRONS !== "1") {
   );
 
   crons.interval(
+    "package-trending-leaderboard",
+    { minutes: 60 },
+    internal.packageLeaderboards.rebuildTrendingLeaderboardAction,
+    { limit: 200 },
+  );
+
+  crons.interval(
+    "recommendation-score-refresh",
+    { hours: 6 },
+    internal.statsMaintenance.runRecommendationScoreBackfillInternal,
+    { batchSize: 500, maxBatches: 50 },
+  );
+
+  crons.interval(
     "skill-stats-backfill",
     { hours: 6 },
     internal.statsMaintenance.runSkillStatBackfillInternal,
@@ -162,9 +176,9 @@ if (process.env.CLAWHUB_DISABLE_CRONS !== "1") {
   );
 
   crons.interval(
-    "rate-limit-counters-prune",
-    { minutes: 15 },
-    internal.rateLimits.pruneRateLimitCountersInternal,
+    "http-rate-limit-keys-prune",
+    { hours: 1 },
+    internal.rateLimits.pruneHttpRateLimitKeysInternal,
     { batchSize: RETENTION_STANDARD_BATCH_SIZE },
   );
 }

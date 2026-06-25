@@ -89,6 +89,7 @@ function makeDb(
 describe("download metric helpers", () => {
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllEnvs();
   });
 
   it("uses a day bucket for download dedupe", () => {
@@ -97,6 +98,7 @@ describe("download metric helpers", () => {
   });
 
   it("prefers user identity and falls back to IP identity", () => {
+    vi.stubEnv("TRUST_FORWARDED_IPS", "true");
     const request = new Request("https://example.com", {
       headers: { "cf-connecting-ip": "203.0.113.10" },
     });

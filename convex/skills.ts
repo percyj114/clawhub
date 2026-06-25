@@ -79,6 +79,7 @@ import {
   summarizeReasonCodes,
   verdictFromCodes,
 } from "./lib/moderationReasonCodes";
+import { hasOfficialPublisherRow, toPublicPublisherWithOfficial } from "./lib/officialPublishers";
 import {
   type HydratableSkill,
   type PublicPublisher,
@@ -2008,14 +2009,15 @@ async function buildPublicSkillEntries(
       ownerPublisherId,
       ownerUserId,
     }).then((ownerDoc) => {
-      const publicOwner = toPublicPublisher(ownerDoc);
-      if (!publicOwner) {
-        return { ownerHandle: null, owner: null };
-      }
-      return {
-        ownerHandle: publicOwner.handle ?? String(publicOwner._id),
-        owner: publicOwner,
-      };
+      return toPublicPublisherWithOfficial(ctx, ownerDoc).then((publicOwner) => {
+        if (!publicOwner) {
+          return { ownerHandle: null, owner: null };
+        }
+        return {
+          ownerHandle: publicOwner.handle ?? String(publicOwner._id),
+          owner: publicOwner,
+        };
+      });
     });
     ownerInfoCache.set(cacheKey, ownerPromise);
     return ownerPromise;
@@ -5106,7 +5108,11 @@ export const listPublicPageV3 = query({
       if (!hydratable) continue;
       const publicSkill = toPublicSkill(hydratable);
       if (!publicSkill) continue;
-      const ownerInfo = digestToOwnerInfo(digest);
+      const ownerInfo = await addOfficialStatusToOwnerInfo(
+        ctx,
+        digestToOwnerInfo(digest),
+        digest.ownerPublisherId,
+      );
       if (!ownerInfo?.owner) continue;
       const latestVersion = await resolveDigestLatestVersionForSkill(ctx, digest);
       items.push({
@@ -5842,19 +5848,62 @@ export const listPublicTrendingPage = query({
   args: {
     limit: v.optional(v.number()),
     nonSuspiciousOnly: v.optional(v.boolean()),
+    categorySlug: v.optional(v.string()),
+    topic: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const limit = clampInt(args.limit ?? 25, 1, MAX_PUBLIC_LIST_LIMIT);
+    const normalizedCategorySlug = args.categorySlug?.trim().toLowerCase();
+    const categorySlug =
+      args.categorySlug === undefined
+        ? undefined
+        : normalizedCategorySlug && isSkillCategorySlug(normalizedCategorySlug)
+          ? normalizedCategorySlug
+          : null;
+    if (args.categorySlug !== undefined && categorySlug === null) {
+      return { items: [], nextCursor: null };
+    }
+    const topic = args.topic === undefined ? undefined : normalizeCatalogTopic(args.topic);
+    if (args.topic !== undefined && !topic) return { items: [], nextCursor: null };
     const kind = args.nonSuspiciousOnly
       ? TRENDING_NON_SUSPICIOUS_LEADERBOARD_KIND
       : TRENDING_LEADERBOARD_KIND;
-    const leaderboard = await ctx.db
+    let leaderboard = await ctx.db
       .query("skillLeaderboards")
       .withIndex("by_kind", (q) => q.eq("kind", kind))
       .order("desc")
       .first();
 
-    if (!leaderboard) return { items: [], nextCursor: null };
+    // Older deployments may have the general snapshot but not the
+    // non-suspicious snapshot yet. Keep trending populated during rollout.
+    if (!leaderboard && args.nonSuspiciousOnly) {
+      leaderboard = await ctx.db
+        .query("skillLeaderboards")
+        .withIndex("by_kind", (q) => q.eq("kind", TRENDING_LEADERBOARD_KIND))
+        .order("desc")
+        .first();
+    }
+
+    if (!leaderboard) {
+      // The first leaderboard snapshot may not exist yet after deployment.
+      // Use a bounded recent catalog warm-up instead of rendering an empty page.
+      const fallbackDigests = await ctx.db
+        .query("skillSearchDigest")
+        .withIndex("by_active_updated", (q) => q.eq("softDeletedAt", undefined))
+        .order("desc")
+        .take(Math.min(Math.max(limit * 8, limit), 200));
+      const fallbackItems: PublicSkillEntry[] = [];
+      for (const digest of fallbackDigests) {
+        if (args.nonSuspiciousOnly && digest.isSuspicious) continue;
+        if (categorySlug && !resolveStoredSkillCategories(digest).includes(categorySlug)) continue;
+        if (topic && !getCatalogTopicSlugs(digest.topics).includes(topic)) continue;
+        const item = await buildPublicSkillEntryFromDigest(ctx, digest);
+        if (!item) continue;
+        fallbackItems.push(item);
+        if (fallbackItems.length >= limit) break;
+      }
+      return { items: fallbackItems, nextCursor: null };
+    }
 
     const items: PublicSkillEntry[] = [];
     for (const entry of leaderboard.items) {
@@ -5864,6 +5913,8 @@ export const listPublicTrendingPage = query({
         .unique();
       if (!digest) continue;
       if (args.nonSuspiciousOnly && digest.isSuspicious) continue;
+      if (categorySlug && !resolveStoredSkillCategories(digest).includes(categorySlug)) continue;
+      if (topic && !getCatalogTopicSlugs(digest.topics).includes(topic)) continue;
       const item = await buildPublicSkillEntryFromDigest(ctx, digest);
       if (!item) continue;
       items.push(item);
@@ -5937,7 +5988,11 @@ async function buildPublicSkillEntryFromDigest(
   const hydratable = digestToHydratableSkill(digest);
   const publicSkill = toPublicSkill(hydratable);
   if (!publicSkill) return null;
-  const ownerInfo = digestToOwnerInfo(digest);
+  const ownerInfo = await addOfficialStatusToOwnerInfo(
+    ctx,
+    digestToOwnerInfo(digest),
+    digest.ownerPublisherId,
+  );
   if (!ownerInfo?.owner) return null;
   const latestVersion = await resolveDigestLatestVersionForSkill(ctx, digest);
   return {
@@ -5946,6 +6001,16 @@ async function buildPublicSkillEntryFromDigest(
     ownerHandle: ownerInfo.ownerHandle,
     owner: ownerInfo.owner,
   };
+}
+
+async function addOfficialStatusToOwnerInfo(
+  ctx: Pick<QueryCtx, "db">,
+  ownerInfo: { ownerHandle: string | null; owner: PublicPublisher | null } | null,
+  publisherId?: Id<"publishers">,
+) {
+  if (!ctx?.db || !ownerInfo?.owner || !publisherId) return ownerInfo;
+  const official = await hasOfficialPublisherRow(ctx, publisherId);
+  return official ? { ...ownerInfo, owner: { ...ownerInfo.owner, official: true } } : ownerInfo;
 }
 
 async function loadPublicLatestVersionForDigest(
@@ -6945,11 +7010,17 @@ function readDigestRecommendationScore(digest: Doc<"skillSearchDigest">): number
     (digest.recommendedScoreVersion === RECOMMENDATION_SCORE_VERSION
       ? digest.recommendedScore
       : undefined) ??
-    computeRecommendationScore({
-      downloads: readDigestRankStat(digest, "downloads"),
-      installs: readDigestRankStat(digest, "installsAllTime"),
-      stars: readDigestRankStat(digest, "stars"),
-    })
+    computeRecommendationScore(
+      {
+        downloads: readDigestRankStat(digest, "downloads"),
+        installs: readDigestRankStat(digest, "installsAllTime"),
+        stars: readDigestRankStat(digest, "stars"),
+      },
+      {
+        createdAt: digest.createdAt,
+        updatedAt: digest.updatedAt,
+      },
+    )
   );
 }
 

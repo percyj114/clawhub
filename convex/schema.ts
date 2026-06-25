@@ -217,6 +217,7 @@ const publishers = defineTable({
   displayName: v.string(),
   bio: v.optional(v.string()),
   image: v.optional(v.string()),
+  imageStorageId: v.optional(v.id("_storage")),
   linkedUserId: v.optional(v.id("users")),
   trustedPublisher: v.optional(v.boolean()),
   publishedSkills: v.optional(v.number()),
@@ -264,6 +265,15 @@ const publisherMembers = defineTable({
   .index("by_publisher_and_role", ["publisherId", "role"])
   .index("by_user", ["userId"])
   .index("by_publisher_user", ["publisherId", "userId"]);
+
+const publisherImageUploadTickets = defineTable({
+  publisherId: v.id("publishers"),
+  userId: v.id("users"),
+  createdAt: v.number(),
+  expiresAt: v.number(),
+  usedAt: v.optional(v.number()),
+  storageId: v.optional(v.id("_storage")),
+}).index("by_publisher_user", ["publisherId", "userId"]);
 
 const officialPublishers = defineTable({
   publisherId: v.id("publishers"),
@@ -1797,7 +1807,24 @@ const packageDailyStats = defineTable({
   downloads: v.number(),
   installs: v.number(),
   updatedAt: v.number(),
-}).index("by_package_day", ["packageId", "day"]);
+})
+  .index("by_package_day", ["packageId", "day"])
+  .index("by_day", ["day"]);
+
+const packageLeaderboards = defineTable({
+  kind: v.string(),
+  generatedAt: v.number(),
+  rangeStartDay: v.number(),
+  rangeEndDay: v.number(),
+  items: v.array(
+    v.object({
+      packageId: v.id("packages"),
+      score: v.number(),
+      installs: v.number(),
+      downloads: v.number(),
+    }),
+  ),
+}).index("by_kind", ["kind", "generatedAt"]);
 
 const packageTrustedPublishers = defineTable({
   packageId: v.id("packages"),
@@ -2745,17 +2772,15 @@ const cliDeviceCodes = defineTable({
   .index("by_user_code_hash", ["userCodeHash"])
   .index("by_status_expires", ["status", "expiresAt"]);
 
-const rateLimitCounters = defineTable({
+const httpRateLimitKeys = defineTable({
+  name: v.string(),
   key: v.string(),
-  windowStart: v.number(),
-  shard: v.number(),
-  count: v.number(),
-  limit: v.number(),
-  updatedAt: v.number(),
+  shard: v.optional(v.number()),
+  lastTouchedAt: v.number(),
   expiresAt: v.number(),
 })
-  .index("by_key_window", ["key", "windowStart"])
-  .index("by_key_window_shard", ["key", "windowStart", "shard"])
+  .index("by_name_and_key_and_shard", ["name", "key", "shard"])
+  .index("by_name_and_key_and_expires_at", ["name", "key", "expiresAt"])
   .index("by_expires_at", ["expiresAt"]);
 
 const downloadMetricTargetKind = v.union(v.literal("skill"), v.literal("package"));
@@ -2915,6 +2940,7 @@ export default defineSchema({
   users,
   publishers,
   publisherMembers,
+  publisherImageUploadTickets,
   officialPublishers,
   githubSkillSources,
   githubSkillContents,
@@ -2933,6 +2959,7 @@ export default defineSchema({
   skillCardGenerationJobs,
   packageStatEvents,
   packageDailyStats,
+  packageLeaderboards,
   packageTrustedPublishers,
   packagePublishTokens,
   packagePublishUploadTickets,
@@ -2973,7 +3000,7 @@ export default defineSchema({
   vtScanLogs,
   apiTokens,
   cliDeviceCodes,
-  rateLimitCounters,
+  httpRateLimitKeys,
   downloadMetricDedupes,
   packageInstallMetricDedupes,
   installTelemetryDedupes,

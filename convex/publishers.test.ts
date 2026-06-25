@@ -1,6 +1,10 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { describe, expect, it, vi } from "vitest";
-import { assertCanManageOwnedResource, requirePublisherRole } from "./lib/publishers";
+import {
+  assertCanManageOwnedResource,
+  ensurePersonalPublisherForUser,
+  requirePublisherRole,
+} from "./lib/publishers";
 import {
   addMember,
   listPublicPage,
@@ -17,6 +21,7 @@ import {
   removeOrgPublisherMemberInternal,
   recoverPersonalPublisherInternal,
   createOrg,
+  createImageUpload,
   deleteOrg,
   reclaimDeletedOrgHandleInternal,
   removeMember,
@@ -283,7 +288,13 @@ const updateProfileHandler = (
     displayName: string;
     bio?: string;
     image?: string;
+    imageStorageId?: string;
+    imageUploadTicket?: string;
   }>
+)._handler;
+
+const createImageUploadHandler = (
+  createImageUpload as unknown as WrappedHandler<{ publisherId: string }>
 )._handler;
 
 const setTrustedPublisherInternalHandler = (
@@ -3933,7 +3944,6 @@ describe("publishers membership controls", () => {
           publisherId: "publishers:org",
           displayName: "Shopify",
           bio: "Commerce platform",
-          image: "https://cdn.example.com/shopify.png",
         } as never,
       ),
     ).resolves.toEqual({
@@ -3949,7 +3959,6 @@ describe("publishers membership controls", () => {
       expect.objectContaining({
         displayName: "Shopify",
         bio: "Commerce platform",
-        image: "https://cdn.example.com/shopify.png",
       }),
     );
     expect(insert).toHaveBeenCalledWith(
@@ -3961,7 +3970,229 @@ describe("publishers membership controls", () => {
     );
   });
 
-  it("rejects invalid org profile image URLs", async () => {
+  it("issues logo upload tickets only to org admins", async () => {
+    vi.mocked(getAuthUserId).mockResolvedValue("users:admin" as never);
+    const insert = vi.fn(async () => "publisherImageUploadTickets:1");
+    const ctx = {
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === "users:admin") return { _id: id };
+          if (id === "publishers:org") {
+            return { _id: id, kind: "org", handle: "shopify", displayName: "Shopify" };
+          }
+          return null;
+        }),
+        query: vi.fn((table: string) => {
+          if (table === "publisherMembers") {
+            return {
+              withIndex: vi.fn(() => ({
+                unique: vi.fn().mockResolvedValue({
+                  publisherId: "publishers:org",
+                  userId: "users:admin",
+                  role: "admin",
+                }),
+              })),
+            };
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
+        insert,
+        patch: vi.fn(),
+        delete: vi.fn(),
+        replace: vi.fn(),
+        normalizeId: vi.fn(),
+      },
+      storage: {
+        generateUploadUrl: vi.fn(async () => "https://storage.example/upload"),
+      },
+    };
+
+    await expect(
+      createImageUploadHandler(ctx as never, { publisherId: "publishers:org" }),
+    ).resolves.toEqual({
+      uploadUrl: "https://storage.example/upload",
+      uploadTicket: "publisherImageUploadTickets:1",
+    });
+    expect(insert).toHaveBeenCalledWith(
+      "publisherImageUploadTickets",
+      expect.objectContaining({
+        publisherId: "publishers:org",
+        userId: "users:admin",
+        expiresAt: expect.any(Number),
+      }),
+    );
+  });
+
+  it("accepts a validated uploaded logo and removes the previous stored image", async () => {
+    vi.mocked(getAuthUserId).mockResolvedValue("users:admin" as never);
+    const publisher = {
+      _id: "publishers:org",
+      kind: "org",
+      handle: "shopify",
+      displayName: "Shopify",
+      image: "https://storage.example/old",
+      imageStorageId: "storage:old",
+    };
+    let publisherReadCount = 0;
+    const patch = vi.fn(async () => {});
+    const insert = vi.fn(async () => "auditLogs:1");
+    const deleteStorage = vi.fn(async () => {});
+    const ctx = {
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === "users:admin") return { _id: id };
+          if (id === "publishers:org") {
+            publisherReadCount += 1;
+            return publisherReadCount === 1
+              ? publisher
+              : {
+                  ...publisher,
+                  image: "https://storage.example/new-logo",
+                  imageStorageId: "storage:new",
+                };
+          }
+          if (id === "publisherImageUploadTickets:1") {
+            return {
+              _id: id,
+              publisherId: "publishers:org",
+              userId: "users:admin",
+              createdAt: 10,
+              expiresAt: Date.now() + 10_000,
+            };
+          }
+          return null;
+        }),
+        system: {
+          get: vi.fn(async () => ({
+            _creationTime: 20,
+            contentType: "image/webp",
+            size: 1000,
+          })),
+        },
+        query: vi.fn((table: string) => {
+          if (table === "publisherMembers") {
+            return {
+              withIndex: vi.fn(() => ({
+                unique: vi.fn().mockResolvedValue({
+                  publisherId: "publishers:org",
+                  userId: "users:admin",
+                  role: "admin",
+                }),
+              })),
+            };
+          }
+          if (table === "officialPublishers") return emptyOfficialPublishersQuery();
+          throw new Error(`unexpected table ${table}`);
+        }),
+        patch,
+        insert,
+        delete: vi.fn(),
+        replace: vi.fn(),
+        normalizeId: vi.fn(),
+      },
+      storage: {
+        getUrl: vi.fn(async () => "https://storage.example/new-logo"),
+        delete: deleteStorage,
+      },
+    };
+
+    await expect(
+      updateProfileHandler(ctx as never, {
+        publisherId: "publishers:org",
+        displayName: "Shopify",
+        imageStorageId: "storage:new",
+        imageUploadTicket: "publisherImageUploadTickets:1",
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      publisher: expect.objectContaining({
+        _id: "publishers:org",
+        image: "https://storage.example/new-logo",
+      }),
+    });
+    expect(patch).toHaveBeenCalledWith(
+      "publisherImageUploadTickets:1",
+      expect.objectContaining({ storageId: "storage:new", usedAt: expect.any(Number) }),
+    );
+    expect(patch).toHaveBeenCalledWith(
+      "publishers:org",
+      expect.objectContaining({
+        image: "https://storage.example/new-logo",
+        imageStorageId: "storage:new",
+      }),
+    );
+    expect(deleteStorage).toHaveBeenCalledWith("storage:old");
+  });
+
+  it("preserves an existing stored logo during ordinary profile edits", async () => {
+    vi.mocked(getAuthUserId).mockResolvedValue("users:admin" as never);
+    const patch = vi.fn(async () => {});
+    const ctx = {
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === "users:admin") return { _id: id };
+          if (id === "publishers:org") {
+            return {
+              _id: id,
+              kind: "org",
+              handle: "shopify",
+              displayName: "Shopify Labs",
+              image: "https://storage.example/current-logo",
+              imageStorageId: "storage:current",
+            };
+          }
+          return null;
+        }),
+        query: vi.fn((table: string) => {
+          if (table === "publisherMembers") {
+            return {
+              withIndex: vi.fn(() => ({
+                unique: vi.fn().mockResolvedValue({
+                  publisherId: "publishers:org",
+                  userId: "users:admin",
+                  role: "admin",
+                }),
+              })),
+            };
+          }
+          if (table === "officialPublishers") return emptyOfficialPublishersQuery();
+          throw new Error(`unexpected table ${table}`);
+        }),
+        patch,
+        insert: vi.fn(),
+        delete: vi.fn(),
+        replace: vi.fn(),
+        normalizeId: vi.fn(),
+      },
+      storage: {
+        delete: vi.fn(),
+      },
+    };
+
+    await expect(
+      updateProfileHandler(ctx as never, {
+        publisherId: "publishers:org",
+        displayName: "Shopify Labs",
+        image: "https://storage.example/current-logo",
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      publisher: expect.objectContaining({
+        handle: "shopify",
+        image: "https://storage.example/current-logo",
+      }),
+    });
+    expect(patch).toHaveBeenCalledWith(
+      "publishers:org",
+      expect.objectContaining({
+        displayName: "Shopify Labs",
+        image: "https://storage.example/current-logo",
+        imageStorageId: "storage:current",
+      }),
+    );
+  });
+
+  it("rejects direct org profile image URL changes", async () => {
     vi.mocked(getAuthUserId).mockResolvedValue("users:admin" as never);
     const ctx = {
       db: {
@@ -4009,7 +4240,7 @@ describe("publishers membership controls", () => {
           image: "not-a-url",
         } as never,
       ),
-    ).rejects.toThrow("Image must be a valid URL");
+    ).rejects.toThrow("Logo changes require an uploaded image");
   });
 });
 
@@ -4648,6 +4879,65 @@ describe("publisher bootstrap", () => {
     ]);
   });
 
+  it("rejects personal publisher handles containing openclaw", async () => {
+    const inserts: Array<{ table: string; value: Record<string, unknown> }> = [];
+    const ctx = {
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === "users:openclaw-china") {
+            return {
+              _id: id,
+              _creationTime: 1,
+              handle: "openclaw-china",
+              displayName: "Openclaw China",
+              trustedPublisher: false,
+              createdAt: 1,
+              updatedAt: 1,
+            };
+          }
+          return null;
+        }),
+        query: vi.fn((table: string) => {
+          if (table === "publishers") {
+            return {
+              withIndex: vi.fn((indexName: string) => {
+                if (indexName === "by_linked_user") {
+                  return { unique: vi.fn().mockResolvedValue(null) };
+                }
+                if (indexName === "by_handle") {
+                  return { unique: vi.fn().mockResolvedValue(null) };
+                }
+                throw new Error(`unexpected index ${indexName}`);
+              }),
+            };
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
+        insert: vi.fn(async (table: string, value: Record<string, unknown>) => {
+          inserts.push({ table, value });
+          return `${table}:${inserts.length}`;
+        }),
+        patch: vi.fn(),
+      },
+    };
+
+    await expect(
+      ensurePersonalPublisherForUser(
+        ctx as never,
+        {
+          _id: "users:openclaw-china",
+          _creationTime: 1,
+          handle: "openclaw-china",
+          displayName: "Openclaw China",
+          trustedPublisher: false,
+          createdAt: 1,
+          updatedAt: 1,
+        } as never,
+      ),
+    ).rejects.toThrow('Handle "@openclaw-china" is reserved for OpenClaw publishers');
+    expect(inserts).toHaveLength(0);
+  });
+
   it("filters stale personal memberships from mine listings", async () => {
     vi.mocked(getAuthUserId).mockResolvedValue("users:friend" as never);
     const memberships = [
@@ -5051,6 +5341,19 @@ describe("self-serve org publisher creation", () => {
         handle: "opik",
       }),
     ).rejects.toThrow('Publisher "@opik" already exists');
+  });
+
+  it("rejects self-serve org handles containing openclaw", async () => {
+    const { ctx, inserts } = makeCreateOrgPublisherCtx({});
+
+    await expect(
+      createOrgPublisherForUserInternalHandler(ctx as never, {
+        actorUserId: "users:vincent",
+        handle: "openclaw-china",
+        displayName: "Openclaw China",
+      }),
+    ).rejects.toThrow('Handle "@openclaw-china" is reserved for OpenClaw publishers');
+    expect(inserts).toHaveLength(0);
   });
 
   it("rejects creation when the handle belongs to a user or personal publisher", async () => {
@@ -6040,7 +6343,7 @@ describe("legacy publisher migration", () => {
     expect(inserts).toHaveLength(0);
   });
 
-  it("lets admins create a missing org publisher with only the legacy package owner as owner", async () => {
+  it("lets admins create a missing reserved OpenClaw org publisher with only the legacy package owner as owner", async () => {
     vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
 
     const users = new Map<string, Record<string, unknown>>([
@@ -6170,8 +6473,8 @@ describe("legacy publisher migration", () => {
       } as never,
       {
         actorUserId: "users:admin",
-        handle: "opik",
-        displayName: "Opik",
+        handle: "openclaw",
+        displayName: "OpenClaw",
         memberHandle: "vincentkoc",
         memberRole: "owner",
       },
@@ -6179,7 +6482,7 @@ describe("legacy publisher migration", () => {
 
     expect(result).toMatchObject({
       ok: true,
-      handle: "opik",
+      handle: "openclaw",
       created: true,
       member: {
         userId: "users:vincent",
@@ -6190,7 +6493,11 @@ describe("legacy publisher migration", () => {
     expect(inserts).toContainEqual(
       expect.objectContaining({
         table: "publishers",
-        value: expect.objectContaining({ kind: "org", handle: "opik", displayName: "Opik" }),
+        value: expect.objectContaining({
+          kind: "org",
+          handle: "openclaw",
+          displayName: "OpenClaw",
+        }),
       }),
     );
     const memberInserts = inserts.filter(
@@ -6417,7 +6724,7 @@ describe("legacy publisher migration", () => {
     ).rejects.toThrow("Publisher must have at least one owner");
   });
 
-  it("converts a legacy personal publisher into an org and rehomes package ownership", async () => {
+  it("converts a reserved OpenClaw legacy personal publisher into an org with a safe default fallback", async () => {
     vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
 
     const users = new Map<string, Record<string, unknown>>([
@@ -6445,20 +6752,6 @@ describe("legacy publisher migration", () => {
           kind: "user",
           handle: "openclaw",
           displayName: "OpenClaw",
-          linkedUserId: "users:openclaw",
-          trustedPublisher: true,
-          createdAt: 1,
-          updatedAt: 1,
-        },
-      ],
-      [
-        "publishers:openclaw-user",
-        {
-          _id: "publishers:openclaw-user",
-          _creationTime: 1,
-          kind: "user",
-          handle: "openclaw-user",
-          displayName: "OpenClaw User",
           linkedUserId: "users:openclaw",
           trustedPublisher: true,
           createdAt: 1,
@@ -6509,7 +6802,7 @@ describe("legacy publisher migration", () => {
 
     const insert = vi.fn(async (table: string, value: Record<string, unknown>) => {
       if (table === "publishers") {
-        const id = "publishers:openclaw-user";
+        const id = "publishers:user";
         publishers.set(id, { _id: id, _creationTime: 1, ...value });
         return id;
       }
@@ -6667,7 +6960,10 @@ describe("legacy publisher migration", () => {
     const result = await migrateLegacyPublisherHandleToOrgInternalHandler(
       {
         db: {
-          get: vi.fn(async (id: string) => users.get(id) ?? publishers.get(id) ?? null),
+          get: vi.fn(async (...args: string[]) => {
+            const id = args.length === 2 ? args[1] : args[0];
+            return users.get(id) ?? publishers.get(id) ?? null;
+          }),
           query,
           patch,
           insert,
@@ -6679,7 +6975,6 @@ describe("legacy publisher migration", () => {
       {
         actorUserId: "users:admin",
         handle: "openclaw",
-        fallbackUserHandle: "openclaw-user",
         displayName: "OpenClaw",
       } as never,
     );
@@ -6689,15 +6984,15 @@ describe("legacy publisher migration", () => {
       handle: "openclaw",
       orgPublisherId: "publishers:openclaw",
       legacyUserId: "users:openclaw",
-      fallbackUserHandle: "openclaw-user",
-      personalPublisherId: "publishers:openclaw-user",
+      fallbackUserHandle: "user",
+      personalPublisherId: "publishers:user",
       convertedExistingPublisher: true,
       packagesMigrated: 1,
     });
     expect(users.get("users:openclaw")).toEqual(
       expect.objectContaining({
-        handle: "openclaw-user",
-        personalPublisherId: "publishers:openclaw-user",
+        handle: "user",
+        personalPublisherId: "publishers:user",
       }),
     );
     expect(publishers.get("publishers:openclaw")).toEqual(
@@ -6707,10 +7002,10 @@ describe("legacy publisher migration", () => {
         linkedUserId: undefined,
       }),
     );
-    expect(publishers.get("publishers:openclaw-user")).toEqual(
+    expect(publishers.get("publishers:user")).toEqual(
       expect.objectContaining({
         kind: "user",
-        handle: "openclaw-user",
+        handle: "user",
         linkedUserId: "users:openclaw",
       }),
     );

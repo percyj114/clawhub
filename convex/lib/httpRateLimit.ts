@@ -1,9 +1,9 @@
+import { MINUTE, type RateLimitConfig } from "@convex-dev/rate-limiter";
 import { internal } from "../_generated/api";
 import type { Doc } from "../_generated/dataModel";
 import type { ActionCtx } from "../_generated/server";
 import { getOptionalApiTokenUser } from "./apiTokenAuth";
 import { corsHeaders, mergeHeaders } from "./httpHeaders";
-import { RATE_LIMIT_COUNTER_SHARDS, RATE_LIMIT_WINDOW_MS } from "./rateLimitConfig";
 
 export const RATE_LIMITS = {
   read: { ip: 3000, key: 12000, adminKey: 120000 },
@@ -13,18 +13,76 @@ export const RATE_LIMITS = {
   export: { ip: 10, key: 60, adminKey: 60 },
 } as const;
 
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const HTTP_RATE_LIMIT_SHARDS = 16;
+const HTTP_RATE_LIMIT_MIN_SHARD_CAPACITY = 10;
+const HTTP_RATE_LIMIT_KEY_TTL_MS = 24 * 60 * 60 * 1000;
+
 type RateLimitResult = {
   allowed: boolean;
-  remaining: number;
+  // The component does not expose an exact global remaining count for sharded
+  // buckets, so successful responses omit this instead of guessing.
+  remaining?: number;
   limit: number;
   resetAt: number;
+  unavailable?: boolean;
 };
+
+export type ApplyRateLimitResult =
+  | { ok: true; headers: HeadersInit }
+  | { ok: false; response: Response };
+
+type RateLimitKind = keyof typeof RATE_LIMITS;
+type RateLimitSubject = "ip" | "key" | "adminKey";
+type HttpRateLimitName = `${RateLimitKind}${Capitalize<RateLimitSubject>}`;
+type FixedWindowRateLimitConfig = Extract<RateLimitConfig, { kind: "fixed window" }>;
+
+const preappliedRateLimitHeaders = new WeakMap<Request, HeadersInit>();
+
+function fixedWindowRateLimit(rate: number): FixedWindowRateLimitConfig {
+  const shards = Math.max(
+    1,
+    Math.min(HTTP_RATE_LIMIT_SHARDS, Math.floor(rate / HTTP_RATE_LIMIT_MIN_SHARD_CAPACITY)),
+  );
+  return {
+    kind: "fixed window",
+    rate,
+    period: MINUTE,
+    start: 0,
+    shards,
+  };
+}
+
+const HTTP_RATE_LIMIT_CONFIGS = {
+  readIp: fixedWindowRateLimit(RATE_LIMITS.read.ip),
+  readKey: fixedWindowRateLimit(RATE_LIMITS.read.key),
+  readAdminKey: fixedWindowRateLimit(RATE_LIMITS.read.adminKey),
+  writeIp: fixedWindowRateLimit(RATE_LIMITS.write.ip),
+  writeKey: fixedWindowRateLimit(RATE_LIMITS.write.key),
+  writeAdminKey: fixedWindowRateLimit(RATE_LIMITS.write.adminKey),
+  trustedPublishIp: fixedWindowRateLimit(RATE_LIMITS.trustedPublish.ip),
+  trustedPublishKey: fixedWindowRateLimit(RATE_LIMITS.trustedPublish.key),
+  trustedPublishAdminKey: fixedWindowRateLimit(RATE_LIMITS.trustedPublish.adminKey),
+  downloadIp: fixedWindowRateLimit(RATE_LIMITS.download.ip),
+  downloadKey: fixedWindowRateLimit(RATE_LIMITS.download.key),
+  downloadAdminKey: fixedWindowRateLimit(RATE_LIMITS.download.adminKey),
+  exportIp: fixedWindowRateLimit(RATE_LIMITS.export.ip),
+  exportKey: fixedWindowRateLimit(RATE_LIMITS.export.key),
+  exportAdminKey: fixedWindowRateLimit(RATE_LIMITS.export.adminKey),
+} as const satisfies Record<HttpRateLimitName, RateLimitConfig>;
+
+export function markRateLimitApplied(request: Request, headers: HeadersInit): void {
+  preappliedRateLimitHeaders.set(request, headers);
+}
 
 export async function applyRateLimit(
   ctx: ActionCtx,
   request: Request,
-  kind: keyof typeof RATE_LIMITS,
-): Promise<{ ok: true; headers: HeadersInit } | { ok: false; response: Response }> {
+  kind: RateLimitKind,
+): Promise<ApplyRateLimitResult> {
+  const preappliedHeaders = preappliedRateLimitHeaders.get(request);
+  if (preappliedHeaders) return { ok: true, headers: preappliedHeaders };
+
   const auth = await getOptionalApiTokenUser(ctx, request);
   const ip = getClientIp(request) ?? "unknown";
   const ipSource = getClientIpSource(request);
@@ -37,9 +95,11 @@ export async function applyRateLimit(
     const userResult = await checkRateLimit(
       ctx,
       getAuthenticatedRateLimitKey(auth.userId, kind),
-      userLimit,
+      userLimit.name,
+      userLimit.limit,
     );
     const headers = rateHeaders(userResult);
+    if (userResult.unavailable) return rateLimitUnavailable(headers);
     if (!userResult.allowed) {
       console.info("rate_limit_denied", {
         kind,
@@ -71,10 +131,12 @@ export async function applyRateLimit(
   // Anonymous requests remain IP-enforced.
   const ipResult = await checkRateLimit(
     ctx,
-    getAnonymousRateLimitKey(request, kind, ip),
+    getAnonymousRateLimitKey(kind, ip),
+    getHttpRateLimitName(kind, "ip"),
     RATE_LIMITS[kind].ip,
   );
   const headers = rateHeaders(ipResult);
+  if (ipResult.unavailable) return rateLimitUnavailable(headers);
 
   if (!ipResult.allowed) {
     console.info("rate_limit_denied", {
@@ -104,28 +166,28 @@ export async function applyRateLimit(
   return { ok: true, headers };
 }
 
-function getAnonymousRateLimitKey(request: Request, kind: keyof typeof RATE_LIMITS, ip: string) {
+function getAnonymousRateLimitKey(kind: RateLimitKind, ip: string) {
   if (ip !== "unknown") return `ip:${ip}:${kind}`;
-  if (kind !== "download") return `ip:unknown:${kind}`;
-  return `ip:unknown:download:${getDownloadRateLimitScope(request)}`;
+  return `ip:unknown:${kind}`;
 }
 
-function getAuthenticatedRateLimitKey(userId: string, kind: keyof typeof RATE_LIMITS) {
+function getAuthenticatedRateLimitKey(userId: string, kind: RateLimitKind) {
   return `user:${userId}:${kind}`;
 }
 
-function getAuthenticatedRateLimit(
-  kind: keyof typeof RATE_LIMITS,
-  user: Pick<Doc<"users">, "role">,
-) {
-  return user.role === "admin" ? RATE_LIMITS[kind].adminKey : RATE_LIMITS[kind].key;
+function getAuthenticatedRateLimit(kind: RateLimitKind, user: Pick<Doc<"users">, "role">) {
+  const subject = user.role === "admin" ? "adminKey" : "key";
+  return {
+    name: getHttpRateLimitName(kind, subject),
+    limit: RATE_LIMITS[kind][subject],
+  };
 }
 
-export function getClientIp(request: Request) {
+export function getClientIp(request: Request): string | null {
+  if (!shouldTrustClientIpHeaders()) return null;
+
   const cfHeader = request.headers.get("cf-connecting-ip");
   if (cfHeader) return splitFirstIp(cfHeader);
-
-  if (!shouldTrustForwardedIps()) return null;
 
   const forwarded =
     request.headers.get("x-forwarded-for") ??
@@ -136,8 +198,8 @@ export function getClientIp(request: Request) {
 }
 
 function getClientIpSource(request: Request) {
+  if (!shouldTrustClientIpHeaders()) return "none";
   if (request.headers.get("cf-connecting-ip")) return "cf-connecting-ip";
-  if (!shouldTrustForwardedIps()) return "none";
   if (request.headers.get("x-forwarded-for")) return "x-forwarded-for";
   if (request.headers.get("x-real-ip")) return "x-real-ip";
   if (request.headers.get("fly-client-ip")) return "fly-client-ip";
@@ -147,45 +209,62 @@ function getClientIpSource(request: Request) {
 async function checkRateLimit(
   ctx: ActionCtx,
   key: string,
+  name: HttpRateLimitName,
   limit: number,
 ): Promise<RateLimitResult> {
-  // Step 1: Read-only check to avoid write conflicts on denied requests.
-  const status = (await ctx.runQuery(internal.rateLimits.getRateLimitStatusInternal, {
-    key,
-    limit,
-    windowMs: RATE_LIMIT_WINDOW_MS,
-  })) as RateLimitResult;
-
-  if (!status.allowed) {
-    return status;
-  }
-
-  // Step 2: Consume with a mutation only when still allowed.
-  let result: { allowed: boolean; remaining: number };
+  const now = Date.now();
   try {
-    result = (await ctx.runMutation(internal.rateLimits.consumeRateLimitInternal, {
+    const status = await ctx.runMutation(internal.rateLimits.consumeHttpRateLimitKeyInternal, {
+      name,
       key,
-      limit,
-      windowMs: RATE_LIMIT_WINDOW_MS,
-      shard: Math.floor(Math.random() * RATE_LIMIT_COUNTER_SHARDS),
-    })) as { allowed: boolean; remaining: number };
-  } catch (error) {
-    if (isRateLimitWriteConflict(error)) {
+      config: HTTP_RATE_LIMIT_CONFIGS[name],
+      now,
+      ttlMs: HTTP_RATE_LIMIT_KEY_TTL_MS,
+    });
+    if (!status.ok) {
       return {
         allowed: false,
         remaining: 0,
-        limit: status.limit,
-        resetAt: status.resetAt,
+        limit,
+        resetAt: now + status.retryAfter,
       };
     }
-    throw error;
-  }
 
+    return {
+      allowed: true,
+      limit,
+      resetAt: getCurrentWindowResetAt(now),
+    };
+  } catch (error) {
+    if (!isRateLimitWriteConflict(error)) throw error;
+    return {
+      allowed: false,
+      remaining: 0,
+      limit,
+      resetAt: now + 1000,
+      unavailable: true,
+    };
+  }
+}
+
+function rateLimitUnavailable(headers: HeadersInit): Extract<ApplyRateLimitResult, { ok: false }> {
+  console.warn("rate_limit_unavailable", {
+    reason: "counter_write_contention",
+  });
   return {
-    allowed: result.allowed,
-    remaining: Math.max(0, status.remaining - 1),
-    limit: status.limit,
-    resetAt: status.resetAt,
+    ok: false,
+    response: new Response("Rate limit temporarily unavailable", {
+      status: 503,
+      headers: mergeHeaders(
+        {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-store",
+          "Retry-After": "1",
+        },
+        headers,
+        corsHeaders(),
+      ),
+    }),
   };
 }
 
@@ -193,15 +272,27 @@ function rateHeaders(result: RateLimitResult): HeadersInit {
   const nowMs = Date.now();
   const resetSeconds = Math.ceil(result.resetAt / 1000);
   const resetDelaySeconds = Math.max(1, Math.ceil((result.resetAt - nowMs) / 1000));
-  return {
+  const headers: Record<string, string> = {
     "X-RateLimit-Limit": String(result.limit),
-    "X-RateLimit-Remaining": String(result.remaining),
     "X-RateLimit-Reset": String(resetSeconds),
     "RateLimit-Limit": String(result.limit),
-    "RateLimit-Remaining": String(result.remaining),
     "RateLimit-Reset": String(resetDelaySeconds),
-    ...(result.allowed ? {} : { "Retry-After": String(resetDelaySeconds) }),
   };
+  if (result.remaining !== undefined) {
+    headers["X-RateLimit-Remaining"] = String(result.remaining);
+    headers["RateLimit-Remaining"] = String(result.remaining);
+  }
+  if (!result.allowed) headers["Retry-After"] = String(resetDelaySeconds);
+  return headers;
+}
+
+function getCurrentWindowResetAt(now: number) {
+  return Math.floor(now / RATE_LIMIT_WINDOW_MS) * RATE_LIMIT_WINDOW_MS + RATE_LIMIT_WINDOW_MS;
+}
+
+function getHttpRateLimitName(kind: RateLimitKind, subject: RateLimitSubject): HttpRateLimitName {
+  const suffix = subject === "ip" ? "Ip" : subject === "key" ? "Key" : "AdminKey";
+  return `${kind}${suffix}` as HttpRateLimitName;
 }
 
 export function parseBearerToken(request: Request) {
@@ -220,32 +311,10 @@ function splitFirstIp(header: string | null) {
   return trimmed || null;
 }
 
-function getDownloadRateLimitScope(request: Request) {
-  try {
-    const url = new URL(request.url);
-    const path = normalizeRateLimitKeyPart(url.pathname.replace(/\/{2,}/g, "/") || "/");
-    const params = new URLSearchParams();
-
-    for (const name of ["slug", "version", "tag"] as const) {
-      const value = url.searchParams.get(name)?.trim();
-      if (value) params.set(name, normalizeRateLimitKeyPart(value));
-    }
-
-    const query = params.toString();
-    return query ? `${path}?${query}` : path;
-  } catch {
-    return "unknown";
-  }
-}
-
-function normalizeRateLimitKeyPart(value: string) {
-  return value.slice(0, 500);
-}
-
-function shouldTrustForwardedIps() {
+function shouldTrustClientIpHeaders() {
   const value = (process.env.TRUST_FORWARDED_IPS ?? "").trim().toLowerCase();
-  // Hardening default: CF-only. Forwarded headers are trivial to spoof unless you
-  // control the trusted proxy layer.
+  // Direct Convex HTTP endpoints can be reached without ClawHub's edge. Trust
+  // client IP headers only when the deployment is explicitly behind that edge.
   if (!value) return false;
   if (value === "1" || value === "true" || value === "yes") return true;
   return false;
@@ -254,7 +323,7 @@ function shouldTrustForwardedIps() {
 function isRateLimitWriteConflict(error: unknown) {
   if (!(error instanceof Error)) return false;
   return (
-    (error.message.includes("rateLimitCounters") || error.message.includes("rateLimits")) &&
+    (error.message.includes("rateLimits") || error.message.includes("httpRateLimitKeys")) &&
     error.message.includes("changed while this mutation was being run")
   );
 }

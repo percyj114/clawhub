@@ -76,6 +76,7 @@ import {
   MAX_RAW_FILE_BYTES,
   getPathSegments,
   json,
+  parsePackagePathSegments,
   publicApiOrigin,
   resolveTagsBatch,
   requireApiTokenUserOrResponse,
@@ -309,7 +310,13 @@ async function getOptionalViewerUserIdForRequest(ctx: ActionCtx, request: Reques
 const PACKAGE_FAMILY_VALUES = ["skill", "code-plugin", "bundle-plugin"] as const;
 const PLUGIN_EXPORT_FAMILY_VALUES = ["code-plugin", "bundle-plugin"] as const;
 const PACKAGE_CHANNEL_VALUES = ["official", "community", "private"] as const;
-const PACKAGE_LIST_SORT_VALUES = ["updated", "recommended", "downloads", "installs"] as const;
+const PACKAGE_LIST_SORT_VALUES = [
+  "updated",
+  "recommended",
+  "downloads",
+  "installs",
+  "trending",
+] as const;
 const PACKAGE_SCAN_STATUS_VALUES = [
   "clean",
   "suspicious",
@@ -1586,6 +1593,13 @@ async function listPackages(
       rate.headers,
     );
   }
+  if (effectiveSort === "trending" && includeSkills) {
+    return text(
+      "Trending sort is only supported for plugin package endpoints; use /api/v1/skills?sort=trending for skills.",
+      400,
+      rate.headers,
+    );
+  }
 
   if (effectiveFamily === "skill") {
     const cursor = isLegacyInstallSortRequest
@@ -1730,6 +1744,32 @@ async function listPackages(
       {
         items,
         nextCursor: isDoneAll ? null : encodeUnifiedCatalogCursor(nextState),
+      },
+      200,
+      rate.headers,
+    );
+  }
+
+  if (!effectiveFamily && options?.pluginFamilies?.length && effectiveSort === "trending") {
+    const result = await runQueryRef<{
+      page: CatalogListItem[];
+      isDone: boolean;
+      continueCursor: string | null;
+    }>(ctx, internalRefs.packages.listPageForViewerInternal, {
+      channel: channelParam.value,
+      isOfficial: isOfficial.value,
+      highlightedOnly: highlightedOnly || undefined,
+      category,
+      topic,
+      excludedScanStatuses: excludedScanStatuses.value,
+      sort: "trending",
+      viewerUserId: viewerUserId ?? undefined,
+      paginationOpts: { cursor: rawCursor, numItems: limit },
+    });
+    return json(
+      {
+        items: result.page,
+        nextCursor: result.isDone ? null : result.continueCursor,
       },
       200,
       rate.headers,
@@ -4056,44 +4096,6 @@ function parseNpmMirrorPath(request: Request) {
   const segments = getPathSegments(request, "/api/npm/");
   if (segments.length === 0) return null;
   return parsePackagePathSegments(segments);
-}
-
-function decodePackagePathSegment(segment: string) {
-  let decoded = segment;
-  for (let i = 0; i < 2 && decoded.includes("%"); i += 1) {
-    try {
-      const next = decodeURIComponent(decoded);
-      if (next === decoded) break;
-      decoded = next;
-    } catch {
-      break;
-    }
-  }
-  return decoded;
-}
-
-function parsePackagePathSegments(segments: string[]) {
-  if (segments.length === 0) return null;
-  const firstSegment = decodePackagePathSegment(segments[0]!);
-  if (firstSegment.startsWith("@")) {
-    if (firstSegment.includes("/")) {
-      const [scope, name, ...encodedRest] = firstSegment.split("/");
-      if (!scope || !name) return null;
-      return {
-        packageName: `${scope}/${name}`,
-        rest: [...encodedRest, ...segments.slice(1)],
-      };
-    }
-    if (segments.length < 2) return null;
-    return {
-      packageName: `${firstSegment}/${decodePackagePathSegment(segments[1]!)}`,
-      rest: segments.slice(2),
-    };
-  }
-  return {
-    packageName: firstSegment,
-    rest: segments.slice(1),
-  };
 }
 
 type NpmPackReleasePage = {

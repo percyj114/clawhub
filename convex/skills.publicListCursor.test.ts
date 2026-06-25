@@ -265,6 +265,43 @@ describe("public skill list deterministic cursors", () => {
     expect(getPageMock).not.toHaveBeenCalled();
   });
 
+  it("includes official publisher status on browse owners", async () => {
+    const digest = makeSearchDigest({
+      ownerPublisherId: "publishers:openclaw",
+      ownerHandle: "openclaw",
+      ownerKind: "org",
+      ownerName: undefined,
+      ownerDisplayName: "OpenClaw",
+    });
+    getPageMock.mockResolvedValueOnce({
+      page: [digest],
+      hasMore: false,
+      indexKeys: [[undefined, digest.updatedAt, digest._id]],
+    });
+
+    const result = await listPublicPageV4Handler(
+      {
+        db: {
+          query: vi.fn((table: string) => {
+            if (table !== "officialPublishers") {
+              throw new Error(`Unexpected table: ${table}`);
+            }
+            return {
+              withIndex: vi.fn(() => ({
+                unique: vi.fn().mockResolvedValue({ publisherId: "publishers:openclaw" }),
+              })),
+            };
+          }),
+        },
+      } as never,
+      { sort: "updated", numItems: 10 },
+    );
+
+    expect((result.page as Array<{ owner?: { official?: boolean } }>)[0]?.owner?.official).toBe(
+      true,
+    );
+  });
+
   it("uses the topic digest index for topic-filtered recommended browse", async () => {
     const digest = makeSearchDigest({
       skillId: "skills:calendar",
@@ -1272,6 +1309,97 @@ describe("public skill list deterministic cursors", () => {
     expect(result.items[0]).toMatchObject({ latestVersion: null });
   });
 
+  it("falls back to the general trending snapshot during non-suspicious rollout", async () => {
+    const digest = makeSearchDigest();
+    const requestedKinds: string[] = [];
+    const ctx = {
+      db: {
+        query: vi.fn((table: string) => {
+          if (table === "skillLeaderboards") {
+            return {
+              withIndex: vi.fn(
+                (
+                  _indexName: string,
+                  builder: (q: { eq: (field: string, value: string) => unknown }) => unknown,
+                ) => {
+                  const queryBuilder = {
+                    eq: (_field: string, value: string) => {
+                      requestedKinds.push(value);
+                      return queryBuilder;
+                    },
+                  };
+                  builder(queryBuilder);
+                  return {
+                    order: () => ({
+                      first: async () =>
+                        requestedKinds.at(-1) === "trending_non_suspicious"
+                          ? null
+                          : { items: [{ skillId: "skills:demo" }] },
+                    }),
+                  };
+                },
+              ),
+            };
+          }
+          if (table === "skillSearchDigest") {
+            return {
+              withIndex: () => ({
+                unique: async () => digest,
+              }),
+            };
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
+      },
+    };
+
+    const result = await listPublicTrendingPageHandler(ctx as never, {
+      limit: 10,
+      nonSuspiciousOnly: true,
+    });
+
+    expect(requestedKinds).toEqual(["trending_non_suspicious", "trending"]);
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]).toMatchObject({ skill: { slug: "demo" } });
+  });
+
+  it("warms trending with recent public skills before the first snapshot exists", async () => {
+    const digest = makeSearchDigest({ updatedAt: 12 });
+    const ctx = {
+      db: {
+        query: vi.fn((table: string) => {
+          if (table === "skillLeaderboards") {
+            return {
+              withIndex: () => ({
+                order: () => ({
+                  first: async () => null,
+                }),
+              }),
+            };
+          }
+          if (table === "skillSearchDigest") {
+            return {
+              withIndex: () => ({
+                order: () => ({
+                  take: async () => [digest],
+                }),
+              }),
+            };
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
+      },
+    };
+
+    const result = await listPublicTrendingPageHandler(ctx as never, {
+      limit: 10,
+      nonSuspiciousOnly: true,
+    });
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]).toMatchObject({ skill: { slug: "demo" } });
+  });
+
   it("keeps verified legacy trending latest versions without owner markers", async () => {
     const legacyDigest = makeSearchDigest({
       latestVersionSkillId: undefined,
@@ -1486,6 +1614,13 @@ describe("skills.listRelatedByCategory", () => {
       return { order };
     });
     const query = vi.fn((table: string) => {
+      if (table === "officialPublishers") {
+        return {
+          withIndex: vi.fn(() => ({
+            unique: vi.fn().mockResolvedValue(null),
+          })),
+        };
+      }
       if (table !== "skillSearchDigest") throw new Error(`Unexpected query table: ${table}`);
       return { withIndex };
     });
@@ -1555,6 +1690,13 @@ describe("skills.listRelatedByCategory", () => {
       return { order };
     });
     const query = vi.fn((table: string) => {
+      if (table === "officialPublishers") {
+        return {
+          withIndex: vi.fn(() => ({
+            unique: vi.fn().mockResolvedValue(null),
+          })),
+        };
+      }
       if (table !== "skillSearchDigest") throw new Error(`Unexpected query table: ${table}`);
       return { withIndex };
     });
@@ -1584,7 +1726,16 @@ describe("skills.listRelatedByCategory", () => {
       builder({ eq });
       return { order };
     });
-    const query = vi.fn(() => ({ withIndex }));
+    const query = vi.fn((table: string) => {
+      if (table === "officialPublishers") {
+        return {
+          withIndex: vi.fn(() => ({
+            unique: vi.fn().mockResolvedValue(null),
+          })),
+        };
+      }
+      return { withIndex };
+    });
 
     const result = await listRelatedByCategoryHandler({ db: { query } } as never, {
       skillId: "skills:current",

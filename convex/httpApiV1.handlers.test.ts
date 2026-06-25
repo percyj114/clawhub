@@ -1,4 +1,5 @@
 /* @vitest-environment node */
+import type { RateLimitArgs, RateLimitReturns } from "@convex-dev/rate-limiter";
 import { gzipSync, strFromU8, unzipSync } from "fflate";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -41,15 +42,18 @@ const { __handlers } = await import("./httpApiV1");
 
 type ActionCtx = import("./_generated/server").ActionCtx;
 
-type RateLimitArgs = { key: string; limit: number; windowMs: number };
-
 function isRateLimitArgs(args: unknown): args is RateLimitArgs {
   if (!args || typeof args !== "object") return false;
   const value = args as Record<string, unknown>;
+  const config = value.config as Record<string, unknown> | undefined;
   return (
-    typeof value.key === "string" &&
-    typeof value.limit === "number" &&
-    typeof value.windowMs === "number"
+    typeof value.name === "string" &&
+    (!("key" in value) || typeof value.key === "string") &&
+    !!config &&
+    typeof config === "object" &&
+    (config.kind === "fixed window" || config.kind === "token bucket") &&
+    typeof config.rate === "number" &&
+    typeof config.period === "number"
   );
 }
 
@@ -229,31 +233,26 @@ function makeCtx(partial: Record<string, unknown>) {
       ? (partial.runQuery as (query: unknown, args: Record<string, unknown>) => unknown)
       : null;
   const runQuery = vi.fn(async (query: unknown, args: Record<string, unknown>) => {
-    if (isRateLimitArgs(args)) {
-      return rateLimitStatus?.(args) ?? { ...okRate(), limit: args.limit };
-    }
     return partialRunQuery ? await partialRunQuery(query, args) : null;
   });
   const runMutation =
     typeof partial.runMutation === "function"
       ? partial.runMutation
-      : vi.fn().mockResolvedValue(okRate());
+      : vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {
+          if (isRateLimitArgs(args)) return rateLimitStatus?.(args) ?? okRate();
+          return okRate();
+        });
 
   return { ...partial, runQuery, runMutation } as unknown as ActionCtx;
 }
 
-const okRate = () => ({
-  allowed: true,
-  remaining: 10,
-  limit: 100,
-  resetAt: Date.now() + 60_000,
+const okRate = (): RateLimitReturns => ({
+  ok: true,
 });
 
-const blockedRate = () => ({
-  allowed: false,
-  remaining: 0,
-  limit: 100,
-  resetAt: Date.now() + 60_000,
+const blockedRate = (): RateLimitReturns => ({
+  ok: false,
+  retryAfter: 60_000,
 });
 
 beforeEach(() => {
@@ -378,7 +377,7 @@ describe("httpApiV1 handlers", () => {
     } as never);
 
     const runMutation = vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {
-      if (isRateLimitArgs(args)) return { ...okRate(), limit: args.limit };
+      if (isRateLimitArgs(args)) return okRate();
       return { ok: true };
     });
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
@@ -399,7 +398,8 @@ describe("httpApiV1 handlers", () => {
       expect.anything(),
       expect.objectContaining({
         key: "user:users:actor:export",
-        limit: RATE_LIMITS.export.key,
+        name: "exportKey",
+        config: expect.objectContaining({ rate: RATE_LIMITS.export.key }),
       }),
     );
   });
@@ -1453,7 +1453,9 @@ describe("httpApiV1 handlers", () => {
     if (response.status !== 200) throw new Error(await response.text());
 
     const slugCalls = runMutation.mock.calls.filter(([, args]) => hasSlugArgs(args));
-    const packageCalls = runMutation.mock.calls.filter(([, args]) => hasPackageNameArgs(args));
+    const packageCalls = runMutation.mock.calls.filter(
+      ([, args]) => hasPackageNameArgs(args) && !isRateLimitArgs(args),
+    );
     expect(slugCalls).toHaveLength(1);
     expect(slugCalls[0]?.[1]).toMatchObject({
       actorUserId: "users:admin",
@@ -2005,18 +2007,16 @@ describe("httpApiV1 handlers", () => {
   });
 
   it("search rate limits", async () => {
-    const runMutation = vi.fn().mockResolvedValue(blockedRate());
     const response = await __handlers.searchSkillsV1Handler(
-      makeCtx({ runAction: vi.fn(), runMutation }),
+      makeCtx({ runAction: vi.fn(), rateLimitStatus: () => blockedRate() }),
       new Request("https://example.com/api/v1/search?q=test"),
     );
     expect(response.status).toBe(429);
   });
 
   it("429 Retry-After is a relative delay, not an absolute epoch", async () => {
-    const runMutation = vi.fn().mockResolvedValue(blockedRate());
     const response = await __handlers.searchSkillsV1Handler(
-      makeCtx({ runAction: vi.fn(), runMutation }),
+      makeCtx({ runAction: vi.fn(), rateLimitStatus: () => blockedRate() }),
       new Request("https://example.com/api/v1/search?q=test"),
     );
     expect(response.status).toBe(429);
@@ -8548,7 +8548,8 @@ describe("httpApiV1 handlers", () => {
     );
     expect(findRateLimitCallArgs(runMutation)).toMatchObject({
       key: expect.stringMatching(/^ip:/),
-      limit: RATE_LIMITS.read.ip,
+      name: "readIp",
+      config: expect.objectContaining({ rate: RATE_LIMITS.read.ip }),
     });
     expect(response.headers.get("RateLimit-Limit")).toBeTruthy();
   });
@@ -12631,6 +12632,7 @@ describe("httpApiV1 handlers", () => {
   });
 
   it("npm mirror tarball downloads record package installs and download metrics", async () => {
+    vi.stubEnv("TRUST_FORWARDED_IPS", "true");
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
       if ("name" in args && !("paginationOpts" in args)) {
         return {
@@ -12927,7 +12929,8 @@ describe("httpApiV1 handlers", () => {
     expect(response.headers.get("RateLimit-Limit")).toBeTruthy();
     expect(findRateLimitCallArgs(runMutation)).toMatchObject({
       key: expect.stringMatching(/^ip:/),
-      limit: RATE_LIMITS.download.ip,
+      name: "downloadIp",
+      config: expect.objectContaining({ rate: RATE_LIMITS.download.ip }),
     });
   });
 
@@ -12987,7 +12990,8 @@ describe("httpApiV1 handlers", () => {
     expect(response.headers.get("RateLimit-Limit")).toBeTruthy();
     expect(findRateLimitCallArgs(runMutation)).toMatchObject({
       key: expect.stringMatching(/^ip:/),
-      limit: RATE_LIMITS.read.ip,
+      name: "readIp",
+      config: expect.objectContaining({ rate: RATE_LIMITS.read.ip }),
     });
   });
 
@@ -13048,6 +13052,7 @@ describe("httpApiV1 handlers", () => {
   });
 
   it("package download uses a package/ root without registry metadata", async () => {
+    vi.stubEnv("TRUST_FORWARDED_IPS", "true");
     const runMutation = vi.fn().mockResolvedValue(okRate());
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
       if ("name" in args) {
@@ -13202,6 +13207,7 @@ describe("httpApiV1 handlers", () => {
   });
 
   it("package downloads succeed and record download metrics", async () => {
+    vi.stubEnv("TRUST_FORWARDED_IPS", "true");
     const runMutation = vi.fn().mockResolvedValue(okRate());
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
       if ("name" in args) {
@@ -13590,7 +13596,8 @@ describe("httpApiV1 handlers", () => {
     expect(response.headers.get("RateLimit-Limit")).toBeTruthy();
     expect(findRateLimitCallArgs(runMutation)).toMatchObject({
       key: "user:users:1:write",
-      limit: RATE_LIMITS.write.key,
+      name: "writeKey",
+      config: expect.objectContaining({ rate: RATE_LIMITS.write.key }),
     });
     expect(runAction).toHaveBeenCalledWith(
       expect.anything(),
@@ -14259,7 +14266,8 @@ describe("httpApiV1 handlers", () => {
       expect.anything(),
       expect.objectContaining({
         key: "ip:unknown:trustedPublish",
-        limit: RATE_LIMITS.trustedPublish.ip,
+        name: "trustedPublishIp",
+        config: expect.objectContaining({ rate: RATE_LIMITS.trustedPublish.ip }),
       }),
     );
     expect(runMutation).toHaveBeenCalledWith(
