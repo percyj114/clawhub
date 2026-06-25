@@ -25,7 +25,7 @@ export async function resolveClawdbotDefaultWorkspace(): Promise<string | null> 
   );
   if (defaultsWorkspace) return defaultsWorkspace;
 
-  const listedAgents = config?.agents?.list ?? [];
+  const listedAgents = getAgentList(config);
   const defaultAgent =
     listedAgents.find((entry) => entry.default) ??
     listedAgents.find((entry) => entry.id === "main");
@@ -37,7 +37,7 @@ export async function resolveClawdbotDefaultWorkspace(): Promise<string | null> 
     openclawConfig.agents?.defaults?.workspace ?? openclawConfig.agent?.workspace ?? "",
   );
   if (openclawDefaults) return openclawDefaults;
-  const openclawAgents = openclawConfig.agents?.list ?? [];
+  const openclawAgents = getAgentList(openclawConfig);
   const openclawDefaultAgent =
     openclawAgents.find((entry) => entry.default) ??
     openclawAgents.find((entry) => entry.id === "main");
@@ -69,13 +69,23 @@ function resolveOpenclawConfigPath() {
   return join(resolveOpenclawStateDir(), "openclaw.json");
 }
 
-function resolveUserPath(input: string) {
+function resolveUserPath(input: unknown) {
+  if (typeof input !== "string") return "";
   const trimmed = input.trim();
   if (!trimmed) return "";
   if (trimmed.startsWith("~")) {
     return resolve(trimmed.replace(/^~(?=$|[\\/])/, resolveHome()));
   }
   return resolve(trimmed);
+}
+
+function getAgentList(config: ClawdbotConfig | null) {
+  const list = config?.agents?.list;
+  return Array.isArray(list) ? list.filter(isRecord) : [];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function readClawdbotConfig(): Promise<ClawdbotConfig | null> {

@@ -145,4 +145,39 @@ describe("resolveClawdbotDefaultWorkspace", () => {
     const resolvedWorkspace = await resolveClawdbotDefaultWorkspace();
     expect(resolvedWorkspace).toBe(resolve(workspace));
   });
+
+  it("ignores malformed clawdbot values and falls back to OpenClaw", async () => {
+    const base = await mkdtemp(join(tmpdir(), "clawhub-clawdbot-malformed-"));
+    const configPath = join(base, "clawdbot.json");
+    const openclawConfigPath = join(base, "openclaw.json");
+    const workspace = join(base, "openclaw-main");
+
+    process.env.CLAWDBOT_CONFIG_PATH = configPath;
+    process.env.OPENCLAW_CONFIG_PATH = openclawConfigPath;
+
+    await writeFile(
+      configPath,
+      "{ agents: { defaults: { workspace: 123 }, list: { default: true } } }",
+      "utf8",
+    );
+    await writeFile(
+      openclawConfigPath,
+      `{ agents: { defaults: { workspace: "${workspace}" } } }`,
+      "utf8",
+    );
+
+    await expect(resolveClawdbotDefaultWorkspace()).resolves.toBe(resolve(workspace));
+  });
+
+  it("ignores malformed agent entries without throwing", async () => {
+    const base = await mkdtemp(join(tmpdir(), "clawhub-clawdbot-malformed-list-"));
+    const configPath = join(base, "clawdbot.json");
+
+    process.env.CLAWDBOT_CONFIG_PATH = configPath;
+    process.env.OPENCLAW_CONFIG_PATH = join(base, "missing-openclaw.json");
+
+    await writeFile(configPath, "{ agents: { list: [null, 123, { workspace: null }] } }", "utf8");
+
+    await expect(resolveClawdbotDefaultWorkspace()).resolves.toBeNull();
+  });
 });
