@@ -5,6 +5,11 @@ set -euo pipefail
 mode="${1:-}"
 publish_target="${2:-}"
 
+if [[ "$#" -gt 2 ]]; then
+  echo "usage: bash scripts/clawhub-cli-npm-publish.sh --publish [package.tgz]" >&2
+  exit 2
+fi
+
 if [[ "${mode}" != "--publish" ]]; then
   echo "usage: bash scripts/clawhub-cli-npm-publish.sh --publish [package.tgz]" >&2
   exit 2
