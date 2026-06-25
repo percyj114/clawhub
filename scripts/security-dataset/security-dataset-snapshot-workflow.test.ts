@@ -1,0 +1,52 @@
+/* @vitest-environment node */
+import { readFile } from "node:fs/promises";
+import { describe, expect, it } from "vitest";
+import { parse as parseYaml } from "yaml";
+
+describe("security-dataset-snapshot workflow", () => {
+  it("keeps the scheduled dataset snapshot below the runner registration budget", async () => {
+    const workflow = parseYaml(
+      await readFile(".github/workflows/security-dataset-snapshot.yml", "utf8"),
+    ) as {
+      jobs: {
+        "export-security-dataset-shards": {
+          strategy?: { "max-parallel"?: number };
+        };
+        "plan-security-dataset": {
+          env?: Record<string, unknown>;
+          steps: Array<{ id?: string; run?: string }>;
+        };
+      };
+      on?: {
+        workflow_dispatch?: {
+          inputs?: Record<string, { default?: string }>;
+        };
+      };
+    };
+
+    const planJob = workflow.jobs["plan-security-dataset"];
+    const exportJob = workflow.jobs["export-security-dataset-shards"];
+    const planStep = planJob.steps.find((step) => step.id === "plan");
+
+    expect(workflow.on?.workflow_dispatch?.inputs?.shards?.default).toBe("12");
+    expect(planJob.env?.SNAPSHOT_SHARDS).toBe("${{ inputs.shards || '12' }}");
+    expect(planJob.env?.SNAPSHOT_MAX_SHARDS_PER_SOURCE).toBe(
+      "${{ vars.SECURITY_DATASET_MAX_SHARDS_PER_SOURCE || '16' }}",
+    );
+    expect(planJob.env?.SNAPSHOT_MAX_MATRIX_JOBS).toBe(
+      "${{ vars.SECURITY_DATASET_MAX_MATRIX_JOBS || '32' }}",
+    );
+    expect(planJob.steps.find((step) => step.run?.includes("Maximum matrix jobs"))?.run).toContain(
+      "requested ${shards} shards per source kind",
+    );
+    expect(planJob.steps.find((step) => step.run?.includes("Maximum matrix jobs"))?.run).toContain(
+      "BigInt(shards) > BigInt(maxShards)",
+    );
+    expect(planJob.steps.find((step) => step.run?.includes("Maximum matrix jobs"))?.run).toContain(
+      "SECURITY_DATASET_MAX_MATRIX_JOBS must be a positive integer",
+    );
+    expect(planStep?.run).toContain("planned ${shardCount} dataset shard jobs");
+    expect(planStep?.run).toContain("BigInt(shardCount) > BigInt(maxJobs)");
+    expect(exportJob.strategy?.["max-parallel"]).toBe(12);
+  });
+});
