@@ -58,6 +58,18 @@ The full `bun run test:e2e` suite includes token-backed CLI flows. Keep that for
 local or secret-backed validation; PR CI should not require a developer auth
 token or a local global ClawHub config.
 
+## Maintenance Jobs
+
+`Security Dataset Snapshot` exports live production security-review data for the
+sanitized Hugging Face dataset. Keep its default fanout small enough that a
+nightly run cannot dominate the org-level GitHub runner-registration bucket:
+12 created-at shards per source kind, at most 32 planned matrix jobs, and
+`max-parallel: 12`. Manual dispatches are also capped before shard planning, so a
+large input cannot allocate a huge matrix before the guard runs. This workflow
+publishes a complete replacement snapshot, so do not run overlapping dispatches
+as a backfill strategy; make any higher-fanout backfill a deliberate temporary
+workflow change with its own capacity plan.
+
 ## Required Checks
 
 GitHub rulesets should require these status checks on `main`:

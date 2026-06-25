@@ -38,7 +38,7 @@ on:
       shards:
         description: "Created-at shards per source kind"
         required: true
-        default: "128"
+        default: "12"
   schedule:
     - cron: "17 9 * * *"
 
@@ -70,7 +70,9 @@ jobs:
       SNAPSHOT_MIN_PAGE_SIZE: ${{ inputs['min-page-size'] || '1' }}
       SNAPSHOT_BATCH_PAGES: ${{ inputs['batch-pages'] || '1' }}
       SNAPSHOT_CONCURRENCY: ${{ inputs.concurrency || '1' }}
-      SNAPSHOT_SHARDS: ${{ inputs.shards || '128' }}
+      SNAPSHOT_SHARDS: ${{ inputs.shards || '12' }}
+      SNAPSHOT_MAX_SHARDS_PER_SOURCE: ${{ vars.SECURITY_DATASET_MAX_SHARDS_PER_SOURCE || '16' }}
+      SNAPSHOT_MAX_MATRIX_JOBS: ${{ vars.SECURITY_DATASET_MAX_MATRIX_JOBS || '32' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -88,6 +90,27 @@ jobs:
           echo "Hugging Face repo: $HF_DATASET_REPO"
           echo "Hugging Face revision: $HF_REVISION"
           echo "Shard count per source kind: $SNAPSHOT_SHARDS"
+          echo "Maximum shards per source kind: $SNAPSHOT_MAX_SHARDS_PER_SOURCE"
+          echo "Maximum matrix jobs: $SNAPSHOT_MAX_MATRIX_JOBS"
+          if [[ ! "$SNAPSHOT_SHARDS" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::shards must be a positive integer"
+            exit 1
+          fi
+          if [[ ! "$SNAPSHOT_MAX_SHARDS_PER_SOURCE" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::SECURITY_DATASET_MAX_SHARDS_PER_SOURCE must be a positive integer"
+            exit 1
+          fi
+          if [[ ! "$SNAPSHOT_MAX_MATRIX_JOBS" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::SECURITY_DATASET_MAX_MATRIX_JOBS must be a positive integer"
+            exit 1
+          fi
+          bun -e '
+          const [shards, maxShards] = process.argv.slice(1);
+          if (BigInt(shards) > BigInt(maxShards)) {
+            console.error(`::error::requested ${shards} shards per source kind, above SECURITY_DATASET_MAX_SHARDS_PER_SOURCE=${maxShards}`);
+            process.exit(1);
+          }
+          ' "$SNAPSHOT_SHARDS" "$SNAPSHOT_MAX_SHARDS_PER_SOURCE"
 
       - name: Plan live export shards
         id: plan
@@ -107,6 +130,14 @@ jobs:
             --concurrency "$SNAPSHOT_CONCURRENCY" \
             --shards "$SNAPSHOT_SHARDS" \
             --write-shard-matrix "$matrix_path"
+          shard_count="$(jq '.include | length' "$matrix_path")"
+          bun -e '
+          const [shardCount, maxJobs] = process.argv.slice(1);
+          if (BigInt(shardCount) > BigInt(maxJobs)) {
+            console.error(`::error::planned ${shardCount} dataset shard jobs, above SECURITY_DATASET_MAX_MATRIX_JOBS=${maxJobs}`);
+            process.exit(1);
+          }
+          ' "$shard_count" "$SNAPSHOT_MAX_MATRIX_JOBS"
           echo "source_snapshot_id=$source_snapshot_id" >> "$GITHUB_OUTPUT"
           echo "matrix=$(jq -c . "$matrix_path")" >> "$GITHUB_OUTPUT"
           jq '{shard_count: (.include | length), first: .include[0], last: .include[-1]}' "$matrix_path"
