@@ -810,6 +810,18 @@ export async function autoBanPublisherAbuseCandidatesPageInternalHandler(
   ctx: MutationCtx,
   args: { batchSize?: number; cursor?: string },
 ): Promise<PublisherAbuseAutobanPageResult> {
+  if (!(await getPublisherAbuseAutobanEnabled(ctx))) {
+    return {
+      ok: true,
+      processed: 0,
+      warned: 0,
+      banned: 0,
+      alreadyBanned: 0,
+      skipped: 0,
+      isDone: true,
+    };
+  }
+
   const batchSize = clampInt(
     args.batchSize ?? DEFAULT_AUTOBAN_BATCH_SIZE,
     1,
@@ -930,17 +942,6 @@ export async function autoBanPublisherAbuseCandidatesPageInternalHandler(
     const linkedUserAlreadyInactive = Boolean(targetUser.deletedAt || targetUser.deactivatedAt);
     const warnedCandidateIsReadyForBan =
       linkedUserAlreadyInactive || isPublisherAbuseWarningReadyForBan(nomination, score, now);
-    if (!(await getPublisherAbuseAutobanEnabled(ctx))) {
-      return {
-        ok: true,
-        processed: warned + banned + alreadyBanned + skipped,
-        warned,
-        banned,
-        alreadyBanned,
-        skipped,
-        isDone: true,
-      };
-    }
 
     if (!warnedCandidateIsReadyForBan) {
       if (

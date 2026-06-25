@@ -1357,67 +1357,19 @@ describe("publisher abuse dry-run persistence", () => {
   });
 
   it("does not warn or ban candidates when the page sees autobans disabled", async () => {
-    const nomination = {
-      ...makeNomination({
-        _id: "publisherAbuseReviewNominations:candidate",
-        ownerKey: "publisher:publishers:candidate",
-        ownerPublisherId: "publishers:candidate",
-        ownerUserId: "users:candidate",
-        latestScoreId: "publisherAbuseScores:new",
-        handleSnapshot: "candidate",
-        label: "potential_ban_candidate",
-        status: "pending",
-        lastScoredAt: 20,
-        updatedAt: 20,
-      }),
-    };
     const runMutation = vi.fn();
     const scheduler = { runAfter: vi.fn(async () => null) };
     const patch = vi.fn(async () => null);
     const insert = vi.fn(async (table: string) => `${table}:new`);
+    const get = vi.fn();
     const ctx = {
       scheduler,
       runMutation,
       db: {
-        get: vi.fn(async (id: string) => {
-          if (id === "publisherAbuseScores:new") {
-            return {
-              ...makeScore({
-                _id: "publisherAbuseScores:new",
-                ownerKey: "publisher:publishers:candidate",
-                ownerPublisherId: "publishers:candidate",
-              }),
-              ownerUserId: "users:candidate",
-              reasonCodes: ["high_catalog_volume", "low_installs_per_skill"],
-              createdAt: 3,
-            };
-          }
-          if (id === "publisherAbuseScoreRuns:latest") return makeCompletedPressureScoreRun();
-          if (id === "publishers:candidate") {
-            return {
-              _id: "publishers:candidate",
-              kind: "user",
-              handle: "candidate",
-              linkedUserId: "users:candidate",
-            };
-          }
-          if (id === "users:candidate") {
-            return {
-              _id: "users:candidate",
-              handle: "candidate",
-              email: "candidate@example.test",
-              role: "user",
-            };
-          }
-          return null;
-        }),
+        get,
         patch,
         insert,
         query: vi.fn((table: string) => {
-          if (table === "publisherAbuseReviewNominations") {
-            return makeAutoBanNominationQuery([nomination]);
-          }
-          if (table === "officialPublishers") return makeEmptyOfficialPublishersQuery();
           if (table === "systemSettings") {
             return makePublisherAbuseAutobanSettingQuery({
               key: "publisherAbuseAutobanEnabled",
@@ -1442,6 +1394,7 @@ describe("publisher abuse dry-run persistence", () => {
 
     expect(runMutation).not.toHaveBeenCalled();
     expect(scheduler.runAfter).not.toHaveBeenCalled();
+    expect(get).not.toHaveBeenCalled();
     expect(patch).not.toHaveBeenCalled();
     expect(insert).not.toHaveBeenCalled();
   });
