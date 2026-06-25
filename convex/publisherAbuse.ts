@@ -457,7 +457,7 @@ export const banPublisherAbuseOwner = mutation({
     await ctx.runMutation(internal.users.banUserInternal, {
       actorUserId: user._id,
       targetUserId: nomination.ownerUserId,
-      reason,
+      reason: publisherAbuseManualBanReason(reason),
     });
 
     const now = Date.now();
@@ -2557,6 +2557,12 @@ function publisherAbuseAutobanReason(
     `${PUBLISHER_ABUSE_AUTOBAN_REASON} (${nomination.modelVersion})${reasons}`,
     MAX_BAN_REASON_LENGTH,
   );
+}
+
+function publisherAbuseManualBanReason(reason: string | undefined) {
+  if (!reason) return PUBLISHER_ABUSE_AUTOBAN_REASON;
+  if (/\bpublisher[_\-\s]?abuse\b/i.test(reason)) return reason;
+  return truncateText(`publisher_abuse: ${reason}`, MAX_BAN_REASON_LENGTH);
 }
 
 function summarizePublisherAbuseFinalizationCohort(run: ScoreRun) {

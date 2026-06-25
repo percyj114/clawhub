@@ -1144,7 +1144,7 @@ describe("publisher abuse dry-run persistence", () => {
     expect(runMutation).toHaveBeenCalledWith(expect.anything(), {
       actorUserId: "users:moderator",
       targetUserId: "users:owner",
-      reason: "confirmed spam",
+      reason: "publisher_abuse: confirmed spam",
     });
     expect(patch).toHaveBeenCalledWith(
       "publisherAbuseReviewNominations:nomination",
@@ -1161,6 +1161,58 @@ describe("publisher abuse dry-run persistence", () => {
         previousStatus: "pending",
         nextStatus: "banned",
         notes: "confirmed spam",
+      }),
+    );
+  });
+
+  it("uses publisher abuse email context for manual bans without notes", async () => {
+    vi.mocked(requireUser).mockResolvedValue({
+      userId: "users:moderator",
+      user: { _id: "users:moderator", role: "moderator" },
+    } as never);
+    const runMutation = vi.fn(async () => ({ ok: true }));
+    const patch = vi.fn(async () => null);
+    const insert = vi.fn(async (table: string) => `${table}:new`);
+    const ctx = {
+      runMutation,
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === "publisherAbuseReviewNominations:nomination") {
+            return {
+              _id: "publisherAbuseReviewNominations:nomination",
+              ownerKey: "user:owner",
+              ownerUserId: "users:owner",
+              latestScoreId: "publisherAbuseScores:score",
+              label: "potential_ban_candidate",
+              status: "pending",
+              updatedAt: 1,
+            };
+          }
+          return null;
+        }),
+        insert,
+        patch,
+      },
+    };
+
+    await expect(
+      banPublisherAbuseOwnerHandler(ctx, {
+        nominationId: "publisherAbuseReviewNominations:nomination",
+        expectedLatestScoreId: "publisherAbuseScores:score",
+        expectedUpdatedAt: 1,
+      }),
+    ).resolves.toEqual({ ok: true, status: "banned" });
+
+    expect(runMutation).toHaveBeenCalledWith(expect.anything(), {
+      actorUserId: "users:moderator",
+      targetUserId: "users:owner",
+      reason: "publisher_abuse: potential ban candidate",
+    });
+    expect(patch).toHaveBeenCalledWith(
+      "publisherAbuseReviewNominations:nomination",
+      expect.objectContaining({
+        status: "banned",
+        notes: undefined,
       }),
     );
   });
