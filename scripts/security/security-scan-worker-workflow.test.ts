@@ -79,6 +79,12 @@ describe("security-scan-codex workflow", () => {
     expect(scanStep?.env ?? {}).not.toHaveProperty("OPENAI_API_KEY");
     expect(scanStep?.env ?? {}).not.toHaveProperty("SECURITY_SCAN_WORKER_TOKEN");
     expect(steps.find((step) => step.name === "Check configuration")).toBeUndefined();
+    const codexInstall = steps.find((step) => step.name === "Install Codex CLI")?.run;
+    const skillspectorInstall = steps.find((step) => step.name === "Install SkillSpector")?.run;
+    expect(codexInstall).toContain("npm install -g @openai/codex@0.115.0");
+    expect(codexInstall).not.toContain("@latest");
+    expect(skillspectorInstall).toContain("git+https://github.com/NVIDIA/skillspector.git@8f37cfa");
+    expect(skillspectorInstall).not.toContain("git+https://github.com/NVIDIA/skillspector.git'");
     expect(steps.find((step) => step.name === "Run Codex security worker")?.env).toEqual({
       OPENAI_API_KEY: "${{ secrets.OPENAI_API_KEY }}",
       SECURITY_SCAN_WORKER_TOKEN: "${{ secrets.SECURITY_SCAN_WORKER_TOKEN }}",

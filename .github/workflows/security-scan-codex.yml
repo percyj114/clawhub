@@ -64,7 +64,7 @@ jobs:
         run: |
           set -euo pipefail
           if ! command -v codex >/dev/null 2>&1; then
-            npm install -g @openai/codex@latest
+            npm install -g @openai/codex@0.115.0
           fi
           codex --version
 
@@ -74,7 +74,7 @@ jobs:
           python -m venv "$RUNNER_TEMP/skillspector-venv"
           source "$RUNNER_TEMP/skillspector-venv/bin/activate"
           python -m pip install --upgrade pip
-          python -m pip install 'git+https://github.com/NVIDIA/skillspector.git'
+          python -m pip install 'git+https://github.com/NVIDIA/skillspector.git@8f37cfa'
           echo "$RUNNER_TEMP/skillspector-venv/bin" >> "$GITHUB_PATH"
           skillspector --help >/dev/null
 
