@@ -97,9 +97,7 @@ if (process.env.CLAWHUB_DISABLE_CRONS !== "1") {
     {
       mode: "current",
       dryRun: false,
-      candidateLimit: 8_000,
       batchSize: 100,
-      maxPages: 100,
       trigger: "cron",
     },
   );

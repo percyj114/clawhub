@@ -2007,7 +2007,7 @@ export async function runTemporalPublisherAbuseScanInternalHandler(
 }> {
   const mode = args.mode ?? "current";
   const dryRun = args.dryRun ?? false;
-  const candidateLimit = clampInt(
+  const requestedCandidateLimit = clampInt(
     args.candidateLimit ?? DEFAULT_TEMPORAL_CANDIDATE_LIMIT,
     1,
     MAX_TEMPORAL_CANDIDATE_LIMIT,
@@ -2017,7 +2017,15 @@ export async function runTemporalPublisherAbuseScanInternalHandler(
     1,
     MAX_TEMPORAL_BATCH_SIZE,
   );
-  const maxPages = clampInt(args.maxPages ?? DEFAULT_TEMPORAL_MAX_PAGES, 1, MAX_TEMPORAL_MAX_PAGES);
+  const requestedMaxPages = clampInt(
+    args.maxPages ?? DEFAULT_TEMPORAL_MAX_PAGES,
+    1,
+    MAX_TEMPORAL_MAX_PAGES,
+  );
+  // Non-dry current scans feed enforcement; partial scans are intentionally not persisted.
+  const boundedScan = dryRun || mode !== "current";
+  const candidateLimit = boundedScan ? requestedCandidateLimit : Number.POSITIVE_INFINITY;
+  const maxPages = boundedScan ? requestedMaxPages : Number.POSITIVE_INFINITY;
   const todayDay = args.todayDay ?? toDayKey(Date.now());
 
   let cursor: string | undefined;

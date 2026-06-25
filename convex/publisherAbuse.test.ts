@@ -5503,26 +5503,57 @@ describe("publisher abuse dry-run persistence", () => {
     );
   });
 
-  it("does not autoban candidates from a partial current temporal scan", async () => {
+  it("completes current temporal scans past caller candidate and page caps", async () => {
     const candidate = temporalCandidate("skills:first", { slug: "first", displayName: "First" });
     candidate.temporalScore.nearConversion = true;
     candidate.temporalScore.installDownloadExcessZScore7 = 60;
+    let collectCalls = 0;
     const ctx = {
       scheduler: { runAfter: vi.fn(async () => null) },
-      runQuery: vi.fn(async () => ({
-        cursor: "next-page",
-        isDone: false,
-        scannedSkills: 1,
-        candidates: [candidate],
-      })),
-      runMutation: vi.fn(),
+      runQuery: vi.fn(async (target: symbol) => {
+        if (String(target).includes("collectTemporalPublisherAbuseSkillCandidatesPageInternal")) {
+          collectCalls += 1;
+          return collectCalls === 1
+            ? {
+                cursor: "next-page",
+                isDone: false,
+                scannedSkills: 1,
+                candidates: [candidate],
+              }
+            : {
+                cursor: undefined,
+                isDone: true,
+                scannedSkills: 1,
+                candidates: [],
+              };
+        }
+        if (String(target).includes("getPublisherAbuseAutobanEnabledInternal")) {
+          return true;
+        }
+        throw new Error(`unexpected query ${String(target)}`);
+      }),
+      runMutation: vi
+        .fn()
+        .mockResolvedValueOnce({
+          flaggedPublishers: 1,
+          nominations: 1,
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          processed: 0,
+          warned: 0,
+          banned: 0,
+          alreadyBanned: 0,
+          skipped: 0,
+          isDone: true,
+        }),
     };
 
     await expect(
       temporalRunHandler(ctx, {
         mode: "current",
         dryRun: false,
-        candidateLimit: 100,
+        candidateLimit: 1,
         batchSize: 1,
         maxPages: 1,
         todayDay: 100,
@@ -5531,13 +5562,22 @@ describe("publisher abuse dry-run persistence", () => {
       ok: true,
       dryRun: false,
       mode: "current",
-      scannedSkills: 1,
+      scannedSkills: 2,
       highTemporalSkills: 1,
       flaggedPublishers: 1,
-      nominations: 0,
+      nominations: 1,
     });
 
-    expect(ctx.runMutation).not.toHaveBeenCalled();
+    expect(collectCalls).toBe(2);
+    expect(ctx.runMutation).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      expect.objectContaining({
+        mode: "current",
+        candidates: [expect.objectContaining({ skillId: "skills:first" })],
+        scanComplete: true,
+      }),
+    );
     expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
   });
 
