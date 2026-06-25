@@ -151,8 +151,10 @@ describe("crons", () => {
       mocks.publisherTemporalAbuseScanRef,
       {
         mode: "current",
-        dryRun: false,
-        batchSize: 100,
+        dryRun: true,
+        candidateLimit: 1_000,
+        batchSize: 50,
+        maxPages: 20,
         trigger: "cron",
       },
     );

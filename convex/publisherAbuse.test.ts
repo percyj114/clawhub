@@ -1784,22 +1784,22 @@ describe("publisher abuse dry-run persistence", () => {
     );
   });
 
-  it("moves backfill temporal autoban candidates out of the pending queue", async () => {
+  it("moves completed current temporal candidates out of the autoban queue", async () => {
     const nomination = makeNomination({
-      _id: "publisherAbuseReviewNominations:backfill",
-      ownerKey: "publisher:publishers:backfill",
-      ownerPublisherId: "publishers:backfill",
-      ownerUserId: "users:backfill",
-      latestScoreId: "publisherAbuseScores:backfill",
-      openedByRunId: "publisherAbuseScoreRuns:backfill",
+      _id: "publisherAbuseReviewNominations:temporal",
+      ownerKey: "publisher:publishers:temporal",
+      ownerPublisherId: "publishers:temporal",
+      ownerUserId: "users:temporal",
+      latestScoreId: "publisherAbuseScores:temporal",
+      openedByRunId: "publisherAbuseScoreRuns:temporal",
       label: "potential_ban_candidate",
       status: "pending",
     });
     const score = makeScore({
-      _id: "publisherAbuseScores:backfill",
-      runId: "publisherAbuseScoreRuns:backfill",
-      ownerKey: "publisher:publishers:backfill",
-      ownerPublisherId: "publishers:backfill",
+      _id: "publisherAbuseScores:temporal",
+      runId: "publisherAbuseScoreRuns:temporal",
+      ownerKey: "publisher:publishers:temporal",
+      ownerPublisherId: "publishers:temporal",
     });
     const patch = vi.fn(async () => null);
     const insert = vi.fn(async (table: string) => `${table}:new`);
@@ -1808,22 +1808,23 @@ describe("publisher abuse dry-run persistence", () => {
       runMutation,
       db: {
         get: vi.fn(async (id: string) => {
-          if (id === "publisherAbuseScores:backfill") return score;
-          if (id === "publisherAbuseScoreRuns:backfill") {
+          if (id === "publisherAbuseScores:temporal") return score;
+          if (id === "publisherAbuseScoreRuns:temporal") {
             return {
-              _id: "publisherAbuseScoreRuns:backfill",
+              _id: "publisherAbuseScoreRuns:temporal",
               modelVersion: "publisher-abuse-temporal.v1",
               status: "completed",
               phase: "completed",
-              temporalMode: "backfill",
+              temporalMode: "current",
+              temporalScanComplete: true,
             };
           }
-          if (id === "publishers:backfill") {
+          if (id === "publishers:temporal") {
             return {
-              _id: "publishers:backfill",
+              _id: "publishers:temporal",
               kind: "user",
-              handle: "backfill",
-              linkedUserId: "users:backfill",
+              handle: "temporal",
+              linkedUserId: "users:temporal",
             };
           }
           return null;
@@ -1860,17 +1861,16 @@ describe("publisher abuse dry-run persistence", () => {
 
     expect(runMutation).not.toHaveBeenCalled();
     expect(patch).toHaveBeenCalledWith(
-      "publisherAbuseReviewNominations:backfill",
+      "publisherAbuseReviewNominations:temporal",
       expect.objectContaining({
         status: "candidate_for_future_action",
-        notes:
-          "Autoban skipped: temporal nomination is not from a complete current enforcement run.",
+        notes: "Autoban skipped: temporal publisher abuse signals require manual review.",
       }),
     );
     expect(insert).toHaveBeenCalledWith(
       "publisherAbuseReviewEvents",
       expect.objectContaining({
-        nominationId: "publisherAbuseReviewNominations:backfill",
+        nominationId: "publisherAbuseReviewNominations:temporal",
         nextStatus: "candidate_for_future_action",
       }),
     );
@@ -5555,50 +5555,19 @@ describe("publisher abuse dry-run persistence", () => {
     );
   });
 
-  it("completes current temporal scans past caller candidate and page caps", async () => {
+  it("keeps current temporal scans bounded when the scan is partial", async () => {
     const candidate = temporalCandidate("skills:first", { slug: "first", displayName: "First" });
     candidate.temporalScore.nearConversion = true;
     candidate.temporalScore.installDownloadExcessZScore7 = 60;
-    let collectCalls = 0;
     const ctx = {
       scheduler: { runAfter: vi.fn(async () => null) },
-      runQuery: vi.fn(async (target: symbol) => {
-        if (String(target).includes("collectTemporalPublisherAbuseSkillCandidatesPageInternal")) {
-          collectCalls += 1;
-          return collectCalls === 1
-            ? {
-                cursor: "next-page",
-                isDone: false,
-                scannedSkills: 1,
-                candidates: [candidate],
-              }
-            : {
-                cursor: undefined,
-                isDone: true,
-                scannedSkills: 1,
-                candidates: [],
-              };
-        }
-        if (String(target).includes("getPublisherAbuseAutobanEnabledInternal")) {
-          return true;
-        }
-        throw new Error(`unexpected query ${String(target)}`);
-      }),
-      runMutation: vi
-        .fn()
-        .mockResolvedValueOnce({
-          flaggedPublishers: 1,
-          nominations: 1,
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          processed: 0,
-          warned: 0,
-          banned: 0,
-          alreadyBanned: 0,
-          skipped: 0,
-          isDone: true,
-        }),
+      runQuery: vi.fn(async () => ({
+        cursor: "next-page",
+        isDone: false,
+        scannedSkills: 1,
+        candidates: [candidate],
+      })),
+      runMutation: vi.fn(),
     };
 
     await expect(
@@ -5614,22 +5583,14 @@ describe("publisher abuse dry-run persistence", () => {
       ok: true,
       dryRun: false,
       mode: "current",
-      scannedSkills: 2,
+      scannedSkills: 1,
       highTemporalSkills: 1,
       flaggedPublishers: 1,
-      nominations: 1,
+      nominations: 0,
     });
 
-    expect(collectCalls).toBe(2);
-    expect(ctx.runMutation).toHaveBeenNthCalledWith(
-      1,
-      expect.anything(),
-      expect.objectContaining({
-        mode: "current",
-        candidates: [expect.objectContaining({ skillId: "skills:first" })],
-        scanComplete: true,
-      }),
-    );
+    expect(ctx.runQuery).toHaveBeenCalledTimes(1);
+    expect(ctx.runMutation).not.toHaveBeenCalled();
     expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
   });
 

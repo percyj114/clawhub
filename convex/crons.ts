@@ -96,8 +96,10 @@ if (process.env.CLAWHUB_DISABLE_CRONS !== "1") {
     internal.publisherAbuse.runTemporalPublisherAbuseScanInternal,
     {
       mode: "current",
-      dryRun: false,
-      batchSize: 100,
+      dryRun: true,
+      candidateLimit: 1_000,
+      batchSize: 50,
+      maxPages: 20,
       trigger: "cron",
     },
   );

@@ -70,10 +70,8 @@ const MAX_AUTOBAN_MAX_PAGES = 250;
 const PUBLISHER_ABUSE_AUTOBAN_WARNING_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 const PUBLISHER_ABUSE_WARNING_PENDING_RETRY_MS = 60 * 60 * 1000;
 const PUBLISHER_ABUSE_AUTOBAN_REASON = "publisher_abuse: potential ban candidate";
-const NON_CURRENT_TEMPORAL_AUTOBAN_SKIP_NOTE =
-  "Autoban skipped: temporal nomination is not from a complete current enforcement run.";
-const STALE_TEMPORAL_AUTOBAN_SKIP_NOTE =
-  "Autoban skipped: temporal nomination is not from the latest complete current enforcement run.";
+const TEMPORAL_AUTOBAN_SKIP_NOTE =
+  "Autoban skipped: temporal publisher abuse signals require manual review.";
 const MISSING_PUBLISHER_AUTOBAN_SKIP_NOTE =
   "Autoban skipped: nomination has no linked publisher row; manual review required.";
 const INACTIVE_PUBLISHER_AUTOBAN_SKIP_NOTE = "Autoban skipped: publisher is inactive.";
@@ -534,33 +532,10 @@ async function getPublisherAbuseAutobanEligibility(
   if (scoredByRun.modelVersion !== PUBLISHER_TEMPORAL_ABUSE_MODEL_VERSION) {
     return { kind: "ready" };
   }
-  if (
-    scoredByRun.status === "running" &&
-    scoredByRun.phase === "finalizing" &&
-    scoredByRun.temporalMode === "current"
-  ) {
-    return { kind: "pending_run" };
-  }
-  if (scoredByRun.status !== "completed" || scoredByRun.phase !== "completed") {
-    return {
-      kind: "defer",
-      status: "candidate_for_future_action",
-      notes: NON_CURRENT_TEMPORAL_AUTOBAN_SKIP_NOTE,
-    };
-  }
-  if (scoredByRun.temporalMode === "current" && scoredByRun.temporalScanComplete === true) {
-    const latestCurrentRunId = await getLatestCompletedCurrentTemporalScoreRunId(ctx);
-    if (latestCurrentRunId === scoredByRun._id) return { kind: "ready" };
-    return {
-      kind: "defer",
-      status: "candidate_for_future_action",
-      notes: STALE_TEMPORAL_AUTOBAN_SKIP_NOTE,
-    };
-  }
   return {
     kind: "defer",
     status: "candidate_for_future_action",
-    notes: NON_CURRENT_TEMPORAL_AUTOBAN_SKIP_NOTE,
+    notes: TEMPORAL_AUTOBAN_SKIP_NOTE,
   };
 }
 
@@ -788,22 +763,6 @@ async function isPublisherAbusePendingWarningStillLinked(
   const targetUser = await ctx.db.get(nomination.ownerUserId);
   if (!targetUser || targetUser.deletedAt || targetUser.deactivatedAt) return false;
   return targetUser.role !== "admin" && targetUser.role !== "moderator";
-}
-
-async function getLatestCompletedCurrentTemporalScoreRunId(ctx: Pick<MutationCtx, "db">) {
-  const run = await ctx.db
-    .query("publisherAbuseScoreRuns")
-    .withIndex("by_model_status_phase_temporal_complete_started_at", (q) =>
-      q
-        .eq("modelVersion", PUBLISHER_TEMPORAL_ABUSE_MODEL_VERSION)
-        .eq("status", "completed")
-        .eq("phase", "completed")
-        .eq("temporalMode", "current")
-        .eq("temporalScanComplete", true),
-    )
-    .order("desc")
-    .first();
-  return run?._id;
 }
 
 export async function autoBanPublisherAbuseCandidatesPageInternalHandler(
@@ -2022,10 +1981,8 @@ export async function runTemporalPublisherAbuseScanInternalHandler(
     1,
     MAX_TEMPORAL_MAX_PAGES,
   );
-  // Non-dry current scans feed enforcement; partial scans are intentionally not persisted.
-  const boundedScan = dryRun || mode !== "current";
-  const candidateLimit = boundedScan ? requestedCandidateLimit : Number.POSITIVE_INFINITY;
-  const maxPages = boundedScan ? requestedMaxPages : Number.POSITIVE_INFINITY;
+  const candidateLimit = requestedCandidateLimit;
+  const maxPages = requestedMaxPages;
   const todayDay = args.todayDay ?? toDayKey(Date.now());
 
   let cursor: string | undefined;
