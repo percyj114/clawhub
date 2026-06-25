@@ -553,7 +553,7 @@ describe("publisher abuse dry-run persistence", () => {
     }
   });
 
-  it("defaults publisher abuse autobans to enabled when no setting exists", async () => {
+  it("defaults publisher abuse autobans to disabled when no setting exists", async () => {
     const user = { _id: "users:moderator", role: "moderator" };
     vi.mocked(requireUser).mockResolvedValue({
       userId: "users:moderator",
@@ -569,7 +569,7 @@ describe("publisher abuse dry-run persistence", () => {
     };
 
     await expect(getPublisherAbuseAutobanSettingHandler(ctx, {})).resolves.toEqual({
-      enabled: true,
+      enabled: false,
       updatedAt: null,
       updatedByUserId: null,
     });
@@ -577,7 +577,7 @@ describe("publisher abuse dry-run persistence", () => {
     expect(assertModerator).toHaveBeenCalledWith(user);
   });
 
-  it("lets admins disable publisher abuse autobans with an audit log", async () => {
+  it("lets admins enable publisher abuse autobans with an audit log", async () => {
     const user = { _id: "users:admin", role: "admin" };
     vi.mocked(requireUser).mockResolvedValue({
       userId: "users:admin",
@@ -598,8 +598,8 @@ describe("publisher abuse dry-run persistence", () => {
       },
     };
 
-    await expect(setPublisherAbuseAutobanEnabledHandler(ctx, { enabled: false })).resolves.toEqual({
-      enabled: false,
+    await expect(setPublisherAbuseAutobanEnabledHandler(ctx, { enabled: true })).resolves.toEqual({
+      enabled: true,
       updatedAt: expect.any(Number),
       updatedByUserId: "users:admin",
     });
@@ -611,7 +611,7 @@ describe("publisher abuse dry-run persistence", () => {
         table: "systemSettings",
         value: {
           key: "publisherAbuseAutobanEnabled",
-          enabled: false,
+          enabled: true,
           updatedAt: expect.any(Number),
           updatedByUserId: "users:admin",
         },
@@ -624,8 +624,8 @@ describe("publisher abuse dry-run persistence", () => {
           targetType: "system",
           targetId: "publisherAbuseAutobanEnabled",
           metadata: {
-            previousEnabled: true,
-            nextEnabled: false,
+            previousEnabled: false,
+            nextEnabled: true,
           },
           createdAt: expect.any(Number),
         },
@@ -1195,7 +1195,14 @@ describe("publisher abuse dry-run persistence", () => {
             return makeAutoBanNominationQuery([nomination]);
           }
           if (table === "officialPublishers") return makeEmptyOfficialPublishersQuery();
-          if (table === "systemSettings") return makePublisherAbuseAutobanSettingQuery(null);
+          if (table === "systemSettings") {
+            return makePublisherAbuseAutobanSettingQuery({
+              key: "publisherAbuseAutobanEnabled",
+              enabled: true,
+              updatedAt: 1,
+              updatedByUserId: "users:admin",
+            });
+          }
           throw new Error(`unexpected table ${table}`);
         }),
       },
@@ -1316,7 +1323,14 @@ describe("publisher abuse dry-run persistence", () => {
             return makeAutoBanNominationQuery([nomination]);
           }
           if (table === "officialPublishers") return makeEmptyOfficialPublishersQuery();
-          if (table === "systemSettings") return makePublisherAbuseAutobanSettingQuery(null);
+          if (table === "systemSettings") {
+            return makePublisherAbuseAutobanSettingQuery({
+              key: "publisherAbuseAutobanEnabled",
+              enabled: true,
+              updatedAt: 1,
+              updatedByUserId: "users:admin",
+            });
+          }
           throw new Error(`unexpected table ${table}`);
         }),
       },
@@ -1479,7 +1493,14 @@ describe("publisher abuse dry-run persistence", () => {
             return makeAutoBanNominationQuery([nomination]);
           }
           if (table === "officialPublishers") return makeEmptyOfficialPublishersQuery();
-          if (table === "systemSettings") return makePublisherAbuseAutobanSettingQuery(null);
+          if (table === "systemSettings") {
+            return makePublisherAbuseAutobanSettingQuery({
+              key: "publisherAbuseAutobanEnabled",
+              enabled: true,
+              updatedAt: 1,
+              updatedByUserId: "users:admin",
+            });
+          }
           throw new Error(`unexpected table ${table}`);
         }),
       },
@@ -1557,7 +1578,14 @@ describe("publisher abuse dry-run persistence", () => {
             return makeAutoBanNominationQuery([nomination]);
           }
           if (table === "officialPublishers") return makeEmptyOfficialPublishersQuery();
-          if (table === "systemSettings") return makePublisherAbuseAutobanSettingQuery(null);
+          if (table === "systemSettings") {
+            return makePublisherAbuseAutobanSettingQuery({
+              key: "publisherAbuseAutobanEnabled",
+              enabled: true,
+              updatedAt: 1,
+              updatedByUserId: "users:admin",
+            });
+          }
           throw new Error(`unexpected table ${table}`);
         }),
       },

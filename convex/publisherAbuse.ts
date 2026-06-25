@@ -392,7 +392,8 @@ export const setPublisherAbuseAutobanEnabled = mutation({
 
     const now = Date.now();
     const existing = await getPublisherAbuseAutobanSettingDoc(ctx);
-    if (existing?.enabled === args.enabled) {
+    const previousEnabled = existing?.enabled ?? false;
+    if (previousEnabled === args.enabled) {
       return summarizePublisherAbuseAutobanSetting(existing);
     }
 
@@ -417,7 +418,7 @@ export const setPublisherAbuseAutobanEnabled = mutation({
       targetType: "system",
       targetId: PUBLISHER_ABUSE_AUTOBAN_SETTING_KEY,
       metadata: {
-        previousEnabled: existing?.enabled ?? true,
+        previousEnabled,
         nextEnabled: args.enabled,
       },
       createdAt: now,
@@ -1089,12 +1090,12 @@ async function getPublisherAbuseAutobanSettingDoc(
 
 async function getPublisherAbuseAutobanEnabled(ctx: Pick<QueryCtx | MutationCtx, "db">) {
   const setting = await getPublisherAbuseAutobanSettingDoc(ctx);
-  return setting?.enabled ?? true;
+  return setting?.enabled ?? false;
 }
 
 function summarizePublisherAbuseAutobanSetting(setting: PublisherAbuseAutobanSettingDoc | null) {
   return {
-    enabled: setting?.enabled ?? true,
+    enabled: setting?.enabled ?? false,
     updatedAt: setting?.updatedAt ?? null,
     updatedByUserId: setting?.updatedByUserId ?? null,
   };

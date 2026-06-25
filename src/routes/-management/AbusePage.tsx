@@ -103,7 +103,7 @@ export function AbusePage({
           : totalPending;
   const loaded = dashboard !== undefined;
   const autobanLoaded = autobanSetting !== undefined;
-  const autobanEnabled = autobanSetting?.enabled ?? true;
+  const autobanEnabled = autobanSetting?.enabled ?? false;
   const autobanStatusLabel = autobanLoaded
     ? autobanEnabled
       ? "Auto-ban is on"
