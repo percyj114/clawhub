@@ -106,22 +106,6 @@ async function fetchHtml(pathname: string) {
   return response.text();
 }
 
-function escapeRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function expectLinkWithRelAndHref(html: string, rel: string, href: string) {
-  const relPattern = new RegExp(`\\brel=["']${escapeRegExp(rel)}["']`, "i");
-  const hrefPattern = new RegExp(`\\bhref=["']${escapeRegExp(href)}["']`, "i");
-  const hasLink = [...html.matchAll(/<link\b[^>]*>/gi)].some(
-    ([tag]) => relPattern.test(tag) && hrefPattern.test(tag),
-  );
-
-  expect(hasLink, `expected HTML to contain <link> with rel="${rel}" and href="${href}"`).toBe(
-    true,
-  );
-}
-
 type SkillDetailResponse = {
   skill: { slug: string; displayName: string; summary: string | null };
   latestVersion: { version: string | null } | null;
@@ -163,10 +147,8 @@ describe("prod http smoke", () => {
     const html = await fetchHtml(`/${owner}/${detail.skill.slug}`);
 
     expect(html).toContain(`<title>${detail.skill.displayName} — ClawHub</title>`);
-    expectLinkWithRelAndHref(
-      html,
-      "canonical",
-      `${getSiteBase()}/${owner}/skills/${detail.skill.slug}`,
+    expect(html).toContain(
+      `<link rel="canonical" href="${getSiteBase()}/${owner}/skills/${detail.skill.slug}"/>`,
     );
     if (detail.skill.summary) {
       expect(html).toContain(detail.skill.summary);

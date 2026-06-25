@@ -27,31 +27,11 @@ vi.mock("@tanstack/react-router", () => ({
   },
 }));
 
-vi.mock("../lib/useHeroCreatorPublisher", () => ({
-  useHeroCreatorPublisher: ({ owner }: { owner?: PublicPublisher | null }) => owner,
-}));
-
 describe("SkillHeader", () => {
   function sidebarStatsRoot(container: HTMLElement) {
     const node = container.querySelector(".detail-sidebar-stats");
     if (!node) throw new Error("Missing .detail-sidebar-stats");
     return node as HTMLElement;
-  }
-
-  function heroCreatorRoot(container: HTMLElement) {
-    const node = container.querySelector(".skill-hero-creator");
-    if (!node) throw new Error("Missing .skill-hero-creator");
-    return node as HTMLElement;
-  }
-
-  function expectCreatorBelowSummary(container: HTMLElement) {
-    const summary = container.querySelector(".skill-summary-block");
-    const creator = container.querySelector(".skill-hero-creator");
-    expect(summary).toBeTruthy();
-    expect(creator).toBeTruthy();
-    expect(
-      summary!.compareDocumentPosition(creator!) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
   }
 
   function setViewportWidth(width: number) {
@@ -176,10 +156,7 @@ describe("SkillHeader", () => {
     expect(onRequireSignIn).toHaveBeenCalledTimes(2);
     expect(onToggleStar).not.toHaveBeenCalled();
     expect(onOpenReport).not.toHaveBeenCalled();
-    expectCreatorBelowSummary(container);
-    expect(within(heroCreatorRoot(container)).getByText("Local")).toBeTruthy();
-    expect(within(heroCreatorRoot(container)).getByText("@local")).toBeTruthy();
-    expect(within(sidebarStatsRoot(container)).queryByText("Creator")).toBeNull();
+    expect(within(sidebarStatsRoot(container)).getByText("Creator")).toBeTruthy();
     expect(within(sidebarStatsRoot(container)).getByText("Downloads")).toBeTruthy();
     expect(within(sidebarStatsRoot(container)).getByText("2")).toBeTruthy();
     expect(container.querySelector('a[href="/local"]')).toBeTruthy();
@@ -188,41 +165,21 @@ describe("SkillHeader", () => {
     ).toBeTruthy();
   });
 
-  it("renders hero category labels without comma separators", () => {
-    const { container } = renderHeader({
-      skill: { ...skill, topics: ["workflow"] },
-      categories: [
-        { slug: "automation", label: "Automation", icon: "zap", keywords: [] },
-        { slug: "development", label: "Development", icon: "wrench", keywords: [] },
-      ],
-    });
-
-    const taxonomy = container.querySelector(".skill-category-meta-list");
-    expect(taxonomy).toBeTruthy();
-    expect(taxonomy?.textContent).toContain("Automation");
-    expect(taxonomy?.textContent).toContain("Development");
-    expect(taxonomy?.textContent).not.toContain(",");
-  });
-
   it("keeps desktop-width sidebar details expanded at 1071px", () => {
     const { container } = renderHeader();
 
-    expectCreatorBelowSummary(container);
-    expect(within(heroCreatorRoot(container)).getByText("Local")).toBeTruthy();
-    expect(within(sidebarStatsRoot(container)).queryByText("Creator")).toBeNull();
+    expect(within(sidebarStatsRoot(container)).getByText("Creator")).toBeTruthy();
     expect(within(sidebarStatsRoot(container)).getByText("Downloads")).toBeTruthy();
     expect(container.querySelector(".detail-mobile-master-tab-list")).toBeTruthy();
   });
 
-  it("places creator below the summary and keeps it out of the sidebar below 901px", () => {
+  it("uses mobile master tabs and creator placement below the title below 901px", () => {
     setViewportWidth(488);
     const { container } = renderHeader();
 
-    const creator = container.querySelector(".skill-hero-creator");
+    const creator = container.querySelector(".skill-hero-mobile-creator");
     const statsPanel = container.querySelector("#skill-mobile-master-panel-stats");
-    expectCreatorBelowSummary(container);
     expect(creator?.textContent).toContain("Local");
-    expect(creator?.textContent).toContain("@local");
     expect(statsPanel?.textContent).not.toContain("Creator");
     expect(statsPanel?.hasAttribute("hidden")).toBe(true);
 
@@ -357,7 +314,7 @@ describe("SkillHeader", () => {
     expect(container.querySelectorAll(".metric-trend-marker-line")).toHaveLength(1);
   });
 
-  it("shows the Official badge on the creator for official publishers", () => {
+  it("shows the Official tag in the title for official owner skills", () => {
     const { container } = renderHeader({
       owner: {
         ...owner,
@@ -365,9 +322,8 @@ describe("SkillHeader", () => {
       },
     });
 
-    const creator = container.querySelector(".skill-hero-creator");
-    expect(creator?.querySelector(".user-name-row .official-badge-icon-only")).toBeTruthy();
-    expect(container.querySelector(".skill-hero-title-row .official-tag")).toBeNull();
+    expect(screen.getByText("Official")).toBeTruthy();
+    expect(container.querySelector(".official-tag")).toBeTruthy();
   });
 
   it("renders canonical topics in the detail hero", () => {
@@ -416,8 +372,7 @@ describe("SkillHeader", () => {
     const { container } = renderHeader({ showArchiveMetadata: false });
 
     expect(within(sidebarStatsRoot(container)).getByText("Downloads")).toBeTruthy();
-    expect(within(sidebarStatsRoot(container)).queryByText("Creator")).toBeNull();
-    expect(within(heroCreatorRoot(container)).getByText("Local")).toBeTruthy();
+    expect(within(sidebarStatsRoot(container)).getByText("Creator")).toBeTruthy();
     expect(within(sidebarStatsRoot(container)).getByText("Last updated")).toBeTruthy();
     expect(screen.queryByText("Current version")).toBeNull();
     expect(screen.queryByText("License")).toBeNull();

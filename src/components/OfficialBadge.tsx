@@ -14,27 +14,14 @@ export function OfficialTag({ className }: { className?: string }) {
   );
 }
 
-type OfficialBadgeProps = {
-  className?: string;
-  iconOnly?: boolean;
-  size?: number;
-};
-
-export function OfficialBadge({ className, iconOnly = false, size = 12 }: OfficialBadgeProps) {
-  if (iconOnly) {
-    const iconClassName = className
-      ? `official-badge-icon-only ${className}`
-      : "official-badge-icon-only";
-    return <BadgeCheck size={size} className={iconClassName} aria-label="Official" />;
-  }
-
+export function OfficialBadge({ className }: { className?: string }) {
   return (
     <span
       className={className ? `official-badge ${className}` : "official-badge"}
       aria-label="Official"
       title="Official"
     >
-      <BadgeCheck size={size} aria-hidden="true" />
+      <BadgeCheck size={12} aria-hidden="true" />
     </span>
   );
 }

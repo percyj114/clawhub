@@ -2,7 +2,7 @@ import { Resvg } from "@resvg/resvg-wasm";
 import { defineEventHandler, getQuery, getRequestHost, setHeader } from "h3";
 import { fetchImageDataUrl } from "../../og/fetchImageDataUrl";
 import { fetchSkillOgMeta } from "../../og/fetchSkillOgMeta";
-import { resolveOgDownloadsDisplay } from "../../og/formatOgStats";
+import { formatOgStat } from "../../og/formatOgStats";
 import {
   ensureResvgWasm,
   FONT_MONO,
@@ -12,7 +12,6 @@ import {
   getWatermarkDataUrl,
 } from "../../og/ogAssets";
 import { pngResponse } from "../../og/pngResponse";
-import { buildOgDownloadsStat } from "../../og/registryOgSvg";
 import { buildSkillOgSvg } from "../../og/skillOgSvg";
 
 type OgQuery = {
@@ -21,7 +20,6 @@ type OgQuery = {
   version?: string;
   title?: string;
   description?: string;
-  downloads?: string;
   installs?: string;
   audit?: string;
   avatar?: string;
@@ -56,6 +54,7 @@ export default defineEventHandler(async (event) => {
   const versionFromQuery = cleanString(query.version);
   const titleFromQuery = cleanString(query.title);
   const descriptionFromQuery = cleanString(query.description);
+  const installsFromQuery = cleanString(query.installs);
   const auditFromQuery = cleanString(query.audit);
   const avatarFromQuery = cleanString(query.avatar);
 
@@ -102,7 +101,10 @@ export default defineEventHandler(async (event) => {
       target: slug,
     },
     stats: [
-      buildOgDownloadsStat(resolveOgDownloadsDisplay(query, meta?.stats.downloads)),
+      {
+        value: installsFromQuery || formatOgStat(meta?.stats.installsAllTime),
+        label: "Installs",
+      },
       { value: auditLabel.replace(/^Audit\s+/i, ""), label: "Audit" },
     ],
   });

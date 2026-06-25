@@ -1,11 +1,5 @@
 import { FONT_SANS } from "./ogAssets";
-import {
-  escapeXml,
-  OPENCLAW_RED,
-  type RegistryOgStat,
-  statLabelMarkup,
-  wrapText,
-} from "./registryOgSvg";
+import { escapeXml, OPENCLAW_RED, type RegistryOgStat, wrapText } from "./registryOgSvg";
 
 export type PublisherOgSvgParams = {
   markDataUrl: string;
@@ -21,7 +15,11 @@ export type PublisherOgSvgParams = {
 function statBlock(stats: RegistryOgStat[] | undefined, x: number, y: number) {
   const stat = stats?.[0] ?? { value: "ClawHub", label: "Publisher" };
   return `<g>
-    ${statLabelMarkup(x, y, stat.label, { fontSize: 22 })}
+    <text x="${x}" y="${y}"
+      fill="#9D9692"
+      font-size="22"
+      font-weight="700"
+      font-family="${FONT_SANS}, sans-serif">${escapeXml(stat.label)}</text>
     <text x="${x}" y="${y + 44}"
       fill="#F7F1EA"
       font-size="44"

@@ -9,7 +9,7 @@ type SkillStatDeltas = {
   installsAllTime?: number;
 };
 
-export type SkillStatReadable = {
+type SkillStatReadable = {
   stats: Partial<
     Pick<Doc<"skills">["stats"], "downloads" | "stars" | "installsCurrent" | "installsAllTime">
   >;
