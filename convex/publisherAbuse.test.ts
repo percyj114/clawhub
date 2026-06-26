@@ -12,6 +12,7 @@ vi.mock("./functions", () => ({
 }));
 
 vi.mock("./lib/access", () => ({
+  assertAdmin: vi.fn(),
   assertModerator: vi.fn(),
   requireUser: vi.fn(),
   requireUserFromAction: vi.fn(),
@@ -20,6 +21,9 @@ vi.mock("./lib/access", () => ({
 vi.mock("./_generated/api", () => ({
   internal: {
     publisherAbuse: {
+      autoBanPublisherAbuseCandidatesPageInternal: Symbol(
+        "autoBanPublisherAbuseCandidatesPageInternal",
+      ),
       collectPublisherAbuseScoresPageInternal: Symbol("collectPublisherAbuseScoresPageInternal"),
       collectTemporalPublisherAbuseSkillCandidatesPageInternal: Symbol(
         "collectTemporalPublisherAbuseSkillCandidatesPageInternal",
@@ -31,19 +35,34 @@ vi.mock("./_generated/api", () => ({
       persistTemporalPublisherAbuseCandidatesInternal: Symbol(
         "persistTemporalPublisherAbuseCandidatesInternal",
       ),
+      clearPublisherAbusePendingWarningInternal: Symbol(
+        "clearPublisherAbusePendingWarningInternal",
+      ),
+      claimPublisherAbusePendingWarningInternal: Symbol(
+        "claimPublisherAbusePendingWarningInternal",
+      ),
+      getPublisherAbuseAutobanEnabledInternal: Symbol("getPublisherAbuseAutobanEnabledInternal"),
+      processPublisherAbuseAutobansInternal: Symbol("processPublisherAbuseAutobansInternal"),
+      recordPublisherAbuseWarningSentInternal: Symbol("recordPublisherAbuseWarningSentInternal"),
       runPublisherAbuseScoreRunInternal: Symbol("runPublisherAbuseScoreRunInternal"),
+      runTemporalPublisherAbuseScanInternal: Symbol("runTemporalPublisherAbuseScanInternal"),
     },
     users: {
+      autobanPublisherAbuseOwnerInternal: Symbol("autobanPublisherAbuseOwnerInternal"),
       banUserInternal: Symbol("banUserInternal"),
+    },
+    emailsNode: {
+      sendPublisherAbuseWarningInternal: Symbol("sendPublisherAbuseWarningInternal"),
     },
   },
 }));
 
 const publisherAbuse = await import("./publisherAbuse");
-const { assertModerator, requireUser, requireUserFromAction } = await import("./lib/access");
+const { assertAdmin, assertModerator, requireUser, requireUserFromAction } =
+  await import("./lib/access");
 
 const TEST_MODEL_CONFIG = {
-  modelVersion: "publisher-abuse-pressure.v2",
+  modelVersion: "publisher-abuse-pressure.v4",
   skillPivot: 100,
   installsPerSkillPivot: 2,
   starsPerSkillPivot: 0.05,
@@ -100,6 +119,7 @@ const startScoreRunHandler = (
 const temporalRunHandler = (
   publisherAbuse.runTemporalPublisherAbuseScanInternal as unknown as Wrapped<
     {
+      runId?: string;
       mode?: "current" | "backfill";
       dryRun?: boolean;
       candidateLimit?: number;
@@ -108,6 +128,7 @@ const temporalRunHandler = (
       todayDay?: number;
       lookbackDays?: number;
       trigger?: "cron" | "manual";
+      actorUserId?: string;
     },
     {
       ok: true;
@@ -185,6 +206,13 @@ const persistTemporalHandler = (
   >
 )._handler;
 
+const markScoreRunFailedHandler = (
+  publisherAbuse.markPublisherAbuseScoreRunFailedInternal as unknown as Wrapped<
+    { runId: string; errorMessage: string },
+    { runId: string; status: string; phase: string }
+  >
+)._handler;
+
 const getOrStartHandler = (
   publisherAbuse.getOrStartPublisherAbuseScoreRunInternal as unknown as Wrapped<
     { trigger: "cron" | "manual"; actorUserId?: string; forceNew?: boolean },
@@ -213,6 +241,20 @@ const getReviewNominationDetailHandler = (
   >
 )._handler;
 
+const getPublisherAbuseAutobanSettingHandler = (
+  publisherAbuse.getPublisherAbuseAutobanSetting as unknown as Wrapped<
+    Record<string, never>,
+    { enabled: boolean; updatedAt: number | null; updatedByUserId: string | null }
+  >
+)._handler;
+
+const setPublisherAbuseAutobanEnabledHandler = (
+  publisherAbuse.setPublisherAbuseAutobanEnabled as unknown as Wrapped<
+    { enabled: boolean },
+    { enabled: boolean; updatedAt: number; updatedByUserId: string }
+  >
+)._handler;
+
 const banPublisherAbuseOwnerHandler = (
   publisherAbuse.banPublisherAbuseOwner as unknown as Wrapped<
     {
@@ -222,6 +264,64 @@ const banPublisherAbuseOwnerHandler = (
       reason?: string;
     },
     { ok: true; status: "banned" }
+  >
+)._handler;
+
+const autoBanPublisherAbuseCandidatesPageHandler = (
+  publisherAbuse.autoBanPublisherAbuseCandidatesPageInternal as unknown as Wrapped<
+    { batchSize?: number; cursor?: string },
+    {
+      ok: true;
+      processed: number;
+      warned: number;
+      banned: number;
+      alreadyBanned: number;
+      skipped: number;
+      isDone: boolean;
+      cursor?: string;
+    }
+  >
+)._handler;
+
+const recordPublisherAbuseWarningSentHandler = (
+  publisherAbuse.recordPublisherAbuseWarningSentInternal as unknown as Wrapped<
+    {
+      nominationId: string;
+      ownerKey: string;
+      runId: string;
+      scoreId: string;
+      warningPendingAt: number;
+      warningSentAt: number;
+      deadlineAt: number;
+    },
+    { ok: boolean; reason?: string }
+  >
+)._handler;
+
+const claimPublisherAbusePendingWarningHandler = (
+  publisherAbuse.claimPublisherAbusePendingWarningInternal as unknown as Wrapped<
+    {
+      nominationId: string;
+      runId: string;
+      scoreId: string;
+      warningPendingAt: number;
+    },
+    { ok: boolean; reason?: string }
+  >
+)._handler;
+
+const processPublisherAbuseAutobansHandler = (
+  publisherAbuse.processPublisherAbuseAutobansInternal as unknown as Wrapped<
+    { batchSize?: number; maxPages?: number; cursor?: string },
+    {
+      ok: true;
+      pages: number;
+      processed: number;
+      banned: number;
+      alreadyBanned: number;
+      skipped: number;
+      isDone: boolean;
+    }
   >
 )._handler;
 
@@ -236,6 +336,8 @@ type PublisherAbuseTestTriageStatus =
 function makeScore(
   fields: Partial<{
     _id: string;
+    runId: string;
+    modelVersion: string;
     ownerKey: string;
     ownerPublisherId: string;
     rank: number;
@@ -245,12 +347,12 @@ function makeScore(
 ) {
   return {
     _id: fields._id ?? "publisherAbuseScores:score",
-    runId: "publisherAbuseScoreRuns:latest",
+    runId: fields.runId ?? "publisherAbuseScoreRuns:latest",
     ownerKey: fields.ownerKey ?? "user:owner",
     ownerPublisherId: fields.ownerPublisherId,
     ownerUserId: undefined,
     handleSnapshot: (fields.ownerKey ?? "user:owner").replace("user:", ""),
-    modelVersion: "publisher-abuse-pressure.v2",
+    modelVersion: fields.modelVersion ?? TEST_MODEL_CONFIG.modelVersion,
     label: fields.label ?? "potential_ban_candidate",
     rank: fields.rank ?? 1,
     pressure: 100,
@@ -268,6 +370,26 @@ function makeScore(
   };
 }
 
+function makeCompletedPressureScoreRun() {
+  return {
+    _id: "publisherAbuseScoreRuns:latest",
+    modelVersion: TEST_MODEL_CONFIG.modelVersion,
+    modelConfig: TEST_MODEL_CONFIG,
+    trigger: "cron",
+    status: "completed",
+    phase: "completed",
+    scannedPublishers: 1,
+    scoredPublishers: 1,
+    finalizedScores: 1,
+    nominatedPublishers: 1,
+    passCount: 0,
+    reviewCount: 0,
+    potentialBanCandidateCount: 1,
+    sumLogPressure: 0,
+    sumSquaredLogPressure: 0,
+  };
+}
+
 function makeNomination(
   fields: Partial<{
     _id: string;
@@ -280,6 +402,7 @@ function makeNomination(
     label: "potential_ban_candidate" | "review" | "pass";
     status: PublisherAbuseTestTriageStatus;
     lastScoredAt: number;
+    openedByRunId: string;
     reviewedAt: number;
     updatedAt: number;
   }> = {},
@@ -291,11 +414,11 @@ function makeNomination(
     ownerUserId: fields.ownerUserId,
     handleSnapshot: fields.handleSnapshot ?? "owner",
     latestScoreId: fields.latestScoreId ?? "publisherAbuseScores:score",
-    modelVersion: fields.modelVersion ?? "publisher-abuse-pressure.v2",
+    modelVersion: fields.modelVersion ?? TEST_MODEL_CONFIG.modelVersion,
     label: fields.label ?? "potential_ban_candidate",
     status: fields.status ?? "pending",
     openedAt: 1,
-    openedByRunId: "publisherAbuseScoreRuns:latest",
+    openedByRunId: fields.openedByRunId ?? "publisherAbuseScoreRuns:latest",
     lastScoredAt: fields.lastScoredAt ?? 1,
     reviewedAt: fields.reviewedAt,
     updatedAt: fields.updatedAt ?? 1,
@@ -316,6 +439,91 @@ function makeEmptyOfficialPublishersQuery() {
         };
       }
       throw new Error(`unexpected official publisher index ${indexName}`);
+    },
+  };
+}
+
+function makeEmptyPublisherMembersQuery() {
+  return {
+    withIndex: (indexName: string) => {
+      expect(indexName).toBe("by_publisher_and_role");
+      return {
+        paginate: async () => ({ page: [], isDone: true, continueCursor: "" }),
+      };
+    },
+  };
+}
+
+function makeAutoBanNominationQuery(
+  nominations: unknown[],
+  options: { isDone?: boolean; continueCursor?: string; expectedCursor?: string | null } = {},
+) {
+  return {
+    withIndex: (
+      indexName: string,
+      build: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
+    ) => {
+      expect(indexName).toBe("by_status_and_label_and_last_scored_at");
+      const constraints: Record<string, unknown> = {};
+      const q = {
+        eq(field: string, value: unknown) {
+          constraints[field] = value;
+          return q;
+        },
+      };
+      build(q);
+      expect(constraints).toEqual({
+        status: "pending",
+        label: "potential_ban_candidate",
+      });
+      return {
+        order: () => ({
+          paginate: async (pagination: { cursor: string | null; numItems: number }) => {
+            expect(pagination.cursor).toBe(options.expectedCursor ?? null);
+            return {
+              page: nominations.slice(0, pagination.numItems),
+              isDone: options.isDone ?? nominations.length <= pagination.numItems,
+              continueCursor: options.continueCursor ?? "next-cursor",
+            };
+          },
+        }),
+      };
+    },
+  };
+}
+
+function makePublisherAbuseAutobanSettingQuery(setting: unknown) {
+  const settings = Array.isArray(setting) ? setting : setting ? [setting] : [];
+  return {
+    withIndex: (
+      indexName: string,
+      build: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
+    ) => {
+      expect(indexName).toBe("by_key_and_updated_at");
+      const constraints: Record<string, unknown> = {};
+      const q = {
+        eq(field: string, value: unknown) {
+          constraints[field] = value;
+          return q;
+        },
+      };
+      build(q);
+      expect(constraints).toEqual({ key: "publisherAbuseAutobanEnabled" });
+      return {
+        order: (direction: "asc" | "desc") => {
+          expect(direction).toBe("desc");
+          return {
+            take: async (limit: number) =>
+              [...settings]
+                .sort(
+                  (left, right) =>
+                    ((right as { updatedAt?: number }).updatedAt ?? 0) -
+                    ((left as { updatedAt?: number }).updatedAt ?? 0),
+                )
+                .slice(0, limit),
+          };
+        },
+      };
     },
   };
 }
@@ -370,6 +578,173 @@ describe("publisher abuse dry-run persistence", () => {
     } finally {
       vi.mocked(assertModerator).mockReset();
     }
+  });
+
+  it("defaults publisher abuse autobans to disabled when no setting exists", async () => {
+    const user = { _id: "users:moderator", role: "moderator" };
+    vi.mocked(requireUser).mockResolvedValue({
+      userId: "users:moderator",
+      user,
+    } as never);
+    const ctx = {
+      db: {
+        query: vi.fn((table: string) => {
+          if (table === "systemSettings") return makePublisherAbuseAutobanSettingQuery(null);
+          throw new Error(`unexpected table ${table}`);
+        }),
+      },
+    };
+
+    await expect(getPublisherAbuseAutobanSettingHandler(ctx, {})).resolves.toEqual({
+      enabled: false,
+      updatedAt: null,
+      updatedByUserId: null,
+    });
+
+    expect(assertModerator).toHaveBeenCalledWith(user);
+  });
+
+  it("lets admins enable publisher abuse autobans with an audit log", async () => {
+    const user = { _id: "users:admin", role: "admin" };
+    vi.mocked(requireUser).mockResolvedValue({
+      userId: "users:admin",
+      user,
+    } as never);
+    const inserted: Array<{ table: string; value: unknown }> = [];
+    const ctx = {
+      db: {
+        query: vi.fn((table: string) => {
+          if (table === "systemSettings") return makePublisherAbuseAutobanSettingQuery(null);
+          throw new Error(`unexpected table ${table}`);
+        }),
+        insert: vi.fn(async (table: string, value: unknown) => {
+          inserted.push({ table, value });
+          return `${table}:new`;
+        }),
+        patch: vi.fn(),
+      },
+    };
+
+    await expect(setPublisherAbuseAutobanEnabledHandler(ctx, { enabled: true })).resolves.toEqual({
+      enabled: true,
+      updatedAt: expect.any(Number),
+      updatedByUserId: "users:admin",
+    });
+
+    expect(assertAdmin).toHaveBeenCalledWith(user);
+    expect(ctx.db.patch).not.toHaveBeenCalled();
+    expect(inserted).toEqual([
+      {
+        table: "systemSettings",
+        value: {
+          key: "publisherAbuseAutobanEnabled",
+          enabled: true,
+          updatedAt: expect.any(Number),
+          updatedByUserId: "users:admin",
+        },
+      },
+      {
+        table: "auditLogs",
+        value: {
+          actorUserId: "users:admin",
+          action: "publisher_abuse.autoban_setting.set",
+          targetType: "system",
+          targetId: "publisherAbuseAutobanEnabled",
+          metadata: {
+            previousEnabled: false,
+            nextEnabled: true,
+          },
+          createdAt: expect.any(Number),
+        },
+      },
+    ]);
+  });
+
+  it("lets admins disable publisher abuse autobans with an audit log", async () => {
+    const user = { _id: "users:admin", role: "admin" };
+    vi.mocked(requireUser).mockResolvedValue({
+      userId: "users:admin",
+      user,
+    } as never);
+    const existingSetting = {
+      _id: "systemSettings:autoban",
+      key: "publisherAbuseAutobanEnabled",
+      enabled: true,
+      updatedAt: 1,
+      updatedByUserId: "users:admin",
+    };
+    const inserted: Array<{ table: string; value: unknown }> = [];
+    const ctx = {
+      db: {
+        query: vi.fn((table: string) => {
+          if (table === "systemSettings") {
+            return makePublisherAbuseAutobanSettingQuery(existingSetting);
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
+        insert: vi.fn(async (table: string, value: unknown) => {
+          inserted.push({ table, value });
+          return `${table}:new`;
+        }),
+        patch: vi.fn(),
+      },
+    };
+
+    await expect(setPublisherAbuseAutobanEnabledHandler(ctx, { enabled: false })).resolves.toEqual({
+      enabled: false,
+      updatedAt: expect.any(Number),
+      updatedByUserId: "users:admin",
+    });
+
+    expect(assertAdmin).toHaveBeenCalledWith(user);
+    expect(ctx.db.patch).toHaveBeenCalledWith("systemSettings:autoban", {
+      enabled: false,
+      updatedAt: expect.any(Number),
+      updatedByUserId: "users:admin",
+    });
+    expect(inserted).toEqual([
+      {
+        table: "auditLogs",
+        value: {
+          actorUserId: "users:admin",
+          action: "publisher_abuse.autoban_setting.set",
+          targetType: "system",
+          targetId: "publisherAbuseAutobanEnabled",
+          metadata: {
+            previousEnabled: true,
+            nextEnabled: false,
+          },
+          createdAt: expect.any(Number),
+        },
+      },
+    ]);
+  });
+
+  it("rejects publisher abuse autoban kill-switch writes from non-admins", async () => {
+    const user = { _id: "users:moderator", role: "moderator" };
+    vi.mocked(requireUser).mockResolvedValue({
+      userId: "users:moderator",
+      user,
+    } as never);
+    vi.mocked(assertAdmin).mockImplementationOnce(() => {
+      throw new Error("Forbidden");
+    });
+    const ctx = {
+      db: {
+        query: vi.fn(),
+        insert: vi.fn(),
+        patch: vi.fn(),
+      },
+    };
+
+    await expect(setPublisherAbuseAutobanEnabledHandler(ctx, { enabled: false })).rejects.toThrow(
+      "Forbidden",
+    );
+
+    expect(assertAdmin).toHaveBeenCalledWith(user);
+    expect(ctx.db.query).not.toHaveBeenCalled();
+    expect(ctx.db.insert).not.toHaveBeenCalled();
+    expect(ctx.db.patch).not.toHaveBeenCalled();
   });
 
   it("reuses an active publisher abuse score run by default", async () => {
@@ -601,7 +976,139 @@ describe("publisher abuse dry-run persistence", () => {
     expect(insert).not.toHaveBeenCalled();
   });
 
-  it("rejects direct ban actions for official publisher nominations", async () => {
+  it.each([
+    {
+      name: "official publisher nominations",
+      publisher: {
+        _id: "publishers:openclaw",
+        kind: "org",
+        handle: "openclaw",
+        displayName: "OpenClaw",
+        linkedUserId: "users:owner",
+      },
+      official: true,
+    },
+    {
+      name: "staff-linked publisher nominations",
+      publisher: {
+        _id: "publishers:staff",
+        kind: "user",
+        handle: "staff",
+        displayName: "Staff",
+        linkedUserId: "users:staff",
+      },
+      extraGet: (id: string) =>
+        id === "users:staff" ? { _id: "users:staff", role: "admin" } : null,
+    },
+    {
+      name: "staff-managed org publisher nominations",
+      publisher: {
+        _id: "publishers:staff-managed",
+        kind: "org",
+        handle: "staff-managed",
+        displayName: "Staff Managed",
+        linkedUserId: "users:owner",
+      },
+      extraGet: (id: string) => {
+        if (id === "users:owner") return { _id: "users:owner", role: "user" };
+        if (id === "users:staff-manager") {
+          return { _id: "users:staff-manager", role: "moderator" };
+        }
+        return null;
+      },
+      staffManaged: true,
+    },
+  ])(
+    "rejects direct ban actions for $name",
+    async ({ publisher, official, staffManaged, extraGet }) => {
+      vi.mocked(requireUser).mockResolvedValue({
+        userId: "users:moderator",
+        user: { _id: "users:moderator", role: "moderator" },
+      } as never);
+      const runMutation = vi.fn(async () => ({ ok: true }));
+      const patch = vi.fn(async () => null);
+      const insert = vi.fn(async (table: string) => `${table}:new`);
+      const ctx = {
+        runMutation,
+        db: {
+          get: vi.fn(async (id: string) => {
+            if (id === "publisherAbuseReviewNominations:nomination") {
+              return makeNomination({
+                _id: "publisherAbuseReviewNominations:nomination",
+                ownerKey: `publisher:${publisher._id}`,
+                ownerPublisherId: publisher._id,
+                ownerUserId: publisher.linkedUserId,
+                label: "potential_ban_candidate",
+                status: "pending",
+                latestScoreId: "publisherAbuseScores:score",
+                updatedAt: 1,
+              });
+            }
+            if (id === publisher._id) return publisher;
+            const extra = extraGet?.(id);
+            if (extra) return extra;
+            if (id === publisher.linkedUserId) return { _id: id, role: "user" };
+            return null;
+          }),
+          insert,
+          patch,
+          query: vi.fn((table: string) => {
+            if (table === "officialPublishers") {
+              return official
+                ? {
+                    withIndex: () => ({
+                      unique: async () => ({
+                        _id: "officialPublishers:openclaw",
+                        publisherId: publisher._id,
+                      }),
+                    }),
+                  }
+                : makeEmptyOfficialPublishersQuery();
+            }
+            if (table === "publisherMembers") {
+              return {
+                withIndex: (indexName: string) => {
+                  expect(indexName).toBe("by_publisher_and_role");
+                  return {
+                    paginate: async () => ({
+                      page: staffManaged
+                        ? [
+                            {
+                              _id: "publisherMembers:staff-manager",
+                              publisherId: publisher._id,
+                              userId: "users:staff-manager",
+                              role: "owner",
+                            },
+                          ]
+                        : [],
+                      isDone: true,
+                      continueCursor: "",
+                    }),
+                  };
+                },
+              };
+            }
+            throw new Error(`unexpected table ${table}`);
+          }),
+        },
+      };
+
+      await expect(
+        banPublisherAbuseOwnerHandler(ctx, {
+          nominationId: "publisherAbuseReviewNominations:nomination",
+          expectedLatestScoreId: "publisherAbuseScores:score",
+          expectedUpdatedAt: 1,
+          reason: "confirmed spam",
+        }),
+      ).rejects.toThrow(/excluded publisher|staff accounts/i);
+
+      expect(runMutation).not.toHaveBeenCalled();
+      expect(patch).not.toHaveBeenCalled();
+      expect(insert).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects direct ban actions when the publisher was relinked", async () => {
     vi.mocked(requireUser).mockResolvedValue({
       userId: "users:moderator",
       user: { _id: "users:moderator", role: "moderator" },
@@ -609,14 +1116,6 @@ describe("publisher abuse dry-run persistence", () => {
     const runMutation = vi.fn(async () => ({ ok: true }));
     const patch = vi.fn(async () => null);
     const insert = vi.fn(async (table: string) => `${table}:new`);
-    const officialPublisher = {
-      _id: "publishers:openclaw",
-      kind: "org",
-      handle: "openclaw",
-      displayName: "OpenClaw",
-      linkedUserId: "users:owner",
-      deactivatedAt: 123,
-    };
     const ctx = {
       runMutation,
       db: {
@@ -624,31 +1123,32 @@ describe("publisher abuse dry-run persistence", () => {
           if (id === "publisherAbuseReviewNominations:nomination") {
             return makeNomination({
               _id: "publisherAbuseReviewNominations:nomination",
-              ownerKey: "publisher:publishers:openclaw",
-              ownerPublisherId: officialPublisher._id,
-              ownerUserId: "users:owner",
+              ownerKey: "publisher:publishers:candidate",
+              ownerPublisherId: "publishers:candidate",
+              ownerUserId: "users:previous-owner",
               label: "potential_ban_candidate",
               status: "pending",
               latestScoreId: "publisherAbuseScores:score",
               updatedAt: 1,
             });
           }
-          if (id === officialPublisher._id) return officialPublisher;
+          if (id === "publishers:candidate") {
+            return {
+              _id: "publishers:candidate",
+              kind: "user",
+              linkedUserId: "users:new-owner",
+            };
+          }
+          if (id === "users:previous-owner") {
+            return { _id: "users:previous-owner", role: "user" };
+          }
+          if (id === "users:new-owner") return { _id: "users:new-owner", role: "user" };
           return null;
         }),
         insert,
         patch,
         query: vi.fn((table: string) => {
-          if (table === "officialPublishers") {
-            return {
-              withIndex: () => ({
-                unique: async () => ({
-                  _id: "officialPublishers:openclaw",
-                  publisherId: officialPublisher._id,
-                }),
-              }),
-            };
-          }
+          if (table === "officialPublishers") return makeEmptyOfficialPublishersQuery();
           throw new Error(`unexpected table ${table}`);
         }),
       },
@@ -661,14 +1161,14 @@ describe("publisher abuse dry-run persistence", () => {
         expectedUpdatedAt: 1,
         reason: "confirmed spam",
       }),
-    ).rejects.toThrow(/official publisher/i);
+    ).rejects.toThrow(/linked user changed/i);
 
     expect(runMutation).not.toHaveBeenCalled();
     expect(patch).not.toHaveBeenCalled();
     expect(insert).not.toHaveBeenCalled();
   });
 
-  it("rejects publisher abuse ban enforcement while nominations are flag-only", async () => {
+  it("bans the linked owner and resolves the nomination in one mutation", async () => {
     vi.mocked(requireUser).mockResolvedValue({
       userId: "users:moderator",
       user: { _id: "users:moderator", role: "moderator" },
@@ -691,6 +1191,7 @@ describe("publisher abuse dry-run persistence", () => {
               updatedAt: 1,
             };
           }
+          if (id === "users:owner") return { _id: "users:owner", role: "user" };
           return null;
         }),
         insert,
@@ -705,14 +1206,81 @@ describe("publisher abuse dry-run persistence", () => {
         expectedUpdatedAt: 1,
         reason: " confirmed spam ",
       }),
-    ).rejects.toThrow(/publisher abuse bans are disabled/i);
+    ).resolves.toEqual({ ok: true, status: "banned" });
 
-    expect(runMutation).not.toHaveBeenCalled();
-    expect(patch).not.toHaveBeenCalled();
-    expect(insert).not.toHaveBeenCalled();
+    expect(runMutation).toHaveBeenCalledWith(expect.anything(), {
+      actorUserId: "users:moderator",
+      targetUserId: "users:owner",
+      reason: "publisher_abuse: confirmed spam",
+    });
+    expect(patch).toHaveBeenCalledWith(
+      "publisherAbuseReviewNominations:nomination",
+      expect.objectContaining({
+        status: "banned",
+        reviewedByUserId: "users:moderator",
+        notes: "confirmed spam",
+      }),
+    );
+    expect(insert).toHaveBeenCalledWith(
+      "publisherAbuseReviewEvents",
+      expect.objectContaining({
+        eventType: "triage_status_changed",
+        previousStatus: "pending",
+        nextStatus: "banned",
+        notes: "confirmed spam",
+      }),
+    );
   });
 
-  it("rejects stale abuse ban actions before banning the linked owner", async () => {
+  it.each(["admin", "moderator"] as const)(
+    "rejects direct ban actions for %s owners without a publisher row",
+    async (role) => {
+      vi.mocked(requireUser).mockResolvedValue({
+        userId: "users:admin",
+        user: { _id: "users:admin", role: "admin" },
+      } as never);
+      const runMutation = vi.fn(async () => ({ ok: true }));
+      const patch = vi.fn(async () => null);
+      const insert = vi.fn(async (table: string) => `${table}:new`);
+      const ctx = {
+        runMutation,
+        db: {
+          get: vi.fn(async (id: string) => {
+            if (id === "publisherAbuseReviewNominations:nomination") {
+              return {
+                _id: "publisherAbuseReviewNominations:nomination",
+                ownerKey: "user:staff",
+                ownerUserId: "users:staff",
+                latestScoreId: "publisherAbuseScores:score",
+                label: "potential_ban_candidate",
+                status: "pending",
+                updatedAt: 1,
+              };
+            }
+            if (id === "users:staff") return { _id: "users:staff", role };
+            return null;
+          }),
+          insert,
+          patch,
+        },
+      };
+
+      await expect(
+        banPublisherAbuseOwnerHandler(ctx, {
+          nominationId: "publisherAbuseReviewNominations:nomination",
+          expectedLatestScoreId: "publisherAbuseScores:score",
+          expectedUpdatedAt: 1,
+          reason: "confirmed spam",
+        }),
+      ).rejects.toThrow(/staff accounts/i);
+
+      expect(runMutation).not.toHaveBeenCalled();
+      expect(patch).not.toHaveBeenCalled();
+      expect(insert).not.toHaveBeenCalled();
+    },
+  );
+
+  it("uses publisher abuse email context for manual bans without notes", async () => {
     vi.mocked(requireUser).mockResolvedValue({
       userId: "users:moderator",
       user: { _id: "users:moderator", role: "moderator" },
@@ -729,11 +1297,13 @@ describe("publisher abuse dry-run persistence", () => {
               _id: "publisherAbuseReviewNominations:nomination",
               ownerKey: "user:owner",
               ownerUserId: "users:owner",
-              latestScoreId: "publisherAbuseScores:new-score",
+              latestScoreId: "publisherAbuseScores:score",
+              label: "potential_ban_candidate",
               status: "pending",
-              updatedAt: 2,
+              updatedAt: 1,
             };
           }
+          if (id === "users:owner") return { _id: "users:owner", role: "user" };
           return null;
         }),
         insert,
@@ -744,432 +1314,1273 @@ describe("publisher abuse dry-run persistence", () => {
     await expect(
       banPublisherAbuseOwnerHandler(ctx, {
         nominationId: "publisherAbuseReviewNominations:nomination",
-        expectedLatestScoreId: "publisherAbuseScores:old-score",
+        expectedLatestScoreId: "publisherAbuseScores:score",
         expectedUpdatedAt: 1,
-        reason: "confirmed spam",
       }),
-    ).rejects.toThrow(/changed; refresh and try again/i);
+    ).resolves.toEqual({ ok: true, status: "banned" });
 
+    expect(runMutation).toHaveBeenCalledWith(expect.anything(), {
+      actorUserId: "users:moderator",
+      targetUserId: "users:owner",
+      reason: "publisher_abuse: potential ban candidate",
+    });
+    expect(patch).toHaveBeenCalledWith(
+      "publisherAbuseReviewNominations:nomination",
+      expect.objectContaining({
+        status: "banned",
+        notes: undefined,
+      }),
+    );
+  });
+
+  it("warns pending potential-ban nominations before banning", async () => {
+    const nomination = makeNomination({
+      _id: "publisherAbuseReviewNominations:candidate",
+      ownerKey: "publisher:publishers:candidate",
+      ownerPublisherId: "publishers:candidate",
+      ownerUserId: "users:candidate",
+      latestScoreId: "publisherAbuseScores:candidate",
+      handleSnapshot: "candidate",
+      label: "potential_ban_candidate",
+      status: "pending",
+      lastScoredAt: 20,
+      updatedAt: 20,
+    });
+    const score = {
+      ...makeScore({
+        _id: "publisherAbuseScores:candidate",
+        ownerKey: "publisher:publishers:candidate",
+        ownerPublisherId: "publishers:candidate",
+      }),
+      ownerUserId: "users:candidate",
+      reasonCodes: ["high_catalog_volume", "low_installs_per_skill"],
+    };
+    const publisher = {
+      _id: "publishers:candidate",
+      kind: "user",
+      handle: "candidate",
+      linkedUserId: "users:candidate",
+    };
+    const patch = vi.fn(async () => null);
+    const insert = vi.fn(async (table: string) => `${table}:new`);
+    const runMutation = vi.fn();
+    const scheduler = { runAfter: vi.fn(async () => null) };
+    const ctx = {
+      scheduler,
+      runMutation,
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === "publisherAbuseScores:candidate") return score;
+          if (id === "publisherAbuseScoreRuns:latest") return makeCompletedPressureScoreRun();
+          if (id === "publishers:candidate") return publisher;
+          if (id === "users:candidate") {
+            return {
+              _id: "users:candidate",
+              handle: "candidate",
+              email: "candidate@example.test",
+              role: "user",
+            };
+          }
+          return null;
+        }),
+        patch,
+        insert,
+        query: vi.fn((table: string) => {
+          if (table === "publisherAbuseReviewNominations") {
+            return makeAutoBanNominationQuery([nomination]);
+          }
+          if (table === "officialPublishers") return makeEmptyOfficialPublishersQuery();
+          if (table === "systemSettings") {
+            return makePublisherAbuseAutobanSettingQuery({
+              key: "publisherAbuseAutobanEnabled",
+              enabled: true,
+              updatedAt: 1,
+              updatedByUserId: "users:admin",
+            });
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
+      },
+    };
+
+    await expect(
+      autoBanPublisherAbuseCandidatesPageHandler(ctx, { batchSize: 10 }),
+    ).resolves.toEqual({
+      ok: true,
+      processed: 1,
+      warned: 1,
+      banned: 0,
+      alreadyBanned: 0,
+      skipped: 0,
+      isDone: true,
+    });
+
+    expect(runMutation).not.toHaveBeenCalled();
+    expect(patch).toHaveBeenCalledWith(
+      "publisherAbuseReviewNominations:candidate",
+      expect.objectContaining({
+        warningPendingAt: expect.any(Number),
+        warningPendingScoreId: "publisherAbuseScores:candidate",
+        warningPendingRunId: "publisherAbuseScoreRuns:latest",
+      }),
+    );
+    expect(insert).not.toHaveBeenCalled();
+    expect(scheduler.runAfter).toHaveBeenCalledWith(
+      0,
+      expect.anything(),
+      expect.objectContaining({
+        nominationId: "publisherAbuseReviewNominations:candidate",
+        ownerKey: "publisher:publishers:candidate",
+        runId: "publisherAbuseScoreRuns:latest",
+        scoreId: "publisherAbuseScores:candidate",
+        userId: "users:candidate",
+        to: "candidate@example.test",
+        handle: "candidate",
+        publisherHandle: "candidate",
+        warningPendingAt: expect.any(Number),
+        graceMs: 7 * 24 * 60 * 60 * 1000,
+        score: expect.objectContaining({
+          publishedSkills: 100,
+          totalInstalls: 1,
+          totalStars: 0,
+          totalDownloads: 10,
+          reasonCodes: ["high_catalog_volume", "low_installs_per_skill"],
+        }),
+      }),
+    );
+  });
+
+  it("records publisher abuse warning delivery and clears pending state", async () => {
+    const nomination = {
+      ...makeNomination({
+        _id: "publisherAbuseReviewNominations:candidate",
+        ownerKey: "publisher:publishers:candidate",
+        ownerPublisherId: "publishers:candidate",
+        ownerUserId: "users:candidate",
+        latestScoreId: "publisherAbuseScores:candidate",
+        label: "potential_ban_candidate",
+        status: "pending",
+      }),
+      warningPendingAt: 10,
+      warningPendingScoreId: "publisherAbuseScores:candidate",
+      warningPendingRunId: "publisherAbuseScoreRuns:latest",
+    };
+    const patch = vi.fn(async () => null);
+    const insert = vi.fn(async (table: string) => `${table}:new`);
+    const ctx = {
+      db: {
+        get: vi.fn(async (id: string) =>
+          id === "publisherAbuseReviewNominations:candidate" ? nomination : null,
+        ),
+        patch,
+        insert,
+      },
+    };
+
+    await expect(
+      recordPublisherAbuseWarningSentHandler(ctx, {
+        nominationId: "publisherAbuseReviewNominations:candidate",
+        ownerKey: "publisher:publishers:candidate",
+        runId: "publisherAbuseScoreRuns:latest",
+        scoreId: "publisherAbuseScores:candidate",
+        warningPendingAt: 10,
+        warningSentAt: 20,
+        deadlineAt: 30,
+      }),
+    ).resolves.toEqual({ ok: true });
+
+    expect(patch).toHaveBeenCalledWith(
+      "publisherAbuseReviewNominations:candidate",
+      expect.objectContaining({
+        warningSentAt: 20,
+        warningExpiresAt: 30,
+        warningScoreId: "publisherAbuseScores:candidate",
+        warningRunId: "publisherAbuseScoreRuns:latest",
+        warningPendingAt: undefined,
+        warningPendingScoreId: undefined,
+        warningPendingRunId: undefined,
+      }),
+    );
+    expect(insert).toHaveBeenCalledWith(
+      "publisherAbuseReviewEvents",
+      expect.objectContaining({
+        nominationId: "publisherAbuseReviewNominations:candidate",
+        ownerKey: "publisher:publishers:candidate",
+        runId: "publisherAbuseScoreRuns:latest",
+        scoreId: "publisherAbuseScores:candidate",
+        eventType: "autoban_warning_sent",
+        createdAt: 20,
+      }),
+    );
+  });
+
+  it("does not send repeat warnings before the warning deadline", async () => {
+    const now = Date.now();
+    const nomination = {
+      ...makeNomination({
+        _id: "publisherAbuseReviewNominations:candidate",
+        ownerKey: "publisher:publishers:candidate",
+        ownerPublisherId: "publishers:candidate",
+        ownerUserId: "users:candidate",
+        latestScoreId: "publisherAbuseScores:candidate",
+        handleSnapshot: "candidate",
+        label: "potential_ban_candidate",
+        status: "pending",
+        lastScoredAt: 20,
+        updatedAt: 20,
+      }),
+      warningSentAt: now - 24 * 60 * 60 * 1000,
+      warningExpiresAt: now + 6 * 24 * 60 * 60 * 1000,
+      warningScoreId: "publisherAbuseScores:candidate",
+      warningRunId: "publisherAbuseScoreRuns:latest",
+    };
+    const score = {
+      ...makeScore({
+        _id: "publisherAbuseScores:candidate",
+        ownerKey: "publisher:publishers:candidate",
+        ownerPublisherId: "publishers:candidate",
+      }),
+      ownerUserId: "users:candidate",
+    };
+    const publisher = {
+      _id: "publishers:candidate",
+      kind: "user",
+      handle: "candidate",
+      linkedUserId: "users:candidate",
+    };
+    const runMutation = vi.fn();
+    const scheduler = { runAfter: vi.fn(async () => null) };
+    const patch = vi.fn(async () => null);
+    const ctx = {
+      scheduler,
+      runMutation,
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === "publisherAbuseScores:candidate") return score;
+          if (id === "publisherAbuseScoreRuns:latest") return makeCompletedPressureScoreRun();
+          if (id === "publishers:candidate") return publisher;
+          if (id === "users:candidate") {
+            return {
+              _id: "users:candidate",
+              handle: "candidate",
+              email: "candidate@example.test",
+              role: "user",
+            };
+          }
+          return null;
+        }),
+        patch,
+        insert: vi.fn(),
+        query: vi.fn((table: string) => {
+          if (table === "publisherAbuseReviewNominations") {
+            return makeAutoBanNominationQuery([nomination]);
+          }
+          if (table === "officialPublishers") return makeEmptyOfficialPublishersQuery();
+          if (table === "systemSettings") {
+            return makePublisherAbuseAutobanSettingQuery({
+              key: "publisherAbuseAutobanEnabled",
+              enabled: true,
+              updatedAt: 1,
+              updatedByUserId: "users:admin",
+            });
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
+      },
+    };
+
+    await expect(autoBanPublisherAbuseCandidatesPageHandler(ctx, {})).resolves.toEqual({
+      ok: true,
+      processed: 1,
+      warned: 0,
+      banned: 0,
+      alreadyBanned: 0,
+      skipped: 0,
+      isDone: true,
+    });
+
+    expect(scheduler.runAfter).not.toHaveBeenCalled();
+    expect(runMutation).not.toHaveBeenCalled();
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("rejects stale publisher abuse warning claims without mutating state", async () => {
+    const nomination = {
+      ...makeNomination({
+        _id: "publisherAbuseReviewNominations:candidate",
+        latestScoreId: "publisherAbuseScores:candidate",
+        label: "potential_ban_candidate",
+        status: "pending",
+      }),
+      warningPendingAt: 10,
+      warningPendingScoreId: "publisherAbuseScores:old",
+      warningPendingRunId: "publisherAbuseScoreRuns:latest",
+    };
+    const patch = vi.fn(async () => null);
+    const ctx = {
+      db: {
+        get: vi.fn(async (id: string) =>
+          id === "publisherAbuseReviewNominations:candidate" ? nomination : null,
+        ),
+        patch,
+      },
+    };
+
+    await expect(
+      claimPublisherAbusePendingWarningHandler(ctx, {
+        nominationId: "publisherAbuseReviewNominations:candidate",
+        runId: "publisherAbuseScoreRuns:latest",
+        scoreId: "publisherAbuseScores:candidate",
+        warningPendingAt: 10,
+      }),
+    ).resolves.toEqual({ ok: false, reason: "stale_warning" });
+
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("clears pending publisher abuse warnings when autobans are disabled", async () => {
+    const nomination = {
+      ...makeNomination({
+        _id: "publisherAbuseReviewNominations:candidate",
+        latestScoreId: "publisherAbuseScores:candidate",
+        label: "potential_ban_candidate",
+        status: "pending",
+      }),
+      warningPendingAt: 10,
+      warningPendingScoreId: "publisherAbuseScores:candidate",
+      warningPendingRunId: "publisherAbuseScoreRuns:latest",
+    };
+    const patch = vi.fn(async () => null);
+    const ctx = {
+      db: {
+        get: vi.fn(async (id: string) =>
+          id === "publisherAbuseReviewNominations:candidate" ? nomination : null,
+        ),
+        patch,
+        query: vi.fn((table: string) => {
+          if (table === "systemSettings") {
+            return makePublisherAbuseAutobanSettingQuery({
+              key: "publisherAbuseAutobanEnabled",
+              enabled: false,
+              updatedAt: 1,
+              updatedByUserId: "users:admin",
+            });
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
+      },
+    };
+
+    await expect(
+      claimPublisherAbusePendingWarningHandler(ctx, {
+        nominationId: "publisherAbuseReviewNominations:candidate",
+        runId: "publisherAbuseScoreRuns:latest",
+        scoreId: "publisherAbuseScores:candidate",
+        warningPendingAt: 10,
+      }),
+    ).resolves.toEqual({ ok: false, reason: "autoban_disabled" });
+
+    expect(patch).toHaveBeenCalledWith(
+      "publisherAbuseReviewNominations:candidate",
+      expect.objectContaining({
+        warningPendingAt: undefined,
+        warningPendingScoreId: undefined,
+        warningPendingRunId: undefined,
+      }),
+    );
+  });
+
+  it("clears pending publisher abuse warnings when the score run failed", async () => {
+    const nomination = {
+      ...makeNomination({
+        _id: "publisherAbuseReviewNominations:candidate",
+        ownerPublisherId: "publishers:candidate",
+        ownerUserId: "users:candidate",
+        latestScoreId: "publisherAbuseScores:candidate",
+        label: "potential_ban_candidate",
+        status: "pending",
+      }),
+      warningPendingAt: 10,
+      warningPendingScoreId: "publisherAbuseScores:candidate",
+      warningPendingRunId: "publisherAbuseScoreRuns:latest",
+    };
+    const patch = vi.fn(async () => null);
+    const ctx = {
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === "publisherAbuseReviewNominations:candidate") return nomination;
+          if (id === "publishers:candidate") {
+            return {
+              _id: "publishers:candidate",
+              kind: "user",
+              handle: "candidate",
+              linkedUserId: "users:candidate",
+            };
+          }
+          if (id === "users:candidate") {
+            return {
+              _id: "users:candidate",
+              handle: "candidate",
+              email: "candidate@example.test",
+              role: "user",
+            };
+          }
+          if (id === "publisherAbuseScoreRuns:latest") {
+            return { ...makeCompletedPressureScoreRun(), status: "failed" };
+          }
+          return null;
+        }),
+        patch,
+        query: vi.fn((table: string) => {
+          if (table === "systemSettings") {
+            return makePublisherAbuseAutobanSettingQuery({
+              key: "publisherAbuseAutobanEnabled",
+              enabled: true,
+              updatedAt: 1,
+              updatedByUserId: "users:admin",
+            });
+          }
+          if (table === "officialPublishers") return makeEmptyOfficialPublishersQuery();
+          throw new Error(`unexpected table ${table}`);
+        }),
+      },
+    };
+
+    await expect(
+      claimPublisherAbusePendingWarningHandler(ctx, {
+        nominationId: "publisherAbuseReviewNominations:candidate",
+        runId: "publisherAbuseScoreRuns:latest",
+        scoreId: "publisherAbuseScores:candidate",
+        warningPendingAt: 10,
+      }),
+    ).resolves.toEqual({ ok: false, reason: "score_run_not_actionable" });
+
+    expect(patch).toHaveBeenCalledWith(
+      "publisherAbuseReviewNominations:candidate",
+      expect.objectContaining({
+        warningPendingAt: undefined,
+        warningPendingScoreId: undefined,
+        warningPendingRunId: undefined,
+      }),
+    );
+  });
+
+  it.each([
+    {
+      name: "official publisher",
+      publisher: {
+        _id: "publishers:candidate",
+        kind: "user",
+        handle: "candidate",
+        linkedUserId: "users:candidate",
+      },
+      official: true,
+    },
+    {
+      name: "staff-linked publisher",
+      publisher: {
+        _id: "publishers:candidate",
+        kind: "user",
+        handle: "candidate",
+        linkedUserId: "users:candidate",
+      },
+      users: {
+        "users:candidate": { _id: "users:candidate", handle: "candidate", role: "admin" },
+      },
+    },
+    {
+      name: "staff-managed org publisher",
+      publisher: {
+        _id: "publishers:candidate",
+        kind: "org",
+        handle: "candidate",
+        linkedUserId: "users:candidate",
+      },
+      users: {
+        "users:candidate": { _id: "users:candidate", handle: "candidate", role: "user" },
+        "users:staff-manager": {
+          _id: "users:staff-manager",
+          handle: "staff-manager",
+          role: "moderator",
+        },
+      },
+      staffMember: {
+        _id: "publisherMembers:staff-manager",
+        publisherId: "publishers:candidate",
+        userId: "users:staff-manager",
+        role: "owner",
+      },
+    },
+    {
+      name: "relinked publisher",
+      publisher: {
+        _id: "publishers:candidate",
+        kind: "user",
+        handle: "candidate",
+        linkedUserId: "users:new-owner",
+      },
+      users: {
+        "users:new-owner": { _id: "users:new-owner", handle: "new-owner", role: "user" },
+      },
+    },
+  ])("clears queued warning claims when a $name is no longer actionable", async (testCase) => {
+    const nomination = {
+      ...makeNomination({
+        _id: "publisherAbuseReviewNominations:candidate",
+        ownerPublisherId: "publishers:candidate",
+        ownerUserId: "users:candidate",
+        latestScoreId: "publisherAbuseScores:candidate",
+        label: "potential_ban_candidate",
+        status: "pending",
+      }),
+      warningPendingAt: 10,
+      warningPendingScoreId: "publisherAbuseScores:candidate",
+      warningPendingRunId: "publisherAbuseScoreRuns:latest",
+    };
+    const patch = vi.fn(async () => null);
+    const users = testCase.users ?? {
+      "users:candidate": { _id: "users:candidate", handle: "candidate", role: "user" },
+    };
+    const ctx = {
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === "publisherAbuseReviewNominations:candidate") return nomination;
+          if (id === "publishers:candidate") return testCase.publisher;
+          return users[id as keyof typeof users] ?? null;
+        }),
+        patch,
+        query: vi.fn((table: string) => {
+          if (table === "systemSettings") {
+            return makePublisherAbuseAutobanSettingQuery({
+              key: "publisherAbuseAutobanEnabled",
+              enabled: true,
+              updatedAt: 1,
+              updatedByUserId: "users:admin",
+            });
+          }
+          if (table === "officialPublishers") {
+            if (testCase.official) {
+              return {
+                withIndex: (indexName: string) => {
+                  expect(indexName).toBe("by_publisher");
+                  return {
+                    unique: async () => ({
+                      _id: "officialPublishers:candidate",
+                      publisherId: "publishers:candidate",
+                    }),
+                  };
+                },
+              };
+            }
+            return makeEmptyOfficialPublishersQuery();
+          }
+          if (table === "publisherMembers") {
+            return {
+              withIndex: () => ({
+                paginate: async () => ({
+                  page: testCase.staffMember ? [testCase.staffMember] : [],
+                  isDone: true,
+                  continueCursor: "",
+                }),
+              }),
+            };
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
+      },
+    };
+
+    await expect(
+      claimPublisherAbusePendingWarningHandler(ctx, {
+        nominationId: "publisherAbuseReviewNominations:candidate",
+        runId: "publisherAbuseScoreRuns:latest",
+        scoreId: "publisherAbuseScores:candidate",
+        warningPendingAt: 10,
+      }),
+    ).resolves.toEqual({ ok: false, reason: "nomination_not_actionable" });
+
+    expect(patch).toHaveBeenCalledWith(
+      "publisherAbuseReviewNominations:candidate",
+      expect.objectContaining({
+        warningPendingAt: undefined,
+        warningPendingScoreId: undefined,
+        warningPendingRunId: undefined,
+      }),
+    );
+  });
+
+  it("bans warned candidates after a later still-bad score passes the warning deadline", async () => {
+    const nomination = {
+      ...makeNomination({
+        _id: "publisherAbuseReviewNominations:candidate",
+        ownerKey: "publisher:publishers:candidate",
+        ownerPublisherId: "publishers:candidate",
+        ownerUserId: "users:candidate",
+        latestScoreId: "publisherAbuseScores:new",
+        handleSnapshot: "candidate",
+        label: "potential_ban_candidate",
+        status: "pending",
+        lastScoredAt: 20,
+        updatedAt: 20,
+      }),
+      warningSentAt: 1,
+      warningExpiresAt: 2,
+      warningScoreId: "publisherAbuseScores:old",
+      warningRunId: "publisherAbuseScoreRuns:old",
+    };
+    const score = {
+      ...makeScore({
+        _id: "publisherAbuseScores:new",
+        ownerKey: "publisher:publishers:candidate",
+        ownerPublisherId: "publishers:candidate",
+      }),
+      ownerUserId: "users:candidate",
+      reasonCodes: ["high_catalog_volume", "low_installs_per_skill"],
+      createdAt: 3,
+    };
+    const publisher = {
+      _id: "publishers:candidate",
+      kind: "user",
+      handle: "candidate",
+      linkedUserId: "users:candidate",
+    };
+    const runMutation = vi.fn(async () => ({
+      ok: true,
+      alreadyBanned: false,
+      deletedSkills: 4,
+      deletedSkillComments: 0,
+      scheduledSkills: false,
+    }));
+    const scheduler = { runAfter: vi.fn(async () => null) };
+    const ctx = {
+      scheduler,
+      runMutation,
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === "publisherAbuseScores:new") return score;
+          if (id === "publisherAbuseScoreRuns:latest") return makeCompletedPressureScoreRun();
+          if (id === "publishers:candidate") return publisher;
+          if (id === "users:candidate") {
+            return {
+              _id: "users:candidate",
+              handle: "candidate",
+              email: "candidate@example.test",
+              role: "user",
+            };
+          }
+          return null;
+        }),
+        patch: vi.fn(),
+        insert: vi.fn(),
+        query: vi.fn((table: string) => {
+          if (table === "publisherAbuseReviewNominations") {
+            return makeAutoBanNominationQuery([nomination]);
+          }
+          if (table === "officialPublishers") return makeEmptyOfficialPublishersQuery();
+          if (table === "systemSettings") {
+            return makePublisherAbuseAutobanSettingQuery({
+              key: "publisherAbuseAutobanEnabled",
+              enabled: true,
+              updatedAt: 1,
+              updatedByUserId: "users:admin",
+            });
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
+      },
+    };
+
+    await expect(autoBanPublisherAbuseCandidatesPageHandler(ctx, {})).resolves.toEqual({
+      ok: true,
+      processed: 1,
+      warned: 0,
+      banned: 1,
+      alreadyBanned: 0,
+      skipped: 0,
+      isDone: true,
+    });
+
+    expect(scheduler.runAfter).not.toHaveBeenCalled();
+    expect(runMutation).toHaveBeenCalledWith(expect.anything(), {
+      ownerUserId: "users:candidate",
+      nominationId: "publisherAbuseReviewNominations:candidate",
+      scoreId: "publisherAbuseScores:new",
+      reason:
+        "publisher_abuse: potential ban candidate (publisher-abuse-pressure.v4): high_catalog_volume, low_installs_per_skill",
+    });
+  });
+
+  it("does not ban warned candidates after the deadline until a newer score confirms", async () => {
+    const nomination = {
+      ...makeNomination({
+        _id: "publisherAbuseReviewNominations:candidate",
+        ownerKey: "publisher:publishers:candidate",
+        ownerPublisherId: "publishers:candidate",
+        ownerUserId: "users:candidate",
+        latestScoreId: "publisherAbuseScores:warned",
+        handleSnapshot: "candidate",
+        label: "potential_ban_candidate",
+        status: "pending",
+        lastScoredAt: 1,
+        updatedAt: 1,
+      }),
+      warningSentAt: 1,
+      warningExpiresAt: 2,
+      warningScoreId: "publisherAbuseScores:warned",
+      warningRunId: "publisherAbuseScoreRuns:latest",
+    };
+    const score = {
+      ...makeScore({
+        _id: "publisherAbuseScores:warned",
+        ownerKey: "publisher:publishers:candidate",
+        ownerPublisherId: "publishers:candidate",
+      }),
+      ownerUserId: "users:candidate",
+      createdAt: 1,
+    };
+    const publisher = {
+      _id: "publishers:candidate",
+      kind: "user",
+      handle: "candidate",
+      linkedUserId: "users:candidate",
+    };
+    const runMutation = vi.fn();
+    const scheduler = { runAfter: vi.fn(async () => null) };
+    const patch = vi.fn();
+    const insert = vi.fn();
+    const ctx = {
+      scheduler,
+      runMutation,
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === score._id) return score;
+          if (id === "publisherAbuseScoreRuns:latest") return makeCompletedPressureScoreRun();
+          if (id === publisher._id) return publisher;
+          if (id === "users:candidate") {
+            return {
+              _id: "users:candidate",
+              handle: "candidate",
+              email: "candidate@example.test",
+              role: "user",
+            };
+          }
+          return null;
+        }),
+        patch,
+        insert,
+        query: vi.fn((table: string) => {
+          if (table === "publisherAbuseReviewNominations") {
+            return makeAutoBanNominationQuery([nomination]);
+          }
+          if (table === "officialPublishers") return makeEmptyOfficialPublishersQuery();
+          if (table === "systemSettings") {
+            return makePublisherAbuseAutobanSettingQuery({
+              key: "publisherAbuseAutobanEnabled",
+              enabled: true,
+              updatedAt: 1,
+              updatedByUserId: "users:admin",
+            });
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
+      },
+    };
+
+    await expect(autoBanPublisherAbuseCandidatesPageHandler(ctx, {})).resolves.toEqual({
+      ok: true,
+      processed: 1,
+      warned: 0,
+      banned: 0,
+      alreadyBanned: 0,
+      skipped: 0,
+      isDone: true,
+    });
+
+    expect(scheduler.runAfter).not.toHaveBeenCalled();
     expect(runMutation).not.toHaveBeenCalled();
     expect(patch).not.toHaveBeenCalled();
     expect(insert).not.toHaveBeenCalled();
   });
 
-  it("streams pending dashboard queues by latest score rank until a visible item is found", async () => {
-    vi.mocked(requireUser).mockResolvedValue({
-      userId: "users:moderator",
-      user: { _id: "users:moderator", role: "moderator" },
-    } as never);
-    const latestRun = {
-      _id: "publisherAbuseScoreRuns:latest",
-      modelVersion: "publisher-abuse-pressure.v2",
-      trigger: "manual",
-      status: "completed",
-      phase: "completed",
-      startedAt: 1,
-      updatedAt: 2,
-      scannedPublishers: 100,
-      scoredPublishers: 100,
-      finalizedScores: 100,
-      nominatedPublishers: 2,
-      passCount: 0,
-      reviewCount: 0,
-      potentialBanCandidateCount: 2,
-    };
-    const skippedScores = Array.from({ length: 9 }, (_, index) =>
-      makeScore({
-        _id: `publisherAbuseScores:stale-${index}`,
-        ownerKey: `user:stale-${index}`,
-        rank: index + 1,
+  it("does not ban when the newer score was created before the warning deadline", async () => {
+    const nomination = {
+      ...makeNomination({
+        _id: "publisherAbuseReviewNominations:candidate",
+        ownerKey: "publisher:publishers:candidate",
+        ownerPublisherId: "publishers:candidate",
+        ownerUserId: "users:candidate",
+        latestScoreId: "publisherAbuseScores:new",
+        handleSnapshot: "candidate",
+        label: "potential_ban_candidate",
+        status: "pending",
+        lastScoredAt: 2,
+        updatedAt: 2,
       }),
-    );
-    const visibleScore = makeScore({
-      _id: "publisherAbuseScores:visible",
-      ownerKey: "user:visible",
-      rank: 10,
-      zScore: 4.2,
-    });
-    const scoreIndexCalls: Array<{ indexName: string; constraints: Record<string, unknown> }> = [];
-    let scoreTakeLimit = 0;
-    const nominations = new Map([
-      [
-        "user:visible",
-        makeNomination({
-          _id: "publisherAbuseReviewNominations:visible",
-          ownerKey: "user:visible",
-          latestScoreId: "publisherAbuseScores:visible",
-          handleSnapshot: "visible-risk-row",
-          lastScoredAt: 10,
-        }),
-      ],
-    ]);
-    const query = vi.fn((table: string) => {
-      if (table === "publisherAbuseScoreRuns") {
-        return {
-          withIndex: (
-            indexName: string,
-            build: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
-          ) => {
-            expect(indexName).toBe("by_model_version_and_started_at");
-            const constraints: Record<string, unknown> = {};
-            const q = {
-              eq(field: string, value: unknown) {
-                constraints[field] = value;
-                return q;
-              },
-            };
-            build(q);
-            expect(constraints.modelVersion).toBe("publisher-abuse-pressure.v4");
-            return {
-              order: () => ({
-                first: async () => latestRun,
-              }),
-            };
-          },
-        };
-      }
-      if (table === "publisherAbuseScores") {
-        return {
-          withIndex: (
-            indexName: string,
-            build: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
-          ) => {
-            const constraints: Record<string, unknown> = {};
-            const q = {
-              eq(field: string, value: unknown) {
-                constraints[field] = value;
-                return q;
-              },
-            };
-            build(q);
-            scoreIndexCalls.push({ indexName, constraints });
-            const rows =
-              constraints.label === "potential_ban_candidate"
-                ? [...skippedScores, visibleScore]
-                : [];
-            return {
-              order: () => ({
-                take: async (limit: number) => {
-                  scoreTakeLimit = limit;
-                  return rows.slice(0, limit);
-                },
-              }),
-            };
-          },
-        };
-      }
-      if (table === "publisherAbuseReviewNominations") {
-        return {
-          withIndex: (
-            indexName: string,
-            build: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
-          ) => {
-            const constraints: Record<string, unknown> = {};
-            const q = {
-              eq(field: string, value: unknown) {
-                constraints[field] = value;
-                return q;
-              },
-            };
-            build(q);
-            if (indexName === "by_owner_key_and_model_version") {
-              return {
-                first: async () => nominations.get(String(constraints.ownerKey)) ?? null,
-              };
-            }
-            if (indexName === "by_status_and_reviewed_at") {
-              return {
-                order: () => ({
-                  take: async () => [],
-                }),
-              };
-            }
-            if (indexName === "by_status_and_label_and_last_scored_at") {
-              return {
-                order: () => ({
-                  take: async () => [],
-                }),
-              };
-            }
-            throw new Error(`unexpected nomination index ${indexName}`);
-          },
-        };
-      }
-      throw new Error(`unexpected table ${table}`);
-    });
+      warningSentAt: 1,
+      warningExpiresAt: 3,
+      warningScoreId: "publisherAbuseScores:old",
+      warningRunId: "publisherAbuseScoreRuns:old",
+    };
+    const score = {
+      ...makeScore({
+        _id: "publisherAbuseScores:new",
+        ownerKey: "publisher:publishers:candidate",
+        ownerPublisherId: "publishers:candidate",
+      }),
+      ownerUserId: "users:candidate",
+      createdAt: 2,
+    };
+    const publisher = {
+      _id: "publishers:candidate",
+      kind: "user",
+      handle: "candidate",
+      linkedUserId: "users:candidate",
+    };
+    const runMutation = vi.fn();
+    const scheduler = { runAfter: vi.fn(async () => null) };
+    const patch = vi.fn();
+    const insert = vi.fn();
     const ctx = {
+      scheduler,
+      runMutation,
       db: {
         get: vi.fn(async (id: string) => {
-          if (id === "publisherAbuseScores:visible") return visibleScore;
-          if (id === "publisherAbuseScoreRuns:latest") return latestRun;
+          if (id === score._id) return score;
+          if (id === "publisherAbuseScoreRuns:latest") return makeCompletedPressureScoreRun();
+          if (id === publisher._id) return publisher;
+          if (id === "users:candidate") {
+            return {
+              _id: "users:candidate",
+              handle: "candidate",
+              email: "candidate@example.test",
+              role: "user",
+            };
+          }
           return null;
         }),
-        query,
+        patch,
+        insert,
+        query: vi.fn((table: string) => {
+          if (table === "publisherAbuseReviewNominations") {
+            return makeAutoBanNominationQuery([nomination]);
+          }
+          if (table === "officialPublishers") return makeEmptyOfficialPublishersQuery();
+          if (table === "systemSettings") {
+            return makePublisherAbuseAutobanSettingQuery({
+              key: "publisherAbuseAutobanEnabled",
+              enabled: true,
+              updatedAt: 1,
+              updatedByUserId: "users:admin",
+            });
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
       },
     };
 
-    await expect(listDashboardHandler(ctx, { limit: 1 })).resolves.toEqual(
-      expect.objectContaining({
-        pendingPotentialBanCandidateItems: [
-          expect.objectContaining({
-            nomination: expect.objectContaining({
-              _id: "publisherAbuseReviewNominations:visible",
-              handleSnapshot: "visible-risk-row",
-            }),
-          }),
-        ],
-      }),
-    );
-    expect(scoreIndexCalls).toContainEqual({
-      indexName: "by_run_and_label_and_rank",
-      constraints: {
-        runId: "publisherAbuseScoreRuns:latest",
-        label: "potential_ban_candidate",
-      },
+    await expect(autoBanPublisherAbuseCandidatesPageHandler(ctx, {})).resolves.toEqual({
+      ok: true,
+      processed: 1,
+      warned: 0,
+      banned: 0,
+      alreadyBanned: 0,
+      skipped: 0,
+      isDone: true,
     });
-    expect(scoreTakeLimit).toBe(32);
+
+    expect(scheduler.runAfter).not.toHaveBeenCalled();
+    expect(runMutation).not.toHaveBeenCalled();
+    expect(patch).not.toHaveBeenCalled();
+    expect(insert).not.toHaveBeenCalled();
   });
 
-  it("hides stale official publisher nominations from dashboard lists and nomination detail", async () => {
-    vi.mocked(requireUser).mockResolvedValue({
-      userId: "users:moderator",
-      user: { _id: "users:moderator", role: "moderator" },
-    } as never);
-    const latestRun = {
-      _id: "publisherAbuseScoreRuns:latest",
-      modelVersion: "publisher-abuse-pressure.v2",
-      trigger: "manual",
-      status: "completed",
-      phase: "completed",
-      startedAt: 1,
-      updatedAt: 2,
-      completedAt: 2,
-      scannedPublishers: 200,
-      scoredPublishers: 198,
-      finalizedScores: 198,
-      nominatedPublishers: 2,
-      passCount: 196,
-      reviewCount: 0,
-      potentialBanCandidateCount: 2,
+  it("runs the warning-delivery-to-post-deadline-ban workflow", async () => {
+    const warningPendingAt = 1_700_000_000_000;
+    const warningSentAt = warningPendingAt + 60_000;
+    const deadlineAt = warningSentAt + 7 * 24 * 60 * 60 * 1000;
+    const firstScore = {
+      ...makeScore({
+        _id: "publisherAbuseScores:first",
+        ownerKey: "publisher:publishers:candidate",
+        ownerPublisherId: "publishers:candidate",
+      }),
+      ownerUserId: "users:candidate",
+      reasonCodes: ["high_catalog_volume", "low_installs_per_skill"],
+      createdAt: warningPendingAt - 1,
     };
-    const officialPublisher = {
-      _id: "publishers:official-risk",
-      kind: "org",
-      handle: "official-risk",
-      displayName: "Official Risk",
-      linkedUserId: "users:official-risk",
+    const secondScore = {
+      ...firstScore,
+      _id: "publisherAbuseScores:second",
+      createdAt: deadlineAt + 1,
     };
-    const communityPublisher = {
-      _id: "publishers:community-risk",
-      kind: "org",
-      handle: "community-risk",
-      displayName: "Community Risk",
-      linkedUserId: "users:community-risk",
+    const nomination = {
+      ...makeNomination({
+        _id: "publisherAbuseReviewNominations:candidate",
+        ownerKey: "publisher:publishers:candidate",
+        ownerPublisherId: "publishers:candidate",
+        ownerUserId: "users:candidate",
+        latestScoreId: firstScore._id,
+        handleSnapshot: "candidate",
+        label: "potential_ban_candidate",
+        status: "pending",
+        lastScoredAt: warningPendingAt,
+        updatedAt: warningPendingAt,
+      }),
     };
-    const officialScore = makeScore({
-      _id: "publisherAbuseScores:official-risk",
-      ownerKey: "publisher:publishers:official-risk",
-      ownerPublisherId: officialPublisher._id,
-      rank: 1,
-      zScore: 5,
-    });
-    const communityScore = makeScore({
-      _id: "publisherAbuseScores:community-risk",
-      ownerKey: "publisher:publishers:community-risk",
-      ownerPublisherId: communityPublisher._id,
-      rank: 2,
-      zScore: 4.5,
-    });
-    const officialNomination = makeNomination({
-      _id: "publisherAbuseReviewNominations:official-risk",
-      ownerKey: officialScore.ownerKey,
-      ownerPublisherId: officialPublisher._id,
-      ownerUserId: "users:official-risk",
-      latestScoreId: officialScore._id,
-      handleSnapshot: officialPublisher.handle,
-      lastScoredAt: 20,
-    });
-    const communityNomination = makeNomination({
-      _id: "publisherAbuseReviewNominations:community-risk",
-      ownerKey: communityScore.ownerKey,
-      ownerPublisherId: communityPublisher._id,
-      ownerUserId: "users:community-risk",
-      latestScoreId: communityScore._id,
-      handleSnapshot: communityPublisher.handle,
-      lastScoredAt: 19,
-    });
-    const officialResolvedNomination = makeNomination({
-      _id: "publisherAbuseReviewNominations:official-resolved",
-      ownerKey: officialScore.ownerKey,
-      ownerPublisherId: officialPublisher._id,
-      ownerUserId: "users:official-risk",
-      latestScoreId: officialScore._id,
-      handleSnapshot: officialPublisher.handle,
-      status: "reviewed_no_action",
-      reviewedAt: 30,
-    });
-    const communityResolvedNomination = makeNomination({
-      _id: "publisherAbuseReviewNominations:community-resolved",
-      ownerKey: communityScore.ownerKey,
-      ownerPublisherId: communityPublisher._id,
-      ownerUserId: "users:community-risk",
-      latestScoreId: communityScore._id,
-      handleSnapshot: communityPublisher.handle,
-      status: "reviewed_no_action",
-      reviewedAt: 29,
-    });
-    const nominations = new Map([
-      [officialScore.ownerKey, officialNomination],
-      [communityScore.ownerKey, communityNomination],
-    ]);
-    const docs = new Map<string, unknown>([
-      [latestRun._id, latestRun],
-      [officialScore._id, officialScore],
-      [communityScore._id, communityScore],
-      [officialNomination._id, officialNomination],
-      [communityNomination._id, communityNomination],
-      [officialResolvedNomination._id, officialResolvedNomination],
-      [communityResolvedNomination._id, communityResolvedNomination],
-      [officialPublisher._id, officialPublisher],
-      [communityPublisher._id, communityPublisher],
-      ["users:official-risk", { _id: "users:official-risk", handle: "official-risk" }],
-      ["users:community-risk", { _id: "users:community-risk", handle: "community-risk" }],
-    ]);
-    const query = vi.fn((table: string) => {
-      if (table === "publisherAbuseScoreRuns") {
-        return {
-          withIndex: () => ({
-            order: () => ({
-              first: async () => latestRun,
-            }),
-          }),
-        };
-      }
-      if (table === "publisherAbuseScores") {
-        return {
-          withIndex: () => ({
-            order: () => ({
-              take: async () => [officialScore, communityScore],
-            }),
-          }),
-        };
-      }
-      if (table === "publisherAbuseReviewNominations") {
-        return {
-          withIndex: (
-            indexName: string,
-            build: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
-          ) => {
-            const constraints: Record<string, unknown> = {};
-            const q = {
-              eq(field: string, value: unknown) {
-                constraints[field] = value;
-                return q;
-              },
-            };
-            build(q);
-            if (indexName === "by_owner_key_and_model_version") {
-              return {
-                first: async () => nominations.get(String(constraints.ownerKey)) ?? null,
-              };
-            }
-            if (indexName === "by_status_and_label_and_last_scored_at") {
-              return {
-                order: () => ({
-                  take: async () => [],
-                }),
-              };
-            }
-            if (indexName === "by_status_and_reviewed_at") {
-              return {
-                order: () => ({
-                  take: async () =>
-                    constraints.status === "reviewed_no_action"
-                      ? [officialResolvedNomination, communityResolvedNomination]
-                      : [],
-                }),
-              };
-            }
-            throw new Error(`unexpected nomination index ${indexName}`);
-          },
-        };
-      }
-      if (table === "officialPublishers") {
-        return {
-          withIndex: (
-            indexName: string,
-            build: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
-          ) => {
-            expect(indexName).toBe("by_publisher");
-            const constraints: Record<string, unknown> = {};
-            const q = {
-              eq(field: string, value: unknown) {
-                constraints[field] = value;
-                return q;
-              },
-            };
-            build(q);
-            return {
-              unique: async () =>
-                constraints.publisherId === officialPublisher._id
-                  ? {
-                      _id: "officialPublishers:official-risk",
-                      publisherId: officialPublisher._id,
-                    }
-                  : null,
-            };
-          },
-        };
-      }
-      if (table === "publisherAbuseReviewEvents") {
-        return {
-          withIndex: () => ({
-            order: () => ({
-              take: async () => [],
-            }),
-          }),
-        };
-      }
-      throw new Error(`unexpected table ${table}`);
-    });
+    const publisher = {
+      _id: "publishers:candidate",
+      kind: "user",
+      handle: "candidate",
+      linkedUserId: "users:candidate",
+    };
+    const user = {
+      _id: "users:candidate",
+      handle: "candidate",
+      email: "candidate@example.test",
+      role: "user",
+    };
+    const run = makeCompletedPressureScoreRun();
+    const scheduledWarnings: Array<{
+      nominationId: string;
+      ownerKey: string;
+      runId: string;
+      scoreId: string;
+      userId: string;
+      to: string;
+      handle: string;
+      publisherHandle: string;
+      warningPendingAt: number;
+      graceMs: number;
+    }> = [];
+    const runMutation = vi.fn(async () => ({
+      ok: true,
+      alreadyBanned: false,
+      deletedSkills: 4,
+      deletedSkillComments: 0,
+      scheduledSkills: false,
+    }));
+    const scheduler = {
+      runAfter: vi.fn(
+        async (_delay: number, _action: unknown, args: (typeof scheduledWarnings)[number]) => {
+          scheduledWarnings.push(args);
+        },
+      ),
+    };
     const ctx = {
+      scheduler,
+      runMutation,
       db: {
-        get: vi.fn(async (id: string) => docs.get(id) ?? null),
-        query,
+        get: vi.fn(async (id: string) => {
+          if (id === firstScore._id) return firstScore;
+          if (id === secondScore._id) return secondScore;
+          if (id === run._id) return run;
+          if (id === publisher._id) return publisher;
+          if (id === user._id) return user;
+          if (id === nomination._id) return nomination;
+          return null;
+        }),
+        patch: vi.fn(async (id: string, patch: Record<string, unknown>) => {
+          if (id !== nomination._id) throw new Error(`unexpected patch id ${id}`);
+          Object.assign(nomination, patch);
+          return null;
+        }),
+        insert: vi.fn(async (table: string) => `${table}:new`),
+        query: vi.fn((table: string) => {
+          if (table === "publisherAbuseReviewNominations") {
+            return makeAutoBanNominationQuery([nomination]);
+          }
+          if (table === "officialPublishers") return makeEmptyOfficialPublishersQuery();
+          if (table === "systemSettings") {
+            return makePublisherAbuseAutobanSettingQuery({
+              key: "publisherAbuseAutobanEnabled",
+              enabled: true,
+              updatedAt: 1,
+              updatedByUserId: "users:admin",
+            });
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
+      },
+    };
+    const nowSpy = vi.spyOn(Date, "now");
+    nowSpy.mockReturnValue(warningPendingAt);
+
+    await expect(autoBanPublisherAbuseCandidatesPageHandler(ctx, {})).resolves.toEqual({
+      ok: true,
+      processed: 1,
+      warned: 1,
+      banned: 0,
+      alreadyBanned: 0,
+      skipped: 0,
+      isDone: true,
+    });
+    expect(scheduledWarnings).toHaveLength(1);
+    expect(nomination).toMatchObject({
+      warningPendingAt,
+      warningPendingScoreId: firstScore._id,
+      warningPendingRunId: run._id,
+    });
+    expect(nomination).not.toHaveProperty("warningSentAt");
+
+    await expect(
+      recordPublisherAbuseWarningSentHandler(ctx, {
+        nominationId: scheduledWarnings[0].nominationId,
+        ownerKey: scheduledWarnings[0].ownerKey,
+        runId: scheduledWarnings[0].runId,
+        scoreId: scheduledWarnings[0].scoreId,
+        warningPendingAt: scheduledWarnings[0].warningPendingAt,
+        warningSentAt,
+        deadlineAt,
+      }),
+    ).resolves.toEqual({ ok: true });
+    expect(nomination).toMatchObject({
+      warningSentAt,
+      warningExpiresAt: deadlineAt,
+      warningScoreId: firstScore._id,
+      warningRunId: run._id,
+      warningPendingAt: undefined,
+    });
+
+    Object.assign(nomination, {
+      latestScoreId: secondScore._id,
+      lastScoredAt: secondScore.createdAt,
+      updatedAt: secondScore.createdAt,
+    });
+    nowSpy.mockReturnValue(deadlineAt + 2);
+
+    await expect(autoBanPublisherAbuseCandidatesPageHandler(ctx, {})).resolves.toEqual({
+      ok: true,
+      processed: 1,
+      warned: 0,
+      banned: 1,
+      alreadyBanned: 0,
+      skipped: 0,
+      isDone: true,
+    });
+
+    expect(scheduler.runAfter).toHaveBeenCalledTimes(1);
+    expect(runMutation).toHaveBeenCalledWith(expect.anything(), {
+      ownerUserId: user._id,
+      nominationId: nomination._id,
+      scoreId: secondScore._id,
+      reason:
+        "publisher_abuse: potential ban candidate (publisher-abuse-pressure.v4): high_catalog_volume, low_installs_per_skill",
+    });
+    nowSpy.mockRestore();
+  });
+
+  it("does not warn or ban candidates when the page sees autobans disabled", async () => {
+    const runMutation = vi.fn();
+    const scheduler = { runAfter: vi.fn(async () => null) };
+    const patch = vi.fn(async () => null);
+    const insert = vi.fn(async (table: string) => `${table}:new`);
+    const get = vi.fn();
+    const ctx = {
+      scheduler,
+      runMutation,
+      db: {
+        get,
+        patch,
+        insert,
+        query: vi.fn((table: string) => {
+          if (table === "systemSettings") {
+            return makePublisherAbuseAutobanSettingQuery({
+              key: "publisherAbuseAutobanEnabled",
+              enabled: false,
+              updatedAt: 100,
+            });
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
       },
     };
 
-    await expect(listDashboardHandler(ctx, { limit: 5 })).resolves.toEqual(
+    await expect(autoBanPublisherAbuseCandidatesPageHandler(ctx, {})).resolves.toEqual({
+      ok: true,
+      processed: 0,
+      warned: 0,
+      banned: 0,
+      alreadyBanned: 0,
+      skipped: 0,
+      isDone: true,
+    });
+
+    expect(runMutation).not.toHaveBeenCalled();
+    expect(scheduler.runAfter).not.toHaveBeenCalled();
+    expect(get).not.toHaveBeenCalled();
+    expect(patch).not.toHaveBeenCalled();
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  it("moves candidates without email to manual review instead of warning or banning", async () => {
+    const nomination = makeNomination({
+      _id: "publisherAbuseReviewNominations:no-email",
+      ownerKey: "publisher:publishers:no-email",
+      ownerPublisherId: "publishers:no-email",
+      ownerUserId: "users:no-email",
+      latestScoreId: "publisherAbuseScores:no-email",
+      handleSnapshot: "no-email",
+      label: "potential_ban_candidate",
+      status: "pending",
+    });
+    const publisher = {
+      _id: "publishers:no-email",
+      kind: "user",
+      handle: "no-email",
+      linkedUserId: "users:no-email",
+    };
+    const patch = vi.fn(async () => null);
+    const insert = vi.fn(async (table: string) => `${table}:new`);
+    const runMutation = vi.fn();
+    const scheduler = { runAfter: vi.fn(async () => null) };
+    const ctx = {
+      scheduler,
+      runMutation,
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === "publisherAbuseScores:no-email") {
+            return makeScore({
+              _id: "publisherAbuseScores:no-email",
+              ownerKey: "publisher:publishers:no-email",
+              ownerPublisherId: "publishers:no-email",
+            });
+          }
+          if (id === "publisherAbuseScoreRuns:latest") return makeCompletedPressureScoreRun();
+          if (id === "publishers:no-email") return publisher;
+          if (id === "users:no-email") {
+            return { _id: "users:no-email", handle: "no-email", role: "user" };
+          }
+          return null;
+        }),
+        patch,
+        insert,
+        query: vi.fn((table: string) => {
+          if (table === "publisherAbuseReviewNominations") {
+            return makeAutoBanNominationQuery([nomination]);
+          }
+          if (table === "officialPublishers") return makeEmptyOfficialPublishersQuery();
+          if (table === "systemSettings") {
+            return makePublisherAbuseAutobanSettingQuery({
+              key: "publisherAbuseAutobanEnabled",
+              enabled: true,
+              updatedAt: 1,
+              updatedByUserId: "users:admin",
+            });
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
+      },
+    };
+
+    await expect(autoBanPublisherAbuseCandidatesPageHandler(ctx, {})).resolves.toEqual({
+      ok: true,
+      processed: 1,
+      warned: 0,
+      banned: 0,
+      alreadyBanned: 0,
+      skipped: 1,
+      isDone: true,
+    });
+
+    expect(runMutation).not.toHaveBeenCalled();
+    expect(scheduler.runAfter).not.toHaveBeenCalled();
+    expect(patch).toHaveBeenCalledWith(
+      "publisherAbuseReviewNominations:no-email",
       expect.objectContaining({
-        pendingPotentialBanCandidateItems: [
-          expect.objectContaining({
-            nomination: expect.objectContaining({
-              _id: communityNomination._id,
-              handleSnapshot: communityPublisher.handle,
-            }),
-          }),
-        ],
-        pendingReviewItems: [],
-        recentResolvedItems: [
-          expect.objectContaining({
-            nomination: expect.objectContaining({
-              _id: communityResolvedNomination._id,
-              handleSnapshot: communityPublisher.handle,
-            }),
-          }),
-        ],
+        status: "needs_policy_discussion",
+        notes: "Autoban warning skipped: linked user has no email address; manual review required.",
       }),
     );
-    await expect(
-      getReviewNominationDetailHandler(ctx, { nominationId: officialNomination._id }),
-    ).resolves.toBeNull();
-    await expect(
-      getReviewNominationDetailHandler(ctx, { nominationId: communityNomination._id }),
-    ).resolves.toEqual(
-      expect.objectContaining({
-        item: expect.objectContaining({
-          nomination: expect.objectContaining({ _id: communityNomination._id }),
+  });
+
+  it("moves completed current temporal candidates out of the autoban queue", async () => {
+    const nomination = makeNomination({
+      _id: "publisherAbuseReviewNominations:temporal",
+      ownerKey: "publisher:publishers:temporal",
+      ownerPublisherId: "publishers:temporal",
+      ownerUserId: "users:temporal",
+      latestScoreId: "publisherAbuseScores:temporal",
+      openedByRunId: "publisherAbuseScoreRuns:temporal",
+      label: "potential_ban_candidate",
+      status: "pending",
+    });
+    const score = makeScore({
+      _id: "publisherAbuseScores:temporal",
+      runId: "publisherAbuseScoreRuns:temporal",
+      ownerKey: "publisher:publishers:temporal",
+      ownerPublisherId: "publishers:temporal",
+    });
+    const patch = vi.fn(async () => null);
+    const insert = vi.fn(async (table: string) => `${table}:new`);
+    const runMutation = vi.fn();
+    const ctx = {
+      runMutation,
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === "publisherAbuseScores:temporal") return score;
+          if (id === "publisherAbuseScoreRuns:temporal") {
+            return {
+              _id: "publisherAbuseScoreRuns:temporal",
+              modelVersion: "publisher-abuse-temporal.v1",
+              status: "completed",
+              phase: "completed",
+              temporalMode: "current",
+              temporalScanComplete: true,
+            };
+          }
+          if (id === "publishers:temporal") {
+            return {
+              _id: "publishers:temporal",
+              kind: "user",
+              handle: "temporal",
+              linkedUserId: "users:temporal",
+            };
+          }
+          return null;
         }),
+        patch,
+        insert,
+        query: vi.fn((table: string) => {
+          if (table === "publisherAbuseReviewNominations") {
+            return makeAutoBanNominationQuery([nomination]);
+          }
+          if (table === "officialPublishers") return makeEmptyOfficialPublishersQuery();
+          if (table === "systemSettings") {
+            return makePublisherAbuseAutobanSettingQuery({
+              key: "publisherAbuseAutobanEnabled",
+              enabled: true,
+              updatedAt: 1,
+              updatedByUserId: "users:admin",
+            });
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
+      },
+    };
+
+    await expect(autoBanPublisherAbuseCandidatesPageHandler(ctx, {})).resolves.toEqual({
+      ok: true,
+      processed: 1,
+      warned: 0,
+      banned: 0,
+      alreadyBanned: 0,
+      skipped: 1,
+      isDone: true,
+    });
+
+    expect(runMutation).not.toHaveBeenCalled();
+    expect(patch).toHaveBeenCalledWith(
+      "publisherAbuseReviewNominations:temporal",
+      expect.objectContaining({
+        status: "candidate_for_future_action",
+        notes: "Autoban skipped: temporal publisher abuse signals require manual review.",
+      }),
+    );
+    expect(insert).toHaveBeenCalledWith(
+      "publisherAbuseReviewEvents",
+      expect.objectContaining({
+        nominationId: "publisherAbuseReviewNominations:temporal",
+        nextStatus: "candidate_for_future_action",
       }),
     );
   });
@@ -1285,144 +2696,203 @@ describe("publisher abuse dry-run persistence", () => {
     );
   });
 
-  it("uses bounded takes for dashboard queues when hidden nominations dominate a bucket", async () => {
+  it("uses completed-run score rank while skipping stale and hidden dashboard candidates", async () => {
     vi.mocked(requireUser).mockResolvedValue({
       userId: "users:moderator",
       user: { _id: "users:moderator", role: "moderator" },
     } as never);
-    const takeCalls: Array<{
-      label: string;
-      numItems: number;
-    }> = [];
-    const query = vi.fn((table: string) => {
-      if (table === "publisherAbuseReviewNominations") {
-        return {
-          withIndex: (
-            indexName: string,
-            build: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
-          ) => {
-            const constraints: Record<string, unknown> = {};
-            const q = {
-              eq(field: string, value: unknown) {
-                constraints[field] = value;
-                return q;
-              },
-            };
-            build(q);
-            if (indexName === "by_status_and_reviewed_at") {
-              return {
-                order: () => ({
-                  take: async () => [],
-                }),
-              };
-            }
-            return {
-              order: () => ({
-                paginate: async () => {
-                  throw new Error("dashboard queue must not use built-in pagination");
-                },
-                take: async (numItems: number) => {
-                  const label = String(constraints.label);
-                  takeCalls.push({ label, numItems });
-                  if (label !== "potential_ban_candidate") {
-                    return [];
-                  }
-                  return Array.from({ length: numItems }, (_, index) => ({
-                    _id: `publisherAbuseReviewNominations:hidden-${index}`,
-                    ownerKey: `user:hidden-${index}`,
-                    ownerPublisherId: undefined,
-                    ownerUserId: `users:hidden-${index}`,
-                    handleSnapshot: `hidden-${index}`,
-                    latestScoreId: `publisherAbuseScores:hidden-${index}`,
-                    modelVersion: "publisher-abuse-pressure.v2",
-                    label: "potential_ban_candidate",
-                    status: "pending",
-                    openedAt: 1,
-                    openedByRunId: "publisherAbuseScoreRuns:run",
-                    lastScoredAt: 10_000 - index,
-                    updatedAt: 1,
-                  }));
-                },
-              }),
-            };
-          },
-        };
-      }
-      if (table === "publisherAbuseScoreRuns") {
-        return {
-          withIndex: () => ({
-            order: () => ({
-              first: async () => null,
-            }),
-          }),
-        };
-      }
-      throw new Error(`unexpected table ${table}`);
+    const latestRun = makeCompletedPressureScoreRun();
+    const staleScore = makeScore({
+      _id: "publisherAbuseScores:stale",
+      ownerKey: "publisher:publishers:stale",
+      ownerPublisherId: "publishers:stale",
+      rank: 1,
     });
+    const hiddenScore = makeScore({
+      _id: "publisherAbuseScores:hidden",
+      ownerKey: "publisher:publishers:hidden",
+      ownerPublisherId: "publishers:hidden",
+      rank: 2,
+    });
+    const visibleScore = makeScore({
+      _id: "publisherAbuseScores:visible",
+      ownerKey: "publisher:publishers:visible",
+      ownerPublisherId: "publishers:visible",
+      rank: 3,
+    });
+    const staleNomination = makeNomination({
+      _id: "publisherAbuseReviewNominations:stale",
+      ownerKey: "publisher:publishers:stale",
+      ownerPublisherId: "publishers:stale",
+      ownerUserId: "users:stale",
+      latestScoreId: "publisherAbuseScores:old-stale",
+      label: "potential_ban_candidate",
+      status: "pending",
+    });
+    const hiddenNomination = makeNomination({
+      _id: "publisherAbuseReviewNominations:hidden",
+      ownerKey: "publisher:publishers:hidden",
+      ownerPublisherId: "publishers:hidden",
+      ownerUserId: "users:hidden",
+      latestScoreId: "publisherAbuseScores:hidden",
+      label: "potential_ban_candidate",
+      status: "pending",
+    });
+    const visibleNomination = makeNomination({
+      _id: "publisherAbuseReviewNominations:visible",
+      ownerKey: "publisher:publishers:visible",
+      ownerPublisherId: "publishers:visible",
+      ownerUserId: "users:visible",
+      latestScoreId: "publisherAbuseScores:visible",
+      label: "potential_ban_candidate",
+      status: "pending",
+    });
+    const scoresTake = vi.fn(async (limit: number) => {
+      expect(limit).toBe(32);
+      return [staleScore, hiddenScore, visibleScore];
+    });
+    const nominationsByOwnerKey = new Map([
+      [staleNomination.ownerKey, staleNomination],
+      [hiddenNomination.ownerKey, hiddenNomination],
+      [visibleNomination.ownerKey, visibleNomination],
+    ]);
     const ctx = {
       db: {
         get: vi.fn(async (id: string) => {
-          if (id.startsWith("publisherAbuseScores:")) {
+          if (id === "publisherAbuseScoreRuns:latest") return latestRun;
+          if (id === "publisherAbuseScores:hidden") return hiddenScore;
+          if (id === "publisherAbuseScores:visible") return visibleScore;
+          if (id === "publishers:hidden") {
             return {
-              _id: id,
-              runId: "publisherAbuseScoreRuns:run",
-              ownerKey: id.replace("publisherAbuseScores:", "user:"),
-              ownerPublisherId: undefined,
-              ownerUserId: id.replace("publisherAbuseScores:", "users:"),
-              handleSnapshot: id.replace("publisherAbuseScores:", ""),
-              modelVersion: "publisher-abuse-pressure.v2",
-              label: "potential_ban_candidate",
-              rank: 1,
-              pressure: 100,
-              logPressure: 2,
-              zScore: 3,
-              publishedSkills: 100,
-              totalInstalls: 1,
-              totalStars: 0,
-              totalDownloads: 10,
-              installsPerSkill: 0.01,
-              starsPerSkill: 0,
-              downloadsPerSkill: 0.1,
-              reasonCodes: ["high_catalog_volume"],
-              createdAt: 1,
+              _id: "publishers:hidden",
+              kind: "user",
+              handle: "hidden",
+              linkedUserId: "users:hidden",
+              deletedAt: 10,
             };
           }
-          if (id.startsWith("users:hidden-")) {
-            return { _id: id, handle: id, role: "user", deletedAt: 2 };
-          }
-          if (id === "publisherAbuseScoreRuns:run") {
+          if (id === "publishers:visible") {
             return {
-              _id: id,
-              modelVersion: "publisher-abuse-pressure.v2",
-              trigger: "manual",
-              status: "completed",
-              phase: "completed",
-              startedAt: 1,
-              updatedAt: 1,
-              scannedPublishers: 0,
-              scoredPublishers: 0,
-              finalizedScores: 0,
-              nominatedPublishers: 0,
-              passCount: 0,
-              reviewCount: 0,
-              potentialBanCandidateCount: 0,
+              _id: "publishers:visible",
+              kind: "user",
+              handle: "visible",
+              linkedUserId: "users:visible",
             };
+          }
+          if (id === "users:hidden") {
+            return { _id: "users:hidden", handle: "hidden", role: "user" };
+          }
+          if (id === "users:visible") {
+            return { _id: "users:visible", handle: "visible", role: "user" };
           }
           return null;
         }),
-        query,
+        query: vi.fn((table: string) => {
+          if (table === "publisherAbuseScoreRuns") {
+            return {
+              withIndex: (
+                indexName: string,
+                build: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
+              ) => {
+                expect(indexName).toBe("by_model_version_and_started_at");
+                const constraints: Record<string, unknown> = {};
+                const q = {
+                  eq(field: string, value: unknown) {
+                    constraints[field] = value;
+                    return q;
+                  },
+                };
+                build(q);
+                return {
+                  order: () => ({
+                    first: async () =>
+                      constraints.modelVersion === TEST_MODEL_CONFIG.modelVersion
+                        ? latestRun
+                        : null,
+                  }),
+                };
+              },
+            };
+          }
+          if (table === "publisherAbuseScores") {
+            return {
+              withIndex: (
+                indexName: string,
+                build: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
+              ) => {
+                expect(indexName).toBe("by_run_and_label_and_rank");
+                const constraints: Record<string, unknown> = {};
+                const q = {
+                  eq(field: string, value: unknown) {
+                    constraints[field] = value;
+                    return q;
+                  },
+                };
+                build(q);
+                expect(constraints.runId).toBe("publisherAbuseScoreRuns:latest");
+                return {
+                  order: () => ({
+                    take:
+                      constraints.label === "potential_ban_candidate" ? scoresTake : async () => [],
+                  }),
+                };
+              },
+            };
+          }
+          if (table === "publisherAbuseReviewNominations") {
+            return {
+              withIndex: (
+                indexName: string,
+                build: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
+              ) => {
+                const constraints: Record<string, unknown> = {};
+                const q = {
+                  eq(field: string, value: unknown) {
+                    constraints[field] = value;
+                    return q;
+                  },
+                };
+                build(q);
+                if (indexName === "by_owner_key_and_model_version") {
+                  return {
+                    first: async () =>
+                      nominationsByOwnerKey.get(String(constraints.ownerKey)) ?? null,
+                  };
+                }
+                if (
+                  indexName === "by_status_and_label_and_last_scored_at" ||
+                  indexName === "by_status_and_reviewed_at"
+                ) {
+                  return {
+                    order: () => ({
+                      take: async () => [],
+                    }),
+                  };
+                }
+                throw new Error(`unexpected nomination index ${indexName}`);
+              },
+            };
+          }
+          if (table === "officialPublishers") return makeEmptyOfficialPublishersQuery();
+          throw new Error(`unexpected table ${table}`);
+        }),
       },
     };
 
-    await expect(listDashboardHandler(ctx, { limit: 2 })).resolves.toEqual(
+    await expect(listDashboardHandler(ctx, { limit: 1 })).resolves.toEqual(
       expect.objectContaining({
-        pendingPotentialBanCandidateItems: [],
-        pendingReviewItems: [],
+        pendingPotentialBanCandidateItems: [
+          expect.objectContaining({
+            nomination: expect.objectContaining({
+              _id: "publisherAbuseReviewNominations:visible",
+              latestScoreId: "publisherAbuseScores:visible",
+            }),
+            publisher: expect.objectContaining({ handle: "visible" }),
+          }),
+        ],
       }),
     );
-
-    expect(takeCalls).toContainEqual({ label: "potential_ban_candidate", numItems: 6 });
-    expect(takeCalls).toContainEqual({ label: "review", numItems: 6 });
+    expect(scoresTake).toHaveBeenCalledWith(32);
   });
 
   it("queries recent resolved nominations by review time", async () => {
@@ -1462,6 +2932,22 @@ describe("publisher abuse dry-run persistence", () => {
       reviewedAt: 100,
       updatedAt: 10_000,
     };
+    const bannedResolution = {
+      _id: "publisherAbuseReviewNominations:banned-resolution",
+      ownerKey: "user:banned-resolution",
+      ownerPublisherId: undefined,
+      ownerUserId: "users:banned-resolution",
+      handleSnapshot: "banned-resolution",
+      latestScoreId: "publisherAbuseScores:banned-resolution",
+      modelVersion: "publisher-abuse-pressure.v2",
+      label: "potential_ban_candidate",
+      status: "banned",
+      openedAt: 1,
+      openedByRunId: "publisherAbuseScoreRuns:run",
+      lastScoredAt: 6_000,
+      reviewedAt: 6_000,
+      updatedAt: 6_000,
+    };
     const query = vi.fn((table: string) => {
       if (table === "publisherAbuseReviewNominations") {
         return {
@@ -1489,9 +2975,11 @@ describe("publisher abuse dry-run persistence", () => {
                 order: () => ({
                   take: async (limit: number) => {
                     expect(limit).toBe(90);
-                    return constraints.status === "reviewed_no_action"
-                      ? [rescoredOldResolution, resolvedNomination]
-                      : [];
+                    if (constraints.status === "banned") return [bannedResolution];
+                    if (constraints.status === "reviewed_no_action") {
+                      return [rescoredOldResolution, resolvedNomination];
+                    }
+                    return [];
                   },
                 }),
               };
@@ -1564,6 +3052,41 @@ describe("publisher abuse dry-run persistence", () => {
               createdAt: 1,
             };
           }
+          if (id === "publisherAbuseScores:banned-resolution") {
+            return {
+              _id: id,
+              runId: "publisherAbuseScoreRuns:run",
+              ownerKey: "user:banned-resolution",
+              ownerPublisherId: undefined,
+              ownerUserId: "users:banned-resolution",
+              handleSnapshot: "banned-resolution",
+              modelVersion: "publisher-abuse-pressure.v2",
+              label: "potential_ban_candidate",
+              rank: 3,
+              pressure: 110,
+              logPressure: 2.1,
+              zScore: 2.1,
+              publishedSkills: 110,
+              totalInstalls: 1,
+              totalStars: 0,
+              totalDownloads: 11,
+              installsPerSkill: 0.01,
+              starsPerSkill: 0,
+              downloadsPerSkill: 0.1,
+              reasonCodes: ["high_catalog_volume"],
+              createdAt: 1,
+            };
+          }
+          if (id === "users:banned-resolution") {
+            return {
+              _id: id,
+              handle: "banned-resolution",
+              name: "Banned Resolution",
+              displayName: "Banned Resolution",
+              role: "user",
+              deletedAt: 6_000,
+            };
+          }
           if (id === "publisherAbuseScoreRuns:run") {
             return {
               _id: id,
@@ -1588,22 +3111,27 @@ describe("publisher abuse dry-run persistence", () => {
       },
     };
 
-    await expect(listDashboardHandler(ctx, { limit: 2 })).resolves.toEqual(
+    const result = await listDashboardHandler(ctx, { limit: 2 });
+    expect(result.recentResolvedItems).toEqual([
       expect.objectContaining({
-        recentResolvedItems: [
-          expect.objectContaining({
-            nomination: expect.objectContaining({
-              _id: "publisherAbuseReviewNominations:fresh-resolution",
-            }),
-          }),
-          expect.objectContaining({
-            nomination: expect.objectContaining({
-              _id: "publisherAbuseReviewNominations:old-resolution",
-            }),
-          }),
-        ],
+        nomination: expect.objectContaining({
+          _id: "publisherAbuseReviewNominations:banned-resolution",
+        }),
+        ownerUser: expect.objectContaining({
+          deletedAt: 6_000,
+        }),
       }),
-    );
+      expect.objectContaining({
+        nomination: expect.objectContaining({
+          _id: "publisherAbuseReviewNominations:fresh-resolution",
+        }),
+      }),
+      expect.objectContaining({
+        nomination: expect.objectContaining({
+          _id: "publisherAbuseReviewNominations:old-resolution",
+        }),
+      }),
+    ]);
   });
 
   it("collects score rows without patching enforcement tables", async () => {
@@ -1859,7 +3387,7 @@ describe("publisher abuse dry-run persistence", () => {
     );
   });
 
-  it("excludes official publishers from abuse scoring even when they match abuse-pressure criteria", async () => {
+  it("excludes official and staff publishers from abuse scoring even when they match abuse-pressure criteria", async () => {
     const insert = vi.fn(async (table: string) => `${table}:new`);
     const patch = vi.fn(async () => null);
     const officialOrgPublisher = {
@@ -1881,21 +3409,54 @@ describe("publisher abuse dry-run persistence", () => {
       displayName: "Community Bulk",
       linkedUserId: "users:community-bulk",
     };
+    const largeCommunityOrgPublisher = {
+      ...officialOrgPublisher,
+      _id: "publishers:large-community-bulk",
+      handle: "large-community-bulk",
+      displayName: "Large Community Bulk",
+      linkedUserId: "users:large-community-bulk",
+    };
+    const tooManyManagerOrgPublisher = {
+      ...officialOrgPublisher,
+      _id: "publishers:too-many-managers",
+      handle: "too-many-managers",
+      displayName: "Too Many Managers",
+      linkedUserId: "users:too-many-managers",
+    };
+    const staffPublisher = {
+      ...officialOrgPublisher,
+      _id: "publishers:staff-bulk",
+      handle: "staff-bulk",
+      displayName: "Staff Bulk",
+      linkedUserId: "users:staff",
+    };
     const officialLookupIds: string[] = [];
     const ctx = {
       db: {
-        get: vi.fn(async () => ({
-          _id: "publisherAbuseScoreRuns:run",
-          modelVersion: TEST_MODEL_CONFIG.modelVersion,
-          modelConfig: TEST_MODEL_CONFIG,
-          status: "running",
-          phase: "collecting",
-          collectCursor: undefined,
-          scannedPublishers: 0,
-          scoredPublishers: 0,
-          sumLogPressure: 0,
-          sumSquaredLogPressure: 0,
-        })),
+        get: vi.fn(async (id: string) => {
+          if (id === "publisherAbuseScoreRuns:run") {
+            return {
+              _id: "publisherAbuseScoreRuns:run",
+              modelVersion: TEST_MODEL_CONFIG.modelVersion,
+              modelConfig: TEST_MODEL_CONFIG,
+              status: "running",
+              phase: "collecting",
+              collectCursor: undefined,
+              scannedPublishers: 0,
+              scoredPublishers: 0,
+              sumLogPressure: 0,
+              sumSquaredLogPressure: 0,
+            };
+          }
+          if (id === "users:staff") return { _id: "users:staff", role: "moderator" };
+          if (id.startsWith("users:large-community-admin-")) {
+            return { _id: id, role: "user" };
+          }
+          if (id.startsWith("users:too-many-manager-")) {
+            return { _id: id, role: "user" };
+          }
+          return null;
+        }),
         insert,
         patch,
         query: vi.fn((table: string) => {
@@ -1903,7 +3464,13 @@ describe("publisher abuse dry-run persistence", () => {
             return {
               withIndex: () => ({
                 paginate: async () => ({
-                  page: [officialOrgPublisher, communityOrgPublisher],
+                  page: [
+                    officialOrgPublisher,
+                    staffPublisher,
+                    communityOrgPublisher,
+                    largeCommunityOrgPublisher,
+                    tooManyManagerOrgPublisher,
+                  ],
                   isDone: true,
                   continueCursor: "",
                 }),
@@ -1938,17 +3505,79 @@ describe("publisher abuse dry-run persistence", () => {
               },
             };
           }
+          if (table === "publisherMembers") {
+            return {
+              withIndex: (
+                indexName: string,
+                build: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
+              ) => {
+                expect(indexName).toBe("by_publisher_and_role");
+                const constraints: Record<string, unknown> = {};
+                const q = {
+                  eq(field: string, value: unknown) {
+                    constraints[field] = value;
+                    return q;
+                  },
+                };
+                build(q);
+                return {
+                  paginate: async ({
+                    cursor,
+                    numItems,
+                  }: {
+                    cursor: string | null;
+                    numItems: number;
+                  }) => {
+                    const members =
+                      constraints.publisherId === largeCommunityOrgPublisher._id &&
+                      constraints.role === "admin"
+                        ? [
+                            {
+                              _id: "publisherMembers:large-community-admin",
+                              publisherId: largeCommunityOrgPublisher._id,
+                              userId: "users:large-community-admin-0",
+                              role: "admin",
+                            },
+                          ]
+                        : constraints.publisherId === tooManyManagerOrgPublisher._id &&
+                            constraints.role === "admin"
+                          ? Array.from({ length: 101 }, (_, index) => ({
+                              _id: `publisherMembers:too-many-manager-${index}`,
+                              publisherId: tooManyManagerOrgPublisher._id,
+                              userId: `users:too-many-manager-${index}`,
+                              role: "admin",
+                            }))
+                          : [];
+                    const offset = cursor ? Number(cursor) : 0;
+                    const page = members.slice(offset, offset + numItems);
+                    const nextOffset = offset + page.length;
+                    return {
+                      page,
+                      isDone: nextOffset >= members.length,
+                      continueCursor: String(nextOffset),
+                    };
+                  },
+                };
+              },
+            };
+          }
           throw new Error(`unexpected table ${table}`);
         }),
       },
     };
 
     await expect(collectHandler(ctx, { runId: "publisherAbuseScoreRuns:run" })).resolves.toEqual(
-      expect.objectContaining({ isDone: false, scanned: 2, phase: "finalizing" }),
+      expect.objectContaining({ isDone: false, scanned: 5, phase: "finalizing" }),
     );
 
-    expect(officialLookupIds).toEqual([officialOrgPublisher._id, communityOrgPublisher._id]);
-    expect(insert).toHaveBeenCalledTimes(1);
+    expect(officialLookupIds).toEqual([
+      officialOrgPublisher._id,
+      staffPublisher._id,
+      communityOrgPublisher._id,
+      largeCommunityOrgPublisher._id,
+      tooManyManagerOrgPublisher._id,
+    ]);
+    expect(insert).toHaveBeenCalledTimes(3);
     expect(insert).toHaveBeenCalledWith(
       "publisherAbuseScores",
       expect.objectContaining({
@@ -1960,17 +3589,37 @@ describe("publisher abuse dry-run persistence", () => {
         totalDownloads: officialOrgPublisher.totalDownloads,
       }),
     );
+    expect(insert).toHaveBeenCalledWith(
+      "publisherAbuseScores",
+      expect.objectContaining({
+        ownerPublisherId: largeCommunityOrgPublisher._id,
+        handleSnapshot: largeCommunityOrgPublisher.handle,
+      }),
+    );
     expect(insert).not.toHaveBeenCalledWith(
       "publisherAbuseScores",
       expect.objectContaining({
         ownerPublisherId: officialOrgPublisher._id,
       }),
     );
+    expect(insert).not.toHaveBeenCalledWith(
+      "publisherAbuseScores",
+      expect.objectContaining({
+        ownerPublisherId: staffPublisher._id,
+      }),
+    );
+    expect(insert).toHaveBeenCalledWith(
+      "publisherAbuseScores",
+      expect.objectContaining({
+        ownerPublisherId: tooManyManagerOrgPublisher._id,
+        handleSnapshot: tooManyManagerOrgPublisher.handle,
+      }),
+    );
     expect(patch).toHaveBeenCalledWith(
       "publisherAbuseScoreRuns:run",
       expect.objectContaining({
-        scannedPublishers: 2,
-        scoredPublishers: 1,
+        scannedPublishers: 5,
+        scoredPublishers: 3,
       }),
     );
   });
@@ -3637,6 +5286,7 @@ describe("publisher abuse dry-run persistence", () => {
               }),
             };
           }
+          if (table === "publisherMembers") return makeEmptyPublisherMembersQuery();
           throw new Error(`unexpected table ${table}`);
         }),
       },
@@ -3755,6 +5405,115 @@ describe("publisher abuse dry-run persistence", () => {
         reviewedAt: undefined,
       }),
     );
+  });
+
+  it("preserves sent warning state when reopening after a failed pressure-run deferral", async () => {
+    const insert = vi.fn(async (table: string) => `${table}:new`);
+    const patch = vi.fn(async (_id: string, _patch: Record<string, unknown>) => null);
+    const ctx = {
+      db: {
+        get: vi.fn(async () => ({
+          _id: "publisherAbuseScoreRuns:run",
+          status: "running",
+          phase: "finalizing",
+          modelVersion: "publisher-abuse-pressure.v2",
+          modelConfig: TEST_MODEL_CONFIG,
+          scoredPublishers: 1,
+          finalizedScores: 0,
+          passCount: 0,
+          reviewCount: 0,
+          potentialBanCandidateCount: 0,
+          nominatedPublishers: 0,
+          sumLogPressure: 3,
+          sumSquaredLogPressure: 9,
+        })),
+        insert,
+        patch,
+        query: vi.fn((table: string) => {
+          if (table === "publisherAbuseScores") {
+            return {
+              withIndex: () => ({
+                order: () => ({
+                  paginate: async () => ({
+                    page: [
+                      {
+                        _id: "publisherAbuseScores:repeat",
+                        ownerKey: "publisher:publishers:repeat",
+                        ownerPublisherId: "publishers:repeat",
+                        ownerUserId: "users:repeat",
+                        handleSnapshot: "repeat",
+                        modelVersion: "publisher-abuse-pressure.v2",
+                        pressure: 1000,
+                        logPressure: 6,
+                        publishedSkills: 1200,
+                        totalInstalls: 8,
+                        totalStars: 0,
+                        totalDownloads: 120,
+                        installsPerSkill: 0.006,
+                        starsPerSkill: 0,
+                        downloadsPerSkill: 0.1,
+                        reasonCodes: ["high_catalog_volume"],
+                      },
+                    ],
+                    isDone: true,
+                    continueCursor: "",
+                  }),
+                }),
+              }),
+            };
+          }
+          if (table === "publisherAbuseReviewNominations") {
+            return {
+              withIndex: () => ({
+                first: async () => ({
+                  _id: "publisherAbuseReviewNominations:existing",
+                  ownerKey: "publisher:publishers:repeat",
+                  ownerUserId: "users:repeat",
+                  label: "potential_ban_candidate",
+                  status: "candidate_for_future_action",
+                  notes:
+                    "Autoban skipped: score run failed before completion; manual review required.",
+                  reviewedByUserId: undefined,
+                  reviewedAt: 100,
+                  warningSentAt: 10,
+                  warningExpiresAt: 20,
+                  warningScoreId: "publisherAbuseScores:old-warning",
+                  warningRunId: "publisherAbuseScoreRuns:old-warning",
+                  warningPendingAt: 30,
+                  warningPendingScoreId: "publisherAbuseScores:pending-warning",
+                  warningPendingRunId: "publisherAbuseScoreRuns:pending-warning",
+                }),
+                take: async () => [],
+              }),
+            };
+          }
+          if (table === "officialPublishers") return makeEmptyOfficialPublishersQuery();
+          throw new Error(`unexpected table ${table}`);
+        }),
+      },
+    };
+
+    await expect(finalizeHandler(ctx, { runId: "publisherAbuseScoreRuns:run" })).resolves.toEqual(
+      expect.objectContaining({ isDone: true, finalized: 1, nominations: 1 }),
+    );
+
+    const nominationPatch = patch.mock.calls.find(
+      ([id]) => id === "publisherAbuseReviewNominations:existing",
+    )?.[1] as Record<string, unknown>;
+    expect(nominationPatch).toMatchObject({
+      latestScoreId: "publisherAbuseScores:repeat",
+      label: "potential_ban_candidate",
+      status: "pending",
+      warningPendingAt: undefined,
+      warningPendingScoreId: undefined,
+      warningPendingRunId: undefined,
+      reviewedByUserId: undefined,
+      reviewedAt: undefined,
+    });
+    expect(nominationPatch).not.toHaveProperty("warningSentAt");
+    expect(nominationPatch).not.toHaveProperty("warningExpiresAt");
+    expect(nominationPatch).not.toHaveProperty("warningScoreId");
+    expect(nominationPatch).not.toHaveProperty("warningRunId");
   });
 
   it("reopens a banned nomination when the linked owner is active again", async () => {
@@ -4017,6 +5776,13 @@ describe("publisher abuse dry-run persistence", () => {
               ownerKey: "publisher:publishers:recovered",
               modelVersion: "publisher-abuse-pressure.v2",
               label: "review",
+              warningSentAt: 10,
+              warningExpiresAt: 20,
+              warningScoreId: "publisherAbuseScores:old-warning",
+              warningRunId: "publisherAbuseScoreRuns:old-warning",
+              warningPendingAt: 30,
+              warningPendingScoreId: "publisherAbuseScores:pending-warning",
+              warningPendingRunId: "publisherAbuseScoreRuns:pending-warning",
             };
             return {
               withIndex: () => ({
@@ -4041,6 +5807,13 @@ describe("publisher abuse dry-run persistence", () => {
         latestScoreId: "publisherAbuseScores:pass-score",
         label: "pass",
         handleSnapshot: "recovered",
+        warningSentAt: undefined,
+        warningExpiresAt: undefined,
+        warningScoreId: undefined,
+        warningRunId: undefined,
+        warningPendingAt: undefined,
+        warningPendingScoreId: undefined,
+        warningPendingRunId: undefined,
       }),
     );
     expect(insert).toHaveBeenCalledWith(
@@ -4086,13 +5859,96 @@ describe("publisher abuse dry-run persistence", () => {
     );
   });
 
-  it("stores the moderator actor when a manual score run starts", async () => {
-    const runMutation = vi.fn().mockResolvedValueOnce({
-      runId: "publisherAbuseScoreRuns:run",
-      phase: "completed",
-      status: "completed",
-    });
+  it("schedules a publisher abuse autoban continuation when candidates remain", async () => {
+    const scheduler = { runAfter: vi.fn(async () => null) };
+    const runMutation = vi.fn(async () => ({
+      ok: true,
+      processed: 1,
+      warned: 0,
+      banned: 1,
+      alreadyBanned: 0,
+      skipped: 0,
+      isDone: false,
+    }));
     const ctx = {
+      scheduler,
+      runQuery: vi.fn<(_: unknown, args: Record<string, never>) => Promise<boolean>>(
+        async () => true,
+      ),
+      runMutation,
+    };
+
+    await expect(
+      processPublisherAbuseAutobansHandler(ctx, { batchSize: 1, maxPages: 2 }),
+    ).resolves.toEqual({
+      ok: true,
+      pages: 2,
+      processed: 2,
+      warned: 0,
+      banned: 2,
+      alreadyBanned: 0,
+      skipped: 0,
+      isDone: false,
+    });
+
+    expect(runMutation).toHaveBeenCalledTimes(2);
+    expect(scheduler.runAfter).toHaveBeenCalledWith(60_000, expect.anything(), {
+      batchSize: 1,
+      maxPages: 2,
+    });
+  });
+
+  it("does not process publisher abuse autobans when the kill switch is disabled", async () => {
+    const ctx = {
+      scheduler: { runAfter: vi.fn(async () => null) },
+      runQuery: vi.fn<(_: unknown, args: Record<string, never>) => Promise<boolean>>(
+        async () => false,
+      ),
+      runMutation: vi.fn(),
+    };
+
+    await expect(
+      processPublisherAbuseAutobansHandler(ctx, { batchSize: 1, maxPages: 2 }),
+    ).resolves.toEqual({
+      ok: true,
+      pages: 0,
+      processed: 0,
+      warned: 0,
+      banned: 0,
+      alreadyBanned: 0,
+      skipped: 0,
+      isDone: true,
+    });
+
+    expect(String(ctx.runQuery.mock.calls[0]?.[0])).toContain(
+      "getPublisherAbuseAutobanEnabledInternal",
+    );
+    expect(ctx.runMutation).not.toHaveBeenCalled();
+    expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
+  });
+
+  it("stores the moderator actor when a manual score run starts", async () => {
+    const runMutation = vi
+      .fn()
+      .mockResolvedValueOnce({
+        runId: "publisherAbuseScoreRuns:run",
+        phase: "completed",
+        status: "completed",
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        processed: 0,
+        warned: 0,
+        banned: 0,
+        alreadyBanned: 0,
+        skipped: 0,
+        isDone: true,
+      });
+    const ctx = {
+      scheduler: { runAfter: vi.fn(async () => null) },
+      runQuery: vi.fn<(_: unknown, args: Record<string, never>) => Promise<boolean>>(
+        async () => true,
+      ),
       runMutation,
     };
 
@@ -4117,6 +5973,9 @@ describe("publisher abuse dry-run persistence", () => {
         actorUserId: "users:moderator",
       }),
     );
+    expect(String(runMutation.mock.calls[1]?.[0])).toContain(
+      "autoBanPublisherAbuseCandidatesPageInternal",
+    );
   });
 
   it("resumes a finalizing run without restarting collection", async () => {
@@ -4130,6 +5989,17 @@ describe("publisher abuse dry-run persistence", () => {
           isDone: true,
           finalized: 1,
           nominations: 0,
+        };
+      }
+      if (String(target).includes("autoBanPublisherAbuseCandidatesPageInternal")) {
+        return {
+          ok: true,
+          processed: 0,
+          warned: 0,
+          banned: 0,
+          alreadyBanned: 0,
+          skipped: 0,
+          isDone: true,
         };
       }
       throw new Error(`unexpected mutation ${String(target)}`);
@@ -4153,11 +6023,56 @@ describe("publisher abuse dry-run persistence", () => {
       isDone: true,
     });
 
-    expect(runMutation).toHaveBeenCalledTimes(1);
+    expect(runMutation).toHaveBeenCalledTimes(2);
     expect(String(runMutation.mock.calls[0]?.[0])).toContain(
       "finalizePublisherAbuseScoresPageInternal",
     );
+    expect(String(runMutation.mock.calls[1]?.[0])).toContain(
+      "autoBanPublisherAbuseCandidatesPageInternal",
+    );
     expect(scheduler.runAfter).not.toHaveBeenCalled();
+  });
+
+  it("does not mark a completed score run failed when the autoban sweep fails", async () => {
+    const autobanError = new Error("autoban failed");
+    const runMutation = vi.fn(async (target: symbol) => {
+      if (String(target).includes("finalizePublisherAbuseScoresPageInternal")) {
+        return {
+          runId: "publisherAbuseScoreRuns:run",
+          phase: "completed",
+          status: "completed",
+          isDone: true,
+          finalized: 1,
+          nominations: 1,
+        };
+      }
+      if (String(target).includes("autoBanPublisherAbuseCandidatesPageInternal")) {
+        throw autobanError;
+      }
+      if (String(target).includes("markPublisherAbuseScoreRunFailedInternal")) {
+        throw new Error("completed scoring run should not be marked failed");
+      }
+      throw new Error(`unexpected mutation ${String(target)}`);
+    });
+    const ctx = {
+      scheduler: { runAfter: vi.fn(async () => null) },
+      runQuery: vi.fn(async () => ({
+        runId: "publisherAbuseScoreRuns:run",
+        phase: "finalizing",
+        status: "running",
+      })),
+      runMutation,
+    };
+
+    await expect(
+      runHandler(ctx, { runId: "publisherAbuseScoreRuns:run", batchSize: 100, maxPages: 1 }),
+    ).rejects.toThrow("autoban failed");
+
+    expect(
+      runMutation.mock.calls.some((call) =>
+        String(call[0]).includes("markPublisherAbuseScoreRunFailedInternal"),
+      ),
+    ).toBe(false);
   });
 
   it("marks the score run failed when a page mutation fails", async () => {
@@ -4247,19 +6162,24 @@ describe("publisher abuse dry-run persistence", () => {
   });
 
   it("reuses an active run when cron starts while another run is active", async () => {
+    const indexBuilder = { eq: vi.fn(() => indexBuilder) };
     const ctx = {
       db: {
         insert: vi.fn(async () => "publisherAbuseScoreRuns:new"),
         query: vi.fn(() => ({
-          withIndex: () => ({
-            order: () => ({
-              first: async () => ({
-                _id: "publisherAbuseScoreRuns:active",
-                status: "running",
-                phase: "collecting",
+          withIndex: (indexName: string, applyIndex: (q: typeof indexBuilder) => unknown) => {
+            expect(indexName).toBe("by_model_version_and_status_and_updated_at");
+            applyIndex(indexBuilder);
+            return {
+              order: () => ({
+                first: async () => ({
+                  _id: "publisherAbuseScoreRuns:active",
+                  status: "running",
+                  phase: "collecting",
+                }),
               }),
-            }),
-          }),
+            };
+          },
         })),
       },
     };
@@ -4271,6 +6191,45 @@ describe("publisher abuse dry-run persistence", () => {
     });
 
     expect(ctx.db.insert).not.toHaveBeenCalled();
+    expect(indexBuilder.eq).toHaveBeenCalledWith("modelVersion", "publisher-abuse-pressure.v4");
+    expect(indexBuilder.eq).toHaveBeenCalledWith("status", "running");
+  });
+
+  it("does not reuse running temporal scans as active pressure score runs", async () => {
+    const indexBuilder = { eq: vi.fn(() => indexBuilder) };
+    const ctx = {
+      db: {
+        insert: vi.fn(async () => "publisherAbuseScoreRuns:new"),
+        query: vi.fn(() => ({
+          withIndex: (indexName: string, applyIndex: (q: typeof indexBuilder) => unknown) => {
+            expect(indexName).toBe("by_model_version_and_status_and_updated_at");
+            applyIndex(indexBuilder);
+            return {
+              order: () => ({
+                first: async () => null,
+              }),
+            };
+          },
+        })),
+      },
+    };
+
+    await expect(getOrStartHandler(ctx, { trigger: "cron" })).resolves.toEqual({
+      runId: "publisherAbuseScoreRuns:new",
+      status: "running",
+      phase: "collecting",
+    });
+
+    expect(indexBuilder.eq).toHaveBeenCalledWith("modelVersion", "publisher-abuse-pressure.v4");
+    expect(indexBuilder.eq).toHaveBeenCalledWith("status", "running");
+    expect(ctx.db.insert).toHaveBeenCalledWith(
+      "publisherAbuseScoreRuns",
+      expect.objectContaining({
+        modelVersion: "publisher-abuse-pressure.v4",
+        status: "running",
+        phase: "collecting",
+      }),
+    );
   });
 
   it("dry-runs the temporal backfill without persisting nominations", async () => {
@@ -4357,16 +6316,28 @@ describe("publisher abuse dry-run persistence", () => {
 
   it("persists an empty current temporal scan so stale nominations can clear", async () => {
     const ctx = {
+      scheduler: { runAfter: vi.fn(async () => null) },
       runQuery: vi.fn(async () => ({
         cursor: undefined,
         isDone: true,
         scannedSkills: 12,
         candidates: [],
       })),
-      runMutation: vi.fn(async () => ({
-        flaggedPublishers: 0,
-        nominations: 0,
-      })),
+      runMutation: vi
+        .fn()
+        .mockResolvedValueOnce({
+          flaggedPublishers: 0,
+          nominations: 0,
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          processed: 0,
+          warned: 0,
+          banned: 0,
+          alreadyBanned: 0,
+          skipped: 0,
+          isDone: true,
+        }),
     };
 
     await expect(
@@ -4388,7 +6359,8 @@ describe("publisher abuse dry-run persistence", () => {
       nominations: 0,
     });
 
-    expect(ctx.runMutation).toHaveBeenCalledWith(
+    expect(ctx.runMutation).toHaveBeenNthCalledWith(
+      1,
       expect.anything(),
       expect.objectContaining({
         mode: "current",
@@ -4396,6 +6368,48 @@ describe("publisher abuse dry-run persistence", () => {
         scanComplete: true,
       }),
     );
+    expect(String(ctx.runMutation.mock.calls[1]?.[0])).toContain(
+      "autoBanPublisherAbuseCandidatesPageInternal",
+    );
+  });
+
+  it("keeps current temporal scans bounded when the scan is partial", async () => {
+    const candidate = temporalCandidate("skills:first", { slug: "first", displayName: "First" });
+    candidate.temporalScore.nearConversion = true;
+    candidate.temporalScore.installDownloadExcessZScore7 = 60;
+    const ctx = {
+      scheduler: { runAfter: vi.fn(async () => null) },
+      runQuery: vi.fn(async () => ({
+        cursor: "next-page",
+        isDone: false,
+        scannedSkills: 1,
+        candidates: [candidate],
+      })),
+      runMutation: vi.fn(),
+    };
+
+    await expect(
+      temporalRunHandler(ctx, {
+        mode: "current",
+        dryRun: false,
+        candidateLimit: 1,
+        batchSize: 1,
+        maxPages: 1,
+        todayDay: 100,
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      dryRun: false,
+      mode: "current",
+      scannedSkills: 1,
+      highTemporalSkills: 1,
+      flaggedPublishers: 1,
+      nominations: 0,
+    });
+
+    expect(ctx.runQuery).toHaveBeenCalledTimes(1);
+    expect(ctx.runMutation).not.toHaveBeenCalled();
+    expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
   });
 
   it("caps backfill temporal page size by lookback read budget", async () => {
@@ -4428,7 +6442,18 @@ describe("publisher abuse dry-run persistence", () => {
     const takeDailyStats = vi.fn(async () => []);
     const ctx = {
       db: {
-        get: vi.fn(),
+        get: vi.fn(async (id: string) => {
+          if (id === "publishers:quiet") {
+            return {
+              _id: "publishers:quiet",
+              kind: "user",
+              handle: "quiet",
+              linkedUserId: "users:quiet",
+            };
+          }
+          if (id === "users:quiet") return { _id: "users:quiet", role: "user" };
+          throw new Error(`unexpected get ${id}`);
+        }),
         query: vi.fn((table: string) => {
           if (table === "skills") {
             return {
@@ -4456,19 +6481,19 @@ describe("publisher abuse dry-run persistence", () => {
       },
     };
 
-    await expect(
-      collectTemporalHandler(ctx, {
-        mode: "backfill",
-        batchSize: 100,
-        lookbackDays: 730,
-        todayDay: 1000,
-      }),
-    ).resolves.toEqual({
+    const result = await collectTemporalHandler(ctx, {
+      mode: "backfill",
+      batchSize: 100,
+      lookbackDays: 730,
+      todayDay: 1000,
+    });
+
+    expect(result).toMatchObject({
       cursor: undefined,
       isDone: true,
       scannedSkills: 1,
-      candidates: [],
     });
+    expect(result.candidates).toHaveLength(1);
 
     expect(paginate).toHaveBeenCalledWith({ cursor: null, numItems: 10 });
     expect(takeDailyStats).toHaveBeenCalledWith(730);
@@ -4491,6 +6516,7 @@ describe("publisher abuse dry-run persistence", () => {
       db: {
         get: vi.fn(async (id: string) => {
           if (id === publisher._id) return publisher;
+          if (id === "users:joel") return { _id: "users:joel", role: "user" };
           throw new Error(`unexpected get ${id}`);
         }),
         query: vi.fn((table: string) => {
@@ -4627,24 +6653,7 @@ describe("publisher abuse dry-run persistence", () => {
               },
             };
           }
-          if (table === "skillDailyStats") {
-            return {
-              withIndex: (indexName: string, callback: (q: typeof indexBuilder) => unknown) => {
-                expect(indexName).toBe("by_skill_day");
-                callback(indexBuilder);
-                return {
-                  take: async () =>
-                    Array.from({ length: 7 }, (_, index) => ({
-                      skillId: "skills:official-spike",
-                      day: 94 + index,
-                      downloads: 200,
-                      installs: 0,
-                      updatedAt: 1,
-                    })),
-                };
-              },
-            };
-          }
+          if (table === "skillDailyStats") throw new Error("official publisher was scanned");
           if (table === "officialPublishers") {
             return {
               withIndex: (indexName: string, callback: (q: typeof indexBuilder) => unknown) => {
@@ -4659,6 +6668,114 @@ describe("publisher abuse dry-run persistence", () => {
               },
             };
           }
+          throw new Error(`unexpected table ${table}`);
+        }),
+      },
+    };
+
+    await expect(
+      collectTemporalHandler(ctx, {
+        mode: "current",
+        batchSize: 1,
+        todayDay: 100,
+      }),
+    ).resolves.toEqual({
+      cursor: undefined,
+      isDone: true,
+      scannedSkills: 1,
+      candidates: [],
+    });
+  });
+
+  it("skips staff-owned org publishers during temporal candidate collection", async () => {
+    const indexBuilder = {
+      eq: vi.fn(() => indexBuilder),
+      gte: vi.fn(() => indexBuilder),
+      lte: vi.fn(() => indexBuilder),
+    };
+    const staffOrgPublisher = {
+      _id: "publishers:staff-labs",
+      kind: "org",
+      handle: "staff-labs",
+      linkedUserId: undefined,
+    };
+    const ctx = {
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === staffOrgPublisher._id) return staffOrgPublisher;
+          if (id === "users:staff-owner") {
+            return { _id: "users:staff-owner", role: "moderator" };
+          }
+          throw new Error(`unexpected get ${id}`);
+        }),
+        query: vi.fn((table: string) => {
+          if (table === "skills") {
+            return {
+              withIndex: (indexName: string, callback: (q: typeof indexBuilder) => unknown) => {
+                expect(indexName).toBe("by_active_stats_downloads");
+                callback(indexBuilder);
+                return {
+                  order: () => ({
+                    paginate: async () => ({
+                      page: [
+                        {
+                          _id: "skills:staff-org-spike",
+                          ownerPublisherId: staffOrgPublisher._id,
+                          slug: "staff-org-spike",
+                          displayName: "Staff Org Spike",
+                          softDeletedAt: undefined,
+                          statsDownloads: 10_000,
+                          statsInstallsAllTime: 0,
+                          stats: {
+                            downloads: 10_000,
+                            stars: 0,
+                            installsCurrent: 0,
+                            installsAllTime: 0,
+                          },
+                        },
+                      ],
+                      isDone: true,
+                      continueCursor: "",
+                    }),
+                  }),
+                };
+              },
+            };
+          }
+          if (table === "publisherMembers") {
+            return {
+              withIndex: (indexName: string, callback: (q: typeof indexBuilder) => unknown) => {
+                expect(indexName).toBe("by_publisher_and_role");
+                callback(indexBuilder);
+                return {
+                  paginate: async ({
+                    cursor,
+                    numItems,
+                  }: {
+                    cursor: string | null;
+                    numItems: number;
+                  }) => {
+                    expect(numItems).toBe(100);
+                    expect(cursor).toBeNull();
+                    return {
+                      page: [
+                        {
+                          _id: "publisherMembers:staff-owner",
+                          publisherId: staffOrgPublisher._id,
+                          userId: "users:staff-owner",
+                          role: "owner",
+                        },
+                      ],
+                      isDone: true,
+                      continueCursor: "",
+                    };
+                  },
+                };
+              },
+            };
+          }
+          if (table === "skillDailyStats") throw new Error("staff org publisher was scanned");
+          if (table === "officialPublishers") return makeEmptyOfficialPublishersQuery();
           throw new Error(`unexpected table ${table}`);
         }),
       },
@@ -4756,6 +6873,13 @@ describe("publisher abuse dry-run persistence", () => {
       nominations: 1,
     });
 
+    expect(insert).toHaveBeenCalledWith(
+      "publisherAbuseScoreRuns",
+      expect.objectContaining({
+        temporalMode: "current",
+        temporalScanComplete: false,
+      }),
+    );
     expect(insert).toHaveBeenCalledWith(
       "publisherAbuseScores",
       expect.objectContaining({
@@ -4968,6 +7092,146 @@ describe("publisher abuse dry-run persistence", () => {
         finalizedScores: 1,
       }),
     );
+  });
+
+  it("downgrades pending temporal nominations created by a failed run", async () => {
+    const failedScore = {
+      ...makeScore({
+        _id: "publisherAbuseScores:failed",
+        runId: "publisherAbuseScoreRuns:temporal",
+        ownerKey: "publisher:publishers:failed",
+      }),
+      modelVersion: "publisher-abuse-temporal.v1",
+    };
+    const failedNomination = {
+      ...makeNomination({
+        _id: "publisherAbuseReviewNominations:failed",
+        ownerKey: failedScore.ownerKey,
+        latestScoreId: failedScore._id,
+        label: "potential_ban_candidate",
+      }),
+      modelVersion: "publisher-abuse-temporal.v1",
+      warningSentAt: 10,
+      warningExpiresAt: 20,
+      warningScoreId: failedScore._id,
+      warningRunId: "publisherAbuseScoreRuns:temporal",
+    };
+    const patch = vi.fn(async () => null);
+    const insert = vi.fn(async () => "publisherAbuseReviewEvents:event");
+    const scheduler = { runAfter: vi.fn(async () => null) };
+    const db = {
+      get: vi.fn(async (id: string) => {
+        if (id === "publisherAbuseScoreRuns:temporal") {
+          return {
+            _id: "publisherAbuseScoreRuns:temporal",
+            modelVersion: "publisher-abuse-temporal.v1",
+            status: "running",
+            phase: "finalizing",
+          };
+        }
+        throw new Error(`unexpected get ${id}`);
+      }),
+      patch,
+      insert,
+      query: vi.fn((table: string) => {
+        if (table === "publisherAbuseScores") {
+          return {
+            withIndex: (
+              indexName: string,
+              build: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
+            ) => {
+              const constraints: Record<string, unknown> = {};
+              const q = {
+                eq(field: string, value: unknown) {
+                  constraints[field] = value;
+                  return q;
+                },
+              };
+              build(q);
+              expect(indexName).toBe("by_run_and_label_and_rank");
+              expect(constraints.runId).toBe("publisherAbuseScoreRuns:temporal");
+              return {
+                paginate: async () => ({
+                  page: constraints.label === "potential_ban_candidate" ? [failedScore] : [],
+                  isDone: true,
+                  continueCursor: "",
+                }),
+              };
+            },
+          };
+        }
+        if (table === "publisherAbuseReviewNominations") {
+          return {
+            withIndex: (
+              indexName: string,
+              build: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
+            ) => {
+              const constraints: Record<string, unknown> = {};
+              const q = {
+                eq(field: string, value: unknown) {
+                  constraints[field] = value;
+                  return q;
+                },
+              };
+              build(q);
+              expect(indexName).toBe("by_owner_key_and_model_version");
+              expect(constraints).toEqual({
+                ownerKey: failedScore.ownerKey,
+                modelVersion: "publisher-abuse-temporal.v1",
+              });
+              return { first: async () => failedNomination };
+            },
+          };
+        }
+        throw new Error(`unexpected query ${table}`);
+      }),
+    };
+
+    await expect(
+      markScoreRunFailedHandler(
+        { db, scheduler },
+        {
+          runId: "publisherAbuseScoreRuns:temporal",
+          errorMessage: "complete failed",
+        },
+      ),
+    ).resolves.toEqual({
+      runId: "publisherAbuseScoreRuns:temporal",
+      status: "failed",
+      phase: "finalizing",
+    });
+
+    expect(patch).toHaveBeenCalledWith(
+      "publisherAbuseScoreRuns:temporal",
+      expect.objectContaining({
+        status: "failed",
+        errorMessage: "complete failed",
+      }),
+    );
+    expect(patch).toHaveBeenCalledWith(
+      failedNomination._id,
+      expect.objectContaining({
+        status: "candidate_for_future_action",
+        warningSentAt: undefined,
+        warningExpiresAt: undefined,
+        warningScoreId: undefined,
+        warningRunId: undefined,
+      }),
+    );
+    expect(insert).toHaveBeenCalledWith(
+      "publisherAbuseReviewEvents",
+      expect.objectContaining({
+        nominationId: failedNomination._id,
+        eventType: "triage_status_changed",
+        previousStatus: "pending",
+        nextStatus: "candidate_for_future_action",
+      }),
+    );
+    expect(scheduler.runAfter).toHaveBeenCalledWith(0, expect.anything(), {
+      runId: "publisherAbuseScoreRuns:temporal",
+      errorMessage: "complete failed",
+      cleanupLabel: "review",
+    });
   });
 });
 

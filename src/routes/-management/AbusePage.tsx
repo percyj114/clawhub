@@ -1,5 +1,14 @@
 import { Link } from "@tanstack/react-router";
-import { Copy, ExternalLink, RefreshCcw, Search } from "lucide-react";
+import {
+  Ban,
+  Copy,
+  ExternalLink,
+  Power,
+  RefreshCcw,
+  Search,
+  ShieldCheck,
+  ShieldOff,
+} from "lucide-react";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { Badge, type BadgeProps } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
@@ -11,6 +20,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "../../components/ui/sheet";
+import { Textarea } from "../../components/ui/textarea";
 import { buildPublisherProfileHref } from "../../lib/ownerRoute";
 import {
   formatRatio,
@@ -22,38 +32,60 @@ import {
   type PublisherAbuseReviewItem,
   type PublisherAbuseReviewScore,
   type PublisherAbuseTab,
+  USER_BAN_REASON_MAX_LENGTH,
 } from "./managementShared";
 
 export function AbusePage({
+  admin,
+  autobanSetting,
+  currentUserId,
   dashboard,
   detail,
   items,
+  notes,
   search,
   selectedItem,
   selectedNominationId,
   tab,
+  onBanOwner,
+  onChangeNotes,
   onChangeSearch,
   onChangeTab,
   onClose,
   onRefresh,
   onSelect,
+  onToggleAutoban,
 }: {
+  admin: boolean;
+  autobanSetting:
+    | {
+        enabled: boolean;
+        updatedAt: number | null;
+        updatedByUserId: Id<"users"> | null;
+      }
+    | undefined;
+  currentUserId: Id<"users"> | null;
   dashboard: PublisherAbuseReviewDashboard | undefined;
   detail: PublisherAbuseReviewDetail | undefined;
   items: PublisherAbuseReviewItem[];
+  notes: string;
   search: string;
   selectedItem: PublisherAbuseReviewItem | null;
   selectedNominationId: Id<"publisherAbuseReviewNominations"> | null;
   tab: PublisherAbuseTab;
+  onBanOwner: (item: PublisherAbuseReviewItem) => void;
+  onChangeNotes: (value: string) => void;
   onChangeSearch: (value: string) => void;
   onChangeTab: (value: PublisherAbuseTab) => void;
   onClose: () => void;
   onRefresh: () => void;
   onSelect: (value: Id<"publisherAbuseReviewNominations">) => void;
+  onToggleAutoban: () => void;
 }) {
   const latestRun = dashboard?.latestRun ?? null;
   const selectedScore = selectedItem?.latestScore ?? null;
   const selectedPublisher = selectedItem?.publisher ?? null;
+  const canBanSelectedUser = canBanPublisherAbuseOwner(selectedItem, currentUserId);
   const visiblePending = dashboard ? getPublisherAbuseVisiblePendingItems(dashboard) : [];
   const totalPending = visiblePending.length;
   const potentialBan = visiblePending.filter(
@@ -70,6 +102,15 @@ export function AbusePage({
           ? resolved
           : totalPending;
   const loaded = dashboard !== undefined;
+  const autobanLoaded = autobanSetting !== undefined;
+  const autobanEnabled = autobanSetting?.enabled ?? false;
+  const autobanStatusLabel = autobanLoaded
+    ? autobanEnabled
+      ? "Auto-ban is on"
+      : "Auto-ban is off"
+    : "Auto-ban loading";
+  const autobanToggleLabel = autobanEnabled ? "Turn off auto-ban" : "Turn on auto-ban";
+  const AutobanStatusIcon = autobanEnabled ? ShieldCheck : ShieldOff;
 
   return (
     <section className="pa" aria-labelledby="pa-title">
@@ -117,6 +158,22 @@ export function AbusePage({
               Run new scan
             </Button>
             <span className="pa-rescan-hint">Re-scores every publisher</span>
+          </div>
+          <div className="pa-autoban" aria-label="Publisher abuse auto-ban">
+            <span className={autobanEnabled ? "pa-autoban-status is-on" : "pa-autoban-status"}>
+              <AutobanStatusIcon size={14} />
+              {autobanStatusLabel}
+            </span>
+            <Button
+              type="button"
+              variant={autobanEnabled ? "destructive" : "primary"}
+              size="sm"
+              disabled={!admin || !autobanLoaded}
+              onClick={onToggleAutoban}
+            >
+              <Power size={14} />
+              {admin ? autobanToggleLabel : "Admins only"}
+            </Button>
           </div>
         </div>
       </header>
@@ -412,11 +469,26 @@ export function AbusePage({
                   </section>
                 ) : selectedItem.nomination.label === "potential_ban_candidate" ? (
                   <section className="pa-zone pa-review">
-                    <div className="pa-section-label">Flagged for review</div>
-                    <p className="pa-hint">
-                      This publisher is in the high-risk bucket. Publisher-abuse bans are disabled
-                      while the scoring model is flag-only.
-                    </p>
+                    <div className="pa-section-label">Triage note</div>
+                    <Textarea
+                      maxLength={USER_BAN_REASON_MAX_LENGTH}
+                      placeholder="Why are you taking this action? (optional)"
+                      value={notes}
+                      onChange={(event) => onChangeNotes(event.target.value)}
+                    />
+                    <div className="pa-actions">
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        size="sm"
+                        className="pa-ban"
+                        disabled={!canBanSelectedUser}
+                        onClick={() => onBanOwner(selectedItem)}
+                      >
+                        <Ban size={14} />
+                        Ban user
+                      </Button>
+                    </div>
                   </section>
                 ) : (
                   <section className="pa-zone pa-review">
@@ -577,6 +649,17 @@ function isVisiblePublisherAbuseItem(item: PublisherAbuseReviewItem) {
     !item.publisher?.deletedAt &&
     !item.publisher?.deactivatedAt
   );
+}
+
+export function canBanPublisherAbuseOwner(
+  item: PublisherAbuseReviewItem | null,
+  currentUserId: Id<"users"> | null,
+) {
+  const ownerUser = item?.ownerUser;
+  if (!ownerUser?._id) return false;
+  if (ownerUser._id === currentUserId) return false;
+  if (ownerUser.role === "admin" || ownerUser.role === "moderator") return false;
+  return true;
 }
 
 export function getPublisherAbuseVisiblePendingItems(dashboard: PublisherAbuseReviewDashboard) {

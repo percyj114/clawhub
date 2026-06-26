@@ -149,14 +149,7 @@ export function labelForPublisherAbuseScore(
   config: PublisherAbuseModelConfig = DEFAULT_PUBLISHER_ABUSE_MODEL_CONFIG,
 ): PublisherAbuseLabel {
   if (!isPublisherAbuseCheckEligible(score, config)) return "pass";
-  if (zScore < config.reviewZThreshold) return "pass";
-  if (
-    zScore >= config.potentialBanCandidateZThreshold &&
-    isPublisherAbuseCheckEligible(score, config)
-  ) {
-    return "potential_ban_candidate";
-  }
-  return "review";
+  return labelForPublisherAbuseZScore(zScore, config);
 }
 
 export function isPublisherAbuseCheckEligible(

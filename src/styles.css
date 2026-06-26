@@ -14021,6 +14021,28 @@ code {
   gap: var(--space-5);
 }
 
+.pa-autoban {
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+  padding-left: var(--space-5);
+  border-left: 1px solid var(--line);
+}
+
+.pa-autoban-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--status-error-fg);
+  font-size: var(--fs-xs);
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.pa-autoban-status.is-on {
+  color: var(--status-success-fg);
+}
+
 .pa-rescan {
   display: grid;
   justify-items: end;

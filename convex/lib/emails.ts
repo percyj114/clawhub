@@ -1,5 +1,7 @@
 export const APPEALS_URL = "https://appeals.openclaw.ai/";
 export const MODERATION_GUIDELINES_URL = "https://docs.openclaw.ai/clawhub/moderation";
+export const CLAWHUB_DASHBOARD_URL = "https://clawhub.ai/dashboard";
+export const OPENCLAW_DISCORD_URL = "https://discord.gg/clawd";
 export const MALICIOUS_REJECTION_ACCOUNT_WARNING =
   "Repeated malicious rejections may lead to account disablement.";
 const MAX_EMAIL_FINDING_SUMMARY_LENGTH = 280;
@@ -13,6 +15,30 @@ const PUBLISHER_ABUSE_POLICY_ITEMS = [
   "Artificially inflating installs, downloads, stars, or other engagement metrics.",
   "Abnormal download activity with little or no corresponding install activity.",
 ];
+const PUBLISHER_ABUSE_WARNING_REASON_MESSAGES: Record<string, string> = {
+  extreme_volume_low_engagement: "Large catalog size combined with very low engagement.",
+  high_catalog_volume: "Unusually large number of published listings.",
+  low_installs_per_skill: "Very low installs per listing.",
+  low_downloads_per_skill: "Very low downloads per listing.",
+  low_stars_per_skill: "Very low stars per listing.",
+  temporal_download_spike_flat_installs:
+    "Download spikes with little corresponding install activity.",
+  temporal_sustained_downloads_flat_installs:
+    "Sustained download activity with little corresponding install activity.",
+  temporal_installs_track_downloads:
+    "Install and download patterns that are far outside normal conversion behavior.",
+};
+const PUBLISHER_ABUSE_WARNING_REASON_PRIORITY = [
+  "extreme_volume_low_engagement",
+  "high_catalog_volume",
+  "low_installs_per_skill",
+  "low_downloads_per_skill",
+  "low_stars_per_skill",
+  "temporal_download_spike_flat_installs",
+  "temporal_sustained_downloads_flat_installs",
+  "temporal_installs_track_downloads",
+] as const;
+const MAX_PUBLISHER_ABUSE_WARNING_REASONS = 3;
 
 export type NotificationArtifact = {
   kind: "skill" | "plugin";
@@ -85,6 +111,27 @@ export type PackageInspectorFindingsEmailArgs = {
   findings: PackageInspectorEmailFinding[];
 };
 
+export type PublisherAbuseWarningScore = {
+  modelVersion: string;
+  publishedSkills: number;
+  totalInstalls: number;
+  totalStars: number;
+  totalDownloads: number;
+  installsPerSkill: number;
+  starsPerSkill: number;
+  downloadsPerSkill: number;
+  zScore: number;
+  reasonCodes: string[];
+};
+
+export type PublisherAbuseWarningEmailArgs = {
+  handle?: string;
+  publisherHandle: string;
+  warningSentAt?: number;
+  deadlineAt: number;
+  score: PublisherAbuseWarningScore;
+};
+
 export type AdminOneOffEmailArgs = {
   recipientHandle?: string;
   subject: string;
@@ -98,7 +145,6 @@ type BanReasonSummary = {
   scannerLabel: string | null;
   findingSummary: string;
   policyReasonItems?: string[];
-  omitTextAppealUrl?: boolean;
 };
 
 function normalizeReasonInput(args: Pick<BanNotificationEmailArgs, "reason" | "trigger">) {
@@ -107,6 +153,14 @@ function normalizeReasonInput(args: Pick<BanNotificationEmailArgs, "reason" | "t
 
 function summarizeBanReason(args: BanNotificationEmailArgs): BanReasonSummary {
   const normalized = normalizeReasonInput(args);
+
+  if (/\bpublisher[_\-\s]?abuse\b/.test(normalized)) {
+    return {
+      scannerLabel: null,
+      findingSummary: PUBLISHER_ABUSE_FINDING_SUMMARY,
+      policyReasonItems: PUBLISHER_ABUSE_POLICY_ITEMS,
+    };
+  }
 
   if (args.source === "autoban") {
     if (normalized.includes("virustotal") || normalized.includes("virus_total")) {
@@ -144,15 +198,6 @@ function summarizeBanReason(args: BanNotificationEmailArgs): BanReasonSummary {
     };
   }
 
-  if (/\bpublisher[_\-\s]?abuse\b/.test(normalized)) {
-    return {
-      scannerLabel: null,
-      findingSummary: PUBLISHER_ABUSE_FINDING_SUMMARY,
-      policyReasonItems: PUBLISHER_ABUSE_POLICY_ITEMS,
-      omitTextAppealUrl: true,
-    };
-  }
-
   return {
     scannerLabel: null,
     findingSummary: "ClawHub staff disabled the account after a security review.",
@@ -178,6 +223,19 @@ function formatUtcTimestamp(value: number | undefined, fallback: string) {
     .toISOString()
     .replace("T", " ")
     .replace(/\.\d{3}Z$/, " UTC");
+}
+
+function publisherAbuseWarningReasonLines(reasonCodes: string[]) {
+  const uniqueReasonCodes = new Set(reasonCodes);
+  const priorityReasonCodes = new Set<string>(PUBLISHER_ABUSE_WARNING_REASON_PRIORITY);
+  const sortedReasonCodes = [
+    ...PUBLISHER_ABUSE_WARNING_REASON_PRIORITY.filter((code) => uniqueReasonCodes.has(code)),
+    ...reasonCodes.filter((code) => !priorityReasonCodes.has(code)),
+  ];
+  const lines = sortedReasonCodes
+    .map((code) => PUBLISHER_ABUSE_WARNING_REASON_MESSAGES[code])
+    .filter((message): message is string => Boolean(message));
+  return Array.from(new Set(lines)).slice(0, MAX_PUBLISHER_ABUSE_WARNING_REASONS);
 }
 
 async function renderAccountSuspendedTemplate(args: {
@@ -299,7 +357,7 @@ export async function buildBanNotificationEmail(
     "- Existing API tokens for the account have been revoked.",
     "- Published listings owned by the account may be hidden from public view.",
   );
-  if (!summary.omitTextAppealUrl) lines.push("", `Appeal: ${APPEALS_URL}`);
+  lines.push("", `Appeal: ${APPEALS_URL}`);
 
   lines.push("", "ClawHub Security");
 
@@ -476,6 +534,62 @@ export async function buildPackageInspectorFindingsEmail(args: PackageInspectorF
     subject,
     text: lines.join("\n"),
     html: rendered.html,
+  };
+}
+
+export async function buildPublisherAbuseWarningEmail(args: PublisherAbuseWarningEmailArgs) {
+  const publisherHandle = args.publisherHandle.trim().replace(/^@+/, "");
+  const publisherLabel = publisherHandle ? `@${publisherHandle}` : "your publisher";
+  const deadline = formatUtcTimestamp(args.deadlineAt, "the warning deadline");
+  const warningSentAt = formatUtcTimestamp(args.warningSentAt, "this warning");
+  const reasonLines = publisherAbuseWarningReasonLines(args.score.reasonCodes);
+  const signalLines = reasonLines.length
+    ? reasonLines.map((line) => `- ${line}`)
+    : ["- Catalog size and engagement patterns were far outside normal publisher behavior."];
+  const body = [
+    `ClawHub's publisher abuse detection flagged the publisher profile ${publisherLabel}.`,
+    "",
+    "This profile is well outside normal ClawHub publishing patterns for scanned publishers.",
+    "",
+    "The biggest signals were:",
+    ...signalLines,
+    "",
+    "If this is not resolved before the deadline below, the account linked to this publisher may be suspended the next time the daily abuse scan confirms the same issue.",
+    "",
+    `Warning sent: ${warningSentAt}`,
+    `Deadline: ${deadline}`,
+    "",
+    "What to fix:",
+    "- Delete low-quality, duplicate, placeholder, or machine-generated listings.",
+    "- Consolidate near-identical skills or plugins.",
+    "- Keep only listings that are useful, maintained, and meaningfully different.",
+    "- Do not inflate installs, downloads, stars, or other engagement metrics.",
+    "",
+    `For more information, join the OpenClaw Discord and tag one of the maintainers: ${OPENCLAW_DISCORD_URL}`,
+  ].join("\n");
+  const subject = "Action required: ClawHub publisher abuse warning";
+
+  const html = await renderGenericOneOffTemplate({
+    recipientHandle: handleLabel(args.handle),
+    subject,
+    title: "Action required: publisher abuse warning",
+    body,
+    primaryActionLabel: "Open ClawHub dashboard",
+    primaryActionUrl: CLAWHUB_DASHBOARD_URL,
+  });
+
+  return {
+    subject,
+    text: [
+      greeting(args.handle),
+      "",
+      body,
+      "",
+      `Open ClawHub dashboard: ${CLAWHUB_DASHBOARD_URL}`,
+      "",
+      "ClawHub Security",
+    ].join("\n"),
+    html,
   };
 }
 

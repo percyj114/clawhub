@@ -42,12 +42,28 @@ See also: [acceptable-usage.md](./acceptable-usage.md) for the marketplace polic
 
 ## Publisher abuse scoring
 
-- Publisher abuse scoring is a staff review signal for bulk-publishing abuse.
-  It must not directly ban users; staff action goes through the publisher abuse
-  nomination review path.
-- Publisher abuse enforcement is flag-only during the current rollout. The
-  scorer can open review and high-risk nominations, but the publisher-abuse
-  action path must not ban users until enforcement is explicitly re-enabled.
+- Publisher abuse scoring classifies bulk-publishing abuse for staff review and
+  warning-first automatic enforcement. Scheduled pressure scoring runs daily.
+  Scheduled temporal scoring is a bounded dry-run signal until it has persisted
+  aggregation/cursor state. The `review` label remains a calibration/manual-review
+  signal. The `potential_ban_candidate` label is an enforcement signal only for
+  pressure-score nominations: the first eligible enforcement sweep must warn the
+  linked non-staff user by email and persist the warning score/run/deadline on the
+  nomination. A later sweep may automatically ban only after the warning deadline
+  has passed and a newer pressure score still places the publisher in
+  `potential_ban_candidate`. A stale warning by itself is not enough to ban.
+- Publisher abuse scoring must skip staff-linked and official publishers before
+  nominations are created. Publisher abuse autoban must process pending
+  `potential_ban_candidate` pressure nominations without waiting for the score
+  run to finish. It must not warn or autoban `review` nominations, historical
+  backfill temporal nominations, partial current temporal nominations,
+  nominations without a linked user account, or candidates whose linked user has
+  no email address. Skipped pending nominations must be moved out of pending
+  status with an explanatory review event so the cron does not retry them
+  forever.
+- Publisher abuse automatic bans must still use the account ban flow, including
+  token revocation, owned listing hiding, audit logging, and the normal
+  suspension/appeal email.
 - Aggregate publisher spam-abuse labels start at the 200-skill pivot. Below
   that pivot, publishers can contribute to the population baseline, but they
   cannot receive aggregate spam reason codes or be nominated by this score path.
@@ -309,8 +325,9 @@ See also: [acceptable-usage.md](./acceptable-usage.md) for the marketplace polic
   appeals record the Discord reviewer id in audit metadata; the token must not
   authorize any other moderation action. Accepted appeals must use the same
   matching-ban restore behavior as admin unbans for skills and packages/plugins
-  and must only clear accounts with a current `user.ban` or
-  `user.autoban.malware` audit matching the ban timestamp.
+  and must only clear accounts with a current `user.ban`,
+  `user.autoban.malware`, or `user.autoban.publisher_abuse` audit matching
+  the ban timestamp.
   Package/plugin restore audit entries from this service path are actorless;
   reviewer provenance belongs on the `user.unban` service audit metadata, not
   on the restored user's package audit rows.

@@ -5,6 +5,9 @@ const mocks = vi.hoisted(() => {
   const interval = vi.fn();
   const githubSkillSyncRef = Symbol("github-skill-source-sync");
   const installTelemetryDedupePruneRef = Symbol("install-telemetry-dedupe-prune");
+  const publisherAbuseAutobanRef = Symbol("publisher-abuse-autobans");
+  const publisherAbuseScoreRefreshRef = Symbol("publisher-abuse-score-refresh");
+  const publisherTemporalAbuseScanRef = Symbol("publisher-temporal-abuse-scan");
   const httpRateLimitKeysPruneRef = Symbol("http-rate-limit-keys-prune");
   const skillStatEventPruneRef = Symbol("skill-stat-event-prune");
   const packageStatEventPruneRef = Symbol("package-stat-event-prune");
@@ -14,6 +17,9 @@ const mocks = vi.hoisted(() => {
     interval,
     githubSkillSyncRef,
     installTelemetryDedupePruneRef,
+    publisherAbuseAutobanRef,
+    publisherAbuseScoreRefreshRef,
+    publisherTemporalAbuseScanRef,
     httpRateLimitKeysPruneRef,
     skillStatEventPruneRef,
     packageStatEventPruneRef,
@@ -51,7 +57,9 @@ vi.mock("./_generated/api", () => ({
       backfillPackageReleaseScansInternal: Symbol("package-scan-backfill"),
     },
     publisherAbuse: {
-      runPublisherAbuseScoreRunInternal: Symbol("publisher-abuse-score-refresh"),
+      runPublisherAbuseScoreRunInternal: mocks.publisherAbuseScoreRefreshRef,
+      runTemporalPublisherAbuseScanInternal: mocks.publisherTemporalAbuseScanRef,
+      processPublisherAbuseAutobansInternal: mocks.publisherAbuseAutobanRef,
     },
     vt: {
       pollPendingScans: Symbol("vt-pending-scans"),
@@ -125,6 +133,43 @@ describe("crons", () => {
       { hours: 24 },
       mocks.installTelemetryDedupePruneRef,
       {},
+    );
+  });
+
+  it("registers publisher abuse cron jobs", async () => {
+    await import("./crons");
+
+    expect(mocks.interval).toHaveBeenCalledWith(
+      "publisher-abuse-score-refresh",
+      { hours: 24 },
+      mocks.publisherAbuseScoreRefreshRef,
+      {
+        batchSize: 250,
+        maxPages: 5,
+        trigger: "cron",
+      },
+    );
+    expect(mocks.interval).toHaveBeenCalledWith(
+      "publisher-temporal-abuse-scan",
+      { hours: 24 },
+      mocks.publisherTemporalAbuseScanRef,
+      {
+        mode: "current",
+        dryRun: true,
+        candidateLimit: 1_000,
+        batchSize: 50,
+        maxPages: 20,
+        trigger: "cron",
+      },
+    );
+    expect(mocks.interval).toHaveBeenCalledWith(
+      "publisher-abuse-autobans",
+      { hours: 24 },
+      mocks.publisherAbuseAutobanRef,
+      {
+        batchSize: 1,
+        maxPages: 50,
+      },
     );
   });
 

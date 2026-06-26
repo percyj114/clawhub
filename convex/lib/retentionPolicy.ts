@@ -192,6 +192,7 @@ export const RETENTION_POLICIES = {
   catalogFeedPublications: permanent("Current published hosted catalog feed snapshot."),
   stars: permanent("User star records."),
   auditLogs: permanent("Audit logs are durable compliance/security history."),
+  systemSettings: permanent("Durable operator-controlled system settings."),
   publisherAbuseScoreRuns: permanent("Abuse scoring run history."),
   publisherAbuseScores: permanent("Abuse score history used for review decisions."),
   publisherAbuseReviewNominations: permanent("Abuse review workflow state."),

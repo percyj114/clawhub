@@ -110,12 +110,19 @@ if (process.env.CLAWHUB_DISABLE_CRONS !== "1") {
     internal.publisherAbuse.runTemporalPublisherAbuseScanInternal,
     {
       mode: "current",
-      dryRun: false,
-      candidateLimit: 1000,
+      dryRun: true,
+      candidateLimit: 1_000,
       batchSize: 50,
       maxPages: 20,
       trigger: "cron",
     },
+  );
+
+  crons.interval(
+    "publisher-abuse-autobans",
+    { hours: 24 },
+    internal.publisherAbuse.processPublisherAbuseAutobansInternal,
+    { batchSize: 1, maxPages: 50 },
   );
 
   crons.interval("vt-pending-scans", { minutes: 5 }, internal.vt.pollPendingScans, {

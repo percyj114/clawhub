@@ -262,6 +262,7 @@ const publisherMembers = defineTable({
   updatedAt: v.number(),
 })
   .index("by_publisher", ["publisherId"])
+  .index("by_publisher_and_role", ["publisherId", "role"])
   .index("by_user", ["userId"])
   .index("by_publisher_user", ["publisherId", "userId"]);
 
@@ -2516,6 +2517,13 @@ const auditLogs = defineTable({
   .index("by_target_action", ["targetType", "targetId", "action"])
   .index("by_target_createdAt", ["targetType", "targetId", "createdAt"]);
 
+const systemSettings = defineTable({
+  key: v.literal("publisherAbuseAutobanEnabled"),
+  enabled: v.boolean(),
+  updatedAt: v.number(),
+  updatedByUserId: v.optional(v.id("users")),
+}).index("by_key_and_updated_at", ["key", "updatedAt"]);
+
 const publisherAbuseScoreRuns = defineTable({
   modelVersion: v.string(),
   modelConfig: publisherAbuseModelConfigValidator,
@@ -2539,6 +2547,8 @@ const publisherAbuseScoreRuns = defineTable({
   sumSquaredLogPressure: v.number(),
   meanLogPressure: v.optional(v.number()),
   stdDevLogPressure: v.optional(v.number()),
+  temporalMode: v.optional(v.union(v.literal("current"), v.literal("backfill"))),
+  temporalScanComplete: v.optional(v.boolean()),
   temporalBenchmark: v.optional(
     v.object({
       sampleSize: v.number(),
@@ -2554,6 +2564,15 @@ const publisherAbuseScoreRuns = defineTable({
 })
   .index("by_status_and_updated_at", ["status", "updatedAt"])
   .index("by_model_version_and_started_at", ["modelVersion", "startedAt"])
+  .index("by_model_version_and_status_and_updated_at", ["modelVersion", "status", "updatedAt"])
+  .index("by_model_status_phase_temporal_complete_started_at", [
+    "modelVersion",
+    "status",
+    "phase",
+    "temporalMode",
+    "temporalScanComplete",
+    "startedAt",
+  ])
   .index("by_started_at", ["startedAt"]);
 
 const publisherAbuseScores = defineTable({
@@ -2577,6 +2596,7 @@ const publisherAbuseScores = defineTable({
   downloadsPerSkill: v.number(),
   reasonCodes: v.array(v.string()),
   temporalHighSkillCount: v.optional(v.number()),
+  temporalP99SkillCount: v.optional(v.number()),
   temporalSpikeSkillCount: v.optional(v.number()),
   temporalSustainedSkillCount: v.optional(v.number()),
   temporalMaxPressure: v.optional(v.number()),
@@ -2652,6 +2672,13 @@ const publisherAbuseReviewNominations = defineTable({
   reviewedByUserId: v.optional(v.id("users")),
   reviewedAt: v.optional(v.number()),
   notes: v.optional(v.string()),
+  warningSentAt: v.optional(v.number()),
+  warningExpiresAt: v.optional(v.number()),
+  warningScoreId: v.optional(v.id("publisherAbuseScores")),
+  warningRunId: v.optional(v.id("publisherAbuseScoreRuns")),
+  warningPendingAt: v.optional(v.number()),
+  warningPendingScoreId: v.optional(v.id("publisherAbuseScores")),
+  warningPendingRunId: v.optional(v.id("publisherAbuseScoreRuns")),
   updatedAt: v.number(),
 })
   .index("by_owner_key_and_model_version", ["ownerKey", "modelVersion"])
@@ -2677,6 +2704,7 @@ const publisherAbuseReviewEvents = defineTable({
   eventType: v.union(
     v.literal("nomination_opened"),
     v.literal("nomination_score_updated"),
+    v.literal("autoban_warning_sent"),
     v.literal("triage_status_changed"),
   ),
   previousStatus: v.optional(publisherAbuseTriageStatusValidator),
@@ -2964,6 +2992,7 @@ export default defineSchema({
   catalogFeedPublications,
   stars,
   auditLogs,
+  systemSettings,
   publisherAbuseScoreRuns,
   publisherAbuseScores,
   publisherAbuseReviewNominations,

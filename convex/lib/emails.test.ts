@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   APPEALS_URL,
+  OPENCLAW_DISCORD_URL,
   buildAdminOneOffEmail,
-  buildMaliciousArtifactEmail,
   buildBanNotificationEmail,
+  buildMaliciousArtifactEmail,
   buildPackageInspectorFindingsEmail,
+  buildPublisherAbuseWarningEmail,
   buildRestoredAccountEmail,
 } from "./emails";
 
@@ -120,12 +122,30 @@ describe("moderation notification email copy", () => {
     );
     expect(email.text).toContain("Artifacts hidden");
     expect(email.text).not.toContain("publisher_abuse:");
-    expect(email.text).not.toContain(`Appeal: ${APPEALS_URL}`);
+    expect(email.text).toContain(`Appeal: ${APPEALS_URL}`);
     expect(email.html).toContain("Submit an appeal");
     expect(email.html).toContain("Bulk or spam publishing");
     expect(email.html).toContain("Artificially inflating installs, downloads, stars");
     expect(email.html).toContain("Artifacts hidden");
     expect(email.html).not.toContain("publisher_abuse:");
+  });
+
+  it("uses publisher-abuse copy for automated publisher-abuse bans", async () => {
+    const email = await buildBanNotificationEmail({
+      handle: "bulkpub",
+      source: "autoban",
+      reason: "publisher_abuse: potential ban candidate",
+      trigger: "publisher_abuse",
+    });
+
+    expect(email.context).toMatchObject({
+      scannerLabel: null,
+      findingSummary:
+        "Your account was identified by ClawHub's publisher abuse review workflow for activity that appears inconsistent with our Acceptable Usage policy.",
+    });
+    expect(email.text).toContain("Bulk or spam publishing");
+    expect(email.text).toContain(`Appeal: ${APPEALS_URL}`);
+    expect(email.text).not.toContain("ClawHub security checks classified the uploaded skill");
   });
 
   it("builds restored-account copy that explains tokens stay revoked", async () => {
@@ -360,6 +380,56 @@ describe("moderation notification email copy", () => {
     expect(email.html).not.toContain("my-my-demo-plugin");
     expect(email.html).not.toContain("1.0.0-beta-beta");
     expect(email.html).not.toContain("11 issueses");
+  });
+
+  it("builds publisher abuse warning emails with a deadline and Discord maintainer escalation", async () => {
+    const email = await buildPublisherAbuseWarningEmail({
+      handle: "bulkpub",
+      publisherHandle: "bulkpub",
+      warningSentAt: Date.UTC(2026, 5, 19, 4, 0, 0),
+      deadlineAt: Date.UTC(2026, 5, 26, 4, 0, 0),
+      score: {
+        modelVersion: "publisher-abuse-pressure.v2",
+        publishedSkills: 143,
+        totalInstalls: 2,
+        totalStars: 0,
+        totalDownloads: 30,
+        installsPerSkill: 0.01,
+        starsPerSkill: 0,
+        downloadsPerSkill: 0.21,
+        zScore: 3.2,
+        reasonCodes: ["high_catalog_volume", "low_installs_per_skill"],
+      },
+    });
+
+    expect(email.subject).toBe("Action required: ClawHub publisher abuse warning");
+    expect(email.text).toContain("Hi bulkpub,");
+    expect(email.text).toContain(
+      "ClawHub's publisher abuse detection flagged the publisher profile @bulkpub.",
+    );
+    expect(email.text).toContain(
+      "This profile is well outside normal ClawHub publishing patterns for scanned publishers.",
+    );
+    expect(email.text).toContain("The biggest signals were:");
+    expect(email.text).toContain("- Unusually large number of published listings.");
+    expect(email.text).toContain("- Very low installs per listing.");
+    expect(email.text).toContain("Deadline: 2026-06-26 04:00:00 UTC");
+    expect(email.text).toContain("Delete low-quality, duplicate, placeholder");
+    expect(email.text).toContain(
+      `For more information, join the OpenClaw Discord and tag one of the maintainers: ${OPENCLAW_DISCORD_URL}`,
+    );
+    expect(email.text).not.toContain("Current signals:");
+    expect(email.text).not.toContain("Published skills");
+    expect(email.text).not.toContain("Total installs");
+    expect(email.text).not.toContain("Installs per skill");
+    expect(email.text).not.toContain("Why this triggered:");
+    expect(email.text).not.toContain("High Catalog Volume");
+    expect(email.text).not.toContain("Low Installs Per Skill");
+    expect(email.html).toContain("Action required: publisher abuse warning");
+    expect(email.html).toContain("@bulkpub");
+    expect(email.html).toContain("Very low installs per listing.");
+    expect(email.html).toContain("2026-06-26 04:00:00 UTC");
+    expect(email.html).toContain(OPENCLAW_DISCORD_URL);
   });
 
   it("builds a templated admin one-off email with escaped staff-authored content", async () => {
