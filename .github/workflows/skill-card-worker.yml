@@ -22,10 +22,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: clawhub-skill-card-worker
-  cancel-in-progress: false
-
 jobs:
   skill-card-worker:
     name: Skill Card worker shard ${{ matrix.shard }}
