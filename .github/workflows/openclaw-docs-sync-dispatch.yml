@@ -51,7 +51,7 @@ jobs:
             local http_status
 
             response_body="$(mktemp)"
-            http_status="$(curl --silent --show-error \
+            if ! http_status="$(curl --silent --show-error \
               --output "${response_body}" \
               --write-out "%{http_code}" \
               --request POST \
@@ -59,7 +59,9 @@ jobs:
               --header "Accept: application/vnd.github+json" \
               --header "X-GitHub-Api-Version: 2022-11-28" \
               "${dispatch_url}" \
-              --data '{"ref":"main"}' || printf '000')"
+              --data '{"ref":"main"}')"; then
+              http_status=000
+            fi
 
             if [ "${http_status}" = "204" ]; then
               echo "OpenClaw docs sync dispatch accepted with ${label}."
