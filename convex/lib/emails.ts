@@ -1,6 +1,7 @@
 export const APPEALS_URL = "https://appeals.openclaw.ai/";
 export const MODERATION_GUIDELINES_URL = "https://docs.openclaw.ai/clawhub/moderation";
 export const CLAWHUB_DASHBOARD_URL = "https://clawhub.ai/dashboard";
+export const OPENCLAW_DISCORD_URL = "https://discord.gg/clawd";
 export const MALICIOUS_REJECTION_ACCOUNT_WARNING =
   "Repeated malicious rejections may lead to account disablement.";
 const MAX_EMAIL_FINDING_SUMMARY_LENGTH = 280;
@@ -198,19 +199,6 @@ function formatUtcTimestamp(value: number | undefined, fallback: string) {
     .toISOString()
     .replace("T", " ")
     .replace(/\.\d{3}Z$/, " UTC");
-}
-
-function formatEmailNumber(value: number) {
-  if (!Number.isFinite(value)) return "0";
-  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value);
-}
-
-function formatPublisherAbuseReasonCode(value: string) {
-  return value
-    .split("_")
-    .filter(Boolean)
-    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
-    .join(" ");
 }
 
 async function renderAccountSuspendedTemplate(args: {
@@ -517,10 +505,6 @@ export async function buildPublisherAbuseWarningEmail(args: PublisherAbuseWarnin
   const publisherLabel = publisherHandle ? `@${publisherHandle}` : "your publisher";
   const deadline = formatUtcTimestamp(args.deadlineAt, "the warning deadline");
   const warningSentAt = formatUtcTimestamp(args.warningSentAt, "this warning");
-  const reasonLines =
-    args.score.reasonCodes.length > 0
-      ? args.score.reasonCodes.map((reason) => `- ${formatPublisherAbuseReasonCode(reason)}`)
-      : ["- Publisher abuse score exceeded the automatic enforcement tier"];
   const body = [
     `ClawHub's publisher abuse detection flagged ${publisherLabel}.`,
     "",
@@ -529,23 +513,13 @@ export async function buildPublisherAbuseWarningEmail(args: PublisherAbuseWarnin
     `Warning sent: ${warningSentAt}`,
     `Deadline: ${deadline}`,
     "",
-    "Current signals:",
-    `- Published skills: ${formatEmailNumber(args.score.publishedSkills)}`,
-    `- Total installs: ${formatEmailNumber(args.score.totalInstalls)}`,
-    `- Total stars: ${formatEmailNumber(args.score.totalStars)}`,
-    `- Total downloads: ${formatEmailNumber(args.score.totalDownloads)}`,
-    `- Installs per skill: ${formatEmailNumber(args.score.installsPerSkill)}`,
-    `- Stars per skill: ${formatEmailNumber(args.score.starsPerSkill)}`,
-    `- Downloads per skill: ${formatEmailNumber(args.score.downloadsPerSkill)}`,
-    "",
-    "Why this triggered:",
-    ...reasonLines,
-    "",
     "What to fix:",
     "- Delete low-quality, duplicate, placeholder, or machine-generated listings.",
     "- Consolidate near-identical skills or plugins.",
     "- Keep only listings that are useful, maintained, and meaningfully different.",
     "- Do not inflate installs, downloads, stars, or other engagement metrics.",
+    "",
+    `For more information, join the OpenClaw Discord and tag one of the maintainers: ${OPENCLAW_DISCORD_URL}`,
   ].join("\n");
   const subject = "Action required: ClawHub publisher abuse warning";
 
