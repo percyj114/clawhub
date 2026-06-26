@@ -17,6 +17,7 @@ const RATE_LIMIT_WINDOW_MS = 60_000;
 const HTTP_RATE_LIMIT_SHARDS = 16;
 const HTTP_RATE_LIMIT_MIN_SHARD_CAPACITY = 10;
 const HTTP_RATE_LIMIT_KEY_TTL_MS = 24 * 60 * 60 * 1000;
+const EDGE_SECRET_HEADER = "x-clawhub-edge-secret";
 
 type RateLimitResult = {
   allowed: boolean;
@@ -184,7 +185,7 @@ function getAuthenticatedRateLimit(kind: RateLimitKind, user: Pick<Doc<"users">,
 }
 
 export function getClientIp(request: Request): string | null {
-  if (!shouldTrustClientIpHeaders()) return null;
+  if (!shouldTrustClientIpHeaders(request)) return null;
 
   const cfHeader = request.headers.get("cf-connecting-ip");
   if (cfHeader) return splitFirstIp(cfHeader);
@@ -198,7 +199,7 @@ export function getClientIp(request: Request): string | null {
 }
 
 function getClientIpSource(request: Request) {
-  if (!shouldTrustClientIpHeaders()) return "none";
+  if (!shouldTrustClientIpHeaders(request)) return "none";
   if (request.headers.get("cf-connecting-ip")) return "cf-connecting-ip";
   if (request.headers.get("x-forwarded-for")) return "x-forwarded-for";
   if (request.headers.get("x-real-ip")) return "x-real-ip";
@@ -311,13 +312,17 @@ function splitFirstIp(header: string | null) {
   return trimmed || null;
 }
 
-function shouldTrustClientIpHeaders() {
+function shouldTrustClientIpHeaders(request: Request) {
   const value = (process.env.TRUST_FORWARDED_IPS ?? "").trim().toLowerCase();
-  // Direct Convex HTTP endpoints can be reached without ClawHub's edge. Trust
-  // client IP headers only when the deployment is explicitly behind that edge.
   if (!value) return false;
-  if (value === "1" || value === "true" || value === "yes") return true;
-  return false;
+  if (!(value === "1" || value === "true" || value === "yes")) return false;
+
+  // Direct Convex HTTP endpoints are public. Only trust forwarded IP headers
+  // when ClawHub's edge has stripped caller-supplied headers and added this
+  // deployment secret.
+  const edgeSecret = process.env.CLAWHUB_EDGE_SECRET?.trim();
+  if (!edgeSecret) return false;
+  return request.headers.get(EDGE_SECRET_HEADER) === edgeSecret;
 }
 
 function isRateLimitWriteConflict(error: unknown) {
