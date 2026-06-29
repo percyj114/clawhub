@@ -45,6 +45,7 @@ const MAX_ACTIVE_SKILL_FALLBACK_SCANS_PER_PAGE = 20;
 const MAX_OWNER_NOMINATION_VERSION_SCAN = 20;
 const DEFAULT_REVIEW_DASHBOARD_PAGE_SIZE = 25;
 const MAX_REVIEW_DASHBOARD_PAGE_SIZE = 25;
+const DASHBOARD_SIGNAL_COUNT_LIMIT = 25;
 const MAX_BAN_REASON_LENGTH = 500;
 const DEFAULT_TEMPORAL_BATCH_SIZE = 50;
 const MAX_TEMPORAL_BATCH_SIZE = 100;
@@ -92,6 +93,8 @@ const FAILED_TEMPORAL_CLEANUP_LABELS = [
 type TriageStatus = Doc<"publisherAbuseReviewNominations">["status"];
 type ScoreRun = Doc<"publisherAbuseScoreRuns">;
 type ScoreDoc = Doc<"publisherAbuseScores">;
+type PublisherAbuseSignalDoc = Doc<"publisherAbuseSignals">;
+type PublisherAbuseSignalType = PublisherAbuseSignalDoc["signalType"];
 type RunPhase = ScoreRun["phase"];
 type TemporalAbuseMode = "current" | "backfill";
 
@@ -100,6 +103,10 @@ const publisherAbuseReviewTabValidator = v.union(
   v.literal("review"),
   v.literal("all_pending"),
   v.literal("resolved"),
+);
+const publisherAbuseSignalTypeValidator = v.union(
+  v.literal("high_install_download_ratio"),
+  v.literal("sustained_downloads_flat_installs"),
 );
 
 type RunState = {
@@ -303,7 +310,10 @@ export const listReviewDashboard = query({
     const auth = await requirePublisherAbuseDashboardUser(ctx);
     if (!auth) return emptyPublisherAbuseReviewDashboard();
 
-    const latestRun = await getLatestPublisherAbuseScoreRun(ctx);
+    const [latestRun, signalCountSummary] = await Promise.all([
+      getLatestPublisherAbuseScoreRun(ctx),
+      getPublisherAbuseSignalCountSummary(ctx),
+    ]);
 
     return {
       latestRun: latestRun ? summarizePublisherAbuseRun(latestRun) : null,
@@ -311,6 +321,7 @@ export const listReviewDashboard = query({
       pendingPotentialBanCandidateItems: [],
       pendingReviewItems: [],
       recentResolvedItems: [],
+      ...signalCountSummary,
     };
   },
 });
@@ -365,6 +376,50 @@ export const listReviewItemsPage = query({
       page: recentResolvedItems,
       isDone: true,
       continueCursor: "",
+    };
+  },
+});
+
+export const listSignalsPage = query({
+  args: {
+    signalType: v.optional(publisherAbuseSignalTypeValidator),
+    paginationOpts: paginationOptsValidator,
+  },
+  handler: async (ctx, args) => {
+    const auth = await requirePublisherAbuseDashboardUser(ctx);
+    if (!auth) {
+      return {
+        page: [],
+        isDone: true,
+        continueCursor: "",
+      };
+    }
+
+    const paginationOpts = {
+      ...args.paginationOpts,
+      numItems: clampInt(
+        args.paginationOpts.numItems ?? DEFAULT_REVIEW_DASHBOARD_PAGE_SIZE,
+        1,
+        MAX_REVIEW_DASHBOARD_PAGE_SIZE,
+      ),
+    };
+    const signalType = args.signalType;
+    const page = signalType
+      ? await ctx.db
+          .query("publisherAbuseSignals")
+          .withIndex("by_signal_type_and_last_seen_at", (q) => q.eq("signalType", signalType))
+          .order("desc")
+          .paginate(paginationOpts)
+      : await ctx.db
+          .query("publisherAbuseSignals")
+          .withIndex("by_last_seen_at")
+          .order("desc")
+          .paginate(paginationOpts);
+
+    return {
+      page: await summarizePublisherAbuseSignals(ctx, page.page),
+      isDone: page.isDone,
+      continueCursor: page.continueCursor,
     };
   },
 });
@@ -433,6 +488,8 @@ function emptyPublisherAbuseReviewDashboard() {
     pendingPotentialBanCandidateItems: [],
     pendingReviewItems: [],
     recentResolvedItems: [],
+    signalCount: 0,
+    signalCountHasMore: false,
   };
 }
 
@@ -1868,6 +1925,13 @@ export async function persistTemporalPublisherAbuseCandidatesInternalHandler(
   const nominationRun = { ...run, temporalScanComplete: args.scanComplete } as ScoreRun;
 
   const now = Date.now();
+  if (args.mode === "current" && args.scanComplete) {
+    await archiveTemporalPublisherAbuseSignals(ctx, {
+      runId,
+      candidates: args.candidates,
+      now,
+    });
+  }
   let nominations = 0;
   let rank = 0;
   const sortedAggregates = [...aggregates].sort(
@@ -2398,6 +2462,116 @@ function temporalEvidenceFromCandidate(candidate: TemporalSkillCandidate) {
     nearConversionWindowEndDay: candidate.temporalScore.nearConversionWindowEndDay,
     reasonCodes: candidate.temporalScore.reasonCodes,
   };
+}
+
+async function archiveTemporalPublisherAbuseSignals(
+  ctx: Pick<MutationCtx, "db">,
+  args: {
+    runId: Id<"publisherAbuseScoreRuns">;
+    candidates: TemporalSkillCandidate[];
+    now: number;
+  },
+) {
+  for (const candidate of args.candidates) {
+    for (const signalType of signalTypesForTemporalCandidate(candidate)) {
+      await upsertPublisherAbuseSignal(ctx, {
+        runId: args.runId,
+        candidate,
+        signalType,
+        now: args.now,
+      });
+    }
+  }
+}
+
+function signalTypesForTemporalCandidate(
+  candidate: TemporalSkillCandidate,
+): PublisherAbuseSignalType[] {
+  const signalTypes: PublisherAbuseSignalType[] = [];
+  if (candidate.temporalScore.nearConversion) {
+    signalTypes.push("high_install_download_ratio");
+  }
+  if (candidate.temporalScore.sustained) {
+    signalTypes.push("sustained_downloads_flat_installs");
+  }
+  return signalTypes;
+}
+
+async function upsertPublisherAbuseSignal(
+  ctx: Pick<MutationCtx, "db">,
+  args: {
+    runId: Id<"publisherAbuseScoreRuns">;
+    candidate: TemporalSkillCandidate;
+    signalType: PublisherAbuseSignalType;
+    now: number;
+  },
+) {
+  const signal = await ctx.db
+    .query("publisherAbuseSignals")
+    .withIndex("by_skill_and_signal_type", (q) =>
+      q.eq("skillId", args.candidate.skillId).eq("signalType", args.signalType),
+    )
+    .first();
+  const snapshot = publisherAbuseSignalSnapshot(args);
+
+  if (signal) {
+    await ctx.db.patch(signal._id, {
+      ...snapshot,
+      lastSeenAt: args.now,
+      seenCount: signal.seenCount + 1,
+    });
+    return;
+  }
+
+  await ctx.db.insert("publisherAbuseSignals", {
+    ...snapshot,
+    firstSeenAt: args.now,
+    lastSeenAt: args.now,
+    seenCount: 1,
+  });
+}
+
+function publisherAbuseSignalSnapshot(args: {
+  runId: Id<"publisherAbuseScoreRuns">;
+  candidate: TemporalSkillCandidate;
+  signalType: PublisherAbuseSignalType;
+}) {
+  const { candidate } = args;
+  return {
+    signalType: args.signalType,
+    ownerKey: candidate.ownerKey,
+    ownerPublisherId: candidate.ownerPublisherId ?? null,
+    ownerUserId: candidate.ownerUserId ?? null,
+    handleSnapshot: candidate.handleSnapshot,
+    skillId: candidate.skillId,
+    skillSlug: candidate.slug,
+    skillDisplayName: candidate.displayName,
+    latestRunId: args.runId,
+    recent7Downloads: candidate.temporalScore.recent7Downloads,
+    recent7Installs: candidate.temporalScore.recent7Installs,
+    recent7InstallDownloadRatio: installDownloadRatio({
+      installs: candidate.temporalScore.recent7Installs,
+      downloads: candidate.temporalScore.recent7Downloads,
+    }),
+    recent30Downloads: candidate.temporalScore.recent30Downloads,
+    recent30Installs: candidate.temporalScore.recent30Installs,
+    recent30InstallDownloadRatio: installDownloadRatio({
+      installs: candidate.temporalScore.recent30Installs,
+      downloads: candidate.temporalScore.recent30Downloads,
+    }),
+    allTimeDownloads: nonNegative(candidate.totalDownloads),
+    allTimeInstalls: nonNegative(candidate.totalInstalls),
+    allTimeInstallDownloadRatio: installDownloadRatio({
+      installs: candidate.totalInstalls,
+      downloads: candidate.totalDownloads,
+    }),
+  };
+}
+
+function installDownloadRatio(input: { installs: number; downloads: number }) {
+  const downloads = nonNegative(input.downloads);
+  if (downloads <= 0) return 0;
+  return nonNegative(input.installs) / downloads;
 }
 
 function uniqueStrings(values: string[]) {
@@ -3099,6 +3273,35 @@ async function summarizeVisiblePublisherAbuseReviewListNominations(
     if (limit && items.length >= limit) break;
   }
   return items;
+}
+
+async function summarizePublisherAbuseSignals(ctx: QueryCtx, signals: PublisherAbuseSignalDoc[]) {
+  return await Promise.all(
+    signals.map(async (signal) => {
+      const [publisher, ownerUser] = await Promise.all([
+        signal.ownerPublisherId ? ctx.db.get(signal.ownerPublisherId) : null,
+        signal.ownerUserId ? ctx.db.get(signal.ownerUserId) : null,
+      ]);
+      return {
+        signal,
+        publisher: publisher ? summarizePublisherForAbuseReview(publisher) : null,
+        ownerUser: ownerUser ? summarizeUserForAbuseReview(ownerUser) : null,
+      };
+    }),
+  );
+}
+
+async function getPublisherAbuseSignalCountSummary(ctx: QueryCtx) {
+  const signals = await ctx.db
+    .query("publisherAbuseSignals")
+    .withIndex("by_last_seen_at")
+    .order("desc")
+    .take(DASHBOARD_SIGNAL_COUNT_LIMIT + 1);
+  const signalCountHasMore = signals.length > DASHBOARD_SIGNAL_COUNT_LIMIT;
+  return {
+    signalCount: Math.min(signals.length, DASHBOARD_SIGNAL_COUNT_LIMIT),
+    signalCountHasMore,
+  };
 }
 
 async function summarizePublisherAbuseReviewNominationListItem(

@@ -14225,12 +14225,47 @@ code {
   background: var(--hover-bg);
 }
 
+.pa-table tbody tr.pa-skeleton-row {
+  cursor: default;
+}
+
+.pa-table tbody tr.pa-skeleton-row:hover {
+  background: transparent;
+}
+
+.pa-table-skeleton-bar {
+  display: block;
+  max-width: 100%;
+  height: 14px;
+  border-radius: 4px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--line) 70%, transparent),
+    color-mix(in srgb, var(--ink-soft) 18%, transparent),
+    color-mix(in srgb, var(--line) 70%, transparent)
+  );
+  background-size: 220% 100%;
+  animation: skeleton-shimmer 1.15s ease-in-out infinite;
+}
+
 .pa-table tbody tr.is-selected {
   background: var(--accent-subtle);
 }
 
 .pa-table tbody tr.is-selected td:first-child {
   box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.pa-signals-table {
+  min-width: 960px;
+}
+
+.pa-signals-table tbody tr {
+  cursor: default;
+}
+
+.pa-signals-table tbody tr:hover {
+  background: transparent;
 }
 
 .pa-num {
@@ -14240,6 +14275,20 @@ code {
 
 .pa-muted {
   color: var(--ink-soft);
+}
+
+.pa-signal-repeat,
+.pa-ratio-subtext {
+  display: block;
+  margin-top: 3px;
+  color: var(--ink-soft);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
+.pa-signal-name {
+  font-weight: 600;
 }
 
 .pa-handle {
@@ -14272,6 +14321,29 @@ code {
   color: var(--ink-soft);
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
+}
+
+.pa-signal-link {
+  border-radius: 6px;
+  color: inherit;
+  margin: -3px -5px;
+  padding: 3px 5px;
+  text-decoration: none;
+}
+
+.pa-signal-link:hover {
+  background: var(--hover-bg);
+}
+
+.pa-signal-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.pa-signal-link span {
+  align-items: center;
+  display: inline-flex;
+  gap: 4px;
 }
 
 .pa-reasons {

@@ -33,6 +33,7 @@ import {
   canBanPublisherAbuseOwner,
   comparePublisherAbuseItems,
   filterPublisherAbuseItems,
+  filterPublisherAbuseSignals,
   getPublisherAbuseItemsForTab,
   getPublisherAbuseVisiblePendingItems,
 } from "./-management/AbusePage";
@@ -47,6 +48,7 @@ import {
   type ManagementUserListResult,
   type ManagementView,
   type PluginByNameResult,
+  type PublisherAbuseSignalEntry,
   type PublisherAbuseReviewItem,
   type PublisherAbuseTab,
   type RecentVersionEntry,
@@ -267,7 +269,18 @@ export function Management() {
     loadMore: loadMorePublisherAbuseItems,
   } = usePaginatedQuery(
     api.publisherAbuse.listReviewItemsPage,
-    staff && abuseViewActive ? { tab: publisherAbuseTab } : "skip",
+    staff && abuseViewActive && publisherAbuseTab !== "signals"
+      ? { tab: publisherAbuseTab }
+      : "skip",
+    { initialNumItems: 25 },
+  );
+  const {
+    results: publisherAbuseSignalPageResults,
+    status: publisherAbuseSignalPageStatus,
+    loadMore: loadMorePublisherAbuseSignals,
+  } = usePaginatedQuery(
+    api.publisherAbuse.listSignalsPage,
+    staff && abuseViewActive && publisherAbuseTab === "signals" ? {} : "skip",
     { initialNumItems: 25 },
   );
 
@@ -302,6 +315,8 @@ export function Management() {
     [publisherAbuseDashboard, publisherAbuseTab],
   );
   const publisherAbusePageItems = (publisherAbusePageResults ?? []) as PublisherAbuseReviewItem[];
+  const publisherAbuseSignalItems = (publisherAbuseSignalPageResults ??
+    []) as PublisherAbuseSignalEntry[];
   const publisherAbuseItemsForTab =
     publisherAbusePageItems.length > 0 || publisherAbuseDashboardFallbackItems.length === 0
       ? publisherAbusePageItems
@@ -317,6 +332,10 @@ export function Management() {
     ) ?? null;
   const selectedPublisherAbuseItem =
     selectedPublisherAbuseDetail?.item ?? fallbackSelectedPublisherAbuseItem;
+  const filteredPublisherAbuseSignals = useMemo(
+    () => filterPublisherAbuseSignals(publisherAbuseSignalItems, publisherAbuseSearch),
+    [publisherAbuseSignalItems, publisherAbuseSearch],
+  );
 
   useEffect(() => {
     if (!selectedSkillId || !selectedOwnerUserId) return;
@@ -640,13 +659,27 @@ export function Management() {
             search={publisherAbuseSearch}
             selectedItem={selectedPublisherAbuseItem}
             selectedNominationId={selectedPublisherAbuseNominationId}
+            signalItems={filteredPublisherAbuseSignals}
+            signalPageStatus={publisherAbuseSignalPageStatus}
             tab={publisherAbuseTab}
             onBanOwner={banPublisherAbuseOwner}
             onChangeNotes={setPublisherAbuseNotes}
             onChangeSearch={setPublisherAbuseSearch}
-            onChangeTab={setPublisherAbuseTab}
+            onChangeTab={(nextTab) => {
+              setPublisherAbuseTab(nextTab);
+              if (nextTab === "signals") {
+                setPublisherAbuseNotes("");
+                setSelectedPublisherAbuseNominationId(null);
+              }
+            }}
             onToggleAutoban={requestTogglePublisherAbuseAutoban}
-            onLoadMore={() => loadMorePublisherAbuseItems(25)}
+            onLoadMore={() => {
+              if (publisherAbuseTab === "signals") {
+                loadMorePublisherAbuseSignals(25);
+              } else {
+                loadMorePublisherAbuseItems(25);
+              }
+            }}
             onRefresh={() => {
               setConfirmRequest({
                 title: "Run a new abuse scan?",

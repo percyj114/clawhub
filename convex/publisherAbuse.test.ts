@@ -198,6 +198,8 @@ const persistTemporalHandler = (
           spikeWindowEndDay?: number;
           sustainedWindowStartDay?: number;
           sustainedWindowEndDay?: number;
+          nearConversionWindowStartDay?: number;
+          nearConversionWindowEndDay?: number;
           reasonCodes: string[];
         };
       }>;
@@ -227,6 +229,8 @@ const listDashboardHandler = (
       pendingPotentialBanCandidateItems: unknown[];
       pendingReviewItems: unknown[];
       recentResolvedItems: Array<{ nomination: { _id: string } }>;
+      signalCount: number;
+      signalCountHasMore: boolean;
     }
   >
 )._handler;
@@ -235,6 +239,20 @@ const listReviewItemsPageHandler = (
   publisherAbuse.listReviewItemsPage as unknown as Wrapped<
     {
       tab: "potential_ban_candidate" | "review" | "all_pending" | "resolved";
+      paginationOpts: { numItems: number; cursor: string | null };
+    },
+    {
+      page: unknown[];
+      isDone: boolean;
+      continueCursor: string;
+    }
+  >
+)._handler;
+
+const listSignalsPageHandler = (
+  publisherAbuse.listSignalsPage as unknown as Wrapped<
+    {
+      signalType?: "high_install_download_ratio" | "sustained_downloads_flat_installs";
       paginationOpts: { numItems: number; cursor: string | null };
     },
     {
@@ -468,6 +486,50 @@ function makeEmptyPublisherMembersQuery() {
   };
 }
 
+function makePublisherAbuseSignalCountQuery(signals: unknown[]) {
+  return {
+    withIndex: (indexName: string) => {
+      expect(indexName).toBe("by_last_seen_at");
+      return {
+        order: (direction: "asc" | "desc") => {
+          expect(direction).toBe("desc");
+          return {
+            take: async (limit: number) => signals.slice(0, limit),
+          };
+        },
+      };
+    },
+  };
+}
+
+function makeEmptyPublisherAbuseScoreRunsQuery() {
+  return {
+    withIndex: (
+      indexName: string,
+      build: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
+    ) => {
+      expect(indexName).toBe("by_model_version_and_started_at");
+      const constraints: Record<string, unknown> = {};
+      const q = {
+        eq(field: string, value: unknown) {
+          constraints[field] = value;
+          return q;
+        },
+      };
+      build(q);
+      expect(constraints.modelVersion).toBeTypeOf("string");
+      return {
+        order: (direction: "asc" | "desc") => {
+          expect(direction).toBe("desc");
+          return {
+            first: async () => null,
+          };
+        },
+      };
+    },
+  };
+}
+
 function hasNoUndefinedValues(value: unknown): boolean {
   if (value === undefined) return false;
   if (value === null || typeof value !== "object") return true;
@@ -574,6 +636,8 @@ describe("publisher abuse dry-run persistence", () => {
         pendingPotentialBanCandidateItems: [],
         pendingReviewItems: [],
         recentResolvedItems: [],
+        signalCount: 0,
+        signalCountHasMore: false,
       });
       await expect(
         getPublisherAbuseAutobanSettingHandler({ db: { query: dbQuery } }, {}),
@@ -629,6 +693,8 @@ describe("publisher abuse dry-run persistence", () => {
       pendingPotentialBanCandidateItems: [],
       pendingReviewItems: [],
       recentResolvedItems: [],
+      signalCount: 0,
+      signalCountHasMore: false,
     });
     await expect(getPublisherAbuseAutobanSettingHandler({ db }, {})).resolves.toEqual({
       enabled: false,
@@ -641,10 +707,52 @@ describe("publisher abuse dry-run persistence", () => {
         { nominationId: "publisherAbuseReviewNominations:nomination" },
       ),
     ).resolves.toBeNull();
+    await expect(
+      listSignalsPageHandler(
+        { db },
+        {
+          signalType: "high_install_download_ratio",
+          paginationOpts: { numItems: 10, cursor: null },
+        },
+      ),
+    ).resolves.toEqual({
+      page: [],
+      isDone: true,
+      continueCursor: "",
+    });
 
     expect(assertModerator).not.toHaveBeenCalled();
     expect(db.get).not.toHaveBeenCalled();
     expect(db.query).not.toHaveBeenCalled();
+  });
+
+  it("returns a bounded publisher abuse signal count on the dashboard", async () => {
+    vi.mocked(requireUser).mockResolvedValue({
+      userId: "users:moderator",
+      user: { _id: "users:moderator", role: "moderator" },
+    } as never);
+    const signals = Array.from({ length: 26 }, (_, index) => ({
+      _id: `publisherAbuseSignals:${index}`,
+    }));
+    const db = {
+      query: vi.fn((table: string) => {
+        if (table === "publisherAbuseScoreRuns") return makeEmptyPublisherAbuseScoreRunsQuery();
+        if (table === "publisherAbuseSignals") return makePublisherAbuseSignalCountQuery(signals);
+        throw new Error(`unexpected table ${table}`);
+      }),
+    };
+
+    await expect(listDashboardHandler({ db }, {})).resolves.toEqual({
+      latestRun: null,
+      pendingItems: [],
+      pendingPotentialBanCandidateItems: [],
+      pendingReviewItems: [],
+      recentResolvedItems: [],
+      signalCount: 25,
+      signalCountHasMore: true,
+    });
+
+    expect(db.query).toHaveBeenCalledWith("publisherAbuseSignals");
   });
 
   it("defaults publisher abuse autobans to disabled when no setting exists", async () => {
@@ -3076,6 +3184,121 @@ describe("publisher abuse dry-run persistence", () => {
     ]);
     expect(hasNoUndefinedValues(item.publisher)).toBe(true);
     expect(hasNoUndefinedValues(item.ownerUser)).toBe(true);
+  });
+
+  it("pages archived publisher abuse signals for staff review", async () => {
+    vi.mocked(requireUser).mockResolvedValue({
+      userId: "users:moderator",
+      user: { _id: "users:moderator", role: "moderator" },
+    } as never);
+    const signal = {
+      _id: "publisherAbuseSignals:ratio",
+      _creationTime: 100,
+      signalType: "high_install_download_ratio",
+      ownerKey: "publisher:publishers:ratio-owner",
+      ownerPublisherId: "publishers:ratio-owner",
+      ownerUserId: "users:ratio-owner",
+      handleSnapshot: "ratio-owner",
+      skillId: "skills:ratio",
+      skillSlug: "ratio-skill",
+      skillDisplayName: "Ratio Skill",
+      latestRunId: "publisherAbuseScoreRuns:temporal",
+      firstSeenAt: 100,
+      lastSeenAt: 200,
+      seenCount: 2,
+      recent7Downloads: 600,
+      recent7Installs: 72,
+      recent7InstallDownloadRatio: 0.12,
+      recent30Downloads: 2_000,
+      recent30Installs: 240,
+      recent30InstallDownloadRatio: 0.12,
+      allTimeDownloads: 10_000,
+      allTimeInstalls: 1_200,
+      allTimeInstallDownloadRatio: 0.12,
+    };
+    const signalPaginate = vi.fn(
+      async (paginationOpts: { numItems: number; cursor: string | null }) => {
+        expect(paginationOpts).toEqual({ numItems: 10, cursor: null });
+        return {
+          page: [signal],
+          isDone: true,
+          continueCursor: "",
+        };
+      },
+    );
+    const ctx = {
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === "publishers:ratio-owner") {
+            return {
+              _id: "publishers:ratio-owner",
+              kind: "user",
+              handle: "ratio-owner",
+              linkedUserId: "users:ratio-owner",
+            };
+          }
+          if (id === "users:ratio-owner") {
+            return {
+              _id: "users:ratio-owner",
+              handle: "ratio-owner",
+              role: "user",
+            };
+          }
+          throw new Error(`unexpected get ${id}`);
+        }),
+        query: vi.fn((table: string) => {
+          if (table === "publisherAbuseSignals") {
+            return {
+              withIndex: (
+                indexName: string,
+                build: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
+              ) => {
+                const constraints: Record<string, unknown> = {};
+                const q = {
+                  eq(field: string, value: unknown) {
+                    constraints[field] = value;
+                    return q;
+                  },
+                };
+                build(q);
+                expect(indexName).toBe("by_signal_type_and_last_seen_at");
+                expect(constraints).toEqual({ signalType: "high_install_download_ratio" });
+                return {
+                  order: () => ({
+                    paginate: signalPaginate,
+                  }),
+                };
+              },
+            };
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
+      },
+    };
+
+    await expect(
+      listSignalsPageHandler(ctx, {
+        signalType: "high_install_download_ratio",
+        paginationOpts: { numItems: 10, cursor: null },
+      }),
+    ).resolves.toEqual({
+      page: [
+        expect.objectContaining({
+          signal,
+          publisher: expect.objectContaining({
+            _id: "publishers:ratio-owner",
+            handle: "ratio-owner",
+          }),
+          ownerUser: expect.objectContaining({
+            _id: "users:ratio-owner",
+            handle: "ratio-owner",
+          }),
+        }),
+      ],
+      isDone: true,
+      continueCursor: "",
+    });
+    expect(signalPaginate).toHaveBeenCalledWith({ numItems: 10, cursor: null });
   });
 
   it("queries recent resolved nominations by review time", async () => {
@@ -7045,7 +7268,7 @@ describe("publisher abuse dry-run persistence", () => {
       "publisherAbuseScores",
       expect.objectContaining({
         ownerKey: "publisher:publishers:pollyreach",
-        label: "potential_ban_candidate",
+        label: "review",
         zScore: expect.any(Number),
         temporalHighSkillCount: 2,
         temporalSpikeSkillCount: 2,
@@ -7057,7 +7280,7 @@ describe("publisher abuse dry-run persistence", () => {
       "publisherAbuseReviewNominations",
       expect.objectContaining({
         ownerKey: "publisher:publishers:pollyreach",
-        label: "potential_ban_candidate",
+        label: "review",
         latestScoreId: "publisherAbuseScores:temporal",
       }),
     );
@@ -7065,7 +7288,205 @@ describe("publisher abuse dry-run persistence", () => {
       ([table]) => table === "publisherAbuseScores",
     )?.[1] as { zScore: number } | undefined;
     expect(scoreInsertPayload).toEqual(expect.objectContaining({ zScore: expect.any(Number) }));
-    expect(scoreInsertPayload?.zScore).toBeGreaterThanOrEqual(2.5);
+    expect(scoreInsertPayload?.zScore).toBeLessThan(2.5);
+  });
+
+  it("archives durable temporal review signals without archiving spike-only evidence", async () => {
+    const highRatio = temporalCandidate("skills:ratio", {
+      slug: "ratio",
+      displayName: "Ratio",
+    });
+    highRatio.temporalScore.spike = false;
+    highRatio.temporalScore.nearConversion = true;
+    highRatio.temporalScore.recent7Downloads = 800;
+    highRatio.temporalScore.recent7Installs = 96;
+    highRatio.temporalScore.recent30Downloads = 2_400;
+    highRatio.temporalScore.recent30Installs = 288;
+    highRatio.temporalScore.installDownloadRatio7 = 0.12;
+    highRatio.temporalScore.installDownloadRatio30 = 0.12;
+    highRatio.temporalScore.installDownloadExcessZScore7 = 12;
+    highRatio.temporalScore.installDownloadExcessZScore30 = 12;
+    highRatio.temporalScore.reasonCodes = ["temporal_installs_track_downloads"];
+
+    const sustained = temporalCandidate("skills:sustained", {
+      slug: "sustained",
+      displayName: "Sustained",
+    });
+    sustained.temporalScore.spike = false;
+    sustained.temporalScore.sustained = true;
+    sustained.temporalScore.recent7Downloads = 1_000;
+    sustained.temporalScore.recent30Downloads = 5_000;
+    sustained.temporalScore.reasonCodes = ["temporal_sustained_downloads_flat_installs"];
+
+    const spikeOnly = temporalCandidate("skills:spike", {
+      slug: "spike",
+      displayName: "Spike",
+    });
+    const existingSignal = {
+      _id: "publisherAbuseSignals:existing-ratio",
+      signalType: "high_install_download_ratio",
+      ownerKey: highRatio.ownerKey,
+      ownerPublisherId: highRatio.ownerPublisherId,
+      ownerUserId: highRatio.ownerUserId,
+      handleSnapshot: highRatio.handleSnapshot,
+      skillId: highRatio.skillId,
+      skillSlug: highRatio.slug,
+      skillDisplayName: highRatio.displayName,
+      latestRunId: "publisherAbuseScoreRuns:old",
+      firstSeenAt: 10,
+      lastSeenAt: 20,
+      seenCount: 5,
+      recent7Downloads: 700,
+      recent7Installs: 70,
+      recent7InstallDownloadRatio: 0.1,
+      recent30Downloads: 2_100,
+      recent30Installs: 210,
+      recent30InstallDownloadRatio: 0.1,
+      allTimeDownloads: 10_000,
+      allTimeInstalls: 1_000,
+      allTimeInstallDownloadRatio: 0.1,
+    };
+    const signalLookups: Array<Record<string, unknown>> = [];
+    const insertedSignals: unknown[] = [];
+    const insert = vi.fn(async (table: string, value?: unknown) => {
+      if (table === "publisherAbuseScoreRuns") return "publisherAbuseScoreRuns:temporal";
+      if (table === "publisherAbuseSignals") {
+        insertedSignals.push(value);
+        return "publisherAbuseSignals:new";
+      }
+      if (table === "publisherAbuseScores") return "publisherAbuseScores:temporal";
+      if (table === "publisherAbuseReviewNominations") {
+        return "publisherAbuseReviewNominations:temporal";
+      }
+      if (table === "publisherAbuseReviewEvents") return "publisherAbuseReviewEvents:temporal";
+      throw new Error(`unexpected insert ${table}`);
+    });
+    const patch = vi.fn(async () => null);
+    const ctx = {
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === "publisherAbuseScoreRuns:temporal") {
+            return {
+              _id: "publisherAbuseScoreRuns:temporal",
+              modelVersion: "publisher-abuse-temporal.v1",
+              modelConfig: TEST_MODEL_CONFIG,
+              trigger: "cron",
+              status: "running",
+              phase: "collecting",
+              scannedPublishers: 0,
+              scoredPublishers: 0,
+              finalizedScores: 0,
+              nominatedPublishers: 0,
+              passCount: 0,
+              reviewCount: 0,
+              potentialBanCandidateCount: 0,
+              sumLogPressure: 0,
+              sumSquaredLogPressure: 0,
+            };
+          }
+          throw new Error(`unexpected get ${id}`);
+        }),
+        insert,
+        patch,
+        query: vi.fn((table: string) => {
+          if (table === "publisherAbuseSignals") {
+            return {
+              withIndex: (
+                indexName: string,
+                build: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
+              ) => {
+                expect(indexName).toBe("by_skill_and_signal_type");
+                const constraints: Record<string, unknown> = {};
+                const q = {
+                  eq(field: string, value: unknown) {
+                    constraints[field] = value;
+                    return q;
+                  },
+                };
+                build(q);
+                signalLookups.push(constraints);
+                return {
+                  first: async () =>
+                    constraints.skillId === highRatio.skillId &&
+                    constraints.signalType === "high_install_download_ratio"
+                      ? existingSignal
+                      : null,
+                };
+              },
+            };
+          }
+          if (table === "publisherAbuseReviewNominations") {
+            return {
+              withIndex: (indexName: string) => {
+                if (indexName === "by_owner_key_and_model_version") {
+                  return {
+                    first: async () => null,
+                    take: async () => [],
+                  };
+                }
+                if (indexName === "by_status_and_model_version_and_label_and_last_scored_at") {
+                  return {
+                    order: () => ({
+                      take: async () => [],
+                    }),
+                  };
+                }
+                throw new Error(`unexpected nomination index ${indexName}`);
+              },
+            };
+          }
+          throw new Error(`unexpected query ${table}`);
+        }),
+      },
+    };
+
+    await expect(
+      persistTemporalHandler(ctx, {
+        mode: "current",
+        trigger: "cron",
+        scanComplete: true,
+        benchmark: temporalBenchmark(),
+        candidates: [highRatio, sustained, spikeOnly],
+      }),
+    ).resolves.toEqual({
+      runId: "publisherAbuseScoreRuns:temporal",
+      flaggedPublishers: 1,
+      nominations: 1,
+    });
+
+    expect(signalLookups).toEqual([
+      { skillId: "skills:ratio", signalType: "high_install_download_ratio" },
+      { skillId: "skills:sustained", signalType: "sustained_downloads_flat_installs" },
+    ]);
+    expect(patch).toHaveBeenCalledWith(
+      "publisherAbuseSignals:existing-ratio",
+      expect.objectContaining({
+        latestRunId: "publisherAbuseScoreRuns:temporal",
+        recent7Downloads: 800,
+        recent7Installs: 96,
+        recent7InstallDownloadRatio: 0.12,
+        seenCount: 6,
+      }),
+    );
+    expect(insertedSignals).toEqual([
+      expect.objectContaining({
+        signalType: "sustained_downloads_flat_installs",
+        skillId: "skills:sustained",
+        skillSlug: "sustained",
+        recent30Downloads: 5_000,
+        firstSeenAt: expect.any(Number),
+        lastSeenAt: expect.any(Number),
+        seenCount: 1,
+      }),
+    ]);
+    expect(insert).toHaveBeenCalledWith(
+      "publisherAbuseScores",
+      expect.objectContaining({
+        label: "review",
+        temporalHighSkillCount: 3,
+        temporalSustainedSkillCount: 1,
+      }),
+    );
   });
 
   it("does not clear stale temporal nominations when the current scan is partial", async () => {

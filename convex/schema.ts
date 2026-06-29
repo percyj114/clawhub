@@ -2757,6 +2757,40 @@ const publisherAbuseReviewEvents = defineTable({
   .index("by_owner_key_and_created_at", ["ownerKey", "createdAt"])
   .index("by_actor_and_created_at", ["actorUserId", "createdAt"]);
 
+const publisherAbuseSignalTypeValidator = v.union(
+  v.literal("high_install_download_ratio"),
+  v.literal("sustained_downloads_flat_installs"),
+);
+
+const publisherAbuseSignals = defineTable({
+  signalType: publisherAbuseSignalTypeValidator,
+  ownerKey: v.string(),
+  ownerPublisherId: v.union(v.id("publishers"), v.null()),
+  ownerUserId: v.union(v.id("users"), v.null()),
+  handleSnapshot: v.string(),
+  skillId: v.id("skills"),
+  skillSlug: v.string(),
+  skillDisplayName: v.string(),
+  latestRunId: v.id("publisherAbuseScoreRuns"),
+  latestScoreId: v.optional(v.id("publisherAbuseScores")),
+  firstSeenAt: v.number(),
+  lastSeenAt: v.number(),
+  seenCount: v.number(),
+  recent7Downloads: v.number(),
+  recent7Installs: v.number(),
+  recent7InstallDownloadRatio: v.number(),
+  recent30Downloads: v.number(),
+  recent30Installs: v.number(),
+  recent30InstallDownloadRatio: v.number(),
+  allTimeDownloads: v.number(),
+  allTimeInstalls: v.number(),
+  allTimeInstallDownloadRatio: v.number(),
+})
+  .index("by_last_seen_at", ["lastSeenAt"])
+  .index("by_signal_type_and_last_seen_at", ["signalType", "lastSeenAt"])
+  .index("by_owner_key_and_last_seen_at", ["ownerKey", "lastSeenAt"])
+  .index("by_skill_and_signal_type", ["skillId", "signalType"]);
+
 const vtScanLogs = defineTable({
   type: v.union(v.literal("daily_rescan"), v.literal("backfill"), v.literal("pending_poll")),
   total: v.number(),
@@ -3037,6 +3071,7 @@ export default defineSchema({
   publisherAbuseScores,
   publisherAbuseReviewNominations,
   publisherAbuseReviewEvents,
+  publisherAbuseSignals,
   vtScanLogs,
   apiTokens,
   cliDeviceCodes,

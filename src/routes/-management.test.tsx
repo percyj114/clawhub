@@ -88,6 +88,49 @@ function makePublisherAbuseItem({
   };
 }
 
+function makePublisherAbuseSignal() {
+  return {
+    signal: {
+      _id: "publisherAbuseSignals:ratio",
+      signalType: "high_install_download_ratio",
+      ownerKey: "publisher:publishers:ratio-owner",
+      ownerPublisherId: "publishers:ratio-owner",
+      ownerUserId: "users:ratio-owner",
+      handleSnapshot: "ratio-owner",
+      skillId: "skills:ratio",
+      skillSlug: "ratio-skill",
+      skillDisplayName: "Ratio Skill",
+      latestRunId: "publisherAbuseScoreRuns:temporal",
+      firstSeenAt: 1715900000000,
+      lastSeenAt: 1716000000000,
+      seenCount: 2,
+      recent7Downloads: 800,
+      recent7Installs: 96,
+      recent7InstallDownloadRatio: 0.12,
+      recent30Downloads: 2_400,
+      recent30Installs: 288,
+      recent30InstallDownloadRatio: 0.12,
+      allTimeDownloads: 10_000,
+      allTimeInstalls: 1_200,
+      allTimeInstallDownloadRatio: 0.12,
+    },
+    publisher: {
+      _id: "publishers:ratio-owner",
+      handle: "ratio-owner",
+      displayName: null,
+      kind: "user",
+      linkedUserId: "users:ratio-owner",
+    },
+    ownerUser: {
+      _id: "users:ratio-owner",
+      handle: "ratio-owner",
+      name: "Ratio Owner",
+      displayName: null,
+      role: "user",
+    },
+  };
+}
+
 function makeManagementUser(
   id: string,
   handle: string,
@@ -299,6 +342,8 @@ describe("Management", () => {
           pendingPotentialBanCandidateItems: [potentialBanItem],
           pendingReviewItems: [reviewItem],
           recentResolvedItems: [],
+          signalCount: 1,
+          signalCountHasMore: false,
         };
       }
       if (name === "users:list") return { items: [], total: 0 };
@@ -322,6 +367,116 @@ describe("Management", () => {
     expect(screen.getByText("Showing 2 of 2 nominations")).toBeTruthy();
     expect(screen.getByText("spammy-pub")).toBeTruthy();
     expect(screen.getByText("review-pub")).toBeTruthy();
+  });
+
+  it("shows archived publisher abuse signals without querying nominations for the signals tab", () => {
+    const signal = makePublisherAbuseSignal();
+    const potentialBanItem = makePublisherAbuseItem();
+    const reviewItem = makePublisherAbuseItem({
+      handle: "review-pub",
+      id: "3",
+      label: "review",
+      ownerKey: "user:review",
+      ownerUserId: "users:review",
+      zScore: 1.8,
+    });
+    const loadMoreSignals = vi.fn();
+    useQueryMock.mockImplementation((query, args) => {
+      if (args === "skip") return undefined;
+      const name = getFunctionName(query);
+      if (name === "skills:listRecentVersions") return [];
+      if (name === "skills:listReportedSkills") return [];
+      if (name === "skills:listDuplicateCandidates") return [];
+      if (name === "publisherAbuse:listReviewDashboard") {
+        return {
+          latestRun: {
+            status: "completed",
+            scannedPublishers: 2,
+            scoredPublishers: 2,
+            potentialBanCandidateCount: 0,
+            reviewCount: 0,
+          },
+          pendingItems: [],
+          pendingPotentialBanCandidateItems: [potentialBanItem],
+          pendingReviewItems: [reviewItem],
+          recentResolvedItems: [],
+          signalCount: 1,
+          signalCountHasMore: false,
+        };
+      }
+      if (name === "users:list") return { items: [], total: 0 };
+      return undefined;
+    });
+    usePaginatedQueryMock.mockImplementation((query, args) => {
+      const name = getFunctionName(query);
+      if (name === "publisherAbuse:listSignalsPage") {
+        return {
+          results: args === "skip" ? [] : [signal],
+          status: args === "skip" ? "LoadingFirstPage" : "Exhausted",
+          loadMore: loadMoreSignals,
+        };
+      }
+      return {
+        results: [],
+        status: args === "skip" ? "LoadingFirstPage" : "Exhausted",
+        loadMore: vi.fn(),
+      };
+    });
+
+    render(<Management />);
+
+    expect(screen.queryByLabelText("Loading")).toBeNull();
+    expect(screen.getByRole("tab", { name: /Signals 1/ })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("tab", { name: /Signals/ }));
+
+    expect(screen.queryByLabelText("Loading")).toBeNull();
+    expect(screen.getByRole("tab", { name: /Potential ban 1/ })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /On the brink 1/ })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /All flagged 2/ })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /Resolved 0/ })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "Signal" })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "Severity" })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "7d ratio" })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "All-time ratio" })).toBeTruthy();
+    expect(screen.getByText("High install/download ratio")).toBeTruthy();
+    expect(screen.getByText("High")).toBeTruthy();
+    expect(screen.getByText("Ratio Skill")).toBeTruthy();
+    expect(screen.getAllByText("ratio-owner").length).toBeGreaterThanOrEqual(1);
+    const skillLink = screen.getByRole("link", { name: "Open skill Ratio Skill" });
+    const publisherLink = screen.getByRole("link", { name: "Open publisher ratio-owner" });
+    expect(skillLink.getAttribute("href")).toBe("/ratio-owner/skills/ratio-skill");
+    expect(skillLink.getAttribute("target")).toBe("_blank");
+    expect(publisherLink.getAttribute("href")).toBe("/ratio-owner");
+    expect(publisherLink.getAttribute("target")).toBe("_blank");
+    expect(screen.getAllByText("12%").length).toBeGreaterThanOrEqual(3);
+    expect(screen.getByText("96 / 800")).toBeTruthy();
+    expect(screen.getByText("Showing 1 signals")).toBeTruthy();
+    expect(screen.queryByRole("columnheader", { name: "Z-score" })).toBeNull();
+    expect(
+      usePaginatedQueryMock.mock.calls.some(
+        ([query, args]) =>
+          getFunctionName(query) === "publisherAbuse:listReviewItemsPage" && args === "skip",
+      ),
+    ).toBe(true);
+  });
+
+  it("shows table skeleton rows while the active publisher abuse page is loading", () => {
+    usePaginatedQueryMock.mockImplementation((query, args) => ({
+      results: [],
+      status:
+        getFunctionName(query) === "publisherAbuse:listReviewItemsPage" && args !== "skip"
+          ? "LoadingFirstPage"
+          : "Exhausted",
+      loadMore: vi.fn(),
+    }));
+
+    render(<Management />);
+
+    expect(
+      screen.getByRole("status", { name: "Loading publisher abuse nominations" }),
+    ).toBeTruthy();
+    expect(screen.queryByText("Loading publisher abuse nominations…")).toBeNull();
   });
 
   it("starts a manual publisher abuse scan without exposing force-new", async () => {
