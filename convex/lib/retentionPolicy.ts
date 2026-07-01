@@ -204,6 +204,7 @@ export const RETENTION_POLICIES = {
   publisherAbuseReviewNominations: permanent("Abuse review workflow state."),
   publisherAbuseReviewEvents: permanent("Abuse review event history."),
   publisherAbuseSignals: permanent("Durable publisher abuse signal archive for staff review."),
+  publisherAbuseSignalReviewEvents: permanent("Abuse signal review event history."),
   vtScanLogs: permanent("VirusTotal scan log history."),
   apiTokens: permanent("User API tokens until revoked."),
   cliDeviceCodes: ephemeral("CLI device codes expire quickly.", {

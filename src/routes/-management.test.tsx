@@ -104,6 +104,7 @@ function makePublisherAbuseSignal() {
       firstSeenAt: 1715900000000,
       lastSeenAt: 1716000000000,
       seenCount: 2,
+      reviewStatus: "open",
       recent7Downloads: 800,
       recent7Installs: 96,
       recent7InstallDownloadRatio: 0.12,
@@ -436,10 +437,12 @@ describe("Management", () => {
     expect(screen.getByRole("tab", { name: /All flagged 2/ })).toBeTruthy();
     expect(screen.getByRole("tab", { name: /Resolved 0/ })).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "Signal" })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "Status" })).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "Severity" })).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "7d ratio" })).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "All-time ratio" })).toBeTruthy();
     expect(screen.getByText("High install/download ratio")).toBeTruthy();
+    expect(screen.getAllByText("Open").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("High")).toBeTruthy();
     expect(screen.getByText("Ratio Skill")).toBeTruthy();
     expect(screen.getAllByText("ratio-owner").length).toBeGreaterThanOrEqual(1);
@@ -452,11 +455,21 @@ describe("Management", () => {
     expect(screen.getAllByText("12%").length).toBeGreaterThanOrEqual(3);
     expect(screen.getByText("96 / 800")).toBeTruthy();
     expect(screen.getByText("Showing 1 signals")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Snooze$/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Dismiss$/ })).toBeTruthy();
     expect(screen.queryByRole("columnheader", { name: "Z-score" })).toBeNull();
     expect(
       usePaginatedQueryMock.mock.calls.some(
         ([query, args]) =>
           getFunctionName(query) === "publisherAbuse:listReviewItemsPage" && args === "skip",
+      ),
+    ).toBe(true);
+    expect(
+      usePaginatedQueryMock.mock.calls.some(
+        ([query, args]) =>
+          getFunctionName(query) === "publisherAbuse:listSignalsPage" &&
+          args !== "skip" &&
+          !("reviewStatus" in (args as Record<string, unknown>)),
       ),
     ).toBe(true);
   });

@@ -66,6 +66,16 @@ See also: [acceptable-usage.md](./acceptable-usage.md) for the marketplace polic
 - Publisher abuse automatic bans must still use the account ban flow, including
   token revocation, owned listing hiding, audit logging, and the normal
   suspension/appeal email.
+- Publisher abuse Signals are manual-review telemetry only. They must not feed
+  automatic ban pressure. Staff can keep a signal `open`, `snoozed`, or
+  `dismissed`; there is no separate escalation state. Active snoozed and
+  dismissed signals stay out of the default Signals queue. A snoozed signal
+  reopens only when the same signal is seen again after its snooze deadline.
+- Hermit owns Discord notification delivery for publisher abuse Signals.
+  ClawHub queues Hermit digests only for changed open signals: newly archived
+  signals, repeated open signals with a higher seen count, manual reopens, and
+  expired snoozes that are seen again. Active snoozed or dismissed signals must
+  update their metric snapshot without notifying Hermit.
 - Aggregate publisher spam-abuse labels start at the 200-skill pivot. Below
   that pivot, publishers can contribute to the population baseline, but they
   cannot receive aggregate spam reason codes or be nominated by this score path.

@@ -14181,6 +14181,34 @@ code {
   outline: none;
 }
 
+.pa-signal-status-tabs {
+  display: inline-flex;
+  align-self: flex-start;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.pa-signal-status-tabs button {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: calc(var(--r-md) - 3px);
+  background: transparent;
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.pa-signal-status-tabs button:hover,
+.pa-signal-status-tabs button.active {
+  background: var(--hover-bg);
+  color: var(--ink);
+}
+
 .pa-table-wrap {
   min-width: 0;
   margin: 0 calc(-1 * var(--space-4));
@@ -14257,7 +14285,7 @@ code {
 }
 
 .pa-signals-table {
-  min-width: 960px;
+  min-width: 1120px;
 }
 
 .pa-signals-table tbody tr {
@@ -14289,6 +14317,17 @@ code {
 
 .pa-signal-name {
   font-weight: 600;
+}
+
+.pa-signal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 138px;
+}
+
+.pa-signal-actions [data-slot="button"] {
+  white-space: nowrap;
 }
 
 .pa-handle {

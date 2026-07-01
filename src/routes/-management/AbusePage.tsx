@@ -1,13 +1,16 @@
 import { Link } from "@tanstack/react-router";
 import {
   Ban,
+  Clock3,
   Copy,
   ExternalLink,
   Power,
   RefreshCcw,
+  RotateCcw,
   Search,
   ShieldCheck,
   ShieldOff,
+  XCircle,
 } from "lucide-react";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { Badge, type BadgeProps } from "../../components/ui/badge";
@@ -33,6 +36,7 @@ import {
   type PublisherAbuseReviewItem,
   type PublisherAbuseReviewScore,
   type PublisherAbuseSignalEntry,
+  type PublisherAbuseSignalStatus,
   type PublisherAbuseTab,
   USER_BAN_REASON_MAX_LENGTH,
 } from "./managementShared";
@@ -52,15 +56,20 @@ export function AbusePage({
   signalItems,
   signalLoadedCount,
   signalPageStatus,
+  signalStatus,
   tab,
   onBanOwner,
   onChangeNotes,
   onChangeSearch,
+  onChangeSignalStatus,
   onChangeTab,
   onClose,
+  onDismissSignal,
   onLoadMore,
   onRefresh,
+  onReopenSignal,
   onSelect,
+  onSnoozeSignal,
   onToggleAutoban,
 }: {
   admin: boolean;
@@ -83,15 +92,20 @@ export function AbusePage({
   signalItems: PublisherAbuseSignalEntry[];
   signalLoadedCount: number;
   signalPageStatus: string;
+  signalStatus: PublisherAbuseSignalStatus;
   tab: PublisherAbuseTab;
   onBanOwner: (item: PublisherAbuseReviewItem) => void;
   onChangeNotes: (value: string) => void;
   onChangeSearch: (value: string) => void;
+  onChangeSignalStatus: (value: PublisherAbuseSignalStatus) => void;
   onChangeTab: (value: PublisherAbuseTab) => void;
   onClose: () => void;
+  onDismissSignal: (item: PublisherAbuseSignalEntry) => void;
   onLoadMore: () => void;
   onRefresh: () => void;
+  onReopenSignal: (item: PublisherAbuseSignalEntry) => void;
   onSelect: (value: Id<"publisherAbuseReviewNominations">) => void;
+  onSnoozeSignal: (item: PublisherAbuseSignalEntry) => void;
   onToggleAutoban: () => void;
 }) {
   const latestRun = dashboard?.latestRun ?? null;
@@ -299,11 +313,30 @@ export function AbusePage({
           />
         </label>
         {tab === "signals" ? (
+          <div className="pa-signal-status-tabs" role="tablist" aria-label="Signal status">
+            {(["open", "snoozed", "dismissed"] as const).map((status) => (
+              <button
+                key={status}
+                type="button"
+                className={signalStatus === status ? "active" : ""}
+                aria-selected={signalStatus === status}
+                onClick={() => onChangeSignalStatus(status)}
+              >
+                {formatPublisherAbuseSignalStatus(status)}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {tab === "signals" ? (
           <PublisherAbuseSignalsTable
             canLoadMore={signalsCanLoadMore || signalsLoadingMore}
             items={signalItems}
             loaded={signalsLoaded}
+            status={signalStatus}
             searchActive={search.trim().length > 0}
+            onDismissSignal={onDismissSignal}
+            onReopenSignal={onReopenSignal}
+            onSnoozeSignal={onSnoozeSignal}
           />
         ) : (
           <div className="pa-table-wrap">
@@ -695,20 +728,29 @@ function PublisherAbuseSignalsTable({
   canLoadMore,
   items,
   loaded,
+  status,
   searchActive,
+  onDismissSignal,
+  onReopenSignal,
+  onSnoozeSignal,
 }: {
   canLoadMore: boolean;
   items: PublisherAbuseSignalEntry[];
   loaded: boolean;
+  status: PublisherAbuseSignalStatus;
   searchActive: boolean;
+  onDismissSignal: (item: PublisherAbuseSignalEntry) => void;
+  onReopenSignal: (item: PublisherAbuseSignalEntry) => void;
+  onSnoozeSignal: (item: PublisherAbuseSignalEntry) => void;
 }) {
-  const emptyState = publisherAbuseSignalEmptyState(searchActive, canLoadMore);
+  const emptyState = publisherAbuseSignalEmptyState(searchActive, canLoadMore, status);
   return (
     <div className="pa-table-wrap">
       <table className="pa-table pa-signals-table">
         <thead>
           <tr>
             <th>Signal</th>
+            <th>Status</th>
             <th>Severity</th>
             <th>Skill</th>
             <th>Publisher</th>
@@ -717,14 +759,15 @@ function PublisherAbuseSignalsTable({
             <th className="pa-num">All-time ratio</th>
             <th>First seen</th>
             <th>Last seen</th>
+            <th>Actions</th>
           </tr>
         </thead>
         <tbody>
           {!loaded ? (
-            <PublisherAbuseTableSkeletonRows columns={9} label="Loading publisher abuse signals" />
+            <PublisherAbuseTableSkeletonRows columns={11} label="Loading publisher abuse signals" />
           ) : items.length === 0 ? (
             <tr className="pa-empty-row">
-              <td colSpan={9}>
+              <td colSpan={11}>
                 <strong>{emptyState.title}</strong>
                 {emptyState.body}
               </td>
@@ -739,6 +782,16 @@ function PublisherAbuseSignalsTable({
                   <div className="pa-signal-repeat">
                     Seen {formatWholeNumber(item.signal.seenCount)}x
                   </div>
+                </td>
+                <td>
+                  <Badge variant="default" size="sm">
+                    {formatPublisherAbuseSignalStatus(signalReviewStatus(item))}
+                  </Badge>
+                  {item.signal.snoozedUntil ? (
+                    <div className="pa-signal-repeat">
+                      until {formatShortTimestamp(item.signal.snoozedUntil)}
+                    </div>
+                  ) : null}
                 </td>
                 <td>
                   <Badge
@@ -795,6 +848,45 @@ function PublisherAbuseSignalsTable({
                 />
                 <td className="pa-muted">{formatShortTimestamp(item.signal.firstSeenAt)}</td>
                 <td className="pa-muted">{formatShortTimestamp(item.signal.lastSeenAt)}</td>
+                <td>
+                  <div className="pa-signal-actions">
+                    {signalReviewStatus(item) === "open" ? (
+                      <>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          title="Snooze signal"
+                          onClick={() => onSnoozeSignal(item)}
+                        >
+                          <Clock3 size={13} />
+                          Snooze
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          title="Dismiss signal"
+                          onClick={() => onDismissSignal(item)}
+                        >
+                          <XCircle size={13} />
+                          Dismiss
+                        </Button>
+                      </>
+                    ) : (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        title="Reopen signal"
+                        onClick={() => onReopenSignal(item)}
+                      >
+                        <RotateCcw size={13} />
+                        Reopen
+                      </Button>
+                    )}
+                  </div>
+                </td>
               </tr>
             ))
           )}
@@ -804,7 +896,11 @@ function PublisherAbuseSignalsTable({
   );
 }
 
-function publisherAbuseSignalEmptyState(searchActive: boolean, canLoadMore: boolean) {
+function publisherAbuseSignalEmptyState(
+  searchActive: boolean,
+  canLoadMore: boolean,
+  status: PublisherAbuseSignalStatus,
+) {
   if (searchActive) {
     return {
       title: "No matching signals",
@@ -820,8 +916,11 @@ function publisherAbuseSignalEmptyState(searchActive: boolean, canLoadMore: bool
     };
   }
   return {
-    title: "No archived signals",
-    body: "No durable publisher abuse evidence matches this view.",
+    title: `No ${formatPublisherAbuseSignalStatus(status).toLowerCase()} signals`,
+    body:
+      status === "open"
+        ? "No actionable publisher abuse signals need review."
+        : "No durable publisher abuse evidence matches this status.",
   };
 }
 
@@ -846,6 +945,16 @@ function PublisherAbuseSignalRatioCell({
 
 function signalPublisherHandle(item: PublisherAbuseSignalEntry) {
   return item.publisher?.handle || item.signal.handleSnapshot;
+}
+
+function signalReviewStatus(item: PublisherAbuseSignalEntry): PublisherAbuseSignalStatus {
+  return item.signal.reviewStatus ?? "open";
+}
+
+function formatPublisherAbuseSignalStatus(status: PublisherAbuseSignalStatus) {
+  if (status === "open") return "Open";
+  if (status === "snoozed") return "Snoozed";
+  return "Dismissed";
 }
 
 function PublisherAbuseIdentity({ label, value }: { label: string; value: string }) {
@@ -1037,6 +1146,7 @@ export function filterPublisherAbuseSignals(items: PublisherAbuseSignalEntry[], 
       item.signal.ownerKey,
       item.signal.ownerPublisherId,
       item.signal.ownerUserId,
+      item.signal.reviewStatus,
       item.publisher?.displayName,
       item.publisher?.handle,
       item.ownerUser?.handle,
