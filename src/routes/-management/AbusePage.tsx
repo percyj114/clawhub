@@ -12,7 +12,7 @@ import {
   ShieldOff,
   XCircle,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { Badge, type BadgeProps } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
@@ -112,6 +112,22 @@ export function AbusePage({
   const [selectedSignalItem, setSelectedSignalItem] = useState<PublisherAbuseSignalEntry | null>(
     null,
   );
+  const selectedSignalId = selectedSignalItem?.signal._id ?? null;
+  useEffect(() => {
+    if (!selectedSignalId) return;
+    if (tab !== "signals") {
+      setSelectedSignalItem(null);
+      return;
+    }
+    const freshSignalItem = signalItems.find((item) => item.signal._id === selectedSignalId);
+    if (freshSignalItem) {
+      setSelectedSignalItem(freshSignalItem);
+      return;
+    }
+    if (signalPageStatus !== "LoadingFirstPage") {
+      setSelectedSignalItem(null);
+    }
+  }, [selectedSignalId, signalItems, signalPageStatus, tab]);
   const latestRun = dashboard?.latestRun ?? null;
   const selectedScore = selectedItem?.latestScore ?? null;
   const selectedPublisher = selectedItem?.publisher ?? null;

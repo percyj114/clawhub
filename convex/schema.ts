@@ -2791,7 +2791,7 @@ const publisherAbuseSignals = defineTable({
   allTimeDownloads: v.number(),
   allTimeInstalls: v.number(),
   allTimeInstallDownloadRatio: v.number(),
-  reviewStatus: v.optional(publisherAbuseSignalReviewStatusValidator),
+  reviewStatus: publisherAbuseSignalReviewStatusValidator,
   snoozedUntil: v.optional(v.number()),
   reviewedByUserId: v.optional(v.id("users")),
   reviewedAt: v.optional(v.number()),

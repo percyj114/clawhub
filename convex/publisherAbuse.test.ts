@@ -363,14 +363,28 @@ const dismissPublisherAbuseSignalHandler = (
 const reopenPublisherAbuseSignalHandler = (
   publisherAbuse.reopenPublisherAbuseSignal as unknown as Wrapped<
     { signalId: string; note?: string },
-    { ok: true; status: "open" }
+    { ok: true; status: "open"; alreadyOpen?: true }
   >
 )._handler;
 
 const claimPublisherAbuseSignalNotificationsHandler = (
   publisherAbuse.claimPublisherAbuseSignalNotificationsInternal as unknown as Wrapped<
     { limit?: number },
-    { signals: unknown[]; hasMore: boolean }
+    { signals: unknown[]; hasMore: boolean; claimedAt: number }
+  >
+)._handler;
+
+const markPublisherAbuseSignalNotificationsSucceededHandler = (
+  publisherAbuse.markPublisherAbuseSignalNotificationsSucceededInternal as unknown as Wrapped<
+    { signalIds: string[]; claimedAt: number; now: number },
+    null
+  >
+)._handler;
+
+const markPublisherAbuseSignalNotificationsFailedHandler = (
+  publisherAbuse.markPublisherAbuseSignalNotificationsFailedInternal as unknown as Wrapped<
+    { signalIds: string[]; claimedAt: number; error: string },
+    null
   >
 )._handler;
 
@@ -582,8 +596,20 @@ function makeEmptyPublisherMembersQuery() {
 
 function makePublisherAbuseSignalCountQuery(signals: unknown[]) {
   return {
-    withIndex: (indexName: string) => {
-      expect(indexName).toBe("by_last_seen_at");
+    withIndex: (
+      indexName: string,
+      build: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
+    ) => {
+      expect(indexName).toBe("by_review_status_and_last_seen_at");
+      const constraints: Record<string, unknown> = {};
+      const q = {
+        eq(field: string, value: unknown) {
+          constraints[field] = value;
+          return q;
+        },
+      };
+      build(q);
+      expect(constraints).toEqual({ reviewStatus: "open" });
       return {
         order: (direction: "asc" | "desc") => {
           expect(direction).toBe("desc");
@@ -851,14 +877,21 @@ describe("publisher abuse dry-run persistence", () => {
       lastChangedAt: 20,
       needsNotification: true,
     };
+    const snoozedSignal = { ...signal, reviewStatus: "snoozed" };
+    const dismissedSignal = { ...signal, reviewStatus: "dismissed" };
     const patch = vi.fn(async () => null);
     const insert = vi.fn(async () => "publisherAbuseSignalReviewEvents:event");
     const ctx = {
       db: {
-        get: vi.fn(async () => signal),
+        get: vi.fn(async () => {
+          if (patch.mock.calls.length === 0) return signal;
+          if (patch.mock.calls.length === 1) return snoozedSignal;
+          return dismissedSignal;
+        }),
         patch,
         insert,
       },
+      scheduler: { runAfter: vi.fn(async () => null) },
     };
 
     await expect(
@@ -933,6 +966,58 @@ describe("publisher abuse dry-run persistence", () => {
         nextStatus: "open",
       }),
     );
+    expect(ctx.scheduler.runAfter).toHaveBeenCalledWith(0, expect.any(Symbol), {});
+  });
+
+  it("does not reopen or notify already-open publisher abuse signals", async () => {
+    vi.mocked(requireUser).mockResolvedValue({
+      userId: "users:moderator",
+      user: { _id: "users:moderator", role: "moderator" },
+    } as never);
+    const signal = {
+      _id: "publisherAbuseSignals:open",
+      signalType: "high_install_download_ratio",
+      ownerKey: "publisher:publishers:ratio-owner",
+      ownerPublisherId: "publishers:ratio-owner",
+      ownerUserId: "users:ratio-owner",
+      handleSnapshot: "ratio-owner",
+      skillId: "skills:ratio",
+      skillSlug: "ratio",
+      skillDisplayName: "Ratio",
+      firstSeenAt: 10,
+      lastSeenAt: 20,
+      seenCount: 2,
+      recent7Downloads: 800,
+      recent7Installs: 96,
+      recent7InstallDownloadRatio: 0.12,
+      recent30Downloads: 2_400,
+      recent30Installs: 288,
+      recent30InstallDownloadRatio: 0.12,
+      allTimeDownloads: 10_000,
+      allTimeInstalls: 1_200,
+      allTimeInstallDownloadRatio: 0.12,
+      reviewStatus: "open",
+      lastChangedAt: 20,
+      needsNotification: true,
+    };
+    const ctx = {
+      db: {
+        get: vi.fn(async () => signal),
+        patch: vi.fn(async () => null),
+        insert: vi.fn(async () => "publisherAbuseSignalReviewEvents:event"),
+      },
+      scheduler: { runAfter: vi.fn(async () => null) },
+    };
+
+    await expect(
+      reopenPublisherAbuseSignalHandler(ctx, {
+        signalId: "publisherAbuseSignals:open",
+        note: "already open",
+      }),
+    ).resolves.toEqual({ ok: true, status: "open", alreadyOpen: true });
+    expect(ctx.db.patch).not.toHaveBeenCalled();
+    expect(ctx.db.insert).not.toHaveBeenCalled();
+    expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
   });
 
   it("sends one Hermit digest for claimed changed signals and clears notification state", async () => {
@@ -971,7 +1056,7 @@ describe("publisher abuse dry-run persistence", () => {
     const runMutation = vi.fn(async (target: unknown) => {
       const name = String(target);
       if (name.includes("claimPublisherAbuseSignalNotificationsInternal")) {
-        return { signals: [signal], hasMore: false };
+        return { signals: [signal], hasMore: false, claimedAt: 1_000 };
       }
       if (name.includes("markPublisherAbuseSignalNotificationsSucceededInternal")) {
         return null;
@@ -996,7 +1081,9 @@ describe("publisher abuse dry-run persistence", () => {
         }),
       );
       const [, requestInit] = fetchMock.mock.calls[0] ?? [];
-      const payload = JSON.parse(String((requestInit as RequestInit | undefined)?.body));
+      const requestBody = (requestInit as RequestInit | undefined)?.body;
+      if (typeof requestBody !== "string") throw new Error("Expected Hermit request body");
+      const payload = JSON.parse(requestBody);
       expect(payload).toEqual(
         expect.objectContaining({
           kind: "publisher_abuse_signals_changed",
@@ -1018,6 +1105,7 @@ describe("publisher abuse dry-run persistence", () => {
         expect.any(Symbol),
         expect.objectContaining({
           signalIds: ["publisherAbuseSignals:ratio"],
+          claimedAt: 1_000,
           now: expect.any(Number),
         }),
       );
@@ -1026,6 +1114,204 @@ describe("publisher abuse dry-run persistence", () => {
       process.env = previousEnv;
       globalThis.fetch = previousFetch;
     }
+  });
+
+  it("schedules the next Hermit signal digest immediately when more changed signals remain", async () => {
+    const previousEnv = { ...process.env };
+    const previousFetch = globalThis.fetch;
+    process.env.CLAWHUB_HERMIT_TOKEN = "hermit-token";
+    process.env.HERMIT_PUBLISHER_ABUSE_BASE_URL = "https://forms.example.test";
+    process.env.SITE_URL = "https://clawhub.example.test";
+    globalThis.fetch = vi.fn<typeof fetch>(async () => new Response("ok", { status: 200 }));
+    const signal = {
+      _id: "publisherAbuseSignals:ratio",
+      signalType: "high_install_download_ratio",
+      ownerKey: "publisher:publishers:ratio-owner",
+      ownerPublisherId: "publishers:ratio-owner",
+      ownerUserId: "users:ratio-owner",
+      handleSnapshot: "ratio-owner",
+      skillId: "skills:ratio",
+      skillSlug: "ratio-skill",
+      skillDisplayName: "Ratio Skill",
+      firstSeenAt: 1715900000000,
+      lastSeenAt: 1716000000000,
+      seenCount: 3,
+      recent7Downloads: 800,
+      recent7Installs: 96,
+      recent7InstallDownloadRatio: 0.12,
+      recent30Downloads: 2_400,
+      recent30Installs: 288,
+      recent30InstallDownloadRatio: 0.12,
+      allTimeDownloads: 10_000,
+      allTimeInstalls: 1_200,
+      allTimeInstallDownloadRatio: 0.12,
+      reviewStatus: "open",
+      needsNotification: false,
+    };
+    const runMutation = vi.fn(async (target: unknown) => {
+      const name = String(target);
+      if (name.includes("claimPublisherAbuseSignalNotificationsInternal")) {
+        return { signals: [signal], hasMore: true, claimedAt: 1_000 };
+      }
+      if (name.includes("markPublisherAbuseSignalNotificationsSucceededInternal")) {
+        return null;
+      }
+      throw new Error(`unexpected mutation ${name}`);
+    });
+    const scheduler = {
+      runAfter: vi.fn(async (_delay: number, _target: unknown, _args: unknown) => null),
+    };
+
+    try {
+      await expect(
+        notifyPublisherAbuseSignalChangesHandler({ runMutation, scheduler }, { limit: 1 }),
+      ).resolves.toEqual({ ok: true, sent: true, count: 1 });
+      expect(scheduler.runAfter).toHaveBeenCalledWith(expect.any(Number), expect.any(Symbol), {
+        limit: 1,
+      });
+      expect(scheduler.runAfter.mock.calls[0]?.[0]).toBe(0);
+      const [, requestInit] = vi.mocked(globalThis.fetch).mock.calls[0] ?? [];
+      const requestBody = (requestInit as RequestInit | undefined)?.body;
+      if (typeof requestBody !== "string") throw new Error("Expected Hermit request body");
+      expect(JSON.parse(requestBody)).toEqual(expect.objectContaining({ hasMore: true }));
+    } finally {
+      process.env = previousEnv;
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("continues Hermit signal notification claims when a skipped empty batch has more rows", async () => {
+    const previousEnv = { ...process.env };
+    const previousFetch = globalThis.fetch;
+    process.env.CLAWHUB_HERMIT_TOKEN = "hermit-token";
+    process.env.HERMIT_PUBLISHER_ABUSE_BASE_URL = "https://forms.example.test";
+    process.env.SITE_URL = "https://clawhub.example.test";
+    globalThis.fetch = vi.fn<typeof fetch>(async () => new Response("ok", { status: 200 }));
+    const runMutation = vi.fn(async (target: unknown) => {
+      const name = String(target);
+      if (name.includes("claimPublisherAbuseSignalNotificationsInternal")) {
+        return { signals: [], hasMore: true, claimedAt: 1_000 };
+      }
+      throw new Error(`unexpected mutation ${name}`);
+    });
+    const scheduler = {
+      runAfter: vi.fn(async (_delay: number, _target: unknown, _args: unknown) => null),
+    };
+
+    try {
+      await expect(
+        notifyPublisherAbuseSignalChangesHandler({ runMutation, scheduler }, { limit: 1 }),
+      ).resolves.toEqual({ ok: true, sent: false });
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+      expect(scheduler.runAfter).toHaveBeenCalledWith(0, expect.any(Symbol), { limit: 1 });
+    } finally {
+      process.env = previousEnv;
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("requeues Hermit signal notifications after a failed digest POST", async () => {
+    const previousEnv = { ...process.env };
+    const previousFetch = globalThis.fetch;
+    process.env.CLAWHUB_HERMIT_TOKEN = "hermit-token";
+    process.env.HERMIT_PUBLISHER_ABUSE_BASE_URL = "https://forms.example.test";
+    process.env.SITE_URL = "https://clawhub.example.test";
+    globalThis.fetch = vi.fn<typeof fetch>(async () => new Response("nope", { status: 500 }));
+    const signal = {
+      _id: "publisherAbuseSignals:ratio",
+      signalType: "high_install_download_ratio",
+      ownerKey: "publisher:publishers:ratio-owner",
+      ownerPublisherId: "publishers:ratio-owner",
+      ownerUserId: "users:ratio-owner",
+      handleSnapshot: "ratio-owner",
+      skillId: "skills:ratio",
+      skillSlug: "ratio-skill",
+      skillDisplayName: "Ratio Skill",
+      firstSeenAt: 1715900000000,
+      lastSeenAt: 1716000000000,
+      seenCount: 3,
+      recent7Downloads: 800,
+      recent7Installs: 96,
+      recent7InstallDownloadRatio: 0.12,
+      recent30Downloads: 2_400,
+      recent30Installs: 288,
+      recent30InstallDownloadRatio: 0.12,
+      allTimeDownloads: 10_000,
+      allTimeInstalls: 1_200,
+      allTimeInstallDownloadRatio: 0.12,
+      reviewStatus: "open",
+      needsNotification: false,
+    };
+    const runMutation = vi.fn(async (target: unknown) => {
+      const name = String(target);
+      if (name.includes("claimPublisherAbuseSignalNotificationsInternal")) {
+        return { signals: [signal], hasMore: false, claimedAt: 1_000 };
+      }
+      if (name.includes("markPublisherAbuseSignalNotificationsFailedInternal")) {
+        return null;
+      }
+      throw new Error(`unexpected mutation ${name}`);
+    });
+    const scheduler = { runAfter: vi.fn(async () => null) };
+
+    try {
+      await expect(
+        notifyPublisherAbuseSignalChangesHandler({ runMutation, scheduler }, { limit: 1 }),
+      ).resolves.toEqual(
+        expect.objectContaining({
+          ok: false,
+          sent: false,
+          error: expect.stringContaining("Hermit publisher abuse digest failed: 500 nope"),
+        }),
+      );
+      expect(runMutation).toHaveBeenCalledWith(
+        expect.any(Symbol),
+        expect.objectContaining({
+          signalIds: ["publisherAbuseSignals:ratio"],
+          claimedAt: 1_000,
+          error: expect.stringContaining("Hermit publisher abuse digest failed: 500 nope"),
+        }),
+      );
+      expect(scheduler.runAfter).toHaveBeenCalledWith(60 * 60 * 1000, expect.any(Symbol), {
+        limit: 1,
+      });
+    } finally {
+      process.env = previousEnv;
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("does not requeue newer claimed signal notifications when a stale digest fails", async () => {
+    const staleFailureSignal = {
+      _id: "publisherAbuseSignals:stale-failure",
+      needsNotification: false,
+      notificationClaimedAt: 2_000,
+    };
+    const changedAgainSignal = {
+      _id: "publisherAbuseSignals:changed-again",
+      needsNotification: true,
+      notificationClaimedAt: undefined,
+      lastChangedAt: 3_000,
+    };
+    const patch = vi.fn(async () => null);
+    const get = vi.fn(async (id: string) => {
+      if (id === "publisherAbuseSignals:stale-failure") return staleFailureSignal;
+      if (id === "publisherAbuseSignals:changed-again") return changedAgainSignal;
+      return null;
+    });
+
+    await expect(
+      markPublisherAbuseSignalNotificationsFailedHandler(
+        { db: { get, patch } },
+        {
+          signalIds: ["publisherAbuseSignals:stale-failure", "publisherAbuseSignals:changed-again"],
+          claimedAt: 1_000,
+          error: "old failure",
+        },
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(patch).not.toHaveBeenCalled();
   });
 
   it("requeues stale Hermit signal notification claims before claiming the next batch", async () => {
@@ -1080,7 +1366,7 @@ describe("publisher abuse dry-run persistence", () => {
               ]);
               return {
                 take: async (limit: number) => {
-                  expect(limit).toBe(5);
+                  expect(limit).toBe(6);
                   return [staleSignal];
                 },
               };
@@ -1109,6 +1395,7 @@ describe("publisher abuse dry-run persistence", () => {
       ).resolves.toEqual({
         signals: [pendingSignal],
         hasMore: false,
+        claimedAt: 1_000_000,
       });
       expect(patch).toHaveBeenCalledWith(
         "publisherAbuseSignals:stale",
@@ -1125,6 +1412,120 @@ describe("publisher abuse dry-run persistence", () => {
     } finally {
       nowSpy.mockRestore();
     }
+  });
+
+  it("continues Hermit signal notification claims when stale claims exceed the batch", async () => {
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    const staleClaims = Array.from({ length: 6 }, (_, index) => ({
+      _id: `publisherAbuseSignals:stale-${index}`,
+      reviewStatus: "open",
+      needsNotification: false,
+      notificationClaimedAt: 10,
+      lastChangedAt: 900_000 - index,
+    }));
+    const pendingSignals = staleClaims.slice(0, 5).map((signal) => ({
+      ...signal,
+      needsNotification: true,
+      notificationClaimedAt: undefined,
+    }));
+    const patch = vi.fn(async () => null);
+    const db = {
+      patch,
+      query: vi.fn((table: string) => {
+        expect(table).toBe("publisherAbuseSignals");
+        return {
+          withIndex: (indexName: string) => {
+            if (indexName === "by_needs_notification_and_notification_claimed_at") {
+              return {
+                take: async (limit: number) => {
+                  expect(limit).toBe(6);
+                  return staleClaims;
+                },
+              };
+            }
+            expect(indexName).toBe("by_needs_notification_and_last_changed_at");
+            return {
+              order: (direction: "asc" | "desc") => {
+                expect(direction).toBe("desc");
+                return {
+                  take: async (limit: number) => {
+                    expect(limit).toBe(6);
+                    return pendingSignals;
+                  },
+                };
+              },
+            };
+          },
+        };
+      }),
+    };
+
+    try {
+      await expect(
+        claimPublisherAbuseSignalNotificationsHandler({ db }, { limit: 5 }),
+      ).resolves.toEqual({
+        signals: pendingSignals,
+        hasMore: true,
+        claimedAt: 1_000_000,
+      });
+      expect(patch).toHaveBeenCalledTimes(10);
+      for (const signal of pendingSignals) {
+        expect(patch).toHaveBeenCalledWith(
+          signal._id,
+          expect.objectContaining({
+            needsNotification: true,
+            notificationClaimedAt: undefined,
+            lastNotificationError: "Retrying after stale Hermit notification claim.",
+          }),
+        );
+        expect(patch).toHaveBeenCalledWith(signal._id, {
+          needsNotification: false,
+          notificationClaimedAt: 1_000_000,
+        });
+      }
+      expect(patch).not.toHaveBeenCalledWith("publisherAbuseSignals:stale-5", expect.anything());
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it("does not clear newer queued signal notifications when a stale digest succeeds", async () => {
+    const deliveredSignal = {
+      _id: "publisherAbuseSignals:delivered",
+      needsNotification: false,
+      notificationClaimedAt: 1_000,
+    };
+    const changedAgainSignal = {
+      _id: "publisherAbuseSignals:changed-again",
+      needsNotification: true,
+      notificationClaimedAt: undefined,
+      lastChangedAt: 2_000,
+    };
+    const patch = vi.fn(async () => null);
+    const get = vi.fn(async (id: string) => {
+      if (id === "publisherAbuseSignals:delivered") return deliveredSignal;
+      if (id === "publisherAbuseSignals:changed-again") return changedAgainSignal;
+      return null;
+    });
+
+    await expect(
+      markPublisherAbuseSignalNotificationsSucceededHandler(
+        { db: { get, patch } },
+        {
+          signalIds: ["publisherAbuseSignals:delivered", "publisherAbuseSignals:changed-again"],
+          claimedAt: 1_000,
+          now: 3_000,
+        },
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(patch).toHaveBeenCalledTimes(1);
+    expect(patch).toHaveBeenCalledWith("publisherAbuseSignals:delivered", {
+      needsNotification: false,
+      notificationClaimedAt: undefined,
+      lastNotifiedAt: 3_000,
+      lastNotificationError: undefined,
+    });
   });
 
   it("returns a bounded publisher abuse signal count on the dashboard", async () => {
@@ -3825,6 +4226,124 @@ describe("publisher abuse dry-run persistence", () => {
       continueCursor: "",
     });
     expect(signalPaginate).toHaveBeenCalledWith({ numItems: 10, cursor: null });
+  });
+
+  it("pages archived publisher abuse signals by review status", async () => {
+    vi.mocked(requireUser).mockResolvedValue({
+      userId: "users:moderator",
+      user: { _id: "users:moderator", role: "moderator" },
+    } as never);
+    const signal = {
+      _id: "publisherAbuseSignals:snoozed",
+      _creationTime: 100,
+      signalType: "sustained_downloads_flat_installs",
+      ownerKey: "publisher:publishers:snoozed-owner",
+      ownerPublisherId: null,
+      ownerUserId: null,
+      handleSnapshot: "snoozed-owner",
+      skillId: "skills:snoozed",
+      skillSlug: "snoozed-skill",
+      skillDisplayName: "Snoozed Skill",
+      latestRunId: "publisherAbuseScoreRuns:temporal",
+      firstSeenAt: 100,
+      lastSeenAt: 200,
+      seenCount: 2,
+      reviewStatus: "snoozed",
+      recent7Downloads: 600,
+      recent7Installs: 1,
+      recent7InstallDownloadRatio: 0,
+      recent30Downloads: 2_000,
+      recent30Installs: 2,
+      recent30InstallDownloadRatio: 0.001,
+      allTimeDownloads: 10_000,
+      allTimeInstalls: 100,
+      allTimeInstallDownloadRatio: 0.01,
+    };
+    const signalPaginate = vi.fn(
+      async (paginationOpts: { numItems: number; cursor: string | null }) => {
+        expect(paginationOpts).toEqual({ numItems: 10, cursor: null });
+        return {
+          page: [signal],
+          isDone: true,
+          continueCursor: "",
+        };
+      },
+    );
+    const ctx = {
+      db: {
+        get: vi.fn(async (id: string) => {
+          throw new Error(`unexpected get ${id}`);
+        }),
+        query: vi.fn((table: string) => {
+          if (table === "publisherAbuseSignals") {
+            return {
+              withIndex: (
+                indexName: string,
+                build: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
+              ) => {
+                const constraints: Record<string, unknown> = {};
+                const q = {
+                  eq(field: string, value: unknown) {
+                    constraints[field] = value;
+                    return q;
+                  },
+                };
+                build(q);
+                expect(indexName).toBe("by_review_status_and_last_seen_at");
+                expect(constraints).toEqual({ reviewStatus: "snoozed" });
+                return {
+                  order: () => ({
+                    paginate: signalPaginate,
+                  }),
+                };
+              },
+            };
+          }
+          if (table === "officialPublishers") return makeEmptyOfficialPublishersQuery();
+          throw new Error(`unexpected table ${table}`);
+        }),
+      },
+    };
+
+    await expect(
+      listSignalsPageHandler(ctx, {
+        reviewStatus: "snoozed",
+        paginationOpts: { numItems: 10, cursor: null },
+      }),
+    ).resolves.toEqual({
+      page: [
+        expect.objectContaining({
+          signal,
+          publisher: null,
+          ownerUser: null,
+        }),
+      ],
+      isDone: true,
+      continueCursor: "",
+    });
+    expect(signalPaginate).toHaveBeenCalledWith({ numItems: 10, cursor: null });
+  });
+
+  it("rejects combined archived signal filters instead of paginating the wrong index", async () => {
+    vi.mocked(requireUser).mockResolvedValue({
+      userId: "users:moderator",
+      user: { _id: "users:moderator", role: "moderator" },
+    } as never);
+    const ctx = {
+      db: {
+        query: vi.fn(() => {
+          throw new Error("query should not run");
+        }),
+      },
+    };
+
+    await expect(
+      listSignalsPageHandler(ctx, {
+        signalType: "high_install_download_ratio",
+        reviewStatus: "snoozed",
+        paginationOpts: { numItems: 10, cursor: null },
+      }),
+    ).rejects.toThrow("Filter by signalType or reviewStatus, not both.");
   });
 
   it("pages unfiltered archived publisher abuse signals by last seen time", async () => {

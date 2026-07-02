@@ -41,6 +41,7 @@ export default defineConfig({
       "**/coverage/**",
       "**/convex/_generated/**",
       "packages/clawhub/**",
+      "packages/clawhub-admin/test-artifact/**",
       "e2e/**",
       "**/*.e2e.test.ts",
     ],

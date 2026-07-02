@@ -421,6 +421,9 @@ export const listSignalsPage = query({
     );
     const signalType = args.signalType;
     const reviewStatus = args.reviewStatus;
+    if (signalType && reviewStatus) {
+      throw new Error("Filter by signalType or reviewStatus, not both.");
+    }
     const paginationOpts: PublisherAbuseReviewPaginationOpts = {
       cursor: args.paginationOpts.cursor ?? null,
       numItems: requestedItems,
@@ -632,6 +635,9 @@ export const reopenPublisherAbuseSignal = mutation({
     assertModerator(user);
     const signal = await ctx.db.get(args.signalId);
     if (!signal) throw new Error("Publisher abuse signal not found");
+    if (publisherAbuseSignalReviewStatus(signal) === "open") {
+      return { ok: true, status: "open" as const, alreadyOpen: true as const };
+    }
     const now = Date.now();
     await setPublisherAbuseSignalReviewStatusWithActor(ctx, {
       signal,
@@ -641,6 +647,11 @@ export const reopenPublisherAbuseSignal = mutation({
       notify: true,
       now,
     });
+    await ctx.scheduler.runAfter(
+      0,
+      internal.publisherAbuse.notifyPublisherAbuseSignalChangesInternal,
+      {},
+    );
     return { ok: true, status: "open" as const };
   },
 });
@@ -748,7 +759,7 @@ async function setPublisherAbuseSignalReviewStatusWithActor(
     reviewedAt: args.now,
     reviewNote: args.note,
     snoozedUntil: args.status === "snoozed" ? args.snoozedUntil : undefined,
-    needsNotification: args.notify ? true : false,
+    needsNotification: args.notify === true,
     lastChangedAt: args.notify ? args.now : args.signal.lastChangedAt,
     notificationClaimedAt: undefined,
     lastNotificationError: undefined,
@@ -1489,10 +1500,19 @@ export const claimPublisherAbuseSignalNotificationsInternal = internalMutation({
 export const markPublisherAbuseSignalNotificationsSucceededInternal = internalMutation({
   args: {
     signalIds: v.array(v.id("publisherAbuseSignals")),
+    claimedAt: v.number(),
     now: v.number(),
   },
   handler: async (ctx, args) => {
     for (const signalId of args.signalIds) {
+      const signal = await ctx.db.get(signalId);
+      if (
+        !signal ||
+        signal.notificationClaimedAt !== args.claimedAt ||
+        signal.needsNotification !== false
+      ) {
+        continue;
+      }
       await ctx.db.patch(signalId, {
         needsNotification: false,
         notificationClaimedAt: undefined,
@@ -1506,10 +1526,19 @@ export const markPublisherAbuseSignalNotificationsSucceededInternal = internalMu
 export const markPublisherAbuseSignalNotificationsFailedInternal = internalMutation({
   args: {
     signalIds: v.array(v.id("publisherAbuseSignals")),
+    claimedAt: v.number(),
     error: v.string(),
   },
   handler: async (ctx, args) => {
     for (const signalId of args.signalIds) {
+      const signal = await ctx.db.get(signalId);
+      if (
+        !signal ||
+        signal.notificationClaimedAt !== args.claimedAt ||
+        signal.needsNotification !== false
+      ) {
+        continue;
+      }
       await ctx.db.patch(signalId, {
         needsNotification: true,
         notificationClaimedAt: undefined,
@@ -2333,7 +2362,7 @@ export async function claimPublisherAbuseSignalNotificationsInternalHandler(
     PUBLISHER_ABUSE_SIGNAL_NOTIFICATION_MAX_BATCH_SIZE,
   );
   const now = Date.now();
-  await requeueStalePublisherAbuseSignalNotificationClaims(ctx, {
+  const hasMoreStaleClaims = await requeueStalePublisherAbuseSignalNotificationClaims(ctx, {
     limit,
     staleBefore: now - PUBLISHER_ABUSE_SIGNAL_NOTIFICATION_CLAIM_STALE_MS,
   });
@@ -2360,7 +2389,8 @@ export async function claimPublisherAbuseSignalNotificationsInternalHandler(
   }
   return {
     signals,
-    hasMore: pendingSignals.length > limit,
+    hasMore: pendingSignals.length > limit || hasMoreStaleClaims,
+    claimedAt: now,
   };
 }
 
@@ -2376,14 +2406,15 @@ async function requeueStalePublisherAbuseSignalNotificationClaims(
         .gte("notificationClaimedAt", 1)
         .lt("notificationClaimedAt", args.staleBefore),
     )
-    .take(args.limit);
-  for (const signal of staleClaims) {
+    .take(args.limit + 1);
+  for (const signal of staleClaims.slice(0, args.limit)) {
     await ctx.db.patch(signal._id, {
       needsNotification: true,
       notificationClaimedAt: undefined,
       lastNotificationError: "Retrying after stale Hermit notification claim.",
     });
   }
+  return staleClaims.length > args.limit;
 }
 
 export async function notifyPublisherAbuseSignalChangesInternalHandler(
@@ -2399,6 +2430,7 @@ export async function notifyPublisherAbuseSignalChangesInternalHandler(
   const claimed: {
     signals: PublisherAbuseSignalDoc[];
     hasMore: boolean;
+    claimedAt: number;
   } = await ctx.runMutation(
     internal.publisherAbuse.claimPublisherAbuseSignalNotificationsInternal,
     {
@@ -2406,6 +2438,13 @@ export async function notifyPublisherAbuseSignalChangesInternalHandler(
     },
   );
   if (claimed.signals.length === 0) {
+    if (claimed.hasMore) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.publisherAbuse.notifyPublisherAbuseSignalChangesInternal,
+        { limit: args.limit },
+      );
+    }
     return { ok: true as const, sent: false as const };
   }
 
@@ -2429,6 +2468,7 @@ export async function notifyPublisherAbuseSignalChangesInternalHandler(
       internal.publisherAbuse.markPublisherAbuseSignalNotificationsSucceededInternal,
       {
         signalIds,
+        claimedAt: claimed.claimedAt,
         now,
       },
     );
@@ -2450,6 +2490,7 @@ export async function notifyPublisherAbuseSignalChangesInternalHandler(
       internal.publisherAbuse.markPublisherAbuseSignalNotificationsFailedInternal,
       {
         signalIds,
+        claimedAt: claimed.claimedAt,
         error: message,
       },
     );
@@ -3899,14 +3940,13 @@ async function summarizeVisiblePublisherAbuseSignals(
 async function getPublisherAbuseSignalCountSummary(ctx: QueryCtx) {
   const signals = await ctx.db
     .query("publisherAbuseSignals")
-    .withIndex("by_last_seen_at")
+    .withIndex("by_review_status_and_last_seen_at", (q) => q.eq("reviewStatus", "open"))
     .order("desc")
     .take(DASHBOARD_SIGNAL_COUNT_SCAN_LIMIT + 1);
   const scannedSignals = signals.slice(0, DASHBOARD_SIGNAL_COUNT_SCAN_LIMIT);
   const staffManagerExclusionBudget = createStaffPublisherManagerExclusionBudget();
   let visibleCount = 0;
   for (const signal of scannedSignals) {
-    if (publisherAbuseSignalReviewStatus(signal) !== "open") continue;
     const publisher = signal.ownerPublisherId ? await ctx.db.get(signal.ownerPublisherId) : null;
     if (await isPublisherExcludedFromPublisherAbuse(ctx, publisher, staffManagerExclusionBudget)) {
       continue;

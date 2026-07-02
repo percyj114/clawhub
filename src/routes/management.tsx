@@ -82,6 +82,18 @@ function isManagementView(value: unknown): value is ManagementView {
   return typeof value === "string" && MANAGEMENT_VIEWS.has(value);
 }
 
+const PUBLISHER_ABUSE_TABS = new Set<string>([
+  "potential_ban_candidate",
+  "review",
+  "all_pending",
+  "resolved",
+  "signals",
+]);
+
+function isPublisherAbuseTab(value: unknown): value is PublisherAbuseTab {
+  return typeof value === "string" && PUBLISHER_ABUSE_TABS.has(value);
+}
+
 type ManagementConfirmRequest = {
   title: string;
   body?: string;
@@ -173,6 +185,7 @@ export const Route = createFileRoute("/management")({
       skill?: string;
       plugin?: string;
       view?: ManagementView;
+      tab?: PublisherAbuseTab;
     } = {};
     if (typeof search.skill === "string" && search.skill.trim()) {
       validated.skill = search.skill;
@@ -182,6 +195,9 @@ export const Route = createFileRoute("/management")({
     }
     if (isManagementView(search.view)) {
       validated.view = search.view;
+    }
+    if (isPublisherAbuseTab(search.tab)) {
+      validated.tab = search.tab;
     }
     return validated;
   },
@@ -261,8 +277,9 @@ export function Management() {
   const [skillSearch, setSkillSearch] = useState(selectedSlug ?? "");
   const [skillOverrideNote, setSkillOverrideNote] = useState("");
   const [confirmRequest, setConfirmRequest] = useState<ManagementConfirmRequest | null>(null);
-  const [publisherAbuseTab, setPublisherAbuseTab] =
-    useState<PublisherAbuseTab>("potential_ban_candidate");
+  const [publisherAbuseTab, setPublisherAbuseTab] = useState<PublisherAbuseTab>(
+    abuseViewActive ? (search.tab ?? "potential_ban_candidate") : "potential_ban_candidate",
+  );
   const [publisherAbuseSearch, setPublisherAbuseSearch] = useState("");
   const [publisherAbuseNotes, setPublisherAbuseNotes] = useState("");
   const [publisherAbuseSignalStatus, setPublisherAbuseSignalStatus] =
@@ -287,9 +304,7 @@ export function Management() {
   } = usePaginatedQuery(
     api.publisherAbuse.listSignalsPage,
     staff && abuseViewActive && publisherAbuseTab === "signals"
-      ? publisherAbuseSignalStatus === "open"
-        ? {}
-        : { reviewStatus: publisherAbuseSignalStatus }
+      ? { reviewStatus: publisherAbuseSignalStatus }
       : "skip",
     { initialNumItems: 25 },
   );
@@ -364,6 +379,16 @@ export function Management() {
   useEffect(() => {
     setSkillSearch(selectedSlug ?? "");
   }, [selectedSlug]);
+
+  useEffect(() => {
+    if (!abuseViewActive) return;
+    const nextTab = search.tab ?? "potential_ban_candidate";
+    setPublisherAbuseTab(nextTab);
+    if (nextTab === "signals") {
+      setPublisherAbuseNotes("");
+      setSelectedPublisherAbuseNominationId(null);
+    }
+  }, [abuseViewActive, search.tab]);
 
   useEffect(() => {
     const handle = setTimeout(() => setReportSearchDebounced(reportSearch), 250);
@@ -736,6 +761,15 @@ export function Management() {
                 setPublisherAbuseNotes("");
                 setSelectedPublisherAbuseNominationId(null);
               }
+              void navigate({
+                to: "/management",
+                search: {
+                  view: "abuse",
+                  tab: nextTab,
+                  skill: undefined,
+                  plugin: undefined,
+                },
+              });
             }}
             onToggleAutoban={requestTogglePublisherAbuseAutoban}
             onDismissSignal={requestDismissPublisherAbuseSignal}
