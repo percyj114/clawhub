@@ -333,13 +333,13 @@ export function AbusePage({
           />
         </label>
         {tab === "signals" ? (
-          <div className="pa-signal-status-tabs" role="tablist" aria-label="Signal status">
+          <div className="pa-signal-status-tabs" role="group" aria-label="Signal status">
             {(["open", "snoozed", "dismissed"] as const).map((status) => (
               <button
                 key={status}
                 type="button"
                 className={signalStatus === status ? "active" : ""}
-                aria-selected={signalStatus === status}
+                aria-pressed={signalStatus === status}
                 onClick={() => onChangeSignalStatus(status)}
               >
                 {formatPublisherAbuseSignalStatus(status)}

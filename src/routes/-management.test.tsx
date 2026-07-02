@@ -465,6 +465,8 @@ describe("Management", () => {
     expect(screen.queryByRole("link", { name: "Open publisher ratio-owner" })).toBeNull();
     expect(screen.getAllByText("12%")).toHaveLength(1);
     expect(screen.getByText("Showing 1 signals")).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Signal status" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open" }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.queryByRole("button", { name: /^Snooze 14 days$/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /^Dismiss signal$/ })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Snoozed" }));
