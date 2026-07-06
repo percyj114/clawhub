@@ -94,4 +94,19 @@ describe("promotions feed schema", () => {
       expect(() => parsePromotionsFeed(feed)).toThrow(/HTTPS URL/);
     },
   );
+
+  it("does not depend on URL.canParse being available in the runtime", () => {
+    const canParseDescriptor = Object.getOwnPropertyDescriptor(URL, "canParse");
+    Object.defineProperty(URL, "canParse", { value: undefined, configurable: true });
+    try {
+      const parsed = parsePromotionsFeed(JSON.parse(serializePromotionsFeed(makeFeed())));
+      expect(parsed.entries.find((entry) => entry.slug === "zeta-launch")?.signupUrl).toBe(
+        "https://signup.example.com",
+      );
+    } finally {
+      if (canParseDescriptor) {
+        Object.defineProperty(URL, "canParse", canParseDescriptor);
+      }
+    }
+  });
 });
