@@ -2897,7 +2897,7 @@ export async function runTemporalPublisherAbuseScanInternalHandler(
       await archiveTemporalPublisherAbuseSignalPages(ctx, {
         candidates: highTemporalCandidates,
         now: Date.now(),
-        notifyHermit: (args.trigger ?? "cron") === "cron" && scanComplete,
+        notifyHermit: (args.trigger ?? "cron") === "cron",
       });
     }
     return {

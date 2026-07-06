@@ -8422,7 +8422,7 @@ describe("publisher abuse dry-run persistence", () => {
         candidates: [expect.objectContaining({ skillId: "skills:bounded-ratio" })],
       }),
     );
-    expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
+    expect(ctx.scheduler.runAfter).toHaveBeenCalledWith(0, expect.any(Symbol), {});
   });
 
   it("caps temporal scan candidate limits below Convex array limits", async () => {
