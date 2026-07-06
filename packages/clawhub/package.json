@@ -37,9 +37,9 @@
     "verify:build": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@clack/prompts": "1.6.0",
+    "@clack/prompts": "1.7.0",
     "@openclaw/plugin-inspector": "0.3.17",
-    "arktype": "2.2.1",
+    "arktype": "2.2.2",
     "commander": "15.0.0",
     "fflate": "0.8.3",
     "ignore": "7.0.5",
