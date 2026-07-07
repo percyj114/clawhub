@@ -54,6 +54,10 @@ const NVIDIA_AUTOMATION_DIR = "AI Transparency Card Automation";
 const NVIDIA_SKILL_DIR = "nvidia-skill-card-generator";
 const SKILL_CARD_CONTEXT_FILE = "skill-card.context.json";
 const SKILL_CARD_OUTPUT_FILE = "skill-card.md";
+const NVIDIA_SKILL_CARD_REFERENCE = {
+  label: "NVIDIA Skill Card documentation",
+  url: "https://docs.nvidia.com/skills/skill-cards",
+} as const;
 const LOCAL_CODEX_HOME = join(root, ".codex/runtime/codex-workers/skill-card");
 const logger = createWorkerLogger({ name: "skill-card-worker" });
 const NVIDIA_ONLY_PUBLIC_CARD_PATTERNS = [
@@ -266,6 +270,7 @@ Rules:
 - Use concise, human-facing prose. Do not mention backend implementation details unless they help the reader understand risk.
 - Use usage_posture "commercial" for normal ClawHub releases unless evidence clearly says demonstration or research_dev.
 - Include references from server-resolved provenance and relevant links in metadata/clawdis when available.
+- Include NVIDIA's public Skill Card documentation as a reference: ${NVIDIA_SKILL_CARD_REFERENCE.url}.
 - output.types should describe what the skill produces for an agent, usually text, markdown, code, shell commands, configuration, or guidance.
 - Use evidence.security as the authoritative security and risk source. Do not independently reinterpret raw scanner outputs.
 - Add optional risk_mitigations when evidence.security.riskFindings, evidence.security.summary, evidence.security.guidance, or artifact behavior supports concrete risks. Shape: [{"risk":"...", "mitigation":"..."}].
@@ -282,6 +287,30 @@ function isRecord(value: unknown): value is JsonRecord {
 
 function optionalTrimmedString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function normalizeReference(value: unknown) {
+  if (!isRecord(value)) return null;
+  const label = optionalTrimmedString(value.label);
+  const url = optionalTrimmedString(value.url);
+  return label && url ? { label, url } : null;
+}
+
+export function ensureNvidiaSkillCardReference(context: JsonRecord) {
+  const references = Array.isArray(context.references)
+    ? context.references
+        .map((reference) => normalizeReference(reference))
+        .filter((reference): reference is { label: string; url: string } => Boolean(reference))
+    : [];
+  const hasNvidiaSkillCardReference = references.some(
+    (reference) => reference.url === NVIDIA_SKILL_CARD_REFERENCE.url,
+  );
+  return {
+    ...context,
+    references: hasNvidiaSkillCardReference
+      ? references
+      : [...references, NVIDIA_SKILL_CARD_REFERENCE],
+  };
 }
 
 export function applyServerPublisherToContext(context: JsonRecord, evidence: JsonRecord) {
@@ -399,9 +428,8 @@ async function generateSkillCardWithCodex(
   const contextPath = join(workspace, SKILL_CARD_CONTEXT_FILE);
   const contextJson = await readFile(contextPath, "utf8");
   if (!contextJson.trim()) throw new Error(`${SKILL_CARD_CONTEXT_FILE} is empty`);
-  const context = applyServerPublisherToContext(
-    JSON.parse(contextJson) as JsonRecord,
-    job.target.evidence,
+  const context = ensureNvidiaSkillCardReference(
+    applyServerPublisherToContext(JSON.parse(contextJson) as JsonRecord, job.target.evidence),
   );
   await writeFile(contextPath, `${JSON.stringify(context, null, 2)}\n`);
   await renderSkillCardMarkdown(workspace, toolDir);
