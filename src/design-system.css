@@ -1,0 +1,89 @@
+@import "@openclaw/design-system/tokens.css";
+@import "@openclaw/design-system/themes.css";
+@import "@openclaw/design-system/themes/product.css";
+@import "@openclaw/design-system/compat/clawhub.css";
+
+/*
+ * The legacy light selectors in styles.css are more specific than the
+ * compatibility aliases' :root rule. Rebind those aliases at the same
+ * specificity while keeping every value owned by the shared package.
+ */
+[data-theme-family="claw"][data-theme-resolved="light"] {
+  --bg: var(--oc-bg-page);
+  --bg-soft: var(--oc-bg-surface);
+  --surface: var(--oc-bg-elevated);
+  --surface-muted: var(--oc-bg-surface);
+  --nav-bg: var(--oc-bg-page);
+  --ink: var(--oc-text-primary);
+  --ink-soft: var(--oc-text-secondary);
+  --accent: var(--oc-accent-primary);
+  --accent-fg: var(--oc-text-on-accent);
+  --accent-deep: var(--oc-accent-primary-hover);
+  --accent-subtle: var(--oc-surface-accent-soft);
+  --line: var(--oc-border-subtle);
+  --border-ui: var(--oc-border-subtle);
+  --border-ui-hover: color-mix(in srgb, var(--oc-text-primary) 20%, transparent);
+  --border-ui-active: var(--oc-border-accent);
+  --status-success-bg: var(--oc-status-success-bg);
+  --status-success-fg: var(--oc-status-success-fg);
+  --status-warning-bg: var(--oc-status-warning-bg);
+  --status-warning-fg: var(--oc-status-warning-fg);
+  --status-error-bg: var(--oc-status-error-bg);
+  --status-error-fg: var(--oc-status-error-fg);
+  --official-bg: var(--oc-status-info-bg);
+  --official-fg: var(--oc-status-info-fg);
+  --input-border: var(--oc-input-border);
+  --input-bg: var(--oc-input-bg);
+  --input-placeholder: var(--oc-input-placeholder);
+  --input-focus-border: var(--oc-input-focus-border);
+  --input-focus-ring: var(--oc-input-focus-ring);
+  --label-fg: var(--oc-text-secondary);
+  --hover-bg: var(--oc-surface-interactive);
+  --active-bg: var(--oc-surface-accent-soft);
+  --overlay-bg: var(--oc-surface-overlay);
+  --diff-added: var(--oc-diff-added);
+  --diff-added-strong: var(--oc-diff-added-strong);
+  --diff-removed: var(--oc-diff-removed);
+  --diff-removed-strong: var(--oc-diff-removed-strong);
+}
+
+@media (prefers-color-scheme: light) {
+  [data-theme-family="claw"][data-theme-mode="system"] {
+    --bg: var(--oc-bg-page);
+    --bg-soft: var(--oc-bg-surface);
+    --surface: var(--oc-bg-elevated);
+    --surface-muted: var(--oc-bg-surface);
+    --nav-bg: var(--oc-bg-page);
+    --ink: var(--oc-text-primary);
+    --ink-soft: var(--oc-text-secondary);
+    --accent: var(--oc-accent-primary);
+    --accent-fg: var(--oc-text-on-accent);
+    --accent-deep: var(--oc-accent-primary-hover);
+    --accent-subtle: var(--oc-surface-accent-soft);
+    --line: var(--oc-border-subtle);
+    --border-ui: var(--oc-border-subtle);
+    --border-ui-hover: color-mix(in srgb, var(--oc-text-primary) 20%, transparent);
+    --border-ui-active: var(--oc-border-accent);
+    --status-success-bg: var(--oc-status-success-bg);
+    --status-success-fg: var(--oc-status-success-fg);
+    --status-warning-bg: var(--oc-status-warning-bg);
+    --status-warning-fg: var(--oc-status-warning-fg);
+    --status-error-bg: var(--oc-status-error-bg);
+    --status-error-fg: var(--oc-status-error-fg);
+    --official-bg: var(--oc-status-info-bg);
+    --official-fg: var(--oc-status-info-fg);
+    --input-border: var(--oc-input-border);
+    --input-bg: var(--oc-input-bg);
+    --input-placeholder: var(--oc-input-placeholder);
+    --input-focus-border: var(--oc-input-focus-border);
+    --input-focus-ring: var(--oc-input-focus-ring);
+    --label-fg: var(--oc-text-secondary);
+    --hover-bg: var(--oc-surface-interactive);
+    --active-bg: var(--oc-surface-accent-soft);
+    --overlay-bg: var(--oc-surface-overlay);
+    --diff-added: var(--oc-diff-added);
+    --diff-added-strong: var(--oc-diff-added-strong);
+    --diff-removed: var(--oc-diff-removed);
+    --diff-removed-strong: var(--oc-diff-removed-strong);
+  }
+}

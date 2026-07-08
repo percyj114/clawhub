@@ -68,7 +68,23 @@ describe("restored UI design contract", () => {
   const publicRegistry = () => read("src/lib/publicRegistry.ts");
   const settings = () => read("src/routes/settings.tsx");
   const styles = () => read("src/styles.css");
+  const designSystemStyles = () => read("src/design-system.css");
   const theme = () => read("src/lib/theme.ts");
+
+  it("loads the shared OpenClaw token adapter after the legacy application stylesheet", () => {
+    const rootSource = rootRoute();
+    const sharedCss = designSystemStyles();
+
+    expect(sharedCss).toContain('@import "@openclaw/design-system/tokens.css";');
+    expect(sharedCss).toContain('@import "@openclaw/design-system/themes/product.css";');
+    expect(sharedCss).toContain('@import "@openclaw/design-system/compat/clawhub.css";');
+    expect(sharedCss).toContain('[data-theme-family="claw"][data-theme-resolved="light"]');
+    expect(sharedCss).toContain("--accent: var(--oc-accent-primary)");
+    expect(sharedCss).toContain('[data-theme-family="claw"][data-theme-mode="system"]');
+    expect(rootSource.indexOf("href: designSystemCss")).toBeGreaterThan(
+      rootSource.indexOf("href: appCss"),
+    );
+  });
 
   it("keeps Vercel browser instrumentation mounted outside local dev", () => {
     const rootSource = rootRoute();

@@ -24,6 +24,7 @@ import {
 } from "../lib/authErrorMessage";
 import { getClawHubSiteUrl, SITE_DESCRIPTION, SITE_NAME } from "../lib/site";
 import { getThemeModeFromCookieHeader, normalizeThemeMode } from "../lib/themeCookie";
+import designSystemCss from "../design-system.css?url";
 import appCss from "../styles.css?url";
 
 const OG_IMAGE_VERSION = "20260624-1";
@@ -119,6 +120,10 @@ export const Route = createRootRoute({
         {
           rel: "stylesheet",
           href: appCss,
+        },
+        {
+          rel: "stylesheet",
+          href: designSystemCss,
         },
         {
           rel: "icon",
