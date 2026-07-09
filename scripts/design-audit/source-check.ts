@@ -167,19 +167,23 @@ async function main() {
   const outputIndex = process.argv.indexOf("--output");
   const baseIndex = process.argv.indexOf("--base");
   const stylesIndex = process.argv.indexOf("--design-system-styles");
+  const workingTree = process.argv.includes("--working-tree");
+  const failOnFindings = process.argv.includes("--fail-on-findings");
   const output = outputIndex >= 0 ? process.argv[outputIndex + 1] : undefined;
   const base = baseIndex >= 0 ? process.argv[baseIndex + 1] : undefined;
   const designSystemStyles =
     stylesIndex >= 0
       ? process.argv[stylesIndex + 1]
       : "node_modules/@openclaw/design-system/styles";
-  if (!output || !base || !designSystemStyles) {
+  if (!output || (!base && !workingTree) || !designSystemStyles) {
     throw new Error(
-      "usage: source-check.ts --base <sha> --output <path> [--design-system-styles <dir>]",
+      "usage: source-check.ts (--base <sha> | --working-tree) --output <path> [--design-system-styles <dir>] [--fail-on-findings]",
     );
   }
 
-  const diff = git("diff", "--unified=0", "--no-ext-diff", `${base}..HEAD`, "--", "src");
+  const diff = workingTree
+    ? git("diff", "--unified=0", "--no-ext-diff", "HEAD", "--", "src")
+    : git("diff", "--unified=0", "--no-ext-diff", `${base}..HEAD`, "--", "src");
   const findings = [
     ...(await undefinedTokenFindings(designSystemStyles)),
     ...changedLineFindings(parseAddedLines(diff)),
@@ -189,7 +193,7 @@ async function main() {
     output,
     `${JSON.stringify(
       {
-        baseSha: base,
+        baseSha: workingTree ? git("rev-parse", "HEAD") : base,
         consumerSha: git("rev-parse", "HEAD"),
         findings,
       },
@@ -198,6 +202,9 @@ async function main() {
     )}\n`,
   );
   console.log(`wrote ${findings.length} deterministic findings to ${output}`);
+  if (failOnFindings && findings.length > 0) {
+    throw new Error(`post-agent deterministic checks found ${findings.length} violation(s)`);
+  }
 }
 
 if (import.meta.main) {

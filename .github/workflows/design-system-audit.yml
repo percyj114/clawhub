@@ -65,18 +65,16 @@ jobs:
       - name: Install browser
         run: bunx playwright install --with-deps chromium
 
-      - name: Resolve released design system
+      - name: Resolve installed design-system release
         id: release
         env:
           DESIGN_SYSTEM_TOKEN: ${{ secrets.DESIGN_SYSTEM_READ_TOKEN || steps.app-token.outputs.token || github.token }}
           GH_TOKEN: ${{ secrets.DESIGN_SYSTEM_READ_TOKEN || steps.app-token.outputs.token || github.token }}
         run: |
           set -euo pipefail
-          release="$(
-            gh api repos/openclaw/design-system/releases/latest \
-              --jq '.tag_name'
-          )"
+          release="v$(node -p "require('./node_modules/@openclaw/design-system/package.json').version")"
           [[ "$release" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          gh api "repos/openclaw/design-system/releases/tags/${release}" >/dev/null
           echo "tag=$release" >> "$GITHUB_OUTPUT"
           mkdir -p "$ARTIFACT_DIRECTORY"
           git -c \
@@ -174,9 +172,20 @@ jobs:
         continue-on-error: true
         run: bun scripts/design-audit/validate-changes.ts
 
+      - name: Re-run deterministic checks on agent patch
+        id: post_source
+        if: steps.codex.outcome == 'success' && steps.change_boundary.outcome == 'success'
+        continue-on-error: true
+        run: |
+          bun scripts/design-audit/source-check.ts \
+            --working-tree \
+            --fail-on-findings \
+            --design-system-styles "$ARTIFACT_DIRECTORY/design-system/styles" \
+            --output "$ARTIFACT_DIRECTORY/post-agent-deterministic.json"
+
       - name: Validate proposed source fixes
         id: validation
-        if: steps.codex.outcome == 'success' && steps.change_boundary.outcome == 'success'
+        if: steps.codex.outcome == 'success' && steps.change_boundary.outcome == 'success' && steps.post_source.outcome == 'success'
         continue-on-error: true
         env:
           VITE_CONVEX_SITE_URL: https://wry-manatee-359.convex.site
@@ -193,7 +202,7 @@ jobs:
 
       - name: Finalize reports
         id: finalize
-        if: steps.codex.outcome == 'success' && steps.change_boundary.outcome == 'success' && !cancelled()
+        if: steps.codex.outcome == 'success' && steps.change_boundary.outcome == 'success' && steps.post_source.outcome == 'success' && !cancelled()
         run: |
           bun scripts/design-audit/finalize.ts \
             --deterministic "$ARTIFACT_DIRECTORY/deterministic.json" \
@@ -280,7 +289,7 @@ jobs:
           retention-days: 30
 
       - name: Fail unsuccessful audit
-        if: steps.codex.outcome == 'failure' || steps.change_boundary.outcome == 'failure' || steps.validation.outcome == 'failure'
+        if: steps.codex.outcome == 'failure' || steps.change_boundary.outcome == 'failure' || steps.post_source.outcome == 'failure' || steps.validation.outcome == 'failure'
         run: |
           echo "The audit or validation failed. Artifacts were preserved and no PR was created." >&2
           exit 1

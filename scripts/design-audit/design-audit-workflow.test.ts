@@ -63,19 +63,29 @@ describe("weekly design-system audit workflow", () => {
     ) as { jobs: { audit: { steps: Step[] } } };
     const steps = workflow.jobs.audit.steps;
     const boundaryIndex = steps.findIndex((step) => step.name === "Validate agent change boundary");
+    const deterministicIndex = steps.findIndex(
+      (step) => step.name === "Re-run deterministic checks on agent patch",
+    );
     const validationIndex = steps.findIndex(
       (step) => step.name === "Validate proposed source fixes",
     );
 
     expect(boundaryIndex).toBeGreaterThan(-1);
-    expect(boundaryIndex).toBeLessThan(validationIndex);
+    expect(boundaryIndex).toBeLessThan(deterministicIndex);
+    expect(deterministicIndex).toBeLessThan(validationIndex);
     expect(steps[boundaryIndex]?.run).toContain("validate-changes.ts");
+    expect(steps[deterministicIndex]?.run).toContain("--working-tree");
+    expect(steps[deterministicIndex]?.run).toContain("--fail-on-findings");
     expect(steps[validationIndex]?.if).toContain("steps.change_boundary.outcome == 'success'");
+    expect(steps[validationIndex]?.if).toContain("steps.post_source.outcome == 'success'");
   });
 
   it("pins the design release and audit inputs in every report", async () => {
     const source = await readFile(".github/workflows/design-system-audit.yml", "utf8");
-    expect(source).toContain("repos/openclaw/design-system/releases/latest");
+    expect(source).toContain(
+      "require('./node_modules/@openclaw/design-system/package.json').version",
+    );
+    expect(source).toContain("repos/openclaw/design-system/releases/tags/${release}");
     expect(source).toContain(
       "url.https://x-access-token:${DESIGN_SYSTEM_TOKEN}@github.com/openclaw/design-system.git.insteadOf=https://github.com/openclaw/design-system.git",
     );
