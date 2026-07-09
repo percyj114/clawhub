@@ -76,8 +76,10 @@ describe("weekly design-system audit workflow", () => {
   it("pins the design release and audit inputs in every report", async () => {
     const source = await readFile(".github/workflows/design-system-audit.yml", "utf8");
     expect(source).toContain("repos/openclaw/design-system/releases/latest");
-    expect(source).toContain('"https://github.com/"');
-    expect(source).toContain('git clone \\\n            --branch "$release"');
+    expect(source).toContain(
+      "url.https://x-access-token:${DESIGN_SYSTEM_TOKEN}@github.com/openclaw/design-system.git.insteadOf=https://github.com/openclaw/design-system.git",
+    );
+    expect(source).toContain('clone \\\n            --branch "$release"');
     expect(source).toContain("--consumer-sha");
     expect(source).toContain("--base-sha");
     expect(source).toContain("--release");
