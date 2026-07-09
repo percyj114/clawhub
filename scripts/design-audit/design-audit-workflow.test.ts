@@ -27,6 +27,7 @@ describe("weekly design-system audit workflow", () => {
     expect(workflow.on.schedule).toEqual([{ cron: "17 15 * * 1" }]);
     expect(workflow.on.workflow_dispatch).toBeDefined();
     expect(workflow.env.AUDIT_BRANCH).toBe("automation/design-system-audit");
+    expect(workflow.env.ARTIFACT_DIRECTORY).toBe("artifacts/design-audit");
     expect(source.toLowerCase()).not.toContain("linear");
     expect(source).not.toContain("gh pr merge");
 
@@ -40,6 +41,11 @@ describe("weekly design-system audit workflow", () => {
     );
     expect(closeClean?.if).toContain("steps.validation.outcome == 'success'");
     expect(closeClean?.run).toContain("gh pr close");
+
+    const appToken = steps.find((step) => step.name === "Create repository token");
+    expect(appToken?.with?.owner).toBe("${{ github.repository_owner }}");
+    expect(appToken?.with?.repositories).toContain("clawhub");
+    expect(appToken?.with?.repositories).toContain("design-system");
   });
 
   it("preserves artifacts and suppresses PRs when validation fails", async () => {
