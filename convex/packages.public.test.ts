@@ -41,6 +41,7 @@ import {
   getVersionSecurityByNameForViewerInternal,
   insertReleaseInternal,
   publishPendingReleaseInternal,
+  finalizePackagePublishAttemptInternal,
   findPackagePublishResultInternal,
   listPackageModerationQueueInternal,
   listPluginExportPageInternal,
@@ -279,6 +280,14 @@ const publishPendingReleaseInternalHandler = (
   publishPendingReleaseInternal as unknown as WrappedHandler<
     {
       releaseId: string;
+    },
+    unknown
+  >
+)._handler;
+const finalizePackagePublishAttemptInternalHandler = (
+  finalizePackagePublishAttemptInternal as unknown as WrappedHandler<
+    {
+      attemptId: string;
     },
     unknown
   >
@@ -7071,6 +7080,53 @@ describe("packages public queries", () => {
     );
   });
 
+  it("releases release-backed finalization claims when pending promotion fails", async () => {
+    const promotionError = new Error("promotion failed");
+    const runMutation = vi.fn(async (_ref: unknown, args: unknown) => {
+      if (typeof args === "object" && args !== null && "attemptId" in args && !("error" in args)) {
+        return {
+          status: "claimed",
+          attemptId: "publishAttempts:demo",
+          packageId: "packages:demo",
+          releaseId: "packageReleases:pending",
+          packageFollowup: {},
+        };
+      }
+      if (typeof args === "object" && args !== null && "releaseId" in args) {
+        throw promotionError;
+      }
+      if (typeof args === "object" && args !== null && "error" in args) {
+        return { attemptId: "publishAttempts:demo", status: "ready_to_finalize" };
+      }
+      throw new Error(`Unexpected mutation args ${JSON.stringify(args)}`);
+    });
+    const ctx = {
+      runMutation,
+      runQuery: vi.fn(async () => {
+        throw new Error("legacy insert recovery should not run for release-backed attempts");
+      }),
+    };
+
+    await expect(
+      finalizePackagePublishAttemptInternalHandler(ctx as never, {
+        attemptId: "publishAttempts:demo",
+      }),
+    ).rejects.toThrow("promotion failed");
+
+    expect(runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ releaseId: "packageReleases:pending" }),
+    );
+    expect(runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        attemptId: "publishAttempts:demo",
+        error: "promotion failed",
+      }),
+    );
+    expect(ctx.runQuery).not.toHaveBeenCalled();
+  });
+
   it("recovers idempotent package publish results for the same owner", async () => {
     const release = makeReleaseDoc({ integritySha256: "abc123" });
     const ctx = {
@@ -7113,6 +7169,49 @@ describe("packages public queries", () => {
       packageId: "packages:demo",
       releaseId: "packageReleases:demo-1",
     });
+  });
+
+  it("does not recover pending package publish results as public successes", async () => {
+    const release = makeReleaseDoc({
+      integritySha256: "abc123",
+      publicationStatus: "pending",
+    });
+    const ctx = {
+      db: {
+        query: vi.fn((table: string) => {
+          if (table === "packages") {
+            return {
+              withIndex: vi.fn(() => ({
+                unique: vi.fn().mockResolvedValue(
+                  makePackageDoc({
+                    ownerUserId: "users:owner",
+                    ownerPublisherId: "publishers:owner",
+                  }),
+                ),
+              })),
+            };
+          }
+          if (table === "packageReleases") {
+            return {
+              withIndex: vi.fn(() => ({
+                unique: vi.fn().mockResolvedValue(release),
+              })),
+            };
+          }
+          throw new Error(`Unexpected table ${table}`);
+        }),
+      },
+    };
+
+    await expect(
+      findPackagePublishResultInternalHandler(ctx as never, {
+        name: "demo-plugin",
+        version: "1.0.0",
+        integritySha256: "abc123",
+        ownerUserId: "users:owner",
+        ownerPublisherId: "publishers:owner",
+      }),
+    ).resolves.toBeNull();
   });
 
   it("does not recover idempotent package publish results for another owner", async () => {

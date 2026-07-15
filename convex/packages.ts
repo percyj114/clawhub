@@ -4370,7 +4370,7 @@ export const findPackagePublishResultInternal = internalQuery({
         q.eq("packageId", pkg._id).eq("version", args.version),
       )
       .unique();
-    if (!release || release.softDeletedAt || release.integritySha256 !== args.integritySha256) {
+    if (!isPublishedPackageRelease(release) || release.integritySha256 !== args.integritySha256) {
       return null;
     }
     return { ok: true as const, packageId: pkg._id, releaseId: release._id };
@@ -8080,6 +8080,10 @@ export const finalizePackagePublishAttemptInternal = internalAction({
               claim.packageInsertArgs,
             );
     } catch (error) {
+      if (claim.releaseId !== undefined) {
+        await releasePackagePublishAttemptFinalizationClaim(ctx, claim.attemptId, claimId, error);
+        throw error;
+      }
       const insertArgs = claim.packageInsertArgs as {
         name?: string;
         version?: string;
