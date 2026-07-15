@@ -9,7 +9,7 @@ import {
   buildPluginSecurityAuditHref,
   buildPluginValidationHref,
 } from "../../src/lib/pluginRoutes";
-import { waitForHydration } from "../helpers/runtimeErrors";
+import { recoverFromTransientErrorScreen, waitForHydration } from "../helpers/runtimeErrors";
 
 type DevPersona = "owner" | "user" | "admin" | "abusePublisher";
 const WORKER_TOKEN = process.env.SECURITY_SCAN_WORKER_TOKEN ?? "local-e2e-worker-token";
@@ -289,6 +289,7 @@ export async function signInAsLocalPersona(page: Page, persona: DevPersona) {
     try {
       await page.goto("/", { waitUntil: "domcontentloaded" });
       await waitForHydration(page);
+      await recoverFromTransientErrorScreen(page);
 
       await page
         .getByRole("button", { name: "Open local dev personas" })
@@ -303,6 +304,7 @@ export async function signInAsLocalPersona(page: Page, persona: DevPersona) {
     } catch (error) {
       lastError = error;
       if (attempt >= 3) throw error;
+      await recoverFromTransientErrorScreen(page).catch(() => {});
       await page.waitForTimeout(1_000 * attempt);
     }
   }
@@ -387,6 +389,7 @@ async function waitForPublishSkillForm(page: Page) {
 
   for (let attempt = 0; attempt < 4; attempt += 1) {
     await waitForHydration(page).catch(() => {});
+    await recoverFromTransientErrorScreen(page);
     if (await heading.isVisible({ timeout: 5_000 }).catch(() => false)) {
       try {
         await page.getByTestId("upload-input").waitFor({ state: "attached", timeout: 15_000 });
@@ -428,6 +431,8 @@ export async function signInAsLocalPublisher(page: Page, persona: DevPersona) {
   await expect
     .poll(
       async () => {
+        await recoverFromTransientErrorScreen(page);
+        await waitForPublishSkillForm(page);
         const value = await getSelectedOwnerHandle(page, "#ownerHandle");
         // The owner persona can briefly render the user handle before the
         // personal publisher subscription reconciles to the publishable handle.

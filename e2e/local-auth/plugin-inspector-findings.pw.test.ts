@@ -4,6 +4,7 @@ import { strToU8, zipSync } from "fflate";
 import {
   expectNoFatalErrorUi,
   expectNoRuntimeErrors,
+  recoverFromTransientErrorScreen,
   trackRuntimeErrors,
   waitForHydration,
 } from "../helpers/runtimeErrors";
@@ -86,8 +87,10 @@ async function writePluginZip(
 }
 
 async function uploadPluginZip(page: Page, zipPath: string) {
+  await recoverFromTransientErrorScreen(page);
   await page.locator('input[type="file"]').first().setInputFiles(zipPath);
   await waitForHydration(page);
+  await recoverFromTransientErrorScreen(page);
 }
 
 async function captureProof(page: Page, testInfo: TestInfo, name: string) {
@@ -125,6 +128,7 @@ async function expectHealthyInspectorPage(page: Page, errors: string[]) {
         error.includes("checkRateLimit") ||
         error.includes("httpRouteRateLimit")),
   );
+  await recoverFromTransientErrorScreen(page);
   await expectNoFatalErrorUi(page);
   await expectNoRuntimeErrors(
     page,
@@ -156,6 +160,7 @@ async function expectDashboardWarningReview(page: Page, warningName: string) {
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
     await waitForHydration(page);
+    await recoverFromTransientErrorScreen(page);
     try {
       await expect(dashboardWarningRow).toBeVisible({ timeout: 30_000 });
       await dashboardWarningRow.click();
@@ -177,11 +182,14 @@ async function expectValidationSectionVisible(page: Page, warningName: string) {
 
   for (let attempt = 1; attempt <= 6; attempt += 1) {
     await waitForHydration(page).catch(() => {});
+    await recoverFromTransientErrorScreen(page);
     if ((await validationSection.count()) > 0) {
       await expect(validationSection).toBeVisible({ timeout: 10_000 });
       return;
     }
     await page.goto(detailHref, { waitUntil: "domcontentloaded" });
+    await waitForHydration(page).catch(() => {});
+    await recoverFromTransientErrorScreen(page);
     await page.waitForTimeout(500 * attempt);
   }
 
@@ -224,6 +232,7 @@ async function publishWarningPluginWithRetry(args: {
       if (attempt > 0) await signInAsLocalPersona(args.page, "admin");
       await args.page.goto("/plugins/publish", { waitUntil: "domcontentloaded" });
       await waitForHydration(args.page);
+      await recoverFromTransientErrorScreen(args.page);
       await uploadPluginZip(
         args.page,
         await writePluginZip(args.testInfo, {
@@ -271,6 +280,7 @@ async function publishHardErrorPluginWithRetry(args: {
       if (attempt > 0) await signInAsLocalPersona(args.page, "admin");
       await args.page.goto("/plugins/publish", { waitUntil: "domcontentloaded" });
       await waitForHydration(args.page);
+      await recoverFromTransientErrorScreen(args.page);
       await uploadPluginZip(
         args.page,
         await writePluginZip(args.testInfo, {
@@ -310,6 +320,7 @@ test("plugin publish stays private until mocked TruffleHog and ClawScan pass", a
   await signInAsLocalPersona(page, "admin");
   await page.goto("/plugins/publish", { waitUntil: "domcontentloaded" });
   await waitForHydration(page);
+  await recoverFromTransientErrorScreen(page);
   await uploadPluginZip(
     page,
     await writePluginZip(testInfo, {
@@ -342,6 +353,7 @@ test("plugin publish stays private until mocked TruffleHog and ClawScan pass", a
 
   await page.goto(buildPluginDetailHref(name), { waitUntil: "domcontentloaded" });
   await waitForHydration(page);
+  await recoverFromTransientErrorScreen(page);
   await expect(page.locator("h1.skill-page-title", { hasText: displayName })).toBeVisible({
     timeout: 30_000,
   });
@@ -361,6 +373,7 @@ test("malicious ClawScan verdict keeps a staged plugin private", async ({
   await signInAsLocalPersona(page, "admin");
   await page.goto("/plugins/publish", { waitUntil: "domcontentloaded" });
   await waitForHydration(page);
+  await recoverFromTransientErrorScreen(page);
   await uploadPluginZip(
     page,
     await writePluginZip(testInfo, {

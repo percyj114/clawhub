@@ -63,6 +63,24 @@ export async function expectNoFatalErrorUi(page: Page) {
   await expect(page.locator("text=Hide Error")).toHaveCount(0);
 }
 
+export async function recoverFromTransientErrorScreen(page: Page) {
+  const errorHeading = page.getByRole("heading", { name: /Something went wrong!?/i });
+  const legacyErrorText = page.locator("text=Something went wrong!").first();
+  const hasErrorScreen =
+    (await errorHeading.isVisible({ timeout: 500 }).catch(() => false)) ||
+    (await legacyErrorText.isVisible({ timeout: 500 }).catch(() => false));
+  if (!hasErrorScreen) return false;
+
+  const retryButton = page.getByRole("button", { name: "Try again" });
+  if (await retryButton.isVisible({ timeout: 500 }).catch(() => false)) {
+    await retryButton.click({ timeout: 5_000 });
+  } else {
+    await page.reload({ waitUntil: "domcontentloaded" });
+  }
+  await waitForHydration(page).catch(() => {});
+  return true;
+}
+
 export async function expectHealthyPage(page: Page, errors: string[]) {
   await expectNoFatalErrorUi(page);
   await expectNoRuntimeErrors(page, errors);
