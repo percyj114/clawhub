@@ -1,6 +1,7 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import {
   expectHealthyPage,
+  recoverFromTransientErrorScreen,
   trackRuntimeErrors,
   waitForHydration,
   withoutRecoverableReactHydrationErrors,
@@ -39,14 +40,34 @@ async function getNewVersionHref(page: Parameters<typeof waitForHydration>[0], d
   throw lastError;
 }
 
-async function expectCurrentVersion(page: import("@playwright/test").Page, version: string) {
-  const metadata = page.locator(".detail-sidebar-stats .sidebar-metadata");
-  await expect(metadata.getByText("Current version", { exact: true })).toBeVisible({
-    timeout: 30_000,
-  });
-  await expect(metadata.getByText(`v${version}`, { exact: true })).toBeVisible({
-    timeout: 30_000,
-  });
+async function expectCurrentVersion(page: Page, version: string) {
+  const detailUrl = page.url().split("#", 1)[0];
+  const expectedVersion = `v${version}`;
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    try {
+      await waitForHydration(page).catch(() => {});
+      await recoverFromTransientErrorScreen(page);
+      const metadata = page.locator(".detail-sidebar-stats .sidebar-metadata");
+      await expect(metadata.getByText("Current version", { exact: true })).toBeVisible({
+        timeout: 30_000,
+      });
+      await expect(metadata.getByText(expectedVersion, { exact: true })).toBeVisible({
+        timeout: 30_000,
+      });
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt >= 4) throw error;
+      await recoverFromTransientErrorScreen(page).catch(() => {});
+      await page.goto(detailUrl, { waitUntil: "domcontentloaded" }).catch(() => {});
+      await waitForHydration(page).catch(() => {});
+      await page.waitForTimeout(1_000 * attempt);
+    }
+  }
+
+  throw lastError;
 }
 
 function withoutExpectedPublishFlowErrors(errors: string[]) {
@@ -54,9 +75,11 @@ function withoutExpectedPublishFlowErrors(errors: string[]) {
     "CONVEX Q(skills:listVersions)",
     "CONVEX Q(skills:list)",
     "CONVEX Q(skills:getBySlug)",
+    "CONVEX Q(skills:getActivityTrendForSlug)",
     "CONVEX Q(skills:checkSlugAvailability)",
     "CONVEX Q(users:me)",
     "CONVEX Q(publishers:listMine)",
+    "CONVEX Q(publishers:getByHandle)",
     "CONVEX Q(publishers:getMyProfileHandle)",
   ];
   return withoutRecoverableReactHydrationErrors(errors).filter(

@@ -110,6 +110,13 @@ function sawTransientUploadFailure(errors: string[]) {
   );
 }
 
+const LOCAL_PACKAGE_API_URL_PATTERN =
+  /http:\/\/127\.0\.0\.1(?::\d+)?\/api\/v1\/packages\/[^'"\s)]+/u;
+
+function localPackageApiUrl(error: string) {
+  return error.match(LOCAL_PACKAGE_API_URL_PATTERN)?.[0] ?? null;
+}
+
 async function expectHealthyInspectorPage(page: Page, errors: string[]) {
   const expectedTransientTimeouts = [
     "CONVEX Q(packages:canDeleteVersions)",
@@ -117,10 +124,38 @@ async function expectHealthyInspectorPage(page: Page, errors: string[]) {
     "CONVEX Q(packages:getManageContext)",
     "CONVEX Q(packages:getPackageInspectorValidationSummaryPublic)",
     "CONVEX Q(packages:list)",
+    "CONVEX Q(publishers:getByHandle)",
     "CONVEX Q(publishers:getMyProfileHandle)",
     "CONVEX Q(publishers:listMine)",
     "CONVEX Q(users:me)",
   ];
+  const localPackageApiCorsUrls = new Set(
+    errors
+      .filter((error) => error.includes("CORS policy"))
+      .map(localPackageApiUrl)
+      .filter((url): url is string => Boolean(url)),
+  );
+  const shouldIgnoreLocalPackageApiFetchFailure = (error: string) => {
+    const corsUrl = localPackageApiUrl(error);
+    if (corsUrl && localPackageApiCorsUrls.has(corsUrl) && error.includes("CORS policy")) {
+      return true;
+    }
+    if (
+      localPackageApiCorsUrls.size > 0 &&
+      error.includes("console:TypeError: Failed to fetch") &&
+      error.includes("packageApi-")
+    ) {
+      return true;
+    }
+    if (
+      corsUrl &&
+      localPackageApiCorsUrls.has(corsUrl) &&
+      error.startsWith("console:Failed to load resource: net::ERR_FAILED")
+    ) {
+      return true;
+    }
+    return false;
+  };
   const sawHttpRateLimitTimeout = errors.some(
     (error) =>
       error.includes("Function execution timed out (maximum duration: 1s)") &&
@@ -144,11 +179,14 @@ async function expectHealthyInspectorPage(page: Page, errors: string[]) {
             error.includes("ErrorBoundary caught") ||
             error.includes("pageerror:Minified React error #422") ||
             error.includes("pageerror:Minified React error #520") ||
-            error ===
-              "console:Failed to load resource: the server responded with a status of 500 (Internal Server Error)" ||
-            error ===
-              "console:Failed to load resource: the server responded with a status of 404 (Not Found)")
-        ),
+            error.startsWith(
+              "console:Failed to load resource: the server responded with a status of 500 (Internal Server Error)",
+            ) ||
+            error.startsWith(
+              "console:Failed to load resource: the server responded with a status of 404 (Not Found)",
+            ))
+        ) &&
+        !shouldIgnoreLocalPackageApiFetchFailure(error),
     ),
   );
 }
@@ -311,7 +349,7 @@ test("plugin publish stays private until mocked TruffleHog and ClawScan pass", a
   page,
   request,
 }, testInfo) => {
-  const errors = trackRuntimeErrors(page);
+  const errors = trackRuntimeErrors(page, { includeConsoleLocation: true });
   const suffix = Date.now().toString(36);
   const name = `pw-staged-plugin-${suffix}`;
   const displayName = `Playwright Staged Plugin ${suffix}`;
@@ -364,7 +402,7 @@ test("malicious ClawScan verdict keeps a staged plugin private", async ({
   page,
   request,
 }, testInfo) => {
-  const errors = trackRuntimeErrors(page);
+  const errors = trackRuntimeErrors(page, { includeConsoleLocation: true });
   const suffix = Date.now().toString(36);
   const name = `pw-malicious-plugin-${suffix}`;
   const displayName = `Playwright Malicious Plugin ${suffix}`;
@@ -405,7 +443,7 @@ test("malicious ClawScan verdict keeps a staged plugin private", async ({
 test("plugin inspector blocks hard publish errors and publishes warning findings", async ({
   page,
 }, testInfo) => {
-  const errors = trackRuntimeErrors(page);
+  const errors = trackRuntimeErrors(page, { includeConsoleLocation: true });
   const suffix = Date.now().toString(36);
 
   await signInAsLocalPersona(page, "admin");

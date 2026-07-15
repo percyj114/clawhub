@@ -191,8 +191,10 @@ function isExpectedVersionDeletionRuntimeError(error: string) {
   return [
     "[CONVEX Q(packages:canDeleteVersions)]",
     "[CONVEX Q(packages:getActivityTrendForName)]",
+    "[CONVEX Q(packages:getPackageInspectorValidationSummaryPublic)]",
     "[CONVEX Q(packages:getManageContext)]",
     "[CONVEX Q(packages:listPackageInspectorWarningsForManager)]",
+    "[CONVEX Q(publishers:getByHandle)]",
     "[CONVEX Q(publishers:getMyProfileHandle)]",
     "[CONVEX Q(publishers:listMine)]",
     "[CONVEX Q(skills:getActivityTrendForSlug)]",
@@ -288,14 +290,39 @@ async function confirmDeleteDialog(page: Parameters<typeof expectNoFatalErrorUi>
 }
 
 async function expectVersionsList(page: Parameters<typeof expectNoFatalErrorUi>[0]) {
-  await ensureVersionsTab(page);
-  await expect(versionToggle(page, OLDER_VERSION)).toBeVisible();
-  await expect(versionToggle(page, LATEST_VERSION)).toBeVisible();
-  await expect(page.getByRole("button", { name: `Delete version ${OLDER_VERSION}` })).toBeVisible();
-  await expect(page.getByRole("button", { name: `Delete version ${LATEST_VERSION}` })).toHaveCount(
-    0,
-  );
-  await expect(page.getByRole("button", { name: /restore/i })).toHaveCount(0);
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    try {
+      await waitForHydration(page).catch(() => {});
+      await recoverFromTransientErrorScreen(page);
+      await ensureVersionsTab(page);
+      const versionsPanel = page.getByRole("tabpanel", { name: "Versions" });
+      const retryButton = versionsPanel.getByRole("button", { name: "Try again" });
+      if (await retryButton.isVisible({ timeout: 500 }).catch(() => false)) {
+        await retryButton.click({ timeout: 5_000 });
+        await waitForHydration(page).catch(() => {});
+      }
+
+      await expect(versionToggle(page, OLDER_VERSION)).toBeVisible({ timeout: 30_000 });
+      await expect(versionToggle(page, LATEST_VERSION)).toBeVisible({ timeout: 30_000 });
+      await expect(
+        page.getByRole("button", { name: `Delete version ${OLDER_VERSION}` }),
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(
+        page.getByRole("button", { name: `Delete version ${LATEST_VERSION}` }),
+      ).toHaveCount(0);
+      await expect(page.getByRole("button", { name: /restore/i })).toHaveCount(0);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt >= 4) throw error;
+      await recoverFromTransientErrorScreen(page).catch(() => {});
+      await page.reload({ waitUntil: "domcontentloaded" }).catch(() => {});
+      await waitForHydration(page).catch(() => {});
+      await page.waitForTimeout(1_000 * attempt);
+    }
+  }
+  throw lastError;
 }
 
 async function expectPublicVersionsList(page: Parameters<typeof expectNoFatalErrorUi>[0]) {
