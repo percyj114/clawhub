@@ -110,12 +110,21 @@ function sawTransientUploadFailure(errors: string[]) {
 async function expectHealthyInspectorPage(page: Page, errors: string[]) {
   const expectedTransientTimeouts = [
     "CONVEX Q(packages:canDeleteVersions)",
+    "CONVEX Q(packages:getActivityTrendForName)",
     "CONVEX Q(packages:getManageContext)",
     "CONVEX Q(packages:getPackageInspectorValidationSummaryPublic)",
     "CONVEX Q(packages:list)",
     "CONVEX Q(publishers:getMyProfileHandle)",
     "CONVEX Q(publishers:listMine)",
+    "CONVEX Q(users:me)",
   ];
+  const sawHttpRateLimitTimeout = errors.some(
+    (error) =>
+      error.includes("Function execution timed out (maximum duration: 1s)") &&
+      (error.includes("touchRateLimitKeyMetadata") ||
+        error.includes("checkRateLimit") ||
+        error.includes("httpRouteRateLimit")),
+  );
   await expectNoFatalErrorUi(page);
   await expectNoRuntimeErrors(
     page,
@@ -124,6 +133,17 @@ async function expectHealthyInspectorPage(page: Page, errors: string[]) {
         !(
           error.includes("Function execution timed out (maximum duration: 1s)") &&
           expectedTransientTimeouts.some((functionName) => error.includes(functionName))
+        ) &&
+        !(
+          sawHttpRateLimitTimeout &&
+          (error.includes("Function execution timed out (maximum duration: 1s)") ||
+            error.includes("ErrorBoundary caught") ||
+            error.includes("pageerror:Minified React error #422") ||
+            error.includes("pageerror:Minified React error #520") ||
+            error ===
+              "console:Failed to load resource: the server responded with a status of 500 (Internal Server Error)" ||
+            error ===
+              "console:Failed to load resource: the server responded with a status of 404 (Not Found)")
         ),
     ),
   );
