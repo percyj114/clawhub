@@ -138,7 +138,13 @@ describe("HomeListingSection", () => {
   it("renders Featured plugins as cards by default", async () => {
     render(<HomeListingSection initialListing={initialPluginListing()} />);
 
-    expect(screen.getByRole("group", { name: "Content type" })).toBeTruthy();
+    const contentTypeButtons = screen
+      .getByRole("group", { name: "Content type" })
+      .querySelectorAll("button");
+    expect(Array.from(contentTypeButtons, (button) => button.textContent)).toEqual([
+      "Plugins",
+      "Skills",
+    ]);
     expect(screen.getByRole("button", { name: "Plugins" }).getAttribute("aria-pressed")).toBe(
       "true",
     );
