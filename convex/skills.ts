@@ -7566,6 +7566,40 @@ function isStaleCursorError(error: unknown) {
   return patterns.some((p) => msg.includes(p));
 }
 
+async function paginatePublicSkillVersions(
+  ctx: QueryCtx,
+  skillId: Id<"skills">,
+  initialCursor: string | null,
+  limit: number,
+) {
+  const items: Doc<"skillVersions">[] = [];
+  let cursor = initialCursor;
+  let isDone = false;
+
+  while (items.length < limit && !isDone) {
+    const runPaginate = (pageCursor: string | null) =>
+      ctx.db
+        .query("skillVersions")
+        .withIndex("by_skill_active_created", (q) =>
+          q.eq("skillId", skillId).eq("softDeletedAt", undefined),
+        )
+        .order("desc")
+        .paginate({ cursor: pageCursor, numItems: limit - items.length });
+    const page = await paginateWithStaleCursorRecovery(runPaginate, cursor);
+    for (const version of page.page) {
+      if (isPublicSkillVersionAvailableForSkill(version, skillId)) {
+        items.push(version);
+        if (items.length >= limit) break;
+      }
+    }
+    cursor = page.continueCursor;
+    isDone = page.isDone;
+    if (page.page.length === 0) break;
+  }
+
+  return { items, nextCursor: isDone ? null : cursor };
+}
+
 export const countPublicSkills = query({
   args: {},
   handler: async (ctx) => {
@@ -7581,20 +7615,16 @@ export const listVersions = query({
     const authUserId = await getAuthUserId(ctx);
     const actor = authUserId ? await ctx.db.get(authUserId) : null;
     const isStaff = actor?.role === "admin" || actor?.role === "moderator";
-    const versions = isStaff
-      ? await ctx.db
-          .query("skillVersions")
-          .withIndex("by_skill", (q) => q.eq("skillId", args.skillId))
-          .order("desc")
-          .take(limit)
-      : await ctx.db
-          .query("skillVersions")
-          .withIndex("by_skill_active_created", (q) =>
-            q.eq("skillId", args.skillId).eq("softDeletedAt", undefined),
-          )
-          .order("desc")
-          .take(limit);
-    return versions.map((version) => toPublicSkillVersion(version)!);
+    if (isStaff) {
+      const versions = await ctx.db
+        .query("skillVersions")
+        .withIndex("by_skill", (q) => q.eq("skillId", args.skillId))
+        .order("desc")
+        .take(limit);
+      return versions.map((version) => toPublicSkillVersion(version)!);
+    }
+    const publicVersions = await paginatePublicSkillVersions(ctx, args.skillId, null, limit);
+    return publicVersions.items.map((version) => toPublicSkillVersion(version)!);
   },
 });
 
@@ -7606,20 +7636,11 @@ export const listVersionsPage = query({
   },
   handler: async (ctx, args) => {
     const limit = clampInt(args.limit ?? 20, 1, MAX_LIST_LIMIT);
-    const runPaginate = (cursor: string | null) =>
-      ctx.db
-        .query("skillVersions")
-        .withIndex("by_skill_active_created", (q) =>
-          q.eq("skillId", args.skillId).eq("softDeletedAt", undefined),
-        )
-        .order("desc")
-        .paginate({ cursor, numItems: limit });
-    const { page, isDone, continueCursor } = await paginateWithStaleCursorRecovery(
-      runPaginate,
-      args.cursor ?? null,
-    );
-    const items = page.map((version) => toPublicSkillVersion(version)!);
-    return { items, nextCursor: isDone ? null : continueCursor };
+    const page = await paginatePublicSkillVersions(ctx, args.skillId, args.cursor ?? null, limit);
+    return {
+      items: page.items.map((version) => toPublicSkillVersion(version)!),
+      nextCursor: page.nextCursor,
+    };
   },
 });
 
@@ -7627,7 +7648,10 @@ export const getVersionById = query({
   args: { versionId: v.id("skillVersions") },
   handler: async (ctx, args) => {
     const version = await ctx.db.get(args.versionId);
-    return version && !version.softDeletedAt && version.ownerDeletedAt === undefined
+    return version &&
+      !version.softDeletedAt &&
+      version.ownerDeletedAt === undefined &&
+      isPublicSkillVersionAvailableForSkill(version, version.skillId)
       ? toPublicSkillVersion(version)
       : null;
   },
@@ -9558,7 +9582,10 @@ export const getVersionBySkillAndVersion = query({
         q.eq("skillId", args.skillId).eq("version", args.version),
       )
       .unique();
-    return version && !version.softDeletedAt && version.ownerDeletedAt === undefined
+    return version &&
+      !version.softDeletedAt &&
+      version.ownerDeletedAt === undefined &&
+      isPublicSkillVersionAvailableForSkill(version, args.skillId)
       ? toPublicSkillVersion(version)
       : null;
   },
@@ -10013,7 +10040,7 @@ async function canReadSkillVersionFiles(ctx: ActionCtx, version: Doc<"skillVersi
 
   if (skill.softDeletedAt || version.softDeletedAt) return false;
 
-  return Boolean(toPublicSkill(skill));
+  return Boolean(toPublicSkill(skill)) && isPublicSkillVersionAvailableForSkill(version, skill._id);
 }
 
 async function canReadGitHubSkillContent(ctx: QueryCtx, skill: Doc<"skills">) {
@@ -11871,6 +11898,59 @@ export const hardDeleteInternal = internalMutation({
   },
 });
 
+type SkillPendingPublishArgs = {
+  userId: Id<"users">;
+  ownerPublisherId?: Id<"publishers">;
+  displayName: string;
+  version: string;
+  changelog: string;
+  changelogSource?: "auto" | "user";
+  tags?: string[];
+  categories?: string[];
+  topics?: string[];
+  files: Doc<"skillVersions">["files"];
+  parsed: Doc<"skillVersions">["parsed"];
+  summary?: string;
+  qualityAssessment?: {
+    decision: "pass" | "quarantine" | "reject";
+    score: number;
+    reason: string;
+    trustTier: "low" | "medium" | "trusted";
+    similarRecentCount: number;
+    signals: {
+      bodyChars: number;
+      bodyWords: number;
+      uniqueWordRatio: number;
+      headingCount: number;
+      bulletCount: number;
+      templateMarkerHits: number;
+      genericSummary: boolean;
+      cjkChars?: number;
+    };
+  };
+  staticScan: NonNullable<Doc<"skillVersions">["staticScan"]>;
+  llmAnalysis?: Doc<"skillVersions">["llmAnalysis"];
+  embedding: number[];
+};
+
+function asSkillPendingPublishArgs(value: unknown): SkillPendingPublishArgs {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new ConvexError("Pending skill publication metadata is missing.");
+  }
+  return value as SkillPendingPublishArgs;
+}
+
+function stripUndefinedForStoredPublication(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripUndefinedForStoredPublication);
+  if (!value || typeof value !== "object") return value;
+
+  const result: Record<string, unknown> = {};
+  for (const [key, nested] of Object.entries(value)) {
+    if (nested !== undefined) result[key] = stripUndefinedForStoredPublication(nested);
+  }
+  return result;
+}
+
 export const insertVersion = internalMutation({
   args: {
     userId: v.id("users"),
@@ -11965,9 +12045,12 @@ export const insertVersion = internalMutation({
     }),
     llmAnalysis: v.optional(v.any()),
     embedding: v.array(v.number()),
+    publicationStatus: v.optional(v.union(v.literal("pending"), v.literal("published"))),
+    deferredAiEnrichment: v.optional(v.any()),
   },
   handler: async (ctx, args) => {
     const userId = args.userId;
+    const isPendingPublication = args.publicationStatus === "pending";
     // Lenient normalization first so we can look up an existing skill row
     // before deciding whether to enforce the strict write-path validator.
     // Owners of grandfathered slugs (reserved, <3 chars, >48 chars, or other
@@ -12082,6 +12165,7 @@ export const insertVersion = internalMutation({
     // For existing rows, keep the already-persisted (possibly grandfathered)
     // slug as-is so legacy publishers are not locked out of version updates.
     const slug = skill ? normalizedSlug : normalizeSkillSlugForWrite(args.slug);
+    const createdNewParent = !skill;
 
     if (!skill) {
       const alias = await getSkillSlugAliasBySlugScoped(
@@ -12394,9 +12478,11 @@ export const insertVersion = internalMutation({
           official: undefined,
           deprecated: undefined,
         },
-        moderationStatus: initialModerationStatus,
-        moderationReason,
-        moderationNotes,
+        moderationStatus: isPendingPublication ? "hidden" : initialModerationStatus,
+        moderationReason: isPendingPublication ? "pending.publication" : moderationReason,
+        moderationNotes: isPendingPublication
+          ? "Pre-publication security checks are pending."
+          : moderationNotes,
         moderationVerdict: initialScannerSnapshot.verdict,
         moderationReasonCodes: initialScannerSnapshot.reasonCodes.length
           ? initialScannerSnapshot.reasonCodes
@@ -12455,6 +12541,10 @@ export const insertVersion = internalMutation({
     const versionId = await ctx.db.insert("skillVersions", {
       skillId: skill._id,
       version: args.version,
+      publicationStatus: args.publicationStatus ?? "published",
+      pendingPublication: isPendingPublication
+        ? stripUndefinedForStoredPublication({ skillInsertArgs: args })
+        : undefined,
       fingerprint: args.fingerprint,
       sourceProvenance: args.sourceProvenance,
       changelog: args.changelog,
@@ -12468,6 +12558,22 @@ export const insertVersion = internalMutation({
       createdAt: now,
       softDeletedAt: undefined,
     });
+
+    if (isPendingPublication) {
+      await ctx.db.insert("skillVersionFingerprints", {
+        skillId: skill._id,
+        versionId,
+        fingerprint: args.fingerprint,
+        kind: "source",
+        createdAt: now,
+      });
+      return {
+        skillId: skill._id,
+        versionId,
+        publicationStatus: "pending" as const,
+        createdNewParent,
+      };
+    }
 
     // Only promote this version to `latest` if it is strictly greater than the
     // currently published latest version (by semver). This allows backport /
@@ -12655,6 +12761,305 @@ export const insertVersion = internalMutation({
     });
 
     return { skillId: skill._id, versionId, embeddingId };
+  },
+});
+
+export const getPendingVersionPublishArgsInternal = internalQuery({
+  args: { versionId: v.id("skillVersions") },
+  handler: async (ctx, args) => {
+    const version = await ctx.db.get(args.versionId);
+    if (!version) return null;
+    const pendingPublication =
+      version.pendingPublication &&
+      typeof version.pendingPublication === "object" &&
+      !Array.isArray(version.pendingPublication)
+        ? (version.pendingPublication as { skillInsertArgs?: unknown })
+        : null;
+    return pendingPublication?.skillInsertArgs ?? null;
+  },
+});
+
+export const discardPendingPublicationInternal = internalMutation({
+  args: {
+    skillId: v.id("skills"),
+    versionId: v.id("skillVersions"),
+    createdNewParent: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    const version = await ctx.db.get(args.versionId);
+    if (!version || version.skillId !== args.skillId || version.publicationStatus !== "pending") {
+      return { deleted: false };
+    }
+
+    const storageIds = new Set<Id<"_storage">>();
+    for (const file of version.files ?? []) {
+      if (typeof file.storageId === "string") {
+        storageIds.add(file.storageId as Id<"_storage">);
+      }
+    }
+
+    const fingerprints = await ctx.db
+      .query("skillVersionFingerprints")
+      .withIndex("by_version", (q) => q.eq("versionId", version._id))
+      .take(100);
+    for (const fingerprint of fingerprints) {
+      await ctx.db.delete(fingerprint._id);
+    }
+    await ctx.db.delete(version._id);
+    await Promise.allSettled([...storageIds].map((storageId) => ctx.storage.delete(storageId)));
+
+    let parentDeleted = false;
+    if (args.createdNewParent) {
+      const skill = await ctx.db.get(args.skillId);
+      if (skill && !skill.latestVersionId) {
+        const remainingVersions = await ctx.db
+          .query("skillVersions")
+          .withIndex("by_skill", (q) => q.eq("skillId", args.skillId))
+          .take(1);
+        if (remainingVersions.length === 0) {
+          await ctx.db.delete(args.skillId);
+          parentDeleted = true;
+        }
+      }
+    }
+
+    return { deleted: true, parentDeleted };
+  },
+});
+
+export const publishPendingVersionInternal = internalMutation({
+  args: {
+    versionId: v.id("skillVersions"),
+    publishArgs: v.any(),
+  },
+  handler: async (ctx, args) => {
+    const version = await ctx.db.get(args.versionId);
+    if (!version || version.softDeletedAt) {
+      throw new ConvexError("Pending skill version not found.");
+    }
+    const skill = await ctx.db.get(version.skillId);
+    if (!skill) throw new ConvexError("Skill not found.");
+
+    const existingEmbedding = await ctx.db
+      .query("skillEmbeddings")
+      .withIndex("by_version", (q) => q.eq("versionId", version._id))
+      .unique();
+    if (version.publicationStatus === "published" || version.publicationStatus === undefined) {
+      if (!existingEmbedding) {
+        throw new ConvexError("Published skill version is missing its embedding.");
+      }
+      return {
+        skillId: skill._id,
+        versionId: version._id,
+        embeddingId: existingEmbedding._id,
+        publicationStatus: "published" as const,
+      };
+    }
+    if (version.publicationStatus !== "pending") {
+      throw new ConvexError(`Skill version is ${version.publicationStatus}, not pending.`);
+    }
+
+    const publishArgs = asSkillPendingPublishArgs(args.publishArgs);
+    const user = await ctx.db.get(publishArgs.userId);
+    if (!user || user.deletedAt || user.deactivatedAt) throw new Error("User not found");
+
+    const now = Date.now();
+    const prevLatestVersion = skill.latestVersionSummary?.version;
+    const isNewLatest =
+      !prevLatestVersion ||
+      !semver.valid(prevLatestVersion) ||
+      semver.gt(version.version, prevLatestVersion);
+    const nextTags: Record<string, Id<"skillVersions">> = { ...skill.tags };
+    if (isNewLatest) {
+      nextTags.latest = version._id;
+    }
+    for (const tag of publishArgs.tags ?? []) {
+      if (tag.toLowerCase() === "latest") continue;
+      nextTags[tag] = version._id;
+    }
+
+    const latestBefore = skill.latestVersionId;
+    const derivedSummary =
+      publishArgs.summary ??
+      getFrontmatterValue(publishArgs.parsed.frontmatter, "description") ??
+      skill.summary;
+    const nextSummary = isNewLatest ? derivedSummary : skill.summary;
+    const nextDisplayName = isNewLatest ? publishArgs.displayName : skill.displayName;
+    const qualityAssessment = publishArgs.qualityAssessment;
+    const isQualityQuarantine = qualityAssessment?.decision === "quarantine";
+    const isPublisherUnderModeration = Boolean(user.requiresModerationAt);
+    const initialModerationStatus =
+      isQualityQuarantine || isPublisherUnderModeration ? "hidden" : "active";
+    const moderationReason = isQualityQuarantine
+      ? "quality.low"
+      : isPublisherUnderModeration
+        ? USER_MODERATION_REASON
+        : "pending.scan";
+    const moderationNotes = isQualityQuarantine
+      ? `Auto-quarantined by quality gate (score=${qualityAssessment.score}, tier=${qualityAssessment.trustTier}, similar=${qualityAssessment.similarRecentCount}).`
+      : isPublisherUnderModeration
+        ? (user.requiresModerationReason ??
+          "Publisher is currently under manual moderation review.")
+        : undefined;
+    const qualityRecord = qualityAssessment
+      ? {
+          score: qualityAssessment.score,
+          decision: qualityAssessment.decision,
+          trustTier: qualityAssessment.trustTier,
+          similarRecentCount: qualityAssessment.similarRecentCount,
+          reason: qualityAssessment.reason,
+          signals: qualityAssessment.signals,
+          evaluatedAt: now,
+        }
+      : undefined;
+
+    const derivedFlags = deriveModerationFlags({
+      skill: {
+        slug: skill.slug,
+        displayName: nextDisplayName,
+        summary: nextSummary ?? undefined,
+      },
+      parsed: publishArgs.parsed,
+      files: publishArgs.files,
+    });
+    const moderationSnapshot = buildModerationSnapshot({ sourceVersionId: version._id });
+    const nextFlags = Array.from(
+      new Set([...(derivedFlags ?? []), ...(moderationSnapshot.legacyFlags ?? [])]),
+    );
+    const versionForModeration = {
+      ...version,
+      staticScan: publishArgs.staticScan,
+      llmAnalysis: publishArgs.llmAnalysis ?? version.llmAnalysis,
+    };
+    const scannerModerationPatch =
+      versionForModeration.llmAnalysis && !isQualityQuarantine && !isPublisherUnderModeration
+        ? buildScannerModerationPatchFromVersion({
+            owner: null,
+            version: versionForModeration,
+            now,
+          })
+        : {};
+
+    const basePatch: SkillModerationPatch = {
+      displayName: nextDisplayName,
+      summary: nextSummary ?? undefined,
+      icon: skill.icon,
+      ownerPublisherId: skill.ownerPublisherId ?? publishArgs.ownerPublisherId,
+      latestVersionId: isNewLatest ? version._id : skill.latestVersionId,
+      latestVersionSummary: isNewLatest
+        ? {
+            version: version.version,
+            createdAt: version.createdAt,
+            changelog: publishArgs.changelog,
+            changelogSource: publishArgs.changelogSource,
+            description: getFrontmatterValue(publishArgs.parsed.frontmatter, "description")?.trim(),
+            clawdis: publishArgs.parsed.clawdis,
+          }
+        : skill.latestVersionSummary,
+      tags: nextTags,
+      categories: isNewLatest ? publishArgs.categories : skill.categories,
+      topics: isNewLatest ? publishArgs.topics : skill.topics,
+      ...(isNewLatest
+        ? {
+            inferredCategories: undefined,
+            inferredTopics: undefined,
+            inferredFromVersionId: undefined,
+            inferredCategoryConfidence: undefined,
+            inferredTopicConfidence: undefined,
+            inferredClassifierVersion: undefined,
+            inferredTopicClassifierVersion: undefined,
+            inferredInputHash: undefined,
+            inferredTopicInputHash: undefined,
+            inferredAt: undefined,
+          }
+        : {}),
+      stats: { ...skill.stats, versions: skill.stats.versions + 1 },
+      softDeletedAt: undefined,
+      moderationStatus: initialModerationStatus,
+      moderationReason,
+      moderationNotes,
+      moderationVerdict: moderationSnapshot.verdict,
+      moderationReasonCodes: moderationSnapshot.reasonCodes.length
+        ? moderationSnapshot.reasonCodes
+        : undefined,
+      moderationEvidence: moderationSnapshot.evidence.length
+        ? moderationSnapshot.evidence
+        : undefined,
+      moderationSummary: moderationSnapshot.summary,
+      moderationEngineVersion: moderationSnapshot.engineVersion,
+      moderationEvaluatedAt: moderationSnapshot.evaluatedAt,
+      moderationSourceVersionId: version._id,
+      quality: qualityRecord ?? skill.quality,
+      moderationFlags: nextFlags.length ? nextFlags : undefined,
+      isSuspicious: computeIsSuspicious({
+        moderationFlags: nextFlags.length ? nextFlags : undefined,
+        moderationReason,
+      }),
+      unpublishedSlugReservedUntil: undefined,
+      unpublishedSlugReleasedAt: undefined,
+      unpublishedOriginalSlug: undefined,
+      updatedAt: now,
+      ...scannerModerationPatch,
+    };
+    const patch = applySkillManualOverrideToSkillPatch({
+      skill,
+      basePatch,
+      now,
+    });
+    const nextSkill = { ...skill, ...patch };
+
+    await ctx.db.patch(version._id, {
+      publicationStatus: "published",
+      changelog: publishArgs.changelog,
+      changelogSource: publishArgs.changelogSource,
+      llmAnalysis: publishArgs.llmAnalysis ?? version.llmAnalysis,
+    });
+    await ctx.db.patch(skill._id, patch);
+    await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill);
+    await adjustUserSkillStatsForSkillChange(ctx, skill, nextSkill);
+    await syncSkillSearchDigestForSkillDoc(ctx, nextSkill);
+
+    const badgeMap = await getSkillBadgeMap(ctx, skill._id);
+    const isApproved = Boolean(badgeMap.redactionApproved);
+    const embeddingId = existingEmbedding
+      ? existingEmbedding._id
+      : await ctx.db.insert("skillEmbeddings", {
+          skillId: skill._id,
+          versionId: version._id,
+          ownerId: publishArgs.userId,
+          embedding: publishArgs.embedding,
+          isLatest: isNewLatest,
+          isApproved,
+          visibility: embeddingVisibilityFor(isNewLatest, isApproved),
+          updatedAt: now,
+        });
+    if (!existingEmbedding) {
+      await ctx.db.insert("embeddingSkillMap", {
+        embeddingId,
+        skillId: skill._id,
+      });
+    }
+
+    if (isNewLatest && latestBefore) {
+      const previousEmbedding = await ctx.db
+        .query("skillEmbeddings")
+        .withIndex("by_version", (q) => q.eq("versionId", latestBefore))
+        .unique();
+      if (previousEmbedding) {
+        await ctx.db.patch(previousEmbedding._id, {
+          isLatest: false,
+          visibility: embeddingVisibilityFor(false, previousEmbedding.isApproved),
+          updatedAt: now,
+        });
+      }
+    }
+
+    return {
+      skillId: skill._id,
+      versionId: version._id,
+      embeddingId,
+      publicationStatus: "published" as const,
+    };
   },
 });
 
