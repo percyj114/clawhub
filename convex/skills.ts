@@ -7615,6 +7615,19 @@ export const listVersions = query({
         .take(limit);
       return versions.map((version) => toPublicSkillVersion(version)!);
     }
+    if (actor) {
+      const skill = await ctx.db.get(args.skillId);
+      if (skill && (await canManageSkillOwnerForActor(ctx, actor, skill))) {
+        const versions = await ctx.db
+          .query("skillVersions")
+          .withIndex("by_skill_active_created", (q) =>
+            q.eq("skillId", args.skillId).eq("softDeletedAt", undefined),
+          )
+          .order("desc")
+          .take(limit);
+        return versions.map((version) => toPublicSkillVersion(version)!);
+      }
+    }
     const publicVersions = await paginatePublicSkillVersions(ctx, args.skillId, null, limit);
     return publicVersions.items.map((version) => toPublicSkillVersion(version)!);
   },

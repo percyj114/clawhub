@@ -523,6 +523,71 @@ describe("public skill version queries", () => {
     },
   );
 
+  it("shows active pending version history to owners through the bounded active index", async () => {
+    const version = makeVersion();
+    const pendingVersion = {
+      ...makeVersion(),
+      _id: "skillVersions:pending",
+      version: "2.0.0",
+      publicationStatus: "pending",
+    };
+    const indexNames: string[] = [];
+    const filters = new Map<string, unknown>();
+    const take = vi.fn(async (limit: number) => [pendingVersion, version].slice(0, limit));
+    vi.mocked(getAuthUserId).mockResolvedValue("users:owner" as never);
+    const ctx = {
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === "users:owner") return { _id: id, role: "user" };
+          if (id === "skills:1") {
+            return {
+              _id: id,
+              ownerUserId: "users:owner",
+              ownerPublisherId: undefined,
+            };
+          }
+          return null;
+        }),
+        query: vi.fn((table: string) => {
+          if (table !== "skillVersions") throw new Error(`Unexpected table ${table}`);
+          return {
+            withIndex: vi.fn(
+              (
+                index: string,
+                buildQuery?: (q: { eq: (field: string, value: unknown) => unknown }) => unknown,
+              ) => {
+                indexNames.push(index);
+                const query = {
+                  eq(field: string, value: unknown) {
+                    filters.set(field, value);
+                    return query;
+                  },
+                };
+                buildQuery?.(query);
+                return { order: vi.fn(() => ({ take })) };
+              },
+            ),
+          };
+        }),
+      },
+    } as never;
+
+    const result = (await listVersionsHandler(ctx, {
+      skillId: "skills:1",
+      limit: 50,
+    } as never)) as Array<{ version: string }>;
+
+    expect(result.map((item) => item.version)).toEqual(["2.0.0", "1.0.0"]);
+    expect(indexNames).toEqual(["by_skill_active_created"]);
+    expect(filters).toEqual(
+      new Map<string, unknown>([
+        ["skillId", "skills:1"],
+        ["softDeletedAt", undefined],
+      ]),
+    );
+    expect(take).toHaveBeenCalledWith(50);
+  });
+
   it("keeps soft-deleted versions from consuming an ordinary viewer's limit", async () => {
     const version = makeVersion();
     const deletedVersion = {
