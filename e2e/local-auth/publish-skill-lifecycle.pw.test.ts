@@ -450,7 +450,7 @@ test("mocked TruffleHog deletes a secret-positive pending skill upload before it
 ## Local secret fixture
 
 This fake token is intentionally redacted by the mocked TruffleHog worker:
-OPENAI_API_KEY=sk-local-e2e-redacted-secret-not-real
+LOCAL_E2E_SECRET_MARKER=redacted-secret-marker-not-real
 `;
 
   await publishSkillVersion(page, testInfo, {
