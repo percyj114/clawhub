@@ -1134,6 +1134,12 @@ function isPublishedPackageRelease(
   );
 }
 
+function hasNoPublishedPackageVersions(
+  pkg: Pick<Doc<"packages">, "latestReleaseId" | "latestVersionSummary" | "stats">,
+) {
+  return !pkg.latestReleaseId && !pkg.latestVersionSummary && (pkg.stats?.versions ?? 0) <= 0;
+}
+
 function normalizePublicPackageSourcePath(sourcePath: unknown) {
   if (typeof sourcePath !== "string") return undefined;
   const trimmed = sourcePath.trim();
@@ -1164,7 +1170,7 @@ function toPublicPackage(
   latestRelease?: Doc<"packageReleases"> | null,
 ): PublicPackageDoc | null {
   if (!pkg || pkg.softDeletedAt) return null;
-  if (!pkg.latestReleaseId && !pkg.latestVersionSummary) return null;
+  if (hasNoPublishedPackageVersions(pkg)) return null;
   if (
     latestRelease !== undefined &&
     latestRelease &&
@@ -7792,41 +7798,13 @@ async function publishPackageImpl(
     ) ?? [];
 
   if (options.stagePrePublicationChecks) {
-    let recoverablePendingRelease:
-      | {
-          ok: true;
-          packageId: Id<"packages">;
-          releaseId: Id<"packageReleases">;
-          publicationStatus: "pending";
-          createdNewParent?: boolean;
-        }
-      | undefined;
+    let existingRelease: Doc<"packageReleases"> | null = null;
     if (existingPackage) {
-      const existingRelease = await runQueryRef<Doc<"packageReleases"> | null>(
+      existingRelease = await runQueryRef<Doc<"packageReleases"> | null>(
         ctx,
         internalRefs.packages.getReleaseByPackageAndVersionInternal,
         { packageId: existingPackage._id, version },
       );
-      const canRecoverOrphanPendingRelease =
-        existingRelease &&
-        !existingRelease.softDeletedAt &&
-        existingRelease.publicationStatus === "pending" &&
-        existingRelease.integritySha256 === integritySha256;
-      if (existingRelease && !canRecoverOrphanPendingRelease) {
-        throw new ConvexError(
-          `Version ${version} already exists. Increment the version number and try again.`,
-        );
-      }
-      if (canRecoverOrphanPendingRelease) {
-        recoverablePendingRelease = {
-          ok: true,
-          packageId: existingPackage._id,
-          releaseId: existingRelease._id,
-          publicationStatus: "pending",
-          createdNewParent:
-            !existingPackage.latestReleaseId && !existingPackage.latestVersionSummary,
-        };
-      }
     }
     const existingAttempt = await runQueryRef<null | { attemptId: Id<"publishAttempts"> }>(
       ctx,
@@ -7842,19 +7820,32 @@ async function publishPackageImpl(
         `Version ${version} already exists. Increment the version number and try again.`,
       );
     }
+    if (existingPackage && existingRelease) {
+      if (!existingRelease.softDeletedAt && existingRelease.publicationStatus === "pending") {
+        await runMutationRef(ctx, internalRefs.packages.discardPendingPackagePublicationInternal, {
+          packageId: existingPackage._id,
+          releaseId: existingRelease._id,
+          createdNewParent: hasNoPublishedPackageVersions(existingPackage),
+        });
+        throw new ConvexError(
+          `Previous pending publish for ${version} did not finish creating security checks. It was cleaned up; retry the publish.`,
+        );
+      }
+      throw new ConvexError(
+        `Version ${version} already exists. Increment the version number and try again.`,
+      );
+    }
 
-    const pendingResult =
-      recoverablePendingRelease ??
-      (await runMutationRef<{
-        ok: true;
-        packageId: Id<"packages">;
-        releaseId: Id<"packageReleases">;
-        publicationStatus?: "pending" | "published";
-        createdNewParent?: boolean;
-      }>(ctx, internalRefs.packages.insertReleaseInternal, {
-        ...packageInsertArgs,
-        publicationStatus: "pending",
-      }));
+    const pendingResult = await runMutationRef<{
+      ok: true;
+      packageId: Id<"packages">;
+      releaseId: Id<"packageReleases">;
+      publicationStatus?: "pending" | "published";
+      createdNewParent?: boolean;
+    }>(ctx, internalRefs.packages.insertReleaseInternal, {
+      ...packageInsertArgs,
+      publicationStatus: "pending",
+    });
 
     const staged = await runMutationRef<{
       attemptId: Id<"publishAttempts">;

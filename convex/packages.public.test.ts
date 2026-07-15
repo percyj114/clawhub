@@ -6060,6 +6060,26 @@ describe("packages public queries", () => {
     ).resolves.toBeNull();
   });
 
+  it("keeps published non-latest packages visible without latest pointers", async () => {
+    const { ctx } = makePackageCtx({
+      pkg: makePackageDoc({
+        latestReleaseId: undefined,
+        latestVersionSummary: undefined,
+        stats: { downloads: 0, installs: 0, stars: 0, versions: 1 },
+      }),
+      latestRelease: null,
+    });
+
+    await expect(
+      getByNameHandler(ctx, {
+        name: "demo-plugin",
+      }),
+    ).resolves.toMatchObject({
+      package: { name: "demo-plugin", latestVersion: null },
+      latestRelease: null,
+    });
+  });
+
   it("hides soft-deleted releases from public version lists", async () => {
     const { ctx, releaseIndexNames } = makePackageCtx({
       versionsPage: {
@@ -8941,7 +8961,7 @@ describe("packages public queries", () => {
     );
   });
 
-  it("recovers an orphan pending package release by creating the missing publish attempt", async () => {
+  it("cleans up orphan pending package releases instead of wedging future retries", async () => {
     const previousFlag = process.env.CLAWHUB_STAGED_PREPUBLICATION_PUBLISHES;
     process.env.CLAWHUB_STAGED_PREPUBLICATION_PUBLISHES = "1";
     const runMutation = vi.fn(async (_ref: unknown, args: unknown) => {
@@ -8959,10 +8979,15 @@ describe("packages public queries", () => {
         "packageReleaseId" in args &&
         "packageFollowup" in args
       ) {
-        return {
-          attemptId: "publishAttempts:recovered",
-          status: "pending_checks",
-        };
+        throw new Error("orphan cleanup should reject before creating a publish attempt");
+      }
+      if (
+        typeof args === "object" &&
+        args !== null &&
+        "releaseId" in args &&
+        "createdNewParent" in args
+      ) {
+        return { deleted: true, parentDeleted: true };
       }
       return null;
     });
@@ -9034,13 +9059,9 @@ describe("packages public queries", () => {
             files: [packageManifestFile],
           },
         }),
-      ).resolves.toMatchObject({
-        ok: true,
-        status: "pending",
-        packageId: "packages:demo",
-        releaseId: "packageReleases:orphan",
-        attemptId: "publishAttempts:recovered",
-      });
+      ).rejects.toThrow(
+        "Previous pending publish for 1.0.0 did not finish creating security checks. It was cleaned up; retry the publish.",
+      );
     } finally {
       if (previousFlag === undefined) {
         delete process.env.CLAWHUB_STAGED_PREPUBLICATION_PUBLISHES;
@@ -9053,7 +9074,7 @@ describe("packages public queries", () => {
       expect.anything(),
       expect.objectContaining({
         packageId: "packages:demo",
-        packageReleaseId: "packageReleases:orphan",
+        releaseId: "packageReleases:orphan",
         createdNewParent: true,
       }),
     );
