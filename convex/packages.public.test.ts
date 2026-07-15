@@ -6043,6 +6043,23 @@ describe("packages public queries", () => {
     expect(result?.latestRelease).toBeNull();
   });
 
+  it("hides package shells that only have pending unpublished releases", async () => {
+    const { ctx } = makePackageCtx({
+      pkg: makePackageDoc({
+        latestReleaseId: undefined,
+        latestVersionSummary: undefined,
+        stats: { downloads: 0, installs: 0, stars: 0, versions: 0 },
+      }),
+      latestRelease: null,
+    });
+
+    await expect(
+      getByNameHandler(ctx, {
+        name: "demo-plugin",
+      }),
+    ).resolves.toBeNull();
+  });
+
   it("hides soft-deleted releases from public version lists", async () => {
     const { ctx, releaseIndexNames } = makePackageCtx({
       versionsPage: {
@@ -6067,6 +6084,78 @@ describe("packages public queries", () => {
     expect(result.page.map((entry) => entry.version)).toEqual(["1.0.0"]);
     expect(result.page[0]).not.toHaveProperty("capabilities");
     expect(releaseIndexNames).toContain("by_package_active_created");
+  });
+
+  it("fills public package version pages after skipping pending releases", async () => {
+    const releases = [
+      makeReleaseDoc({
+        _id: "packageReleases:pending",
+        version: "2.0.0",
+        publicationStatus: "pending",
+      }),
+      makeReleaseDoc({
+        _id: "packageReleases:published",
+        version: "1.0.0",
+      }),
+    ];
+    const paginate = vi.fn(
+      async ({ cursor, numItems }: { cursor: string | null; numItems: number }) => {
+        const start = cursor ? Number(cursor) : 0;
+        const page = releases.slice(start, start + numItems);
+        const next = start + page.length;
+        return {
+          page,
+          isDone: next >= releases.length,
+          continueCursor: next >= releases.length ? "" : String(next),
+        };
+      },
+    );
+    const releaseIndexNames: string[] = [];
+    const ctx = {
+      db: {
+        get: vi.fn(async (id: string) =>
+          typeof id === "string" && id.startsWith("users:")
+            ? { _id: id, handle: id.split(":").pop() ?? "user" }
+            : null,
+        ),
+        query: vi.fn((table: string) => {
+          if (table === "packages") {
+            return {
+              withIndex: vi.fn(() => ({
+                unique: vi.fn().mockResolvedValue(makePackageDoc()),
+              })),
+            };
+          }
+          if (table === "packageReleases") {
+            return {
+              withIndex: vi.fn((indexName: string) => {
+                releaseIndexNames.push(indexName);
+                return {
+                  order: vi.fn(() => ({
+                    paginate,
+                  })),
+                };
+              }),
+            };
+          }
+          throw new Error(`Unexpected table ${table}`);
+        }),
+      },
+    };
+
+    const result = await listVersionsHandler(ctx as never, {
+      name: "demo-plugin",
+      paginationOpts: { cursor: null, numItems: 1 },
+    });
+
+    expect(result).toMatchObject({
+      page: [{ version: "1.0.0" }],
+      isDone: true,
+      continueCursor: "",
+    });
+    expect(paginate).toHaveBeenNthCalledWith(1, { cursor: null, numItems: 1 });
+    expect(paginate).toHaveBeenNthCalledWith(2, { cursor: "1", numItems: 1 });
+    expect(releaseIndexNames).toEqual(["by_package_active_created", "by_package_active_created"]);
   });
 
   it("soft-deletes packages and active releases for the owner", async () => {
@@ -8848,6 +8937,124 @@ describe("packages public queries", () => {
         packageId: "packages:demo",
         packageReleaseId: "packageReleases:pending",
         scanContext: expect.any(Object),
+      }),
+    );
+  });
+
+  it("recovers an orphan pending package release by creating the missing publish attempt", async () => {
+    const previousFlag = process.env.CLAWHUB_STAGED_PREPUBLICATION_PUBLISHES;
+    process.env.CLAWHUB_STAGED_PREPUBLICATION_PUBLISHES = "1";
+    const runMutation = vi.fn(async (_ref: unknown, args: unknown) => {
+      if (
+        typeof args === "object" &&
+        args !== null &&
+        "publicationStatus" in args &&
+        (args as { publicationStatus?: string }).publicationStatus === "pending"
+      ) {
+        throw new Error("orphan recovery should not insert a second pending release");
+      }
+      if (
+        typeof args === "object" &&
+        args !== null &&
+        "packageReleaseId" in args &&
+        "packageFollowup" in args
+      ) {
+        return {
+          attemptId: "publishAttempts:recovered",
+          status: "pending_checks",
+        };
+      }
+      return null;
+    });
+    const trustedPublisher = {
+      _id: "packageTrustedPublishers:1",
+      packageId: "packages:demo",
+      provider: "github-actions",
+      repository: "openclaw/openclaw",
+      repositoryId: "1",
+      repositoryOwner: "openclaw",
+      repositoryOwnerId: "2",
+      workflowFilename: "plugin-clawhub-release.yml",
+      environment: "clawhub-release",
+    };
+    const orphanParent = makePackageDoc({
+      latestReleaseId: undefined,
+      latestVersionSummary: undefined,
+      stats: { downloads: 0, installs: 0, stars: 0, versions: 0 },
+    });
+    const orphanRelease = makeReleaseDoc({
+      _id: "packageReleases:orphan",
+      packageId: "packages:demo",
+      integritySha256: "b8107c6a51a6a7554e20d2963348212b80bc816fb59492ee163792103a6b7df6",
+      publicationStatus: "pending",
+    });
+    const ctx = {
+      runQuery: vi
+        .fn()
+        .mockResolvedValueOnce({
+          _id: "packagePublishTokens:1",
+          packageId: "packages:demo",
+          provider: "github-actions",
+          repository: "openclaw/openclaw",
+          repositoryId: "1",
+          repositoryOwner: "openclaw",
+          repositoryOwnerId: "2",
+          workflowFilename: "plugin-clawhub-release.yml",
+          environment: "clawhub-release",
+          version: "1.0.0",
+          sha: "abc123",
+          ref: "refs/heads/main",
+          runId: "100",
+          runAttempt: "1",
+          expiresAt: Date.now() + 60_000,
+        })
+        .mockResolvedValueOnce(trustedPublisher)
+        .mockResolvedValueOnce(orphanParent)
+        .mockResolvedValueOnce(trustedPublisher)
+        .mockResolvedValueOnce(orphanRelease)
+        .mockResolvedValueOnce(null),
+      runMutation,
+      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
+      scheduler: {
+        runAfter: vi.fn(),
+      },
+      storage: makePackageManifestStorage(),
+    };
+
+    try {
+      await expect(
+        publishPackageForTrustedPublisherInternalHandler(ctx as never, {
+          publishTokenId: "packagePublishTokens:1",
+          payload: {
+            name: "demo-plugin",
+            family: "bundle-plugin",
+            version: "1.0.0",
+            changelog: "init",
+            bundle: { hostTargets: ["desktop"] },
+            files: [packageManifestFile],
+          },
+        }),
+      ).resolves.toMatchObject({
+        ok: true,
+        status: "pending",
+        packageId: "packages:demo",
+        releaseId: "packageReleases:orphan",
+        attemptId: "publishAttempts:recovered",
+      });
+    } finally {
+      if (previousFlag === undefined) {
+        delete process.env.CLAWHUB_STAGED_PREPUBLICATION_PUBLISHES;
+      } else {
+        process.env.CLAWHUB_STAGED_PREPUBLICATION_PUBLISHES = previousFlag;
+      }
+    }
+
+    expect(runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        packageId: "packages:demo",
+        packageReleaseId: "packageReleases:orphan",
+        createdNewParent: true,
       }),
     );
   });

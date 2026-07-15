@@ -1164,6 +1164,7 @@ function toPublicPackage(
   latestRelease?: Doc<"packageReleases"> | null,
 ): PublicPackageDoc | null {
   if (!pkg || pkg.softDeletedAt) return null;
+  if (!pkg.latestReleaseId && !pkg.latestVersionSummary) return null;
   if (
     latestRelease !== undefined &&
     latestRelease &&
@@ -1171,7 +1172,6 @@ function toPublicPackage(
   ) {
     return null;
   }
-  if (latestRelease === undefined && !pkg.latestReleaseId && !pkg.latestVersionSummary) return null;
   const latestVersion =
     latestRelease === undefined
       ? (pkg.latestVersionSummary?.version ?? null)
@@ -1222,6 +1222,50 @@ function toPublicPackageRelease(release: Doc<"packageReleases">) {
       sourcePath,
     },
   };
+}
+
+async function paginatePublishedPackageReleases(
+  ctx: QueryCtx,
+  packageId: Id<"packages">,
+  paginationOpts: { cursor: string | null; numItems: number },
+) {
+  const targetCount = Math.max(1, Math.min(paginationOpts.numItems, MAX_PUBLIC_LIST_PAGE_SIZE));
+  const page: Doc<"packageReleases">[] = [];
+  let cursor = paginationOpts.cursor;
+  let isDone = false;
+  let continueCursor = "";
+  let remainingScanBudget = Math.max(
+    targetCount,
+    Math.min(
+      MAX_PUBLIC_LIST_FILTER_SCAN_DOCUMENTS,
+      targetCount * MAX_PUBLIC_LIST_FILTER_SCAN_PAGES,
+    ),
+  );
+
+  for (let scanPages = 0; scanPages < MAX_PUBLIC_LIST_FILTER_SCAN_PAGES; scanPages += 1) {
+    if (page.length >= targetCount || isDone || remainingScanBudget <= 0) break;
+    const pageSize = Math.min(remainingScanBudget, targetCount - page.length);
+    const result = await ctx.db
+      .query("packageReleases")
+      .withIndex("by_package_active_created", (q) =>
+        q.eq("packageId", packageId).eq("softDeletedAt", undefined),
+      )
+      .order("desc")
+      .paginate({ cursor, numItems: pageSize });
+    remainingScanBudget -= pageSize;
+    cursor = result.continueCursor;
+    continueCursor = result.continueCursor;
+    isDone = result.isDone;
+    for (const release of result.page) {
+      if (isPublishedPackageRelease(release)) {
+        page.push(release);
+        if (page.length >= targetCount) break;
+      }
+    }
+    if (result.page.length === 0) break;
+  }
+
+  return { page, isDone, continueCursor: isDone ? "" : continueCursor };
 }
 
 function packageArtifactSummary(
@@ -2978,16 +3022,10 @@ export const listVersions = query({
     const viewerUserId = await getOptionalViewerUserId(ctx);
     const pkg = await getReadablePackageByName(ctx, args.name, viewerUserId);
     if (!pkg) return { page: [], isDone: true, continueCursor: "" };
-    const result = await ctx.db
-      .query("packageReleases")
-      .withIndex("by_package_active_created", (q) =>
-        q.eq("packageId", pkg._id).eq("softDeletedAt", undefined),
-      )
-      .order("desc")
-      .paginate(args.paginationOpts);
+    const result = await paginatePublishedPackageReleases(ctx, pkg._id, args.paginationOpts);
     return {
       ...result,
-      page: result.page.filter(isPublishedPackageRelease).map(toPublicPackageRelease),
+      page: result.page.map(toPublicPackageRelease),
     };
   },
 });
@@ -3001,16 +3039,10 @@ export const listVersionsForViewerInternal = internalQuery({
   handler: async (ctx, args) => {
     const pkg = await getReadablePackageByName(ctx, args.name, args.viewerUserId);
     if (!pkg) return { page: [], isDone: true, continueCursor: "" };
-    const result = await ctx.db
-      .query("packageReleases")
-      .withIndex("by_package_active_created", (q) =>
-        q.eq("packageId", pkg._id).eq("softDeletedAt", undefined),
-      )
-      .order("desc")
-      .paginate(args.paginationOpts);
+    const result = await paginatePublishedPackageReleases(ctx, pkg._id, args.paginationOpts);
     return {
       ...result,
-      page: result.page.filter(isPublishedPackageRelease).map(toPublicPackageRelease),
+      page: result.page.map(toPublicPackageRelease),
     };
   },
 });
@@ -7760,21 +7792,40 @@ async function publishPackageImpl(
     ) ?? [];
 
   if (options.stagePrePublicationChecks) {
+    let recoverablePendingRelease:
+      | {
+          ok: true;
+          packageId: Id<"packages">;
+          releaseId: Id<"packageReleases">;
+          publicationStatus: "pending";
+          createdNewParent?: boolean;
+        }
+      | undefined;
     if (existingPackage) {
       const existingRelease = await runQueryRef<Doc<"packageReleases"> | null>(
         ctx,
         internalRefs.packages.getReleaseByPackageAndVersionInternal,
         { packageId: existingPackage._id, version },
       );
-      const canReuseExistingRelease =
-        packageInsertArgs.allowExistingRelease &&
+      const canRecoverOrphanPendingRelease =
         existingRelease &&
         !existingRelease.softDeletedAt &&
+        existingRelease.publicationStatus === "pending" &&
         existingRelease.integritySha256 === integritySha256;
-      if (existingRelease && !canReuseExistingRelease) {
+      if (existingRelease && !canRecoverOrphanPendingRelease) {
         throw new ConvexError(
           `Version ${version} already exists. Increment the version number and try again.`,
         );
+      }
+      if (canRecoverOrphanPendingRelease) {
+        recoverablePendingRelease = {
+          ok: true,
+          packageId: existingPackage._id,
+          releaseId: existingRelease._id,
+          publicationStatus: "pending",
+          createdNewParent:
+            !existingPackage.latestReleaseId && !existingPackage.latestVersionSummary,
+        };
       }
     }
     const existingAttempt = await runQueryRef<null | { attemptId: Id<"publishAttempts"> }>(
@@ -7792,16 +7843,18 @@ async function publishPackageImpl(
       );
     }
 
-    const pendingResult = await runMutationRef<{
-      ok: true;
-      packageId: Id<"packages">;
-      releaseId: Id<"packageReleases">;
-      publicationStatus?: "pending" | "published";
-      createdNewParent?: boolean;
-    }>(ctx, internalRefs.packages.insertReleaseInternal, {
-      ...packageInsertArgs,
-      publicationStatus: "pending",
-    });
+    const pendingResult =
+      recoverablePendingRelease ??
+      (await runMutationRef<{
+        ok: true;
+        packageId: Id<"packages">;
+        releaseId: Id<"packageReleases">;
+        publicationStatus?: "pending" | "published";
+        createdNewParent?: boolean;
+      }>(ctx, internalRefs.packages.insertReleaseInternal, {
+        ...packageInsertArgs,
+        publicationStatus: "pending",
+      }));
 
     const staged = await runMutationRef<{
       attemptId: Id<"publishAttempts">;
