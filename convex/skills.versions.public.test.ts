@@ -437,6 +437,38 @@ describe("public skill version queries", () => {
     expect(paginated.paginate).toHaveBeenNthCalledWith(2, { cursor: "1", numItems: 1 });
   });
 
+  it("bounds public version pagination over hidden pending versions", async () => {
+    const pendingVersions = Array.from({ length: 13 }, (_, index) => ({
+      ...makeVersion(),
+      _id: `skillVersions:pending-${index}`,
+      version: `2.0.${index}`,
+      publicationStatus: "pending",
+    }));
+    const publishedVersion = {
+      ...makeVersion(),
+      _id: "skillVersions:published-after-backlog",
+      version: "1.0.0",
+    };
+    const paginated = makePaginatedSkillVersionQuery([...pendingVersions, publishedVersion]);
+    const ctx = {
+      db: {
+        query: vi.fn((table: string) => {
+          if (table !== "skillVersions") throw new Error(`Unexpected table ${table}`);
+          return { withIndex: paginated.withIndex };
+        }),
+      },
+    } as never;
+
+    const result = (await listVersionsPageHandler(ctx, {
+      skillId: "skills:1",
+      limit: 1,
+    } as never)) as { items: Array<{ version: string }>; nextCursor: string | null };
+
+    expect(result).toEqual({ items: [], nextCursor: "12" });
+    expect(paginated.paginate).toHaveBeenCalledTimes(12);
+    expect(paginated.paginate).toHaveBeenLastCalledWith({ cursor: "11", numItems: 1 });
+  });
+
   it.each(["admin", "moderator"] as const)(
     "shows soft-deleted version history to %s staff through the bounded skill index",
     async (role) => {
