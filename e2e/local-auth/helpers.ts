@@ -136,6 +136,7 @@ export async function completeMockPrePublicationChecks(args: {
     attemptId: string;
     claimId: string;
     artifactFingerprint: string;
+    files?: Array<{ path: string; storageId?: string; url?: string | null }>;
   };
   if (!claim) {
     throw new Error(`No pending ${args.kind} publish attempt for ${args.slug}@${args.version}`);
@@ -155,29 +156,33 @@ export async function completeMockPrePublicationChecks(args: {
           checkedAt: Date.now(),
         }
       : undefined;
-  return await convexClient().action(api.publishAttempts.completePrePublicationChecks, {
-    token: WORKER_TOKEN,
-    attemptId: claim.attemptId,
-    claimId: claim.claimId,
-    artifactFingerprint: claim.artifactFingerprint,
-    trufflehog: {
-      status: args.trufflehog ?? "clean",
-      summary:
-        args.trufflehog === "blocked"
-          ? "Mock TruffleHog found a redacted secret in the local e2e fixture."
-          : "Mock TruffleHog found no secrets in the local e2e fixture.",
-      redactedFindings: args.trufflehog === "blocked" ? ["redacted-secret"] : undefined,
+  const completion = (await convexClient().action(
+    api.publishAttempts.completePrePublicationChecks,
+    {
+      token: WORKER_TOKEN,
+      attemptId: claim.attemptId,
+      claimId: claim.claimId,
+      artifactFingerprint: claim.artifactFingerprint,
+      trufflehog: {
+        status: args.trufflehog ?? "clean",
+        summary:
+          args.trufflehog === "blocked"
+            ? "Mock TruffleHog found a redacted secret in the local e2e fixture."
+            : "Mock TruffleHog found no secrets in the local e2e fixture.",
+        redactedFindings: args.trufflehog === "blocked" ? ["redacted-secret"] : undefined,
+      },
+      clawscan: {
+        status: clawscanBlocked ? "blocked" : clawscanFailed ? "failed" : "clean",
+        summary: "Mock ClawScan completed for the local e2e fixture.",
+        redactedFindings:
+          clawscan === "suspicious" || clawscan === "malicious"
+            ? [`status=completed; verdict=${clawscan}`]
+            : undefined,
+      },
+      clawscanAnalysis,
     },
-    clawscan: {
-      status: clawscanBlocked ? "blocked" : clawscanFailed ? "failed" : "clean",
-      summary: "Mock ClawScan completed for the local e2e fixture.",
-      redactedFindings:
-        clawscan === "suspicious" || clawscan === "malicious"
-          ? [`status=completed; verdict=${clawscan}`]
-          : undefined,
-    },
-    clawscanAnalysis,
-  });
+  )) as Record<string, unknown>;
+  return { ...completion, claim };
 }
 
 function devPersonaHeaderPattern(persona: DevPersona, expectedHandle: string) {
