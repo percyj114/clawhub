@@ -1,12 +1,12 @@
+import { PACKAGE_TRENDING_LEADERBOARD_LIMIT } from "clawhub-schema";
 import { api } from "../../convex/_generated/api";
 import { convexHttp } from "../convex/client";
-import { isSkillOfficial } from "./badges";
 import { getSkillCategoriesForSkill } from "./categories";
 import { fetchPluginCatalog, type PackageListItem } from "./packageApi";
 import type { PublicSkill, PublicUser } from "./publicUser";
 
 export type HomeListingKind = "skills" | "plugins";
-export type HomeListingTab = "featured" | "popular" | "trending" | "officials";
+export type HomeListingTab = "featured" | "popular" | "trending";
 
 export type HomeSkillListingEntry = {
   skill: PublicSkill;
@@ -54,20 +54,6 @@ export function homeListingCacheKey({
   fetchLimit: number;
 }) {
   return ["listing", kind, tab, categoryCacheKey(categorySlugs), fetchLimit].join(":");
-}
-
-export function filterHomeSkillsByTab(entries: HomeSkillListingEntry[], tab: HomeListingTab) {
-  if (tab === "officials") {
-    return entries.filter((entry) => isSkillOfficial(entry.skill));
-  }
-  return entries;
-}
-
-export function filterHomePluginsByTab(items: PackageListItem[], tab: HomeListingTab) {
-  if (tab === "officials") {
-    return items.filter((item) => item.isOfficial);
-  }
-  return items;
 }
 
 export function itemMatchesAnyHomeCategory(
@@ -141,7 +127,6 @@ export async function fetchHomeSkillListing(
           sort: "downloads",
           dir: "desc",
           highlightedOnly: tab === "featured" ? true : undefined,
-          officialFirst: tab === "officials" ? true : undefined,
           categorySlug: categorySlug ?? undefined,
         });
         if (Array.isArray(result)) break;
@@ -161,7 +146,7 @@ export async function fetchHomeSkillListing(
     }),
   );
   const pages = results.flatMap((result) => result.page);
-  const sorted = sortHomeSkillEntries(filterHomeSkillsByTab(uniqueHomeSkillEntries(pages), tab));
+  const sorted = sortHomeSkillEntries(uniqueHomeSkillEntries(pages));
   const hasMore =
     sorted.length > numItems || (tab !== "featured" && results.some((result) => result.hasMore));
   const page = sorted.slice(0, numItems);
@@ -174,30 +159,47 @@ export async function fetchHomePluginListing(
   limit: number,
   signal?: AbortSignal,
 ) {
-  const openClawOfficials = tab === "officials";
   const featured = tab === "featured";
-  const categoriesToFetch = categorySlugs.length > 0 ? categorySlugs : [null];
+  const trending = tab === "trending";
+  const usesGlobalTrendingFilter = trending && categorySlugs.length > 1;
+  const categoriesToFetch = usesGlobalTrendingFilter
+    ? [null]
+    : categorySlugs.length > 0
+      ? categorySlugs
+      : [null];
   const results = await Promise.all(
     categoriesToFetch.map(async (categorySlug) => {
       const items: PackageListItem[] = [];
       let cursor: string | null | undefined;
       let hasMore = false;
+      let trendingCandidatesScanned = 0;
 
       while (items.length < limit) {
         const result = await fetchPluginCatalog({
           category: categorySlug ?? undefined,
           cursor: cursor ?? undefined,
-          isOfficial: openClawOfficials ? true : undefined,
           featured: featured ? true : undefined,
-          sort: "downloads",
-          limit: Math.min(limit - items.length, PLUGIN_CATALOG_PAGE_LIMIT),
+          sort: trending ? "trending" : "downloads",
+          limit: usesGlobalTrendingFilter
+            ? PLUGIN_CATALOG_PAGE_LIMIT
+            : Math.min(limit - items.length, PLUGIN_CATALOG_PAGE_LIMIT),
           signal,
         });
+        trendingCandidatesScanned += result.items.length;
         items.push(
           ...result.items.filter((item) => itemMatchesAnyHomeCategory(item, categorySlugs)),
         );
 
         hasMore = result.nextCursor != null;
+        if (
+          usesGlobalTrendingFilter &&
+          trendingCandidatesScanned >= PACKAGE_TRENDING_LEADERBOARD_LIMIT &&
+          result.nextCursor
+        ) {
+          throw new Error(
+            `Trending plugin feed exceeded ${PACKAGE_TRENDING_LEADERBOARD_LIMIT}-item contract`,
+          );
+        }
         if (!result.nextCursor || result.nextCursor === cursor) break;
         cursor = result.nextCursor;
       }
@@ -206,8 +208,7 @@ export async function fetchHomePluginListing(
     }),
   );
   let items = uniqueHomePlugins(results.flatMap((result) => result.items));
-  items = filterHomePluginsByTab(items, tab);
-  if (tab === "popular" || featured || openClawOfficials) {
+  if (tab === "popular" || featured) {
     items.sort((a, b) => (b.stats?.downloads ?? 0) - (a.stats?.downloads ?? 0));
   }
   const page = items.slice(0, limit);
@@ -248,10 +249,10 @@ export async function fetchInitialHomeListing(): Promise<HomeListingInitialData>
   const hasFeaturedPlugins = featuredPlugins.items.length > 0;
   const result = hasFeaturedPlugins
     ? featuredPlugins
-    : await fetchHomePluginListing("officials", [], HOME_LISTING_PAGE_SIZE);
+    : await fetchHomePluginListing("popular", [], HOME_LISTING_PAGE_SIZE);
   return {
     kind: "plugins",
-    tab: hasFeaturedPlugins ? "featured" : "officials",
+    tab: hasFeaturedPlugins ? "featured" : "popular",
     categorySlugs: [],
     fetchLimit: HOME_LISTING_PAGE_SIZE,
     items: result.items,

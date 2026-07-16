@@ -1,7 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { isPluginCategorySlug, isSkillCategorySlug } from "clawhub-schema";
 import {
-  BadgeCheck,
   Binoculars,
   CloudOff,
   Download,
@@ -27,8 +26,6 @@ import { api } from "../../convex/_generated/api";
 import { convexHttp } from "../convex/client";
 import { PLUGIN_CATEGORIES, SKILL_CATEGORIES, type BrowseCategory } from "../lib/categories";
 import {
-  filterHomePluginsByTab as filterPluginsByTab,
-  filterHomeSkillsByTab as filterSkillsByTab,
   fetchHomeFeaturedAvailability as fetchFeaturedAvailability,
   fetchHomePluginListing as fetchPluginListing,
   fetchHomeSkillListing as fetchSkillListing,
@@ -64,8 +61,8 @@ const SKILL_LISTING_TABS: Array<{ id: ListingTab; label: string }> = [
 
 const PLUGIN_LISTING_TABS: Array<{ id: ListingTab; label: string }> = [
   { id: "featured", label: "Featured" },
-  { id: "officials", label: "Verified" },
   { id: "popular", label: "Top" },
+  { id: "trending", label: "Trending" },
 ];
 
 const LISTING_PAGE_SIZE = HOME_LISTING_PAGE_SIZE;
@@ -421,22 +418,14 @@ export function HomeListingSection({ initialListing = null }: HomeListingSection
     [categorySlugs, listingCategories],
   );
 
-  const filteredSearchSkills = useMemo(
-    () => filterSkillsByTab(searchSkills, tab),
-    [searchSkills, tab],
-  );
-  const filteredSearchPlugins = useMemo(
-    () => filterPluginsByTab(searchPlugins, tab),
-    [searchPlugins, tab],
-  );
   const visibleTabs = (kind === "skills" ? SKILL_LISTING_TABS : PLUGIN_LISTING_TABS).filter(
     (item) => item.id !== "featured" || featuredAvailability[kind] === true,
   );
 
   const activeItems = isSearchMode
     ? kind === "skills"
-      ? filteredSearchSkills
-      : filteredSearchPlugins
+      ? searchSkills
+      : searchPlugins
     : kind === "skills"
       ? skills
       : plugins;
@@ -487,17 +476,13 @@ export function HomeListingSection({ initialListing = null }: HomeListingSection
         if (controller.signal.aborted) return;
         setFeaturedAvailability((current) => ({ ...current, [kind]: available }));
         if (!available) {
-          setTab((current) =>
-            current === "featured" ? (kind === "plugins" ? "officials" : "popular") : current,
-          );
+          setTab((current) => (current === "featured" ? "popular" : current));
         }
       })
       .catch(() => {
         if (controller.signal.aborted) return;
         setFeaturedAvailability((current) => ({ ...current, [kind]: false }));
-        setTab((current) =>
-          current === "featured" ? (kind === "plugins" ? "officials" : "popular") : current,
-        );
+        setTab((current) => (current === "featured" ? "popular" : current));
       });
 
     return () => controller.abort();
@@ -631,9 +616,8 @@ export function HomeListingSection({ initialListing = null }: HomeListingSection
                 fetchPluginCatalog({
                   q: trimmedSearch,
                   category: categorySlug ?? undefined,
-                  isOfficial: tab === "officials" ? true : undefined,
                   featured: tab === "featured" ? true : undefined,
-                  sort: "downloads",
+                  sort: tab === "trending" ? "trending" : "downloads",
                   limit: fetchLimit,
                   signal: controller.signal,
                 }),
@@ -687,8 +671,8 @@ export function HomeListingSection({ initialListing = null }: HomeListingSection
     setFetchLimit(LISTING_PAGE_SIZE);
   }, [categorySlugs, isSearchMode, kind, tab, trimmedSearch, view]);
 
-  const visibleSkills = (isSearchMode ? filteredSearchSkills : skills).slice(0, visibleCount);
-  const visiblePlugins = (isSearchMode ? filteredSearchPlugins : plugins).slice(0, visibleCount);
+  const visibleSkills = (isSearchMode ? searchSkills : skills).slice(0, visibleCount);
+  const visiblePlugins = (isSearchMode ? searchPlugins : plugins).slice(0, visibleCount);
 
   const handleSeeMore = () => {
     setVisibleCount((count) => count + LISTING_PAGE_SIZE);
@@ -710,13 +694,7 @@ export function HomeListingSection({ initialListing = null }: HomeListingSection
     setKind(nextKind);
     setCategorySlugs([]);
     const nextFeaturedAvailability = featuredAvailability[nextKind];
-    setTab(
-      nextFeaturedAvailability === false
-        ? nextKind === "plugins"
-          ? "officials"
-          : "popular"
-        : "featured",
-    );
+    setTab(nextFeaturedAvailability === false ? "popular" : "featured");
   };
 
   const removeCategory = (slug: string) => {
@@ -732,13 +710,13 @@ export function HomeListingSection({ initialListing = null }: HomeListingSection
       <div className="home-v2-listing-controls">
         <div className="home-v2-listing-toolbar">
           <div
-            className="home-v2-listing-kind clawhub-segmented"
+            className="home-v2-listing-kind clawhub-segmented oc-segmented"
             role="group"
             aria-label="Content type"
           >
             <button
               type="button"
-              className={`home-v2-listing-kind-btn clawhub-segmented-btn${
+              className={`home-v2-listing-kind-btn clawhub-segmented-btn oc-segmented-item${
                 kind === "plugins" ? " is-active" : ""
               }`}
               aria-pressed={kind === "plugins"}
@@ -748,7 +726,7 @@ export function HomeListingSection({ initialListing = null }: HomeListingSection
             </button>
             <button
               type="button"
-              className={`home-v2-listing-kind-btn clawhub-segmented-btn${
+              className={`home-v2-listing-kind-btn clawhub-segmented-btn oc-segmented-item${
                 kind === "skills" ? " is-active" : ""
               }`}
               aria-pressed={kind === "skills"}
@@ -771,14 +749,6 @@ export function HomeListingSection({ initialListing = null }: HomeListingSection
                   className={`home-v2-listing-tab${tab === item.id ? " is-active" : ""}`}
                   onClick={() => setTab(item.id)}
                 >
-                  {item.id === "officials" ? (
-                    <BadgeCheck
-                      size={14}
-                      strokeWidth={2.25}
-                      className="home-v2-listing-tab-icon"
-                      aria-hidden="true"
-                    />
-                  ) : null}
                   {item.label}
                 </button>
               ))}
@@ -808,13 +778,13 @@ export function HomeListingSection({ initialListing = null }: HomeListingSection
               />
 
               <div
-                className="home-v2-listing-view clawhub-segmented"
+                className="home-v2-listing-view clawhub-segmented oc-segmented"
                 role="group"
                 aria-label="Layout"
               >
                 <button
                   type="button"
-                  className={`home-v2-listing-view-btn clawhub-segmented-btn${
+                  className={`home-v2-listing-view-btn clawhub-segmented-btn oc-segmented-item${
                     view === "list" ? " is-active" : ""
                   }`}
                   aria-pressed={view === "list"}
@@ -825,7 +795,7 @@ export function HomeListingSection({ initialListing = null }: HomeListingSection
                 </button>
                 <button
                   type="button"
-                  className={`home-v2-listing-view-btn clawhub-segmented-btn${
+                  className={`home-v2-listing-view-btn clawhub-segmented-btn oc-segmented-item${
                     view === "grid" ? " is-active" : ""
                   }`}
                   aria-pressed={view === "grid"}
