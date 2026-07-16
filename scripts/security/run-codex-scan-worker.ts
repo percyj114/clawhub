@@ -1890,7 +1890,7 @@ async function runLegacyScan(
   return { llmAnalysis, skillSpectorAnalysis };
 }
 
-function scanHealthClassification(input: {
+export function scanHealthClassification(input: {
   clawscan: ClawScanCommandDiagnostic;
   codex: CodexCommandDiagnostic;
   errorMessage?: string;
@@ -1906,11 +1906,42 @@ function scanHealthClassification(input: {
   let judgeStageFailed = false;
 
   if (input.implementation === "legacy") {
+    let skillSpectorStatus = input.skillSpectorAnalysis?.status;
+    let skillSpectorIssueCount = input.skillSpectorAnalysis?.issueCount;
+    let skillSpectorParsedIssueCount = input.skillSpectorAnalysis?.issues.length;
+    if (skillSpectorStatus === undefined && input.skillSpector.rawResult !== undefined) {
+      try {
+        const parsedReport = normalizeSkillSpectorAnalysis(input.skillSpector.rawResult);
+        skillSpectorStatus = parsedReport.status;
+        skillSpectorIssueCount = parsedReport.issueCount;
+        skillSpectorParsedIssueCount = parsedReport.issues.length;
+      } catch {
+        skillSpectorStatus = "error";
+        skillSpectorIssueCount = 0;
+        skillSpectorParsedIssueCount = 0;
+      }
+    }
+    const skillSpectorRan =
+      input.skillSpector.args !== undefined ||
+      input.skillSpector.exitCode !== undefined ||
+      input.skillSpector.timedOut === true;
+    const validFindingsExit =
+      input.skillSpector.exitCode === 1 &&
+      (skillSpectorStatus === "suspicious" || skillSpectorStatus === "malicious") &&
+      (skillSpectorIssueCount ?? 0) > 0 &&
+      (skillSpectorParsedIssueCount ?? 0) > 0;
+    const missingExitStatus = skillSpectorRan && input.skillSpector.exitCode === undefined;
+    const unexpectedExit =
+      input.skillSpector.exitCode !== undefined &&
+      input.skillSpector.exitCode !== 0 &&
+      !validFindingsExit;
     scannerStageFailed =
       input.skillSpector.timedOut === true ||
-      (input.skillSpector.exitCode !== undefined && input.skillSpector.exitCode !== 0) ||
-      input.skillSpectorAnalysis?.status === "error" ||
-      input.skillSpectorAnalysis?.status === "failed";
+      (skillSpectorRan && skillSpectorStatus === undefined) ||
+      missingExitStatus ||
+      unexpectedExit ||
+      skillSpectorStatus === "error" ||
+      skillSpectorStatus === "failed";
     judgeStageFailed =
       input.status === "failed" &&
       (input.codex.args !== undefined ||
