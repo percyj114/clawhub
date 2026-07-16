@@ -990,6 +990,11 @@ const skillSlugAliases = defineTable({
 const skillVersions = defineTable({
   skillId: v.id("skills"),
   version: v.string(),
+  publicationStatus: v.optional(
+    v.union(v.literal("pending"), v.literal("published"), v.literal("blocked")),
+  ),
+  publishAttemptId: v.optional(v.id("publishAttempts")),
+  pendingPublication: v.optional(v.any()),
   fingerprint: v.optional(v.string()),
   sourceProvenance: v.optional(
     v.object({
@@ -1125,6 +1130,12 @@ const publishAttempts = defineTable({
   ownerUserId: v.optional(v.id("users")),
   ownerPublisherId: v.optional(v.id("publishers")),
   sourceOwnerPublisherId: v.optional(v.id("publishers")),
+  skillId: v.optional(v.id("skills")),
+  skillVersionId: v.optional(v.id("skillVersions")),
+  packageId: v.optional(v.id("packages")),
+  packageReleaseId: v.optional(v.id("packageReleases")),
+  createdNewParent: v.optional(v.boolean()),
+  clawpackStorageId: v.optional(v.id("_storage")),
   slug: v.string(),
   displayName: v.string(),
   version: v.string(),
@@ -1137,6 +1148,7 @@ const publishAttempts = defineTable({
   }),
   skillInsertArgs: v.optional(v.any()),
   packageInsertArgs: v.optional(v.any()),
+  scanContext: v.optional(v.any()),
   followup: v.optional(
     v.object({
       skipWebhook: v.optional(v.boolean()),
@@ -1636,6 +1648,11 @@ const packages = defineTable({
 const packageReleases = defineTable({
   packageId: v.id("packages"),
   version: v.string(),
+  publicationStatus: v.optional(
+    v.union(v.literal("pending"), v.literal("published"), v.literal("blocked")),
+  ),
+  publishAttemptId: v.optional(v.id("publishAttempts")),
+  pendingPublication: v.optional(v.any()),
   changelog: v.string(),
   summary: v.optional(v.string()),
   icon: v.optional(v.string()),
@@ -1655,6 +1672,7 @@ const packageReleases = defineTable({
   extractedPackageJson: v.optional(v.any()),
   extractedPluginManifest: v.optional(v.any()),
   normalizedBundleManifest: v.optional(v.any()),
+  manifestSearchTerms: v.optional(v.array(v.string())),
   pluginManifestSummary: v.optional(pluginManifestSummaryValidator),
   compatibility: packageCompatibilityValidator,
   runtimeId: v.optional(v.string()),
@@ -2044,6 +2062,7 @@ const packageSearchDigest = defineTable({
   categories: v.optional(v.array(v.string())),
   topics: v.optional(v.array(v.string())),
   pluginCategoryTags: v.optional(v.array(v.string())),
+  manifestSearchTerms: v.optional(v.array(v.string())),
   verificationTier: v.optional(packageVerificationTierValidator),
   stats: v.optional(packageStatsValidator),
   recommendedScore: v.optional(v.number()),

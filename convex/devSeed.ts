@@ -5208,6 +5208,51 @@ export const getAccountRecreationState: ReturnType<typeof rawInternalMutation> =
     },
   });
 
+export const getPrePublicationSkillAttemptState: ReturnType<typeof rawInternalMutation> =
+  rawInternalMutation({
+    args: {
+      attemptId: v.id("publishAttempts"),
+    },
+    handler: async (ctx, args) => {
+      const attempt = await ctx.db.get(args.attemptId);
+      if (!attempt || attempt.kind !== "skill") {
+        return {
+          ok: true as const,
+          attemptExists: Boolean(attempt),
+          skillExists: false,
+          versionExists: false,
+        };
+      }
+
+      const skill = attempt.skillId ? await ctx.db.get(attempt.skillId) : null;
+      const version = attempt.skillVersionId ? await ctx.db.get(attempt.skillVersionId) : null;
+
+      return {
+        ok: true as const,
+        attemptExists: true,
+        attempt: {
+          attemptId: attempt._id,
+          status: attempt.status,
+          slug: attempt.slug,
+          version: attempt.version,
+          skillId: attempt.skillId ?? null,
+          skillVersionId: attempt.skillVersionId ?? null,
+          filesCount: attempt.files.length,
+          hasSkillInsertArgs: attempt.skillInsertArgs !== undefined,
+          hasFollowup: attempt.followup !== undefined,
+          trufflehogStatus: attempt.checks.trufflehog.status,
+          trufflehogRedactedFindingCount: attempt.checks.trufflehog.redactedFindings?.length ?? 0,
+          clawscanStatus: attempt.checks.clawscan.status,
+          blockedAt: attempt.blockedAt ?? null,
+        },
+        skillExists: Boolean(skill),
+        skillLatestVersionId: skill?.latestVersionId ?? null,
+        versionExists: Boolean(version),
+        versionPublicationStatus: version?.publicationStatus ?? null,
+      };
+    },
+  });
+
 async function upsertRoleHelpFixtureUser(ctx: MutationCtx, user: RoleHelpFixtureUser) {
   const now = Date.now();
   const existing = await ctx.db

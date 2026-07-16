@@ -66,9 +66,10 @@ describe("pre-publication publish worker workflow", () => {
     expect(job.strategy?.matrix?.shard).toEqual([0, 1]);
     expect(job.strategy?.["max-parallel"]).toBe(2);
     expect(job.env).toMatchObject({
-      CODEX_SECURITY_SCAN_TIMEOUT_MS: "${{ vars.CODEX_SECURITY_SCAN_TIMEOUT_MS || '240000' }}",
       CONVEX_URL:
         "${{ vars.CONVEX_URL || vars.VITE_CONVEX_URL || 'https://wry-manatee-359.convex.cloud' }}",
+      PREPUBLICATION_CLAWSCAN_TIMEOUT_MS:
+        "${{ vars.PREPUBLICATION_CLAWSCAN_TIMEOUT_MS || '240000' }}",
       PREPUBLICATION_CHECK_LIMIT: "${{ inputs['batch-limit'] || '2' }}",
       PREPUBLICATION_TRUFFLEHOG_IMAGE:
         "${{ vars.PREPUBLICATION_TRUFFLEHOG_IMAGE || 'ghcr.io/trufflesecurity/trufflehog:3.95.6@sha256:96f8429082cb2d4ae73b1096dcdb2f5aa139881d97042b0c5e5fa226a392e056' }}",
@@ -76,15 +77,21 @@ describe("pre-publication publish worker workflow", () => {
     expect(String(job.env?.PREPUBLICATION_TRUFFLEHOG_IMAGE)).toContain("@sha256:");
     expect(job.env).not.toHaveProperty("OPENAI_API_KEY");
     expect(job.env).not.toHaveProperty("SECURITY_SCAN_WORKER_TOKEN");
+    expect(job.env).not.toHaveProperty("CODEX_SECURITY_SCAN_TIMEOUT_MS");
 
     const runStep = steps.find((step) => step.name === "Run pre-publication publish worker");
     expect(runStep?.run).toContain("bun run publish:prepublication-worker");
-    expect(steps.find((step) => step.name === "Install ClawScan CLI")).toBeUndefined();
+    expect(steps.find((step) => step.name === "Install ClawScan CLI")?.run).toContain(
+      "npm install -g @openclaw/clawscan@0.1.2",
+    );
+    expect(steps.find((step) => step.name === "Install Codex CLI")).toBeUndefined();
+    expect(steps.find((step) => step.name === "Authenticate Codex CLI")).toBeUndefined();
+    expect(steps.find((step) => step.name === "Install SkillSpector")).toBeUndefined();
     expect(JSON.stringify(job)).not.toContain("CODEX_SECURITY_SCAN_SHADOW_CLAWSCAN");
-    expect(JSON.stringify(job)).not.toContain("clawscan --version");
     expect(runStep?.env).toEqual({
       OPENAI_API_KEY: "${{ secrets.OPENAI_API_KEY }}",
       SECURITY_SCAN_WORKER_TOKEN: "${{ secrets.SECURITY_SCAN_WORKER_TOKEN }}",
+      VIRUSTOTAL_API_KEY: "${{ secrets.VT_API_KEY }}",
     });
 
     for (const step of steps) {
@@ -93,7 +100,10 @@ describe("pre-publication publish worker workflow", () => {
         stepName === "Run pre-publication publish worker",
       );
       expect(stepUsesSecret(step, "OPENAI_API_KEY"), stepName).toBe(
-        stepName === "Authenticate Codex CLI" || stepName === "Run pre-publication publish worker",
+        stepName === "Run pre-publication publish worker",
+      );
+      expect(stepUsesSecret(step, "VT_API_KEY"), stepName).toBe(
+        stepName === "Run pre-publication publish worker",
       );
     }
   });

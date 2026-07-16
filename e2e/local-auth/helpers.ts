@@ -9,7 +9,7 @@ import {
   buildPluginSecurityAuditHref,
   buildPluginValidationHref,
 } from "../../src/lib/pluginRoutes";
-import { waitForHydration } from "../helpers/runtimeErrors";
+import { recoverFromTransientErrorScreen, waitForHydration } from "../helpers/runtimeErrors";
 
 type DevPersona = "owner" | "user" | "admin" | "abusePublisher";
 const WORKER_TOKEN = process.env.SECURITY_SCAN_WORKER_TOKEN ?? "local-e2e-worker-token";
@@ -120,27 +120,86 @@ function convexClient() {
   return new ConvexHttpClient(convexUrl);
 }
 
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+type MockPrePublicationClaim = {
+  attemptId: string;
+  claimId: string;
+  artifactFingerprint: string;
+  files?: Array<{ path: string; storageId?: string; url?: string | null }>;
+};
+
+async function claimMockPrePublicationChecks(args: {
+  kind: "skill" | "package";
+  slug: string;
+  version: string;
+}) {
+  let lastClaimError: unknown;
+  let claim: MockPrePublicationClaim | null = null;
+  for (let attempt = 1; attempt <= 8; attempt += 1) {
+    const claimed = (await convexClient()
+      .action(api.publishAttempts.claimPrePublicationChecks, {
+        token: WORKER_TOKEN,
+        kind: args.kind,
+        slug: args.slug,
+        version: args.version,
+      })
+      .catch((error: unknown) => {
+        lastClaimError = error;
+        return null;
+      })) as MockPrePublicationClaim | null;
+    if (claimed) {
+      claim = claimed;
+      break;
+    }
+    await wait(Math.min(500 * attempt, 2_000));
+  }
+  if (!claim) {
+    const detail =
+      lastClaimError instanceof Error
+        ? ` Last claim error: ${lastClaimError.message}`
+        : lastClaimError
+          ? ` Last claim error: ${String(lastClaimError)}`
+          : "";
+    throw new Error(
+      `No pending ${args.kind} publish attempt for ${args.slug}@${args.version}.${detail}`,
+    );
+  }
+  return claim;
+}
+
+export async function expectSingleMockPrePublicationCheckRejected(args: {
+  kind: "skill" | "package";
+  slug: string;
+  version: string;
+}) {
+  const claim = await claimMockPrePublicationChecks(args);
+  await expect(
+    convexClient().action(api.publishAttempts.completePrePublicationChecks, {
+      token: WORKER_TOKEN,
+      attemptId: claim.attemptId,
+      claimId: claim.claimId,
+      artifactFingerprint: claim.artifactFingerprint,
+      trufflehog: {
+        status: "clean",
+        summary: "Mock TruffleHog found no secrets in the local e2e fixture.",
+      },
+    } as never),
+  ).rejects.toThrow();
+  return claim;
+}
+
 export async function completeMockPrePublicationChecks(args: {
   kind: "skill" | "package";
   slug: string;
   version: string;
+  claim?: MockPrePublicationClaim;
   trufflehog?: "clean" | "blocked";
   clawscan?: "clean" | "suspicious" | "malicious" | "failed";
 }) {
-  const claim = (await convexClient().action(api.publishAttempts.claimPrePublicationChecks, {
-    token: WORKER_TOKEN,
-    kind: args.kind,
-    slug: args.slug,
-    version: args.version,
-  })) as null | {
-    attemptId: string;
-    claimId: string;
-    artifactFingerprint: string;
-  };
-  if (!claim) {
-    throw new Error(`No pending ${args.kind} publish attempt for ${args.slug}@${args.version}`);
-  }
-
+  const claim = args.claim ?? (await claimMockPrePublicationChecks(args));
   const clawscan = args.clawscan ?? "clean";
   const clawscanBlocked = clawscan === "malicious";
   const clawscanFailed = clawscan === "failed";
@@ -155,29 +214,33 @@ export async function completeMockPrePublicationChecks(args: {
           checkedAt: Date.now(),
         }
       : undefined;
-  return await convexClient().action(api.publishAttempts.completePrePublicationChecks, {
-    token: WORKER_TOKEN,
-    attemptId: claim.attemptId,
-    claimId: claim.claimId,
-    artifactFingerprint: claim.artifactFingerprint,
-    trufflehog: {
-      status: args.trufflehog ?? "clean",
-      summary:
-        args.trufflehog === "blocked"
-          ? "Mock TruffleHog found a redacted secret in the local e2e fixture."
-          : "Mock TruffleHog found no secrets in the local e2e fixture.",
-      redactedFindings: args.trufflehog === "blocked" ? ["redacted-secret"] : undefined,
+  const completion = (await convexClient().action(
+    api.publishAttempts.completePrePublicationChecks,
+    {
+      token: WORKER_TOKEN,
+      attemptId: claim.attemptId,
+      claimId: claim.claimId,
+      artifactFingerprint: claim.artifactFingerprint,
+      trufflehog: {
+        status: args.trufflehog ?? "clean",
+        summary:
+          args.trufflehog === "blocked"
+            ? "Mock TruffleHog found a redacted secret in the local e2e fixture."
+            : "Mock TruffleHog found no secrets in the local e2e fixture.",
+        redactedFindings: args.trufflehog === "blocked" ? ["redacted-secret"] : undefined,
+      },
+      clawscan: {
+        status: clawscanBlocked ? "blocked" : clawscanFailed ? "failed" : "clean",
+        summary: "Mock ClawScan completed for the local e2e fixture.",
+        redactedFindings:
+          clawscan === "suspicious" || clawscan === "malicious"
+            ? [`status=completed; verdict=${clawscan}`]
+            : undefined,
+      },
+      clawscanAnalysis,
     },
-    clawscan: {
-      status: clawscanBlocked ? "blocked" : clawscanFailed ? "failed" : "clean",
-      summary: "Mock ClawScan completed for the local e2e fixture.",
-      redactedFindings:
-        clawscan === "suspicious" || clawscan === "malicious"
-          ? [`status=completed; verdict=${clawscan}`]
-          : undefined,
-    },
-    clawscanAnalysis,
-  });
+  )) as Record<string, unknown>;
+  return { ...completion, claim };
 }
 
 function devPersonaHeaderPattern(persona: DevPersona, expectedHandle: string) {
@@ -284,6 +347,7 @@ export async function signInAsLocalPersona(page: Page, persona: DevPersona) {
     try {
       await page.goto("/", { waitUntil: "domcontentloaded" });
       await waitForHydration(page);
+      await recoverFromTransientErrorScreen(page);
 
       await page
         .getByRole("button", { name: "Open local dev personas" })
@@ -298,6 +362,7 @@ export async function signInAsLocalPersona(page: Page, persona: DevPersona) {
     } catch (error) {
       lastError = error;
       if (attempt >= 3) throw error;
+      await recoverFromTransientErrorScreen(page).catch(() => {});
       await page.waitForTimeout(1_000 * attempt);
     }
   }
@@ -382,6 +447,7 @@ async function waitForPublishSkillForm(page: Page) {
 
   for (let attempt = 0; attempt < 4; attempt += 1) {
     await waitForHydration(page).catch(() => {});
+    await recoverFromTransientErrorScreen(page);
     if (await heading.isVisible({ timeout: 5_000 }).catch(() => false)) {
       try {
         await page.getByTestId("upload-input").waitFor({ state: "attached", timeout: 15_000 });
@@ -423,6 +489,8 @@ export async function signInAsLocalPublisher(page: Page, persona: DevPersona) {
   await expect
     .poll(
       async () => {
+        await recoverFromTransientErrorScreen(page);
+        await waitForPublishSkillForm(page);
         const value = await getSelectedOwnerHandle(page, "#ownerHandle");
         // The owner persona can briefly render the user handle before the
         // personal publisher subscription reconciles to the publishable handle.
@@ -470,6 +538,19 @@ export async function publishSkillVersion(
   const detailUrlPattern = new RegExp(`/[^/]+/(?:skills/)?${escapeRegExp(args.slug)}$`);
   const versionExists = async () =>
     args.versionExists ? await args.versionExists() : await publishedSkillVersionExists(page, args);
+  type PublishState = "duplicate" | "pending" | "private-detail" | "published" | "";
+  const readPublishState = async (): Promise<PublishState> => {
+    if (await hasDuplicateVersionAlert(page, args.version)) return "duplicate";
+    if (await versionExists()) return "published";
+    const pendingChecks = page.getByText("Running TruffleHog and ClawScan", { exact: false });
+    if (await pendingChecks.isVisible({ timeout: 500 }).catch(() => false)) {
+      return "pending";
+    }
+    if (!args.versionExists && detailUrlPattern.test(new URL(page.url()).pathname)) {
+      return "private-detail";
+    }
+    return "";
+  };
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     let publishUrl = page.url();
     try {
@@ -477,24 +558,11 @@ export async function publishSkillVersion(
       await expect(publishButton).toBeEnabled({ timeout: 30_000 });
       publishUrl = page.url();
       await publishButton.click({ timeout: 15_000 });
-      const pendingChecks = page.getByText("Running TruffleHog and ClawScan", { exact: false });
       await expect
-        .poll(
-          async () => {
-            if (await hasDuplicateVersionAlert(page, args.version)) return "duplicate";
-            if (await versionExists()) return "published";
-            if (await pendingChecks.isVisible({ timeout: 500 }).catch(() => false)) {
-              return "pending";
-            }
-            if (!args.versionExists && detailUrlPattern.test(new URL(page.url()).pathname)) {
-              return "detail";
-            }
-            return "";
-          },
-          { timeout: 60_000, intervals: [500, 1_000, 2_000] },
-        )
+        .poll(readPublishState, { timeout: 60_000, intervals: [500, 1_000, 2_000] })
         .not.toBe("");
-      if (await pendingChecks.isVisible({ timeout: 500 }).catch(() => false)) {
+      const observedPublishState = await readPublishState();
+      if (observedPublishState !== "published" && !(await versionExists())) {
         if (args.completeChecks === false) {
           return args.ownerHandle;
         }
