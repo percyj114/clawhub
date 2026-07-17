@@ -6,7 +6,4 @@
 - Manifest image: `https://cdn.simpleicons.org/whatsapp`
 - Desktop list: manifest image rendered; image-less neighboring plugins used the
   Channels category glyph.
-- Desktop detail: manifest image rendered beside the title with no horizontal
-  overflow.
-- Mobile detail: manifest image rendered beside the title with no horizontal
-  overflow.
+- Desktop detail: header remained text-only with no marketplace icon or image.

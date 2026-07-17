@@ -3,7 +3,7 @@
   "mode": "feature",
   "scenario": "plugin-manifest-icons",
   "provider": "codex-in-app-browser",
-  "candidate": "2d8fc916c9c6b778327a49d58f25cc67b73ba871",
+  "candidate": "10f5589ebf4bc11215ad37affcaadc5c0cde4e54",
   "lanes": [
     {
       "name": "candidate",
@@ -13,19 +13,13 @@
           "name": "Plugin list manifest icon and category fallbacks",
           "slug": "plugin-list-desktop",
           "status": "passed",
-          "screenshot": "screenshots/plugin-icons-list-desktop.png"
+          "screenshot": "plugin-list-whatsapp.png"
         },
         {
-          "name": "Plugin detail manifest icon on desktop",
-          "slug": "plugin-detail-desktop",
+          "name": "Plugin detail header remains text-only",
+          "slug": "plugin-detail-no-icon",
           "status": "passed",
-          "screenshot": "screenshots/plugin-icon-detail-desktop.png"
-        },
-        {
-          "name": "Plugin detail manifest icon on mobile",
-          "slug": "plugin-detail-mobile",
-          "status": "passed",
-          "screenshot": "screenshots/plugin-icon-detail-mobile.png"
+          "screenshot": "plugin-detail-no-icon.png"
         }
       ]
     }
