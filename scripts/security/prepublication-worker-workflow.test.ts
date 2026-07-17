@@ -96,9 +96,9 @@ describe("pre-publication publish worker workflow", () => {
     expect(job["runs-on"]).toBe("${{ inputs.runner || 'blacksmith-8vcpu-ubuntu-2404' }}");
     expect(job["timeout-minutes"]).toBe(25);
     expect(job.strategy?.matrix?.shard).toBe(
-      "${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs['attempt-id'] != '' && '[0]' || '[0,1]') }}",
+      "${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs['attempt-id'] != '' && '[0]' || '[0,1,2,3]') }}",
     );
-    expect(job.strategy?.["max-parallel"]).toBe(2);
+    expect(job.strategy?.["max-parallel"]).toBe(4);
     expect(job.env).toMatchObject({
       CONVEX_URL:
         "${{ vars.CONVEX_URL || vars.VITE_CONVEX_URL || 'https://wry-manatee-359.convex.cloud' }}",
