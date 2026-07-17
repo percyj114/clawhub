@@ -37,6 +37,10 @@ For local reproduction, run the matching `ci:*` package scripts. `bun run ci:pr`
 matches the non-browser PR gates. `bun run ci:playwright-smoke` assumes the
 chromium Playwright browser has already been installed.
 
+Vercel preview builds retry the full Convex deploy-and-seed pipeline up to three
+times, waiting 20 seconds and then 40 seconds. Retries use fresh suffixed preview
+names because duplicate names can resolve to an earlier, incomplete deployment.
+
 To reproduce the local-auth browser gate locally, install the chromium
 Playwright browser once and run:
 
