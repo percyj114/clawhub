@@ -71,7 +71,10 @@ See also: [acceptable-usage.md](./acceptable-usage.md) for the marketplace polic
   must persist a terminal failed state instead of leaving a resumable running run.
   Moderators can start this same full signal pipeline from the staff Signals tab.
   New manual starts record the actor; requests made while a temporal scan is
-  already active return that run without starting a competing worker.
+  actively reporting progress return that run without starting a competing
+  worker. A running row that has not persisted progress for fifteen minutes is
+  terminally failed and replaced so an abandoned scheduler chain cannot block
+  moderator rescans.
   Explicitly bounded manual scans remain diagnostic-only.
   The `review` label remains a calibration/manual-review signal. The
   `potential_ban_candidate` label is an

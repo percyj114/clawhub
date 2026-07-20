@@ -245,6 +245,58 @@ describe("scheduled temporal publisher abuse scan", () => {
     expect(patch).not.toHaveBeenCalled();
   });
 
+  it("replaces an abandoned signal scan whose progress heartbeat is stale", async () => {
+    const now = Date.now();
+    const existing = temporalRun({
+      temporalPipelineKind: undefined,
+      startedAt: now - 4 * 24 * 60 * 60 * 1_000,
+      updatedAt: now - 16 * 60 * 1_000,
+    });
+    const replacementRunId =
+      "publisherAbuseScoreRuns:replacement-signals" as Id<"publisherAbuseScoreRuns">;
+    const patch = vi.fn(async () => null);
+    const insert = vi.fn(async () => replacementRunId);
+    let queryCount = 0;
+    const ctx = {
+      db: {
+        query: vi.fn(() => ({
+          withIndex: vi.fn(() => ({
+            order: vi.fn(() => ({
+              first: vi.fn(async () => {
+                queryCount += 1;
+                return queryCount === 1 ? null : existing;
+              }),
+            })),
+          })),
+        })),
+        patch,
+        insert,
+      },
+    };
+
+    await expect(
+      getOrStartScheduledTemporalScanInternalHandler(ctx as unknown as MutationCtx, {
+        trigger: "manual",
+        actorUserId: "users:moderator" as Id<"users">,
+      }),
+    ).resolves.toEqual({ runId: replacementRunId, resumed: false });
+
+    expect(patch).toHaveBeenCalledWith(
+      existing._id,
+      expect.objectContaining({
+        status: "failed",
+        errorMessage: expect.stringContaining("stopped reporting progress"),
+      }),
+    );
+    expect(insert).toHaveBeenCalledWith(
+      "publisherAbuseScoreRuns",
+      expect.objectContaining({
+        trigger: "manual",
+        temporalPipelineKind: "signals",
+      }),
+    );
+  });
+
   it("does not launch a second worker for an already-running signal scan", async () => {
     const existing = temporalRun({ trigger: "cron" });
     const runMutation = vi.fn(async () => ({ runId: existing._id, resumed: true }));

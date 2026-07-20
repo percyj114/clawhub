@@ -23,6 +23,8 @@ const SOURCE_PAGE_SIZE = 50;
 const PERCENTILE_PAGE_SIZE = 500;
 const CANDIDATE_PAGE_SIZE = 100;
 const TEMPORAL_SCAN_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+// A scan step cannot legitimately run this long without persisting progress.
+const TEMPORAL_SCAN_HEARTBEAT_TIMEOUT_MS = 15 * 60 * 1000;
 
 const temporalCohortBandValidator = v.union(v.literal("p95"), v.literal("p99"));
 const temporalScoreValidator = v.object({
@@ -112,17 +114,24 @@ export async function getOrStartScheduledTemporalScanInternalHandler(
         .first();
   const existing =
     currentPipeline ?? (legacyCronPipeline?.temporalPipelinePhase ? legacyCronPipeline : null);
+  const withinWorkingStateRetention =
+    existing !== null && now - existing.startedAt < TEMPORAL_SCAN_RETENTION_MS;
+  const hasRecentProgress =
+    existing !== null && now - existing.updatedAt < TEMPORAL_SCAN_HEARTBEAT_TIMEOUT_MS;
   if (
     existing?.temporalPipelinePhase &&
     existing.temporalPipelinePhase !== "completed" &&
-    now - existing.startedAt < TEMPORAL_SCAN_RETENTION_MS
+    withinWorkingStateRetention &&
+    hasRecentProgress
   ) {
     return { runId: existing._id, resumed: true as const };
   }
   if (existing) {
     await ctx.db.patch(existing._id, {
       status: "failed",
-      errorMessage: "Scheduled temporal scan exceeded its seven-day working-state retention.",
+      errorMessage: withinWorkingStateRetention
+        ? "Scheduled temporal scan stopped reporting progress for more than fifteen minutes."
+        : "Scheduled temporal scan exceeded its seven-day working-state retention.",
       updatedAt: now,
     });
   }
