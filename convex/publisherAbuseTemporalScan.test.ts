@@ -10,6 +10,7 @@ import {
 import type { TemporalSkillCandidate } from "./publisherAbuse";
 import {
   advanceScheduledTemporalCandidatesInternalHandler,
+  markScheduledTemporalScanFailedInternalHandler,
   percentileIndex,
   pruneExpiredTemporalScanRowsInternalHandler,
   runScheduledTemporalPublisherAbuseScanInternalHandler,
@@ -205,6 +206,90 @@ describe("scheduled temporal publisher abuse scan", () => {
       2,
       expect.anything(),
       expect.objectContaining({ batchSize: 50 }),
+    );
+  });
+
+  it("passes only percentile inputs to the persisted benchmark sample validator", async () => {
+    const run = temporalRun();
+    const fullScore = temporalScore({ recent30Downloads: 3_000, spikeMultiplier: 4 });
+    const runQuery = vi
+      .fn()
+      .mockResolvedValueOnce(run)
+      .mockResolvedValueOnce({
+        benchmarkScores: [fullScore],
+        candidates: [],
+        cursor: "next-page",
+        isDone: false,
+        scannedSkills: 1,
+      });
+    const runMutation = vi.fn(async () => ({ applied: true }));
+    const scheduler = { runAfter: vi.fn(async () => null) };
+    const handler = runScheduledTemporalPublisherAbuseScanInternalHandler as unknown as (
+      ctx: {
+        runQuery: typeof runQuery;
+        runMutation: typeof runMutation;
+        scheduler: typeof scheduler;
+      },
+      args: { runId?: Id<"publisherAbuseScoreRuns"> },
+    ) => Promise<unknown>;
+
+    await handler({ runQuery, runMutation, scheduler }, { runId: run._id });
+
+    expect(runMutation).toHaveBeenCalledWith(expect.anything(), {
+      runId: run._id,
+      expectedCursor: undefined,
+      nextCursor: "next-page",
+      isDone: false,
+      benchmarkScores: [{ recent30Downloads: 3_000, spikeMultiplier: 4 }],
+      candidates: [],
+    });
+  });
+
+  it("marks a scheduled scan failed when a scan step throws", async () => {
+    const run = temporalRun();
+    const scanError = new Error("invalid benchmark payload");
+    const runQuery = vi.fn().mockResolvedValueOnce(run).mockRejectedValueOnce(scanError);
+    const runMutation = vi.fn(async (_target: unknown, _args: unknown) => ({ failed: true }));
+    const scheduler = { runAfter: vi.fn(async () => null) };
+    const handler = runScheduledTemporalPublisherAbuseScanInternalHandler as unknown as (
+      ctx: {
+        runQuery: typeof runQuery;
+        runMutation: typeof runMutation;
+        scheduler: typeof scheduler;
+      },
+      args: { runId?: Id<"publisherAbuseScoreRuns"> },
+    ) => Promise<unknown>;
+
+    await expect(handler({ runQuery, runMutation, scheduler }, { runId: run._id })).rejects.toThrow(
+      "invalid benchmark payload",
+    );
+
+    expect(runMutation).toHaveBeenCalledTimes(1);
+    expect(runMutation.mock.calls[0]?.[1]).toEqual({
+      runId: run._id,
+      errorMessage: "invalid benchmark payload",
+    });
+  });
+
+  it("persists a failed terminal state for an active scheduled scan", async () => {
+    const run = temporalRun();
+    const patch = vi.fn(async () => null);
+    const ctx = { db: { get: vi.fn(async () => run), patch } };
+
+    await expect(
+      markScheduledTemporalScanFailedInternalHandler(ctx as unknown as MutationCtx, {
+        runId: run._id,
+        errorMessage: "invalid benchmark payload",
+      }),
+    ).resolves.toEqual({ failed: true });
+
+    expect(patch).toHaveBeenCalledWith(
+      run._id,
+      expect.objectContaining({
+        status: "failed",
+        temporalScanComplete: false,
+        errorMessage: "invalid benchmark payload",
+      }),
     );
   });
 

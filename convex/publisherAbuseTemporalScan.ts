@@ -475,6 +475,29 @@ export const failExpiredScheduledTemporalScanInternal = internalMutation({
   handler: failExpiredScheduledTemporalScanInternalHandler,
 });
 
+export async function markScheduledTemporalScanFailedInternalHandler(
+  ctx: MutationCtx,
+  args: { runId: Id<"publisherAbuseScoreRuns">; errorMessage: string },
+) {
+  const run = await getScheduledTemporalScanStateInternalHandler(ctx, { runId: args.runId });
+  if (run.status !== "running") return { failed: false as const };
+  await ctx.db.patch(run._id, {
+    status: "failed",
+    temporalScanComplete: false,
+    errorMessage: args.errorMessage,
+    updatedAt: Date.now(),
+  });
+  return { failed: true as const };
+}
+
+export const markScheduledTemporalScanFailedInternal = internalMutation({
+  args: {
+    runId: v.id("publisherAbuseScoreRuns"),
+    errorMessage: v.string(),
+  },
+  handler: markScheduledTemporalScanFailedInternalHandler,
+});
+
 type TemporalSourcePage = {
   cursor?: string;
   isDone: boolean;
@@ -485,20 +508,28 @@ type TemporalSourcePage = {
 
 type PercentilePage = { values: number[]; cursor?: string; isDone: boolean };
 type CandidatePage = { candidates: TemporalSkillCandidate[]; cursor?: string; isDone: boolean };
+type ScheduledTemporalScanResult =
+  | { ok: true; runId: Id<"publisherAbuseScoreRuns">; completed: true }
+  | {
+      ok: false;
+      runId: Id<"publisherAbuseScoreRuns">;
+      completed: false;
+      expired: true;
+    }
+  | {
+      ok: true;
+      runId: Id<"publisherAbuseScoreRuns">;
+      completed: false;
+      phase: Exclude<TemporalScanRun["temporalPipelinePhase"], "completed">;
+    };
 
-export async function runScheduledTemporalPublisherAbuseScanInternalHandler(
+async function runScheduledTemporalPublisherAbuseScanStep(
   ctx: ActionCtx,
-  args: { runId?: Id<"publisherAbuseScoreRuns"> },
-) {
-  const start = args.runId
-    ? { runId: args.runId }
-    : await ctx.runMutation(
-        internal.publisherAbuseTemporalScan.getOrStartScheduledTemporalScanInternal,
-        {},
-      );
+  runId: Id<"publisherAbuseScoreRuns">,
+): Promise<ScheduledTemporalScanResult> {
   const run: TemporalScanRun = await ctx.runQuery(
     internal.publisherAbuseTemporalScan.getScheduledTemporalScanStateInternal,
-    { runId: start.runId },
+    { runId },
   );
   if (run.status !== "running" || run.temporalPipelinePhase === "completed") {
     return { ok: true as const, runId: run._id, completed: true as const };
@@ -526,6 +557,12 @@ export async function runScheduledTemporalPublisherAbuseScanInternalHandler(
         todayDay: run.temporalTodayDay,
       },
     );
+    const benchmarkScores = (
+      sourcePage.benchmarkScores ?? sourcePage.candidates.map(({ temporalScore }) => temporalScore)
+    ).map(({ recent30Downloads, spikeMultiplier }) => ({
+      recent30Downloads,
+      spikeMultiplier,
+    }));
     await ctx.runMutation(
       internal.publisherAbuseTemporalScan.storeScheduledTemporalScanPageInternal,
       {
@@ -533,12 +570,7 @@ export async function runScheduledTemporalPublisherAbuseScanInternalHandler(
         expectedCursor: run.temporalSourceCursor,
         nextCursor: sourcePage.cursor,
         isDone: sourcePage.isDone,
-        benchmarkScores:
-          sourcePage.benchmarkScores ??
-          sourcePage.candidates.map(({ temporalScore }) => ({
-            recent30Downloads: temporalScore.recent30Downloads,
-            spikeMultiplier: temporalScore.spikeMultiplier,
-          })),
+        benchmarkScores,
         candidates: sourcePage.candidates,
       },
     );
@@ -643,6 +675,35 @@ export async function runScheduledTemporalPublisherAbuseScanInternalHandler(
     completed: false as const,
     phase: run.temporalPipelinePhase,
   };
+}
+
+export async function runScheduledTemporalPublisherAbuseScanInternalHandler(
+  ctx: ActionCtx,
+  args: { runId?: Id<"publisherAbuseScoreRuns"> },
+): Promise<ScheduledTemporalScanResult> {
+  const start: { runId: Id<"publisherAbuseScoreRuns"> } = args.runId
+    ? { runId: args.runId }
+    : await ctx.runMutation(
+        internal.publisherAbuseTemporalScan.getOrStartScheduledTemporalScanInternal,
+        {},
+      );
+  try {
+    return await runScheduledTemporalPublisherAbuseScanStep(ctx, start.runId);
+  } catch (error) {
+    const errorMessage = (error instanceof Error ? error.message : String(error)).slice(0, 2_000);
+    try {
+      await ctx.runMutation(
+        internal.publisherAbuseTemporalScan.markScheduledTemporalScanFailedInternal,
+        { runId: start.runId, errorMessage },
+      );
+    } catch (recordError) {
+      console.error("[publisher-temporal-abuse-scan] Failed to persist scan failure", {
+        runId: start.runId,
+        errorMessage: recordError instanceof Error ? recordError.message : String(recordError),
+      });
+    }
+    throw error;
+  }
 }
 
 export const runScheduledTemporalPublisherAbuseScanInternal = internalAction({
