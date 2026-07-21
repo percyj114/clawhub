@@ -1047,6 +1047,8 @@ async function admitScans(ctx: MutationCtx, args: AdmitScansArgs) {
         );
       }
     }
+    // skillScanRequests embeds its validated file manifest in one document, so file count
+    // does not change the six real-admission writes before the final run patch.
     const admissionWriteCost = args.dispatchKind === "real" ? 6 : 2;
     if (writesUsed + admissionWriteCost + runWriteCount > run.budgets.maxWritesPerBatch) {
       throw new ConvexError("skills.sh catalog scan-admission write budget exceeded");

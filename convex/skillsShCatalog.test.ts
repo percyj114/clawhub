@@ -73,21 +73,33 @@ async function storeTestArtifact(
   content: string,
   path = "SKILL.md",
 ) {
-  const blob = new Blob([content], { type: "text/markdown" });
-  const storageId = await t.run(async (ctx) => await ctx.storage.store(blob));
-  const sha256 = await sha256Hex(blob);
+  return await storeTestArtifactFiles(t, externalId, [{ path, content }]);
+}
+
+async function storeTestArtifactFiles(
+  t: CatalogTest,
+  externalId: string,
+  inputs: Array<{ path: string; content: string }>,
+) {
+  const files = [];
+  for (const input of inputs) {
+    const blob = new Blob([input.content], { type: "text/markdown" });
+    const storageId = await t.run(async (ctx) => await ctx.storage.store(blob));
+    files.push({
+      path: input.path,
+      size: blob.size,
+      storageId,
+      sha256: await sha256Hex(blob),
+      contentType: "text/markdown",
+    });
+  }
+  files.sort((left, right) => left.path.localeCompare(right.path));
   return {
     externalId,
-    artifactContentHash: await sha256Hex(`${path}\0${sha256}\n`),
-    files: [
-      {
-        path,
-        size: blob.size,
-        storageId,
-        sha256,
-        contentType: "text/markdown",
-      },
-    ],
+    artifactContentHash: await sha256Hex(
+      files.map((file) => `${file.path}\0${file.sha256}\n`).join(""),
+    ),
+    files,
   };
 }
 
@@ -2071,7 +2083,10 @@ describe("skills.sh catalog overload control plane", () => {
       cursor: 0,
       rows: [frozenSnapshot.rows.find((row) => row.externalId === "nvidia/skills/aiq-deploy")!],
     });
-    const artifact = await storeTestArtifact(t, "nvidia/skills/aiq-deploy", "six write artifact");
+    const artifact = await storeTestArtifactFiles(t, "nvidia/skills/aiq-deploy", [
+      { path: "SKILL.md", content: "six write artifact" },
+      { path: "references/context.md", content: "second embedded artifact file" },
+    ]);
 
     const result = await t.action(internal.skillsShCatalog.admitRealScansInternal, {
       runId,
