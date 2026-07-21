@@ -70,6 +70,7 @@
     "seed:test:validate-snapshot": "bun scripts/staging-seed/validate-sanitized-snapshot.ts",
     "setup:worktree": "bun scripts/setup-worktree.ts",
     "skill-cards:worker": "bun scripts/skill-cards/run-skill-card-worker.ts",
+    "skills-sh:capture-500": "bun scripts/skills-sh-catalog/capture-frozen-snapshot.ts",
     "skills:install": "npx --yes skills@1.5.16 add openclaw/design-system --skill openclaw-design openclaw-brand openclaw-design-system openclaw-marketing-pages openclaw-design-audit --agent codex --copy --yes",
     "test": "vitest run",
     "test:e2e": "vitest run -c vitest.e2e.config.ts",
