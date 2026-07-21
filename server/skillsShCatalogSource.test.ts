@@ -158,7 +158,7 @@ describe("skills.sh Vercel source boundary", () => {
     ).toThrow("invalid authenticated GitHub owner proof");
   });
 
-  it("preflights exact live owners before fetching 500 canonical details", async () => {
+  it("selects 500 hash-qualified rows before requiring exact live owner proofs", async () => {
     const listRows = [
       {
         id: "anthropics/skills/frontend-design",
@@ -222,6 +222,30 @@ describe("skills.sh Vercel source boundary", () => {
       }
       detailUrls.push(url);
       const id = decodeURIComponent(url.split("/api/v1/skills/")[1] ?? "");
+      if (id === "owner/repo-0/skill-0") {
+        return new Response(
+          JSON.stringify({
+            id,
+            source: "owner/repo-0",
+            slug: "skill-0",
+            installs: 1,
+            hash: null,
+            files: null,
+          }),
+        );
+      }
+      if (id === "owner/repo-1/skill-1") {
+        return new Response(
+          JSON.stringify({
+            id,
+            source: "owner/repo-1",
+            slug: "skill-1",
+            installs: 1,
+            hash: "b".repeat(64),
+            files: null,
+          }),
+        );
+      }
       return new Response(
         JSON.stringify({
           id,
@@ -265,23 +289,33 @@ describe("skills.sh Vercel source boundary", () => {
       admitExternalIds: ["nvidia/skills/nvidia-skill-0"],
     };
 
+    await expect(
+      captureSkillsShCatalogTestSnapshot({
+        ...options,
+        admitExternalIds: ["owner/repo-1/skill-1"],
+      }),
+    ).rejects.toThrow("live admission lacks artifact files");
+    detailUrls.length = 0;
+
     const preflight = await captureSkillsShCatalogTestSnapshot(options).catch((error) => error);
     expect(preflight).toBeInstanceOf(SkillsShCatalogOwnerProofRequiredError);
     expect(preflight).toMatchObject({
       owners: ["anthropics", "nvidia", "owner"],
       sourcePreflight: {
-        skillsShFetches: 2,
+        skillsShFetches: 506,
         listFetches: 1,
         searchFetches: 1,
-        detailFetches: 0,
+        detailFetches: 504,
         selection: {
           rows: 500,
           nvidiaRows: 10,
+          skippedIncompleteDetails: 1,
         },
       },
     });
-    expect(detailUrls).toHaveLength(0);
+    expect(detailUrls).toHaveLength(504);
 
+    detailUrls.length = 0;
     const snapshot = await captureSkillsShCatalogTestSnapshot({
       ...options,
       githubOwnerProof: {
@@ -302,16 +336,19 @@ describe("skills.sh Vercel source boundary", () => {
         "anthropics/skills/frontend-design",
         "anthropics/claude-code/frontend-design",
       ],
+      skippedIncompleteDetails: 1,
     });
+    expect(snapshot.rows.some((row) => row.externalId === "owner/repo-0/skill-0")).toBe(false);
     expect(snapshot.artifacts).toHaveLength(1);
     expect(snapshot.metrics).toMatchObject({
-      skillsShFetches: 502,
+      skillsShFetches: 506,
       listFetches: 1,
       searchFetches: 1,
-      detailFetches: 500,
+      detailFetches: 504,
       githubOwnerFetches: 3,
+      skippedIncompleteDetails: 1,
     });
-    expect(detailUrls).toHaveLength(500);
+    expect(detailUrls).toHaveLength(504);
   });
 
   it("rejects an ordinary Preview even when spoofable Test strings are present", async () => {

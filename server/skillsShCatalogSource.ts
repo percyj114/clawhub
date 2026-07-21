@@ -34,11 +34,11 @@ export type SkillsShCatalogDetail = {
   source: string;
   slug: string;
   installs: number;
-  hash: string;
+  hash: string | null;
   files: Array<{
     name: string;
     content: string;
-  }>;
+  }> | null;
 };
 
 type SkillsShCatalogPage = {
@@ -53,6 +53,10 @@ type SkillsShCatalogPage = {
 
 type SkillsShCatalogSearch = {
   data: SkillsShCatalogListRow[];
+};
+
+type HashQualifiedSkillsShCatalogDetail = SkillsShCatalogDetail & {
+  hash: string;
 };
 
 function assertIntegerInRange(name: string, value: number, min: number, max: number) {
@@ -225,6 +229,7 @@ export class SkillsShCatalogOwnerProofRequiredError extends Error {
         rows: number;
         nvidiaRows: number;
         requiredCollisionIds: readonly string[];
+        skippedIncompleteDetails: number;
       };
     },
   ) {
@@ -379,29 +384,14 @@ function normalizeListRow(row: SkillsShCatalogListRow) {
   };
 }
 
-async function mapWithConcurrency<T, R>(
-  values: readonly T[],
-  concurrency: number,
-  mapper: (value: T, index: number) => Promise<R>,
-) {
-  const results = Array.from<R>({ length: values.length });
-  let nextIndex = 0;
-  async function worker() {
-    while (nextIndex < values.length) {
-      const index = nextIndex;
-      nextIndex += 1;
-      results[index] = await mapper(values[index] as T, index);
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, () => worker()));
-  return results;
-}
-
 function sha256Hex(bytes: Uint8Array | string) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
 function buildArtifact(detail: SkillsShCatalogDetail) {
+  if (!Array.isArray(detail.files) || detail.files.length < 1) {
+    throw new Error(`skills.sh live admission lacks artifact files: ${detail.id}`);
+  }
   const files = detail.files
     .map((file) => {
       const bytes = Buffer.from(file.content, "utf8");
@@ -435,11 +425,14 @@ function createSkillsShFetchOptions(
   };
 }
 
-async function selectSkillsShCatalogTestRows(fetchOptions: {
-  env?: SkillsShCatalogSourceEnv;
-  fetchImpl?: typeof fetch;
-  oidcToken?: string;
-}) {
+async function selectSkillsShCatalogTestRows(
+  fetchOptions: {
+    env?: SkillsShCatalogSourceEnv;
+    fetchImpl?: typeof fetch;
+    oidcToken?: string;
+  },
+  requiredArtifactIds: ReadonlySet<string>,
+) {
   const candidates = new Map<string, ReturnType<typeof normalizeListRow>>();
   let listFetches = 0;
   for (let page = 0; candidates.size < MAX_SOURCE_PAGE_SIZE + 100; page += 1) {
@@ -467,26 +460,72 @@ async function selectSkillsShCatalogTestRows(fetchOptions: {
   const requiredIds = new Set([
     ...REQUIRED_COLLISION_IDS,
     ...nvidiaRows.map((row) => row.externalId),
+    ...requiredArtifactIds,
   ]);
   for (const row of nvidiaRows) candidates.set(row.externalId, row);
   for (const id of requiredIds) {
     if (!candidates.has(id)) throw new Error(`Required skills.sh live row is missing: ${id}`);
   }
-  const selectedRows = [
+  const candidateRows = [
     ...Array.from(requiredIds, (id) => candidates.get(id)!),
     ...Array.from(candidates.values()).filter((row) => !requiredIds.has(row.externalId)),
-  ].slice(0, MAX_SOURCE_PAGE_SIZE);
-  if (selectedRows.length !== MAX_SOURCE_PAGE_SIZE) {
-    throw new Error(`Expected ${MAX_SOURCE_PAGE_SIZE} live rows`);
+  ];
+  const selected: Array<{
+    row: ReturnType<typeof normalizeListRow>;
+    detail: HashQualifiedSkillsShCatalogDetail;
+  }> = [];
+  let detailFetches = 0;
+  let skippedIncompleteDetails = 0;
+  for (
+    let offset = 0;
+    offset < candidateRows.length && selected.length < MAX_SOURCE_PAGE_SIZE;
+    offset += DETAIL_CONCURRENCY
+  ) {
+    const batch = candidateRows.slice(offset, offset + DETAIL_CONCURRENCY);
+    const details = await Promise.all(
+      batch.map(async (row) => await fetchSkillsShCatalogDetail(row.externalId, fetchOptions)),
+    );
+    detailFetches += details.length;
+    for (let index = 0; index < batch.length; index += 1) {
+      const row = batch[index]!;
+      const detail = details[index]!;
+      const hasExactHash =
+        detail.id.trim().toLowerCase() === row.externalId &&
+        typeof detail.hash === "string" &&
+        /^[a-f0-9]{64}$/i.test(detail.hash);
+      if (!hasExactHash) {
+        if (requiredIds.has(row.externalId) || requiredArtifactIds.has(row.externalId)) {
+          throw new Error(
+            `Required skills.sh live row lacks an exact detail hash: ${row.externalId}`,
+          );
+        }
+        skippedIncompleteDetails += 1;
+        continue;
+      }
+      if (
+        requiredArtifactIds.has(row.externalId) &&
+        (!Array.isArray(detail.files) || detail.files.length < 1)
+      ) {
+        throw new Error(`skills.sh live admission lacks artifact files: ${row.externalId}`);
+      }
+      selected.push({ row, detail: detail as HashQualifiedSkillsShCatalogDetail });
+      if (selected.length === MAX_SOURCE_PAGE_SIZE) break;
+    }
+  }
+  if (selected.length !== MAX_SOURCE_PAGE_SIZE) {
+    throw new Error(`Expected ${MAX_SOURCE_PAGE_SIZE} hash-qualified live rows`);
   }
   return {
-    selectedRows,
-    selectedOwners: Array.from(new Set(selectedRows.map((row) => row.owner))).sort(),
+    selected,
+    selectedOwners: Array.from(new Set(selected.map(({ row }) => row.owner))).sort(),
     listFetches,
+    detailFetches,
+    skippedIncompleteDetails,
     selection: {
-      rows: selectedRows.length,
-      nvidiaRows: selectedRows.filter((row) => row.owner === "nvidia").length,
+      rows: selected.length,
+      nvidiaRows: selected.filter(({ row }) => row.owner === "nvidia").length,
       requiredCollisionIds: REQUIRED_COLLISION_IDS,
+      skippedIncompleteDetails,
     },
   };
 }
@@ -519,12 +558,20 @@ export async function captureSkillsShCatalogTestSnapshot(options: {
     options.fetchImpl,
     authorization.oidcToken,
   );
-  const selection = await selectSkillsShCatalogTestRows(fetchOptions);
+  const admitted = new Set(
+    (options.admitExternalIds ?? []).map((externalId) => externalId.trim().toLowerCase()),
+  );
+  if (admitted.size > authorization.maxRealScanAdmissions) {
+    throw new Error(
+      `skills.sh live Test admission cannot exceed ${authorization.maxRealScanAdmissions}`,
+    );
+  }
+  const selection = await selectSkillsShCatalogTestRows(fetchOptions, admitted);
   const sourcePreflight = {
-    skillsShFetches: selection.listFetches + 1,
+    skillsShFetches: selection.listFetches + 1 + selection.detailFetches,
     listFetches: selection.listFetches,
     searchFetches: 1,
-    detailFetches: 0,
+    detailFetches: selection.detailFetches,
     selection: selection.selection,
   };
   const githubOwnerProof =
@@ -539,18 +586,7 @@ export async function captureSkillsShCatalogTestSnapshot(options: {
     selection.selectedOwners,
     githubOwnerProof,
   );
-  const details = await mapWithConcurrency(
-    selection.selectedRows,
-    DETAIL_CONCURRENCY,
-    async (row) => await fetchSkillsShCatalogDetail(row.externalId, fetchOptions),
-  );
-  const selected = selection.selectedRows.map((row, index) => {
-    const detail = details[index]!;
-    if (detail.id.trim().toLowerCase() !== row.externalId || !/^[a-f0-9]{64}$/i.test(detail.hash)) {
-      throw new Error(`skills.sh live row lacks an exact detail hash: ${row.externalId}`);
-    }
-    return { row, detail };
-  });
+  const selected = selection.selected;
   const rows = selected.map(({ row, detail }) => {
     const githubOwnerId = githubOwnerIds.get(row.owner)!;
     return {
@@ -566,14 +602,6 @@ export async function captureSkillsShCatalogTestSnapshot(options: {
       installs: row.installs,
     };
   });
-  const admitted = new Set(
-    (options.admitExternalIds ?? []).map((externalId) => externalId.trim().toLowerCase()),
-  );
-  if (admitted.size > authorization.maxRealScanAdmissions) {
-    throw new Error(
-      `skills.sh live Test admission cannot exceed ${authorization.maxRealScanAdmissions}`,
-    );
-  }
   const artifacts = selected
     .filter(({ row }) => admitted.has(row.externalId))
     .map(({ row, detail }) => ({
@@ -595,14 +623,16 @@ export async function captureSkillsShCatalogTestSnapshot(options: {
       rows: rows.length,
       nvidiaRows: rows.filter((row) => row.owner === "nvidia").length,
       requiredCollisionIds: REQUIRED_COLLISION_IDS,
+      skippedIncompleteDetails: selection.skippedIncompleteDetails,
     },
     metrics: {
       runtimeMs: Date.now() - startedAt,
-      skillsShFetches: selection.listFetches + 1 + details.length,
+      skillsShFetches: selection.listFetches + 1 + selection.detailFetches,
       listFetches: selection.listFetches,
       searchFetches: 1,
-      detailFetches: details.length,
+      detailFetches: selection.detailFetches,
       githubOwnerFetches: githubOwnerProof.fetches,
+      skippedIncompleteDetails: selection.skippedIncompleteDetails,
     },
   };
 }
