@@ -1,24 +1,24 @@
 {
   "verdict": "pass",
-  "generatedAt": "2026-07-21T08:28:56.037Z",
+  "generatedAt": "2026-07-21T09:02:16.188Z",
   "deployment": {
     "kind": "disposable-local-convex",
-    "name": "local-amantus-clawdhub-934",
+    "name": "local-amantus-clawdhub-7449",
     "cloudUrl": "http://127.0.0.1:3210",
     "permanentTestDeployed": false,
     "productionDeployed": false
   },
   "runtime": {
-    "elapsedMs": 42203,
+    "elapsedMs": 42507,
     "memory": {
-      "backendPid": 11536,
-      "backendRssStartKiB": 857360,
-      "backendRssPeakKiB": 871408,
-      "backendRssEndKiB": 763024,
-      "driverRssStartBytes": 53542912,
-      "driverRssPeakBytes": 79380480,
-      "driverRssEndBytes": 79380480,
-      "driverHeapPeakBytes": 9794541
+      "backendPid": 97459,
+      "backendRssStartKiB": 816368,
+      "backendRssPeakKiB": 891456,
+      "backendRssEndKiB": 863968,
+      "driverRssStartBytes": 51904512,
+      "driverRssPeakBytes": 75415552,
+      "driverRssEndBytes": 75415552,
+      "driverHeapPeakBytes": 6130176
     },
     "clientCalls": {
       "mutation": 279,
@@ -221,7 +221,7 @@
   "admissionContainment": {
     "deterministicOnlyInLocalProof": true,
     "realDispatchOutsideStagingLiveRejected": true,
-    "realDispatchRejection": "[Request ID: 898de620f9ba9a29] Server Error\nUncaught ConvexError: real skills.sh scan admission requires staging-live controls\n    at handler (../convex/skillsShCatalog.ts:913:14)\n    at async handler (../../node_modules/convex-helpers/server/customFunctions.js:268:27)\n"
+    "realDispatchRejection": "[Request ID: add843a2d41d4f84] Server Error\nUncaught ConvexError: real skills.sh scan admission requires staging-live controls\n    at handler (../convex/skillsShCatalog.ts:915:14)\n    at async handler (../../node_modules/convex-helpers/server/customFunctions.js:268:27)\n"
   },
   "lifecycleContainment": {
     "canceledRunningAttempts": 1,
@@ -237,9 +237,9 @@
       }
     ],
     "canceledRunAdmissionRejected": true,
-    "canceledRunAdmissionRejection": "[Request ID: 51bc2cd211ad9fc2] Server Error\nUncaught ConvexError: Cannot admit scans for canceled run\n    at handler (../convex/skillsShCatalog.ts:900:24)\n    at async handler (../../node_modules/convex-helpers/server/customFunctions.js:268:27)\n",
+    "canceledRunAdmissionRejection": "[Request ID: 286aefc65cc575ac] Server Error\nUncaught ConvexError: Cannot admit scans for canceled run\n    at handler (../convex/skillsShCatalog.ts:902:24)\n    at async handler (../../node_modules/convex-helpers/server/customFunctions.js:268:27)\n",
     "killSwitchAdmissionRejected": true,
-    "killSwitchAdmissionRejection": "[Request ID: 4700cb4e34370393] Server Error\nUncaught ConvexError: skills.sh catalog controls are disabled\n    at assertCatalogActive (../convex/skillsShCatalog.ts:157:14)\n    at assertScanAdmissionEnabled (../convex/skillsShCatalog.ts:179:14)\n    at handler (../convex/skillsShCatalog.ts:891:24)\n    at async handler (../../node_modules/convex-helpers/server/customFunctions.js:268:27)\n"
+    "killSwitchAdmissionRejection": "[Request ID: b4c1e019ae188e8a] Server Error\nUncaught ConvexError: skills.sh catalog controls are disabled\n    at assertCatalogActive (../convex/skillsShCatalog.ts:157:14)\n    at assertScanAdmissionEnabled (../convex/skillsShCatalog.ts:179:14)\n    at handler (../convex/skillsShCatalog.ts:893:24)\n    at async handler (../../node_modules/convex-helpers/server/customFunctions.js:268:27)\n"
   },
   "rollback": {
     "controls": {
@@ -262,7 +262,7 @@
       "reason": "visibility and control rollback proof",
       "scanAdmissionEnabled": false,
       "scanPlanningEnabled": false,
-      "updatedAt": 1784622535801,
+      "updatedAt": 1784624535953,
       "updatedBy": "claw-556-local-proof",
       "writesEnabled": false
     },
