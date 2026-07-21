@@ -1,28 +1,28 @@
 {
   "verdict": "pass",
-  "generatedAt": "2026-07-21T03:34:15.693Z",
+  "generatedAt": "2026-07-21T04:16:44.885Z",
   "deployment": {
     "kind": "disposable-local-convex",
-    "name": "local-amantus-clawdhub-5123",
+    "name": "local-amantus-clawdhub-5574",
     "cloudUrl": "http://127.0.0.1:3210",
     "permanentTestDeployed": false,
     "productionDeployed": false
   },
   "runtime": {
-    "elapsedMs": 25312,
+    "elapsedMs": 61487,
     "memory": {
-      "backendPid": 17330,
-      "backendRssStartKiB": 741728,
-      "backendRssPeakKiB": 851744,
-      "backendRssEndKiB": 851728,
-      "driverRssStartBytes": 52805632,
-      "driverRssPeakBytes": 77348864,
-      "driverRssEndBytes": 77348864,
-      "driverHeapPeakBytes": 6942187
+      "backendPid": 17807,
+      "backendRssStartKiB": 930640,
+      "backendRssPeakKiB": 932400,
+      "backendRssEndKiB": 860352,
+      "driverRssStartBytes": 53936128,
+      "driverRssPeakBytes": 79069184,
+      "driverRssEndBytes": 79069184,
+      "driverHeapPeakBytes": 9479037
     },
     "clientCalls": {
-      "mutation": 153,
-      "query": 173,
+      "mutation": 277,
+      "query": 297,
       "expectedErrors": 8,
       "unexpectedErrors": 0
     },
@@ -66,11 +66,11 @@
     "authoritativePersistedEntries": 0,
     "authoritativeScanAttempts": 0,
     "authoritativeNativeScanJobs": 0,
-    "batches": 80,
+    "batches": 200,
     "operationEstimates": {
-      "dbReads": 20161,
-      "dbWrites": 81,
-      "functionCalls": 81
+      "dbReads": 20401,
+      "dbWrites": 201,
+      "functionCalls": 201
     }
   },
   "frozen500": {
@@ -152,9 +152,9 @@
       },
       "authoritativeAttempts": 0,
       "operationEstimates": {
-        "dbReads": 1009,
-        "dbWrites": 5,
-        "functionCalls": 5
+        "dbReads": 1023,
+        "dbWrites": 507,
+        "functionCalls": 7
       }
     },
     "changedRerun": {
@@ -176,9 +176,9 @@
       "artifactHash": null,
       "hashSemantics": "sourceContentHash is the upstream observation; deterministic fixture completion is not an independent ClawScan artifact hash",
       "operationEstimates": {
-        "dbReads": 1026,
-        "dbWrites": 13,
-        "functionCalls": 7
+        "dbReads": 1040,
+        "dbWrites": 513,
+        "functionCalls": 9
       }
     },
     "finalAuthoritativeEntries": 500,
@@ -221,7 +221,7 @@
   "admissionContainment": {
     "deterministicOnlyInLocalProof": true,
     "realDispatchOutsideStagingLiveRejected": true,
-    "realDispatchRejection": "requires staging-live controls"
+    "realDispatchRejection": "[Request ID: cf394376940c17d1] Server Error\nUncaught ConvexError: real skills.sh scan admission requires staging-live controls\n    at handler (../convex/skillsShCatalog.ts:638:22)\n    at async handler (../../node_modules/convex-helpers/server/customFunctions.js:268:27)\n"
   },
   "lifecycleContainment": {
     "canceledRunningAttempts": 1,
@@ -237,9 +237,9 @@
       }
     ],
     "canceledRunAdmissionRejected": true,
-    "canceledRunAdmissionRejection": "Cannot admit scans for canceled run",
+    "canceledRunAdmissionRejection": "[Request ID: eb1d99caef6190f1] Server Error\nUncaught ConvexError: Cannot admit scans for canceled run\n    at handler (../convex/skillsShCatalog.ts:625:24)\n    at async handler (../../node_modules/convex-helpers/server/customFunctions.js:268:27)\n",
     "killSwitchAdmissionRejected": true,
-    "killSwitchAdmissionRejection": "catalog controls are disabled"
+    "killSwitchAdmissionRejection": "[Request ID: b390ad2c4e851de1] Server Error\nUncaught ConvexError: skills.sh catalog controls are disabled\n    at assertCatalogActive (../convex/skillsShCatalog.ts:132:14)\n    at assertScanAdmissionEnabled (../convex/skillsShCatalog.ts:154:14)\n    at handler (../convex/skillsShCatalog.ts:616:24)\n    at async handler (../../node_modules/convex-helpers/server/customFunctions.js:268:27)\n"
   },
   "rollback": {
     "controls": {
@@ -262,7 +262,7 @@
       "reason": "visibility and control rollback proof",
       "scanAdmissionEnabled": false,
       "scanPlanningEnabled": false,
-      "updatedAt": 1784604855460,
+      "updatedAt": 1784607404533,
       "updatedBy": "claw-556-local-proof",
       "writesEnabled": false
     },

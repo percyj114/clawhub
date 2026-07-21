@@ -104,7 +104,7 @@ async function expectedFailure<T>(kind: CallKind, operation: () => Promise<T>, m
     assert(detail.includes(message), `expected error containing "${message}"`);
     calls.expectedErrors += 1;
     sampleMemory();
-    return message;
+    return detail;
   }
   throw new Error(`expected operation to fail with "${message}"`);
 }
@@ -229,7 +229,7 @@ async function main() {
       scanPlanningEnabled: true,
       scanAdmissionEnabled: false,
       maxEntriesPerRun: 20_000,
-      maxEntriesPerBatch: 250,
+      maxEntriesPerBatch: 100,
       maxWritesPerBatch: 2,
       maxPlannedScans: 20_000,
       maxScanAdmissionsPerBatch: 0,
