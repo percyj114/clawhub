@@ -553,6 +553,7 @@ export const setFixtureRunPausedInternal = internalMutation({
       run.status === "completed" ||
       run.status === "budget-exhausted" ||
       run.status === "failed" ||
+      run.status === "canceling" ||
       run.status === "canceled"
     ) {
       throw new ConvexError(`Cannot change pause state for ${run.status} run`);
@@ -615,7 +616,12 @@ export const admitFixtureScansInternal = internalMutation({
     const control = assertScanAdmissionEnabled(await getControlDoc(ctx));
     const run = await ctx.db.get(args.runId);
     if (!run) throw new ConvexError("skills.sh catalog run not found");
-    if (run.status === "paused" || run.status === "canceled" || run.status === "failed") {
+    if (
+      run.status === "paused" ||
+      run.status === "canceling" ||
+      run.status === "canceled" ||
+      run.status === "failed"
+    ) {
       throw new ConvexError(`Cannot admit scans for ${run.status} run`);
     }
     const externalIds = Array.from(
@@ -627,10 +633,10 @@ export const admitFixtureScansInternal = internalMutation({
       1,
       run.budgets.maxScanAdmissionsPerBatch,
     );
-    if (run.counts.scansAdmitted + externalIds.length > run.budgets.maxScanAdmissionsPerRun) {
-      throw new ConvexError("skills.sh catalog run scan-admission budget exceeded");
-    }
     if (args.dispatchKind === "real") {
+      if (control.mode !== "staging-live") {
+        throw new ConvexError("real skills.sh scan admission requires staging-live controls");
+      }
       if (environment.environment !== "test") {
         throw new ConvexError(
           "real skills.sh scan admission requires the permanent Test environment",
@@ -761,6 +767,15 @@ export const markScanAttemptRunningInternal = internalMutation({
       return { started: false };
     }
     const run = await ctx.db.get(attempt.runId);
+    if (
+      run &&
+      (run.status === "paused" ||
+        run.status === "canceling" ||
+        run.status === "canceled" ||
+        run.status === "failed")
+    ) {
+      throw new ConvexError(`Cannot start scan for ${run.status} run`);
+    }
     const now = Date.now();
     await ctx.db.patch(attempt._id, { status: "running", updatedAt: now });
     if (run) {
@@ -788,7 +803,7 @@ export const completeDeterministicScansInternal = internalMutation({
     assertIntegerInRange("limit", args.limit, 1, MAX_DETERMINISTIC_COMPLETIONS_PER_BATCH);
     const run = await ctx.db.get(args.runId);
     if (!run) throw new ConvexError("skills.sh catalog run not found");
-    if (run.status === "canceled" || run.status === "failed") {
+    if (run.status === "canceling" || run.status === "canceled" || run.status === "failed") {
       throw new ConvexError(`Cannot complete scans for ${run.status} run`);
     }
     const queueHealth = await readQueueHealth(ctx, control);
@@ -877,6 +892,26 @@ export const recordFixtureScanResultInternal = internalMutation({
     if (attempt.sourceContentHash !== args.sourceContentHash) {
       throw new ConvexError("skills.sh fixture source observation hash mismatch");
     }
+    const run = await ctx.db.get(attempt.runId);
+    if (run?.status === "canceling" || run?.status === "canceled") {
+      const now = Date.now();
+      const canceledOperations = await cancelAttempt(ctx, attempt, now);
+      const hasMore = await hasActiveScanAttemptsForRun(ctx, run._id);
+      await ctx.db.patch(run._id, {
+        status: hasMore ? "canceling" : "canceled",
+        counts: {
+          ...run.counts,
+          scansCanceled: run.counts.scansCanceled + 1,
+        },
+        operations: addOperations(run.operations, {
+          functionCalls: 1,
+          dbReads: 4 + canceledOperations.dbReads,
+          dbWrites: 1 + canceledOperations.dbWrites,
+        }),
+        updatedAt: now,
+      });
+      return { applied: false, reason: "run-canceled" };
+    }
     const entry = await ctx.db.get(attempt.entryId);
     if (!entry || entry.sourceContentHash !== args.sourceContentHash) {
       const now = Date.now();
@@ -885,7 +920,6 @@ export const recordFixtureScanResultInternal = internalMutation({
         completedAt: now,
         updatedAt: now,
       });
-      const run = await ctx.db.get(attempt.runId);
       if (run) {
         await ctx.db.patch(run._id, {
           counts: {
@@ -916,7 +950,6 @@ export const recordFixtureScanResultInternal = internalMutation({
       publicVisible: false,
       updatedAt: now,
     });
-    const run = await ctx.db.get(attempt.runId);
     if (run) {
       await ctx.db.patch(run._id, {
         counts: {
@@ -949,13 +982,14 @@ export const cancelCatalogRunInternal = internalMutation({
       ctx.db
         .query("skillsShCatalogScanAttempts")
         .withIndex("by_run_and_status", (q) => q.eq("runId", run._id).eq("status", "queued"))
-        .take(args.limit),
+        .take(args.limit + 1),
       ctx.db
         .query("skillsShCatalogScanAttempts")
         .withIndex("by_run_and_status", (q) => q.eq("runId", run._id).eq("status", "running"))
-        .take(args.limit),
+        .take(args.limit + 1),
     ]);
     const active = [...queued, ...running].slice(0, args.limit);
+    const hasMore = queued.length + running.length > active.length;
     const now = Date.now();
     let attemptReads = 0;
     let attemptWrites = 0;
@@ -969,7 +1003,7 @@ export const cancelCatalogRunInternal = internalMutation({
       scansCanceled: run.counts.scansCanceled + active.length,
     };
     await ctx.db.patch(run._id, {
-      status: "canceled",
+      status: hasMore ? "canceling" : "canceled",
       counts,
       operations: addOperations(run.operations, {
         functionCalls: 1,
@@ -978,7 +1012,12 @@ export const cancelCatalogRunInternal = internalMutation({
       }),
       updatedAt: now,
     });
-    return { canceled: active.length, counts };
+    return {
+      canceled: active.length,
+      hasMore,
+      status: hasMore ? ("canceling" as const) : ("canceled" as const),
+      counts,
+    };
   },
 });
 
@@ -1255,6 +1294,20 @@ async function cancelAttempt(
     return { dbReads: 1, dbWrites: 2 };
   }
   return { dbReads: 1, dbWrites: 1 };
+}
+
+async function hasActiveScanAttemptsForRun(ctx: MutationCtx, runId: Id<"skillsShCatalogRuns">) {
+  const [queued, running] = await Promise.all([
+    ctx.db
+      .query("skillsShCatalogScanAttempts")
+      .withIndex("by_run_and_status", (q) => q.eq("runId", runId).eq("status", "queued"))
+      .first(),
+    ctx.db
+      .query("skillsShCatalogScanAttempts")
+      .withIndex("by_run_and_status", (q) => q.eq("runId", runId).eq("status", "running"))
+      .first(),
+  ]);
+  return Boolean(queued || running);
 }
 
 function addOperations(current: OperationCounts, added: OperationCounts) {

@@ -432,7 +432,6 @@ describe("skills.sh catalog overload control plane", () => {
     const allowlist = frozenSnapshot.rows.slice(0, 10).map((row) => row.externalId);
     await t.mutation(internal.skillsShCatalog.configureFixtureControlInternal, {
       ...BASE_CONTROL,
-      mode: "staging-live",
       maxScanAdmissionsPerBatch: 10,
       maxScanAdmissionsPerRun: 10,
       maxScanAdmissionsPerDay: 10,
@@ -450,6 +449,23 @@ describe("skills.sh catalog overload control plane", () => {
       observed: 500,
       scansPlanned: 500,
       scansAdmitted: 0,
+    });
+    await expect(
+      t.mutation(internal.skillsShCatalog.admitFixtureScansInternal, {
+        runId,
+        externalIds: [allowlist[0]!],
+        dispatchKind: "real",
+      }),
+    ).rejects.toThrow("requires staging-live controls");
+    await t.mutation(internal.skillsShCatalog.configureFixtureControlInternal, {
+      ...BASE_CONTROL,
+      mode: "staging-live",
+      maxScanAdmissionsPerBatch: 10,
+      maxScanAdmissionsPerRun: 10,
+      maxScanAdmissionsPerDay: 10,
+      maxCatalogQueued: 10,
+      maxCatalogInFlight: 1,
+      realScanAllowlist: allowlist,
     });
     await expect(
       t.mutation(internal.skillsShCatalog.admitFixtureScansInternal, {
@@ -488,6 +504,110 @@ describe("skills.sh catalog overload control plane", () => {
       await t.run(async (ctx) => await ctx.db.query("securityScanJobs").collect()),
     ).toHaveLength(0);
   }, 30_000);
+
+  it("charges retry budgets only for newly admitted scan attempts", async () => {
+    useEnvironment(LOCAL_ENV);
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.skillsShCatalog.configureFixtureControlInternal, {
+      ...BASE_CONTROL,
+      maxEntriesPerRun: 2,
+      maxEntriesPerBatch: 2,
+      maxPlannedScans: 2,
+      maxScanAdmissionsPerBatch: 2,
+      maxScanAdmissionsPerRun: 2,
+      maxScanAdmissionsPerDay: 2,
+      maxCatalogQueued: 2,
+      maxCatalogInFlight: 1,
+    });
+    const { runId } = await t.mutation(internal.skillsShCatalog.startFixtureRunInternal, {
+      fixtureId: "synthetic-20000-v1",
+      actor: "codex-test",
+      reason: "idempotent admission retry budget",
+    });
+    await processToTerminal(t, runId);
+    const entries = await collectEntries(t);
+    expect(entries).toHaveLength(2);
+
+    await t.mutation(internal.skillsShCatalog.admitFixtureScansInternal, {
+      runId,
+      externalIds: [entries[0]!.externalId],
+      dispatchKind: "deterministic",
+    });
+    const retried = await t.mutation(internal.skillsShCatalog.admitFixtureScansInternal, {
+      runId,
+      externalIds: entries.map((entry) => entry.externalId),
+      dispatchKind: "deterministic",
+    });
+    expect(retried).toMatchObject({ requested: 2, admitted: 1, skipped: 1 });
+    expect(await collectAttempts(t, runId)).toHaveLength(2);
+  });
+
+  it("blocks queued starts and late results while a catalog run is canceling", async () => {
+    useEnvironment(LOCAL_ENV);
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.skillsShCatalog.configureFixtureControlInternal, {
+      ...BASE_CONTROL,
+      maxEntriesPerRun: 3,
+      maxEntriesPerBatch: 3,
+      maxPlannedScans: 3,
+      maxScanAdmissionsPerBatch: 3,
+      maxScanAdmissionsPerRun: 3,
+      maxScanAdmissionsPerDay: 3,
+      maxCatalogQueued: 3,
+      maxCatalogInFlight: 3,
+    });
+    const { runId } = await t.mutation(internal.skillsShCatalog.startFixtureRunInternal, {
+      fixtureId: "synthetic-20000-v1",
+      actor: "codex-test",
+      reason: "partial cancellation lifecycle",
+    });
+    await processToTerminal(t, runId);
+    const entries = await collectEntries(t);
+    await t.mutation(internal.skillsShCatalog.admitFixtureScansInternal, {
+      runId,
+      externalIds: entries.map((entry) => entry.externalId),
+      dispatchKind: "deterministic",
+    });
+    const attempts = await collectAttempts(t, runId);
+    expect(attempts).toHaveLength(3);
+    await t.mutation(internal.skillsShCatalog.markScanAttemptRunningInternal, {
+      attemptId: attempts[2]!._id,
+    });
+
+    const partial = await t.mutation(internal.skillsShCatalog.cancelCatalogRunInternal, {
+      runId,
+      limit: 1,
+    });
+    expect(partial).toMatchObject({ canceled: 1, hasMore: true, status: "canceling" });
+    await expect(
+      t.mutation(internal.skillsShCatalog.markScanAttemptRunningInternal, {
+        attemptId: attempts[1]!._id,
+      }),
+    ).rejects.toThrow("Cannot start scan for canceling run");
+    await expect(
+      t.mutation(internal.skillsShCatalog.admitFixtureScansInternal, {
+        runId,
+        externalIds: [entries[1]!.externalId],
+        dispatchKind: "deterministic",
+      }),
+    ).rejects.toThrow("Cannot admit scans for canceling run");
+
+    const lateResult = await t.mutation(internal.skillsShCatalog.recordFixtureScanResultInternal, {
+      attemptId: attempts[2]!._id,
+      sourceContentHash: attempts[2]!.sourceContentHash,
+      verdict: "clean",
+    });
+    expect(lateResult).toEqual({ applied: false, reason: "run-canceled" });
+    const finished = await t.mutation(internal.skillsShCatalog.cancelCatalogRunInternal, {
+      runId,
+      limit: 10,
+    });
+    expect(finished).toMatchObject({ canceled: 1, hasMore: false, status: "canceled" });
+    expect(
+      (await collectAttempts(t, runId)).every((attempt) => attempt.status === "canceled"),
+    ).toBe(true);
+    expect((await collectEntries(t)).every((entry) => !entry.publicVisible)).toBe(true);
+  });
 
   it("enforces queue health and concurrent caps, then cancels only catalog state", async () => {
     useEnvironment(LOCAL_ENV);

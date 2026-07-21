@@ -2812,6 +2812,7 @@ const skillsShCatalogRuns = defineTable({
     v.literal("completed"),
     v.literal("budget-exhausted"),
     v.literal("failed"),
+    v.literal("canceling"),
     v.literal("canceled"),
   ),
   cursor: v.number(),

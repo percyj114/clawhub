@@ -52,8 +52,6 @@ const memory = {
   driverRssPeakBytes: process.memoryUsage().rss,
   driverRssEndBytes: 0,
   driverHeapPeakBytes: process.memoryUsage().heapUsed,
-  driverMaxRssStartBytes: process.resourceUsage().maxRSS,
-  driverMaxRssEndBytes: 0,
 };
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -109,6 +107,25 @@ async function expectedFailure<T>(kind: CallKind, operation: () => Promise<T>, m
     return detail;
   }
   throw new Error(`expected operation to fail with "${message}"`);
+}
+
+function reclassifyExpectedRaceFailures(
+  results: PromiseSettledResult<unknown>[],
+  expectedMessage: string,
+) {
+  const rejected = results.filter(
+    (result): result is PromiseRejectedResult => result.status === "rejected",
+  );
+  for (const result of rejected) {
+    const detail = result.reason instanceof Error ? result.reason.message : String(result.reason);
+    assert(
+      detail.includes(expectedMessage),
+      `expected race rejection containing "${expectedMessage}", received "${detail}"`,
+    );
+  }
+  calls.unexpectedErrors -= rejected.length;
+  calls.expectedErrors += rejected.length;
+  return rejected;
 }
 
 function chunks<T>(values: readonly T[], size: number) {
@@ -230,6 +247,12 @@ async function main() {
     );
   }
   assert(dryRun?.status === "completed", "20,000-row dry run did not finish");
+  assert(
+    dryRun.counts.observed === 20_000 &&
+      dryRun.counts.scansPlanned === 20_000 &&
+      dryRun.counts.wouldInsert === 20_000,
+    "20,000-row dry run did not observe and plan the complete fixture",
+  );
   const entriesAfterDryRun = await collectPage<Doc<"skillsShCatalogEntries">>((cursor) =>
     query(() =>
       client.query(internal.skillsShCatalog.listEntriesPageInternal, {
@@ -467,13 +490,14 @@ async function main() {
     ),
   );
   const sameRunFulfilled = sameRunRace.filter((result) => result.status === "fulfilled");
-  const sameRunRejected = sameRunRace.filter((result) => result.status === "rejected");
+  const sameRunRejected = reclassifyExpectedRaceFailures(
+    sameRunRace,
+    "run scan-admission budget exceeded",
+  );
   assert(
     sameRunFulfilled.length === 1 && sameRunRejected.length === 1,
     "same-run concurrent admission exceeded its cap",
   );
-  calls.unexpectedErrors -= sameRunRejected.length;
-  calls.expectedErrors += sameRunRejected.length;
   const sameRunAttempts = await collectPage<Doc<"skillsShCatalogScanAttempts">>((cursor) =>
     query(() =>
       client.query(internal.skillsShCatalog.listRunScanAttemptsPageInternal, {
@@ -580,13 +604,14 @@ async function main() {
     ),
   ]);
   const dailyFulfilled = dailyRace.filter((result) => result.status === "fulfilled");
-  const dailyRejected = dailyRace.filter((result) => result.status === "rejected");
+  const dailyRejected = reclassifyExpectedRaceFailures(
+    dailyRace,
+    "daily scan-admission budget exceeded",
+  );
   assert(
     dailyFulfilled.length === 1 && dailyRejected.length === 1,
     "cross-run daily admission exceeded its cap",
   );
-  calls.unexpectedErrors -= dailyRejected.length;
-  calls.expectedErrors += dailyRejected.length;
   const dailyWinnerRunId = dailyRace[0]?.status === "fulfilled" ? dailyRunA : dailyRunB;
   await mutation(() =>
     client.mutation(internal.skillsShCatalog.completeDeterministicScansInternal, {
@@ -747,7 +772,6 @@ async function main() {
   memory.backendRssEndKiB = readNumber(["ps", "-o", "rss=", "-p", String(memory.backendPid)]);
   memory.backendRssPeakKiB = Math.max(memory.backendRssPeakKiB, memory.backendRssEndKiB);
   memory.driverRssEndBytes = process.memoryUsage().rss;
-  memory.driverMaxRssEndBytes = process.resourceUsage().maxRSS;
   sampleMemory();
 
   const proof = {
