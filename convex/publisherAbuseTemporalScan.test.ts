@@ -220,9 +220,15 @@ describe("scheduled temporal publisher abuse scan", () => {
     );
   });
 
-  it("does not take over an active cron scan when a moderator requests a rescan", async () => {
+  it("does not replace a recently quiet cron scan when a moderator requests a rescan", async () => {
     const actorUserId = "users:moderator" as Id<"users">;
-    const existing = temporalRun({ trigger: "cron", actorUserId: undefined });
+    const now = Date.now();
+    const existing = temporalRun({
+      trigger: "cron",
+      actorUserId: undefined,
+      startedAt: now - 4 * 24 * 60 * 60 * 1_000,
+      updatedAt: now - 16 * 60 * 1_000,
+    });
     const patch = vi.fn(async () => null);
     const ctx = {
       db: {
@@ -245,12 +251,12 @@ describe("scheduled temporal publisher abuse scan", () => {
     expect(patch).not.toHaveBeenCalled();
   });
 
-  it("replaces an abandoned signal scan whose progress heartbeat is stale", async () => {
+  it("lets a moderator replace a signal scan after twenty-four hours without progress", async () => {
     const now = Date.now();
     const existing = temporalRun({
       temporalPipelineKind: undefined,
       startedAt: now - 4 * 24 * 60 * 60 * 1_000,
-      updatedAt: now - 16 * 60 * 1_000,
+      updatedAt: now - 2 * 24 * 60 * 60 * 1_000,
     });
     const replacementRunId =
       "publisherAbuseScoreRuns:replacement-signals" as Id<"publisherAbuseScoreRuns">;
@@ -285,7 +291,7 @@ describe("scheduled temporal publisher abuse scan", () => {
       existing._id,
       expect.objectContaining({
         status: "failed",
-        errorMessage: expect.stringContaining("stopped reporting progress"),
+        errorMessage: expect.stringContaining("twenty-four hours"),
       }),
     );
     expect(insert).toHaveBeenCalledWith(
