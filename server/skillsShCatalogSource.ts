@@ -36,8 +36,8 @@ export type SkillsShCatalogDetail = {
   installs: number;
   hash: string | null;
   files: Array<{
-    name: string;
-    content: string;
+    name?: unknown;
+    content?: unknown;
   }> | null;
 };
 
@@ -388,9 +388,26 @@ function sha256Hex(bytes: Uint8Array | string) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+function hasCompleteArtifactFiles(
+  detail: SkillsShCatalogDetail,
+): detail is SkillsShCatalogDetail & {
+  files: Array<{ name: string; content: string }>;
+} {
+  return (
+    Array.isArray(detail.files) &&
+    detail.files.length > 0 &&
+    detail.files.every(
+      (file) =>
+        typeof file.name === "string" &&
+        file.name.trim().length > 0 &&
+        typeof file.content === "string",
+    )
+  );
+}
+
 function buildArtifact(detail: SkillsShCatalogDetail) {
-  if (!Array.isArray(detail.files) || detail.files.length < 1) {
-    throw new Error(`skills.sh live admission lacks artifact files: ${detail.id}`);
+  if (!hasCompleteArtifactFiles(detail)) {
+    throw new Error(`skills.sh live admission has incomplete artifact files: ${detail.id}`);
   }
   const files = detail.files
     .map((file) => {
@@ -507,6 +524,11 @@ async function selectSkillsShCatalogTestRows(
         (!Array.isArray(detail.files) || detail.files.length < 1)
       ) {
         throw new Error(`skills.sh live admission lacks artifact files: ${row.externalId}`);
+      }
+      if (requiredArtifactIds.has(row.externalId) && !hasCompleteArtifactFiles(detail)) {
+        throw new Error(
+          `skills.sh live admission has incomplete artifact files: ${row.externalId}`,
+        );
       }
       selected.push({ row, detail: detail as HashQualifiedSkillsShCatalogDetail });
       if (selected.length === MAX_SOURCE_PAGE_SIZE) break;

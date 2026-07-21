@@ -246,6 +246,18 @@ describe("skills.sh Vercel source boundary", () => {
           }),
         );
       }
+      if (id === "owner/repo-2/skill-2") {
+        return new Response(
+          JSON.stringify({
+            id,
+            source: "owner/repo-2",
+            slug: "skill-2",
+            installs: 1,
+            hash: "c".repeat(64),
+            files: [{ name: "SKILL.md" }],
+          }),
+        );
+      }
       return new Response(
         JSON.stringify({
           id,
@@ -295,6 +307,14 @@ describe("skills.sh Vercel source boundary", () => {
         admitExternalIds: ["owner/repo-1/skill-1"],
       }),
     ).rejects.toThrow("live admission lacks artifact files");
+    detailUrls.length = 0;
+
+    await expect(
+      captureSkillsShCatalogTestSnapshot({
+        ...options,
+        admitExternalIds: ["owner/repo-2/skill-2"],
+      }),
+    ).rejects.toThrow("live admission has incomplete artifact files");
     detailUrls.length = 0;
 
     const preflight = await captureSkillsShCatalogTestSnapshot(options).catch((error) => error);
