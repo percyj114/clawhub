@@ -1,0 +1,259 @@
+{
+  "schemaVersion": 1,
+  "issue": "CLAW-556",
+  "generatedAt": "2026-07-21T10:08:10Z",
+  "question": "Does the permanent Test staging seam fetch and process exactly 500 live skills through the ClawHub Vercel OIDC boundary without broad scan admission, public visibility, scheduling, or native-state changes?",
+  "verdict": "pass_for_review",
+  "sourceRevision": {
+    "gitSha": "f74f895a0c0fe13c3a49de7f9ff0a9e6a9df0446",
+    "branch": "pe/claw-556-skills-sh-catalog-control-plane",
+    "convexDeployment": "academic-chihuahua-392",
+    "convexBuildSha": "f74f895a0c0fe13c3a49de7f9ff0a9e6a9df0446"
+  },
+  "vercel": {
+    "project": "openclaw-foundation/clawhub",
+    "verifiedOidcIdentity": {
+      "ownerId": "team_pLdjXbfy0XvPRiNmAygTjTSH",
+      "projectId": "prj_UVAJPNPYrBwTEkPJwkpEySsge8Mc",
+      "environment": "test"
+    },
+    "liveInvocation": {
+      "deploymentId": "dpl_9ndfyttJWaTC3LZibUgL371TstFx",
+      "url": "clawhub-nh4plivpm-openclaw-foundation.vercel.app",
+      "target": "test",
+      "sourceSha": "f74f895a0c0fe13c3a49de7f9ff0a9e6a9df0446",
+      "proofCompleted": true,
+      "deploymentState": "ERROR",
+      "deploymentLimit": "The one-shot proof build intentionally did not emit the normal application output after the bounded invocation, so Vercel marked that invocation deployment as ERROR after the proof response was captured."
+    },
+    "finalInertDeployment": {
+      "deploymentId": "dpl_7Mu67A55g3o9qVDEF3trs4m65ySC",
+      "buildId": "bld_51us42k0b",
+      "url": "clawhub-n8mmmgn3t-openclaw-foundation.vercel.app",
+      "target": "test",
+      "sourceSha": "f74f895a0c0fe13c3a49de7f9ff0a9e6a9df0446",
+      "readyState": "READY",
+      "createdAt": "2026-07-21T10:06:12Z",
+      "runtime": "nodejs24.x",
+      "memorySizeMiB": 2048,
+      "timeoutSeconds": 300,
+      "liveInvocationMarkerPresent": false,
+      "unauthenticatedRouteStatus": 401,
+      "newCatalogRunsAfterDeploy": 0
+    }
+  },
+  "liveSnapshot": {
+    "snapshotId": "skills-sh-test-live-500:5dbb0caa415371e5",
+    "capturedAt": "2026-07-21T09:55:56.277Z",
+    "rows": 500,
+    "nvidiaRows": 10,
+    "requiredCollisionIds": [
+      "anthropics/skills/frontend-design",
+      "anthropics/claude-code/frontend-design"
+    ],
+    "skillsShFetches": {
+      "total": 507,
+      "list": 2,
+      "search": 1,
+      "detail": 504,
+      "runtimeMs": 38317,
+      "skippedIncompleteDetails": 1
+    },
+    "githubOwnerResolution": {
+      "authenticatedFetches": 70,
+      "immutableOwnerIdsRequiredForEverySelectedRow": true,
+      "placeholderOwnerIdsAccepted": false
+    }
+  },
+  "configuredLimits": {
+    "discoveryRows": 500,
+    "entriesPerBatch": 50,
+    "entriesPerRun": 500,
+    "writesPerBatch": 100,
+    "plannedScansPerRun": 500,
+    "explicitRealScanAllowlistCeiling": 10,
+    "realScanAdmissionsPerBatch": 1,
+    "realScanAdmissionsPerRun": 1,
+    "realScanAdmissionsPerDay": 1,
+    "nativeQueuedThreshold": 3,
+    "nativeInFlightThreshold": 0,
+    "catalogQueuedThreshold": 1,
+    "catalogInFlightThreshold": 1,
+    "schedulesEnabled": false,
+    "publicVisibilityEnabled": false
+  },
+  "liveRun": {
+    "runId": "h17w3pzcbww82myvmz8a1msnxh8azbss",
+    "status": "completed",
+    "cursor": 500,
+    "runtimeMs": 16148,
+    "batchesProcessed": 10,
+    "expectedActions": {
+      "observed": 500,
+      "inserts": 0,
+      "updates": 0,
+      "unchanged": 500,
+      "scanPlans": 0,
+      "realScanAdmissions": 0
+    },
+    "persistedActions": {
+      "catalogEntries": 500,
+      "inserted": 0,
+      "updated": 0,
+      "unchanged": 500,
+      "scanAttempts": 0,
+      "realScanJobs": 0
+    },
+    "consumedBudgets": {
+      "entriesObserved": 500,
+      "batchesProcessed": 10,
+      "scansPlanned": 0,
+      "scanAdmissionBatches": 0,
+      "scansAdmitted": 0,
+      "lastBatchReadsEstimate": 102,
+      "lastBatchWritesEstimate": 51
+    },
+    "operationEstimates": {
+      "dbReads": 1021,
+      "dbWrites": 511,
+      "functionCalls": 11
+    },
+    "errors": []
+  },
+  "identicalRerun": {
+    "runId": "h17qgyp7yhwt5g4dvfyppdw0gd8ayt02",
+    "status": "completed",
+    "cursor": 500,
+    "runtimeMs": 15979,
+    "batchesProcessed": 10,
+    "observed": 500,
+    "unchanged": 500,
+    "inserted": 0,
+    "updated": 0,
+    "scanPlans": 0,
+    "scanAttempts": 0,
+    "realScanJobs": 0,
+    "errors": []
+  },
+  "changedInputRun": {
+    "runId": "h17n18bmyq5tr5mdka784mm0dn8aycxe",
+    "status": "completed",
+    "runtimeMs": 16635,
+    "observed": 500,
+    "persistedMetadataUpdates": 453,
+    "unchanged": 47,
+    "changedSourceHashes": 3,
+    "scanPlans": 3,
+    "scanAttempts": 0,
+    "realScanJobs": 0,
+    "changedExternalIds": [
+      "alchaincyf/huashu-design/huashu-design",
+      "getpaperclipai/paperclip/paperclip-converting-plans-to-tasks",
+      "getpaperclipai/paperclip/para-memory-files"
+    ],
+    "errors": []
+  },
+  "pauseCancelKillSwitch": {
+    "runId": "h17thn76pzx9phr0w0g9rxgrw58aznq9",
+    "cursorAfterFirstBatch": 50,
+    "pausedBatchRejected": true,
+    "cursorAfterResumeBatch": 100,
+    "batchesAfterResume": 2,
+    "completedBatchReplayObserved": false,
+    "finalStatus": "canceled",
+    "attemptsCanceled": 0,
+    "discoveryRejectedAfterKillSwitch": true,
+    "admissionRejectedAfterKillSwitch": true
+  },
+  "admission": {
+    "requested": 0,
+    "admitted": 0,
+    "skipped": 0,
+    "realQueueAfterRun": 0,
+    "catalogAttemptsAfterRun": 0,
+    "nativeQueueBefore": {
+      "queued": 3,
+      "inFlight": 0
+    },
+    "nativeQueueAfter": {
+      "queued": 3,
+      "inFlight": 0
+    },
+    "reasonForZeroAdmissions": "The selected NVIDIA and representative collision candidates exposed incomplete source file bodies. The real path requires a complete fetched artifact and exact artifact hash, so admission failed closed rather than weakening validation."
+  },
+  "runtime": {
+    "totalElapsedMs": 75008,
+    "rssStartBytes": 160522240,
+    "rssEndBytes": 269778944,
+    "rssDeltaBytes": 109256704,
+    "heapUsedStartBytes": 19133656,
+    "heapUsedEndBytes": 98823704,
+    "heapUsedDeltaBytes": 79690048,
+    "sourceFetches": 507,
+    "githubFetches": 70,
+    "errors": 0,
+    "operationCountsAreEstimates": true
+  },
+  "authoritativeReadback": {
+    "nativeSkills": {
+      "beforeCount": 67616,
+      "afterCount": 67616,
+      "beforeSha256": "267d17957e61a49f37dd009a5d88194b3587daf86281e253522ff1b7c9ad80f7",
+      "afterSha256": "267d17957e61a49f37dd009a5d88194b3587daf86281e253522ff1b7c9ad80f7",
+      "identical": true,
+      "pagesReadAfter": 68
+    },
+    "nativeSecurityScanJobs": {
+      "beforeCount": 3,
+      "afterCount": 3,
+      "beforeSha256": "3c08230f417303a66c0678e7c6192864d045bca72581ab1b51a9908c64f36ddc",
+      "afterSha256": "3c08230f417303a66c0678e7c6192864d045bca72581ab1b51a9908c64f36ddc",
+      "identical": true,
+      "sources": {
+        "publish": 3
+      },
+      "statuses": {
+        "queued": 3
+      }
+    },
+    "catalog": {
+      "entries": 500,
+      "entriesPublicVisible": 0,
+      "entriesInstallable": 0,
+      "scanStatusPlanned": 500,
+      "scanAttempts": 0,
+      "realScanQueue": 0
+    }
+  },
+  "finalControls": {
+    "mode": "off",
+    "paused": true,
+    "discoveryEnabled": false,
+    "writesEnabled": false,
+    "scanPlanningEnabled": false,
+    "scanAdmissionEnabled": false,
+    "publicVisibilityEnabled": false,
+    "realScanAllowlist": [],
+    "schedulesPresent": false,
+    "githubTokenPresentInConvex": false,
+    "temporaryOperatorTokensRevoked": true,
+    "temporaryInvocationFilesRemoved": true,
+    "productionTouched": false
+  },
+  "overloadAcceptance": {
+    "local20000RowProofArtifact": "proof/claw-556/skills-sh-500-local-proof.json",
+    "discovery20000RowsCreatesAutomaticNativeJobs": 0,
+    "discovery20000RowsCreatesCatalogAttempts": 0,
+    "permanentTestFetchRows": 500,
+    "permanentTestRealScanCeiling": 10,
+    "permanentTestRealScansObserved": 0,
+    "discoveryWritesAdmissionVisibilityIndependentlyControlled": true,
+    "unhealthyOrExhaustedAdmissionFailsClosed": true,
+    "dailySchedulingDefaultOff": true
+  },
+  "limits": [
+    "The skills.sh detail contract did not provide complete file bodies for the selected real-scan candidates, so this gate proves fail-closed artifact admission rather than a terminal real ClawScan verdict.",
+    "Vercel local-upload deployments do not expose a gitSource object. The source SHA is bound by the clean detached worktree, the fixed one-shot invoker assertion, the Convex APP_BUILD_SHA readback, and the final conventional commit chain.",
+    "Database operation counts are code-path estimates. Runtime, memory, fetch counts, full paginated table counts, and canonical SHA-256 comparisons are measured."
+  ]
+}
