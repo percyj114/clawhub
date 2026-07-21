@@ -324,6 +324,12 @@ const githubSkillScanStatusValidator = v.union(
   v.literal("pending"),
   v.literal("failed"),
 );
+const catalogScanVerdictValidator = v.union(
+  v.literal("clean"),
+  v.literal("suspicious"),
+  v.literal("malicious"),
+  v.literal("failed"),
+);
 
 const internalRefs = internal as unknown as {
   packages: {
@@ -343,6 +349,7 @@ const internalRefs = internal as unknown as {
     getSkillScanRequestForUserInternal: unknown;
     getJobTargetInternal: unknown;
     recordGitHubSkillScanResultInternal: unknown;
+    completeCatalogSkillScanJobInternal: unknown;
     recordSkillScanRequestFailedInternal: unknown;
     recordSkillScanRequestSucceededInternal: unknown;
     requeueJobLeaseInternal: unknown;
@@ -350,9 +357,6 @@ const internalRefs = internal as unknown as {
   };
   securityScanDispatch: {
     requestSecurityScanDispatchInternal: unknown;
-  };
-  skillsShCatalog: {
-    recordRealScanResultInternal: unknown;
   };
   skills: {
     getSkillByIdInternal: unknown;
@@ -1921,6 +1925,227 @@ export const recordSkillScanRequestSucceededInternal = internalMutation({
   },
 });
 
+export const completeCatalogSkillScanJobInternal = internalMutation({
+  args: {
+    attemptId: v.id("skillsShCatalogScanAttempts"),
+    scanId: v.id("skillScanRequests"),
+    jobId: v.id("securityScanJobs"),
+    leaseToken: v.string(),
+    artifactContentHash: v.string(),
+    verdict: catalogScanVerdictValidator,
+    runId: v.optional(v.string()),
+    llmAnalysis: llmAnalysisValidator,
+    skillSpectorAnalysis: v.optional(skillSpectorAnalysisValidator),
+  },
+  handler: async (ctx, args) => {
+    const environment = getSkillsShFixtureEnvironmentPolicy();
+    if (!environment.allowed || environment.environment !== "test") {
+      throw new ConvexError("catalog scan completion requires the permanent Test environment");
+    }
+    const [job, request, attempt] = await Promise.all([
+      ctx.db.get(args.jobId),
+      ctx.db.get(args.scanId),
+      ctx.db.get(args.attemptId),
+    ]);
+    if (
+      !job ||
+      job.source !== "skills-sh-catalog-test" ||
+      job.targetKind !== "skillScanRequest" ||
+      job.skillScanRequestId !== args.scanId
+    ) {
+      throw new ConvexError("Catalog scan job linkage mismatch");
+    }
+    if (
+      !request ||
+      request.sourceKind !== "skills-sh-catalog" ||
+      request.securityScanJobId !== args.jobId ||
+      request.skillsShCatalogAttemptId !== args.attemptId
+    ) {
+      throw new ConvexError("Catalog scan request linkage mismatch");
+    }
+    if (
+      !attempt ||
+      attempt.dispatchKind !== "real" ||
+      attempt.skillScanRequestId !== args.scanId ||
+      attempt.securityScanJobId !== args.jobId
+    ) {
+      throw new ConvexError("Catalog scan attempt linkage mismatch");
+    }
+    const artifactContentHash = args.artifactContentHash.toLowerCase();
+    if (
+      !attempt.artifactContentHash ||
+      attempt.artifactContentHash !== artifactContentHash ||
+      request.sha256hash !== artifactContentHash
+    ) {
+      throw new ConvexError("Catalog scan artifact hash mismatch");
+    }
+    if (
+      attempt.status === "succeeded" ||
+      attempt.status === "failed" ||
+      attempt.status === "canceled"
+    ) {
+      const expectedStatus = args.verdict === "failed" ? "failed" : "succeeded";
+      if (
+        attempt.status === expectedStatus &&
+        attempt.verdict === args.verdict &&
+        request.status === expectedStatus &&
+        job.status === expectedStatus &&
+        (expectedStatus !== "failed" ||
+          (request.lastError === "Catalog scan analysis failed" &&
+            job.lastError === "Catalog scan analysis failed"))
+      ) {
+        return { ok: true as const, applied: true as const, publicVisible: false as const };
+      }
+      if (
+        attempt.status === "canceled" &&
+        request.status === "failed" &&
+        job.status === "failed" &&
+        request.lastError === job.lastError
+      ) {
+        if (request.lastError === "Catalog run canceled before scan completion") {
+          return { ok: true as const, applied: false as const, reason: "run-canceled" as const };
+        }
+        if (request.lastError === "Catalog source changed before scan completion") {
+          return { ok: true as const, applied: false as const, reason: "stale-attempt" as const };
+        }
+      }
+      throw new ConvexError("Catalog scan terminal result mismatch");
+    }
+    if (
+      job.leaseToken !== args.leaseToken ||
+      job.status !== "running" ||
+      (attempt.status !== "queued" && attempt.status !== "running")
+    ) {
+      throw new ConvexError("Catalog scan job lease mismatch");
+    }
+
+    const [run, entry] = await Promise.all([
+      ctx.db.get(attempt.runId),
+      ctx.db.get(attempt.entryId),
+    ]);
+    const now = Date.now();
+    const terminalizeWithoutResult = async (reason: "run-canceled" | "stale-attempt") => {
+      const entryStillCurrent = entry?.sourceContentHash === attempt.sourceContentHash;
+      await ctx.db.patch(attempt._id, {
+        status: "canceled",
+        completedAt: now,
+        updatedAt: now,
+      });
+      if (entryStillCurrent) {
+        await ctx.db.patch(entry._id, {
+          scanStatus: "canceled",
+          publicVisible: false,
+          updatedAt: now,
+        });
+      }
+      await ctx.db.patch(request._id, {
+        status: "failed",
+        lastError:
+          reason === "run-canceled"
+            ? "Catalog run canceled before scan completion"
+            : "Catalog source changed before scan completion",
+        completedAt: now,
+        updatedAt: now,
+      });
+      await ctx.db.patch(job._id, {
+        status: "failed",
+        lastError:
+          reason === "run-canceled"
+            ? "Catalog run canceled before scan completion"
+            : "Catalog source changed before scan completion",
+        completedAt: now,
+        leaseToken: undefined,
+        leaseExpiresAt: undefined,
+        updatedAt: now,
+      });
+      if (run) {
+        const [queued, running] = await Promise.all([
+          ctx.db
+            .query("skillsShCatalogScanAttempts")
+            .withIndex("by_run_and_status", (q) => q.eq("runId", run._id).eq("status", "queued"))
+            .first(),
+          ctx.db
+            .query("skillsShCatalogScanAttempts")
+            .withIndex("by_run_and_status", (q) => q.eq("runId", run._id).eq("status", "running"))
+            .first(),
+        ]);
+        await ctx.db.patch(run._id, {
+          ...(reason === "run-canceled"
+            ? { status: queued || running ? ("canceling" as const) : ("canceled" as const) }
+            : {}),
+          counts: {
+            ...run.counts,
+            scansCanceled: run.counts.scansCanceled + 1,
+          },
+          operations: {
+            functionCalls: run.operations.functionCalls + 1,
+            dbReads: run.operations.dbReads + 7,
+            dbWrites: run.operations.dbWrites + (entryStillCurrent ? 5 : 4),
+          },
+          updatedAt: now,
+        });
+      }
+      return { ok: true as const, applied: false as const, reason };
+    };
+
+    if (run?.status === "canceling" || run?.status === "canceled") {
+      return await terminalizeWithoutResult("run-canceled");
+    }
+    if (!entry || entry.sourceContentHash !== attempt.sourceContentHash) {
+      return await terminalizeWithoutResult("stale-attempt");
+    }
+
+    const scanFailed = args.verdict === "failed";
+    await ctx.db.patch(attempt._id, {
+      status: scanFailed ? "failed" : "succeeded",
+      verdict: args.verdict,
+      completedAt: now,
+      updatedAt: now,
+    });
+    await ctx.db.patch(entry._id, {
+      scanStatus: args.verdict,
+      publicVisible: false,
+      updatedAt: now,
+    });
+    await ctx.db.patch(request._id, {
+      status: scanFailed ? "failed" : "succeeded",
+      lastError: scanFailed ? "Catalog scan analysis failed" : undefined,
+      llmAnalysis: args.llmAnalysis,
+      ...(args.skillSpectorAnalysis
+        ? { skillSpectorAnalysis: capSkillSpectorAnalysisForStorage(args.skillSpectorAnalysis) }
+        : {}),
+      writtenBack: request.writtenBack,
+      runId: args.runId,
+      completedAt: now,
+      updatedAt: now,
+    });
+    await ctx.db.patch(job._id, {
+      status: scanFailed ? "failed" : "succeeded",
+      lastError: scanFailed ? "Catalog scan analysis failed" : undefined,
+      runId: args.runId,
+      completedAt: now,
+      leaseToken: undefined,
+      leaseExpiresAt: undefined,
+      updatedAt: now,
+    });
+    if (run) {
+      await ctx.db.patch(run._id, {
+        counts: {
+          ...run.counts,
+          scansCompleted: run.counts.scansCompleted + 1,
+        },
+        operations: {
+          functionCalls: run.operations.functionCalls + 1,
+          dbReads: run.operations.dbReads + 5,
+          dbWrites: run.operations.dbWrites + 5,
+        },
+        updatedAt: now,
+      });
+    }
+    return { ok: true as const, applied: true as const, publicVisible: false as const };
+  },
+});
+
 export const recordSkillScanRequestFailedInternal = internalMutation({
   args: {
     scanId: v.id("skillScanRequests"),
@@ -3338,7 +3563,13 @@ export const completeCodexScanJob = action({
       },
     );
     if (!target) throw new ConvexError("Job not found");
-    if (target.job.leaseToken !== args.leaseToken) throw new ConvexError("Lease mismatch");
+    const isCatalogScanRequest =
+      target.job.targetKind === "skillScanRequest" &&
+      target.scanRequest?.sourceKind === "skills-sh-catalog" &&
+      Boolean(target.scanRequest.skillsShCatalogAttemptId);
+    if (!isCatalogScanRequest && target.job.leaseToken !== args.leaseToken) {
+      throw new ConvexError("Lease mismatch");
+    }
 
     if (target.job.targetKind === "skillVersion" && target.version) {
       if (args.skillSpectorAnalysis) {
@@ -3398,11 +3629,31 @@ export const completeCodexScanJob = action({
         target.scanRequest.sourceKind === "skills-sh-catalog" &&
         target.scanRequest.skillsShCatalogAttemptId
       ) {
-        await runMutationRef(ctx, internalRefs.skillsShCatalog.recordRealScanResultInternal, {
-          attemptId: target.scanRequest.skillsShCatalogAttemptId,
-          artifactContentHash: target.scanRequest.sha256hash ?? "",
-          verdict: githubSkillScanStatusFromLlmAnalysis(args.llmAnalysis),
-        });
+        const result = await runMutationRef<{ ok: true }>(
+          ctx,
+          internalRefs.securityScan.completeCatalogSkillScanJobInternal,
+          {
+            attemptId: target.scanRequest.skillsShCatalogAttemptId,
+            scanId: target.scanRequest._id,
+            jobId: args.jobId,
+            leaseToken: args.leaseToken,
+            artifactContentHash: target.scanRequest.sha256hash ?? "",
+            verdict: githubSkillScanStatusFromLlmAnalysis(args.llmAnalysis),
+            runId: args.runId,
+            llmAnalysis: args.llmAnalysis,
+            skillSpectorAnalysis,
+          },
+        );
+        try {
+          await runMutationRef(
+            ctx,
+            internalRefs.securityScanDispatch.requestSecurityScanDispatchInternal,
+            {},
+          );
+        } catch {
+          console.warn("security scan dispatch request failed after catalog completion");
+        }
+        return result;
       }
       await runMutationRef(ctx, internalRefs.securityScan.recordSkillScanRequestSucceededInternal, {
         scanId: target.scanRequest._id,

@@ -528,6 +528,7 @@ export const processStagingLiveBatchInternal = internalMutation({
               .withIndex("by_entry_and_source_content_hash", (q) =>
                 q.eq("entryId", existing._id).eq("sourceContentHash", row.sourceContentHash),
               )
+              .filter((q) => q.neq(q.field("status"), "canceled"))
               .order("desc")
               .first()
           : null;
@@ -683,6 +684,7 @@ export const processFixtureBatchInternal = internalMutation({
               .withIndex("by_entry_and_source_content_hash", (q) =>
                 q.eq("entryId", existing._id).eq("sourceContentHash", row.sourceContentHash),
               )
+              .filter((q) => q.neq(q.field("status"), "canceled"))
               .order("desc")
               .first()
           : null;
@@ -990,6 +992,7 @@ export const admitFixtureScansInternal = internalMutation({
         .withIndex("by_entry_and_source_content_hash", (q) =>
           q.eq("entryId", entry._id).eq("sourceContentHash", entry.sourceContentHash),
         )
+        .filter((q) => q.neq(q.field("status"), "canceled"))
         .order("desc")
         .first();
       readsUsed += 1;
@@ -1134,7 +1137,12 @@ export const completeDeterministicScansInternal = internalMutation({
     assertIntegerInRange("limit", args.limit, 1, MAX_DETERMINISTIC_COMPLETIONS_PER_BATCH);
     const run = await ctx.db.get(args.runId);
     if (!run) throw new ConvexError("skills.sh catalog run not found");
-    if (run.status === "canceling" || run.status === "canceled" || run.status === "failed") {
+    if (
+      run.status === "paused" ||
+      run.status === "canceling" ||
+      run.status === "canceled" ||
+      run.status === "failed"
+    ) {
       throw new ConvexError(`Cannot complete scans for ${run.status} run`);
     }
     const queueHealth = await readQueueHealth(ctx, control);

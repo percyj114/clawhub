@@ -4745,6 +4745,124 @@ describe("securityScan", () => {
     );
   });
 
+  it("terminalizes a catalog attempt, request, and job through one mutation", async () => {
+    vi.stubEnv("SECURITY_SCAN_WORKER_TOKEN", "placeholder");
+    const runQuery = vi.fn(async () => ({
+      job: {
+        _id: "securityScanJobs:catalog",
+        targetKind: "skillScanRequest",
+        leaseToken: "lease-token",
+      },
+      scanRequest: {
+        _id: "skillScanRequests:catalog",
+        sourceKind: "skills-sh-catalog",
+        skillsShCatalogAttemptId: "skillsShCatalogScanAttempts:catalog",
+        sha256hash: "artifact-hash",
+      },
+    }));
+    const runMutation = vi.fn(async () => ({ ok: true }));
+
+    await completeCodexScanJobHandler(
+      { runMutation, runQuery },
+      {
+        token: "placeholder",
+        jobId: "securityScanJobs:catalog",
+        leaseToken: "lease-token",
+        runId: "clawscan-run",
+        llmAnalysis: { status: "clean", checkedAt: 123 },
+      },
+    );
+
+    expect(runMutation).toHaveBeenCalledTimes(2);
+    expect(runMutation).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      expect.objectContaining({
+        attemptId: "skillsShCatalogScanAttempts:catalog",
+        scanId: "skillScanRequests:catalog",
+        jobId: "securityScanJobs:catalog",
+        leaseToken: "lease-token",
+        artifactContentHash: "artifact-hash",
+        verdict: "clean",
+        runId: "clawscan-run",
+        llmAnalysis: { status: "clean", checkedAt: 123 },
+      }),
+    );
+    expect(runMutation).toHaveBeenNthCalledWith(2, expect.anything(), {});
+  });
+
+  it("acknowledges a committed catalog completion when queue refill fails", async () => {
+    vi.stubEnv("SECURITY_SCAN_WORKER_TOKEN", "placeholder");
+    const runQuery = vi.fn(async () => ({
+      job: {
+        _id: "securityScanJobs:catalog",
+        targetKind: "skillScanRequest",
+        leaseToken: "lease-token",
+      },
+      scanRequest: {
+        _id: "skillScanRequests:catalog",
+        sourceKind: "skills-sh-catalog",
+        skillsShCatalogAttemptId: "skillsShCatalogScanAttempts:catalog",
+        sha256hash: "artifact-hash",
+      },
+    }));
+    const runMutation = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, applied: true })
+      .mockRejectedValueOnce(new Error("dispatch unavailable"));
+
+    await expect(
+      completeCodexScanJobHandler(
+        { runMutation, runQuery },
+        {
+          token: "placeholder",
+          jobId: "securityScanJobs:catalog",
+          leaseToken: "lease-token",
+          runId: "clawscan-run",
+          llmAnalysis: { status: "clean", checkedAt: 123 },
+        },
+      ),
+    ).resolves.toEqual({ ok: true, applied: true });
+
+    expect(runMutation).toHaveBeenCalledTimes(2);
+  });
+
+  it("routes a repeated terminal catalog callback to idempotent completion", async () => {
+    vi.stubEnv("SECURITY_SCAN_WORKER_TOKEN", "placeholder");
+    const runQuery = vi.fn(async () => ({
+      job: {
+        _id: "securityScanJobs:catalog",
+        targetKind: "skillScanRequest",
+        status: "succeeded",
+      },
+      scanRequest: {
+        _id: "skillScanRequests:catalog",
+        sourceKind: "skills-sh-catalog",
+        skillsShCatalogAttemptId: "skillsShCatalogScanAttempts:catalog",
+        sha256hash: "artifact-hash",
+      },
+    }));
+    const runMutation = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, applied: true, publicVisible: false })
+      .mockResolvedValueOnce({ ok: true });
+
+    await expect(
+      completeCodexScanJobHandler(
+        { runMutation, runQuery },
+        {
+          token: "placeholder",
+          jobId: "securityScanJobs:catalog",
+          leaseToken: "expired-lease-token",
+          runId: "clawscan-run",
+          llmAnalysis: { status: "clean", checkedAt: 123 },
+        },
+      ),
+    ).resolves.toEqual({ ok: true, applied: true, publicVisible: false });
+
+    expect(runMutation).toHaveBeenCalledTimes(2);
+  });
+
   it("clears legacy plugin SkillSpector results when no new analysis is produced", async () => {
     vi.stubEnv("SECURITY_SCAN_WORKER_TOKEN", "worker-secret");
     const runQuery = vi.fn(async () => ({

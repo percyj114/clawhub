@@ -271,6 +271,144 @@ describe("skills.sh catalog overload control plane", () => {
     expect(await collectAttempts(t, repeated.runId)).toHaveLength(0);
   });
 
+  it("replans unchanged fixture content after its prior attempt was canceled", async () => {
+    useEnvironment(LOCAL_ENV);
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.skillsShCatalog.configureFixtureControlInternal, {
+      ...BASE_CONTROL,
+      maxEntriesPerRun: 2,
+      maxEntriesPerBatch: 2,
+      maxPlannedScans: 2,
+      maxScanAdmissionsPerBatch: 1,
+      maxScanAdmissionsPerRun: 1,
+      maxScanAdmissionsPerDay: 2,
+      maxCatalogQueued: 1,
+      maxCatalogInFlight: 1,
+    });
+    const first = await t.mutation(internal.skillsShCatalog.startFixtureRunInternal, {
+      fixtureId: "nvidia-small-v1",
+      actor: "codex-test",
+      reason: "cancel one fixture attempt",
+    });
+    await processToTerminal(t, first.runId);
+    const [entry] = await collectEntries(t);
+    await t.mutation(internal.skillsShCatalog.admitFixtureScansInternal, {
+      runId: first.runId,
+      externalIds: [entry!.externalId],
+      dispatchKind: "deterministic",
+    });
+    await t.mutation(internal.skillsShCatalog.cancelCatalogRunInternal, {
+      runId: first.runId,
+      limit: 10,
+    });
+
+    const repeated = await t.mutation(internal.skillsShCatalog.startFixtureRunInternal, {
+      fixtureId: "nvidia-small-v1",
+      actor: "codex-test",
+      reason: "replan canceled fixture content",
+    });
+    const repeatedRun = await processToTerminal(t, repeated.runId);
+
+    expect(repeatedRun.counts).toMatchObject({
+      observed: 2,
+      unchanged: 2,
+      scansPlanned: 1,
+    });
+    expect(
+      (await collectEntries(t)).find((row) => row.externalId === entry!.externalId),
+    ).toMatchObject({
+      scanStatus: "planned",
+    });
+    const readmitted = await t.mutation(internal.skillsShCatalog.admitFixtureScansInternal, {
+      runId: repeated.runId,
+      externalIds: [entry!.externalId],
+      dispatchKind: "deterministic",
+    });
+    expect(readmitted).toMatchObject({ admitted: 1, skipped: 0 });
+    expect(await collectAttempts(t, first.runId)).toHaveLength(1);
+    expect(await collectAttempts(t, repeated.runId)).toMatchObject([
+      { status: "queued", sourceContentHash: entry!.sourceContentHash },
+    ]);
+  });
+
+  it("replans unchanged staging content after its prior attempt was canceled", async () => {
+    useEnvironment(TEST_ENV);
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.skillsShCatalog.configureFixtureControlInternal, {
+      ...BASE_CONTROL,
+      mode: "staging-live",
+      maxEntriesPerRun: 500,
+      maxEntriesPerBatch: 1,
+      maxPlannedScans: 500,
+      maxScanAdmissionsPerBatch: 1,
+      maxScanAdmissionsPerRun: 1,
+      maxScanAdmissionsPerDay: 2,
+      maxCatalogQueued: 1,
+      maxCatalogInFlight: 1,
+    });
+    const row = frozenSnapshot.rows.find(
+      (candidate) => candidate.externalId === "nvidia/skills/aiq-deploy",
+    )!;
+    const first = await t.mutation(internal.skillsShCatalog.startStagingLiveRunInternal, {
+      actor: "codex-test",
+      reason: "cancel one staging attempt",
+      snapshotId: "skills-sh-test-live-500:canceled-first",
+      sourceCapturedAt: "2026-07-21T00:00:00.000Z",
+      snapshotCaptureFetches: 1,
+      fixtureLength: 500,
+    });
+    await t.mutation(internal.skillsShCatalog.processStagingLiveBatchInternal, {
+      runId: first.runId,
+      cursor: 0,
+      rows: [row],
+    });
+    await t.mutation(internal.skillsShCatalog.admitFixtureScansInternal, {
+      runId: first.runId,
+      externalIds: [row.externalId],
+      dispatchKind: "deterministic",
+    });
+    await t.mutation(internal.skillsShCatalog.cancelCatalogRunInternal, {
+      runId: first.runId,
+      limit: 10,
+    });
+
+    const repeated = await t.mutation(internal.skillsShCatalog.startStagingLiveRunInternal, {
+      actor: "codex-test",
+      reason: "replan canceled staging content",
+      snapshotId: "skills-sh-test-live-500:canceled-repeat",
+      sourceCapturedAt: "2026-07-21T00:05:00.000Z",
+      snapshotCaptureFetches: 1,
+      fixtureLength: 500,
+    });
+    const repeatedRun = await t.mutation(internal.skillsShCatalog.processStagingLiveBatchInternal, {
+      runId: repeated.runId,
+      cursor: 0,
+      rows: [row],
+    });
+
+    expect(repeatedRun.counts).toMatchObject({
+      observed: 1,
+      unchanged: 1,
+      scansPlanned: 1,
+    });
+    expect(
+      (await collectEntries(t)).find((entry) => entry.externalId === row.externalId),
+    ).toMatchObject({
+      scanStatus: "planned",
+      sourceSnapshotId: "skills-sh-test-live-500:canceled-repeat",
+    });
+    const readmitted = await t.mutation(internal.skillsShCatalog.admitFixtureScansInternal, {
+      runId: repeated.runId,
+      externalIds: [row.externalId],
+      dispatchKind: "deterministic",
+    });
+    expect(readmitted).toMatchObject({ admitted: 1, skipped: 0 });
+    expect(await collectAttempts(t, first.runId)).toHaveLength(1);
+    expect(await collectAttempts(t, repeated.runId)).toMatchObject([
+      { status: "queued", sourceContentHash: row.sourceContentHash },
+    ]);
+  });
+
   it("plans a bounded 20,000-row discovery without writing entries or enqueueing scans", async () => {
     useEnvironment(LOCAL_ENV);
     const t = convexTest(schema, modules);
@@ -711,6 +849,47 @@ describe("skills.sh catalog overload control plane", () => {
     expect(completed).toMatchObject({ matched: 1, completed: 1, canceled: 0 });
   });
 
+  it("does not complete queued deterministic work while the run is paused", async () => {
+    useEnvironment(LOCAL_ENV);
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.skillsShCatalog.configureFixtureControlInternal, {
+      ...BASE_CONTROL,
+      maxEntriesPerRun: 3,
+      maxEntriesPerBatch: 1,
+      maxPlannedScans: 3,
+      maxScanAdmissionsPerBatch: 1,
+      maxScanAdmissionsPerRun: 1,
+      maxScanAdmissionsPerDay: 1,
+      maxCatalogQueued: 1,
+      maxCatalogInFlight: 1,
+    });
+    const { runId } = await t.mutation(internal.skillsShCatalog.startFixtureRunInternal, {
+      fixtureId: "synthetic-20000-v1",
+      actor: "codex-test",
+      reason: "pause queued deterministic completion",
+    });
+    await t.mutation(internal.skillsShCatalog.processFixtureBatchInternal, { runId });
+    const [entry] = await collectEntries(t);
+    await t.mutation(internal.skillsShCatalog.admitFixtureScansInternal, {
+      runId,
+      externalIds: [entry!.externalId],
+      dispatchKind: "deterministic",
+    });
+    await t.mutation(internal.skillsShCatalog.setFixtureRunPausedInternal, {
+      runId,
+      paused: true,
+    });
+
+    await expect(
+      t.mutation(internal.skillsShCatalog.completeDeterministicScansInternal, {
+        runId,
+        limit: 1,
+      }),
+    ).rejects.toThrow("Cannot complete scans for paused run");
+    expect((await collectAttempts(t, runId))[0]).toMatchObject({ status: "queued" });
+    expect((await collectEntries(t))[0]).toMatchObject({ scanStatus: "queued" });
+  });
+
   it("blocks queued starts and late results while a catalog run is canceling", async () => {
     useEnvironment(LOCAL_ENV);
     const t = convexTest(schema, modules);
@@ -1017,29 +1196,61 @@ describe("skills.sh catalog overload control plane", () => {
       skillScanRequestId: linked.request?._id,
     });
 
+    const operationsBeforeStaleResult = (await t.query(internal.skillsShCatalog.getRunInternal, {
+      runId,
+    }))!.operations;
     await t.run(async (ctx) => {
       const entry = await ctx.db.get(attempt!.entryId);
       await ctx.db.patch(entry!._id, {
         sourceContentHash: "changed-after-admission",
         updatedAt: Date.now(),
       });
+      await ctx.db.patch(attempt!.securityScanJobId!, {
+        status: "running",
+        leaseToken: "lease-token",
+        leaseExpiresAt: Date.now() + 60_000,
+        workerId: "catalog-worker",
+        updatedAt: Date.now(),
+      });
     });
-    const staleResult = await t.mutation(internal.skillsShCatalog.recordRealScanResultInternal, {
-      attemptId: attempt!._id,
-      artifactContentHash: attempt!.artifactContentHash!,
-      verdict: "clean",
-    });
-    expect(staleResult).toEqual({ applied: false, reason: "stale-attempt" });
-    expect(await t.query(internal.skillsShCatalog.getRunInternal, { runId })).toMatchObject({
+    const staleResult = await t.mutation(
+      internal.securityScan.completeCatalogSkillScanJobInternal,
+      {
+        attemptId: attempt!._id,
+        scanId: attempt!.skillScanRequestId!,
+        jobId: attempt!.securityScanJobId!,
+        leaseToken: "lease-token",
+        artifactContentHash: attempt!.artifactContentHash!,
+        verdict: "clean",
+        runId: "clawscan-run",
+        llmAnalysis: { status: "clean", checkedAt: Date.now() },
+      },
+    );
+    expect(staleResult).toEqual({ ok: true, applied: false, reason: "stale-attempt" });
+    const staleRun = await t.query(internal.skillsShCatalog.getRunInternal, { runId });
+    expect(staleRun).toMatchObject({
       counts: {
         scansAdmitted: 1,
         scansCanceled: 1,
         scansCompleted: 0,
       },
     });
+    expect(staleRun!.operations.dbWrites).toBe(operationsBeforeStaleResult.dbWrites + 4);
     expect((await collectAttempts(t, runId))[0]).toMatchObject({
       status: "canceled",
     });
+    expect(
+      await t.run(async (ctx) => await ctx.db.get(attempt!.skillScanRequestId!)),
+    ).toMatchObject({
+      status: "failed",
+      lastError: "Catalog source changed before scan completion",
+    });
+    expect(await t.run(async (ctx) => await ctx.db.get(attempt!.securityScanJobId!))).toMatchObject(
+      {
+        status: "failed",
+        lastError: "Catalog source changed before scan completion",
+      },
+    );
   });
 
   it("defers expiry cleanup for an active catalog job and accepts its later result", async () => {
@@ -1110,6 +1321,9 @@ describe("skills.sh catalog overload control plane", () => {
       });
       await ctx.db.patch(attempt!.securityScanJobId!, {
         status: "running",
+        leaseToken: "lease-token",
+        leaseExpiresAt: Date.now() + 60_000,
+        workerId: "catalog-worker",
         updatedAt: Date.now(),
       });
       await ctx.db.patch(attempt!._id, {
@@ -1136,12 +1350,17 @@ describe("skills.sh catalog overload control plane", () => {
     );
     expect((await collectAttempts(t, runId))[0]).toMatchObject({ status: "running" });
 
-    const result = await t.mutation(internal.skillsShCatalog.recordRealScanResultInternal, {
+    const result = await t.mutation(internal.securityScan.completeCatalogSkillScanJobInternal, {
       attemptId: attempt!._id,
+      scanId: attempt!.skillScanRequestId!,
+      jobId: attempt!.securityScanJobId!,
+      leaseToken: "lease-token",
       artifactContentHash: attempt!.artifactContentHash!,
       verdict: "clean",
+      runId: "clawscan-run",
+      llmAnalysis: { status: "clean", checkedAt: Date.now() },
     });
-    expect(result).toEqual({ applied: true, publicVisible: false });
+    expect(result).toEqual({ ok: true, applied: true, publicVisible: false });
     expect((await collectAttempts(t, runId))[0]).toMatchObject({
       status: "succeeded",
       verdict: "clean",
@@ -1149,6 +1368,23 @@ describe("skills.sh catalog overload control plane", () => {
     expect(await t.run(async (ctx) => await ctx.db.get(attempt!.entryId))).toMatchObject({
       scanStatus: "clean",
       publicVisible: false,
+    });
+    expect(
+      await t.run(async (ctx) => await ctx.db.get(attempt!.skillScanRequestId!)),
+    ).toMatchObject({
+      status: "succeeded",
+      runId: "clawscan-run",
+      llmAnalysis: { status: "clean" },
+    });
+    const completedJob = await t.run(async (ctx) => await ctx.db.get(attempt!.securityScanJobId!));
+    expect(completedJob).toMatchObject({
+      status: "succeeded",
+      runId: "clawscan-run",
+    });
+    expect(completedJob).not.toHaveProperty("leaseToken");
+    expect(completedJob).not.toHaveProperty("leaseExpiresAt");
+    expect(await t.query(internal.skillsShCatalog.getRunInternal, { runId })).toMatchObject({
+      counts: { scansCompleted: 1 },
     });
   });
 
@@ -1496,7 +1732,7 @@ describe("skills.sh catalog overload control plane", () => {
     );
   });
 
-  it("admits one real scan when all seven writes fit the batch budget", async () => {
+  it("admits one real scan within seven writes and terminalizes a failed verdict", async () => {
     useEnvironment(TEST_ENV);
     const t = convexTest(schema, modules);
     const actorUserId = await t.run(
@@ -1562,5 +1798,79 @@ describe("skills.sh catalog overload control plane", () => {
     expect(
       await t.run(async (ctx) => await ctx.db.query("securityScanJobs").collect()),
     ).toHaveLength(1);
+
+    const [attempt] = await collectAttempts(t, runId);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(attempt!.securityScanJobId!, {
+        status: "running",
+        leaseToken: "lease-token",
+        leaseExpiresAt: Date.now() + 60_000,
+        workerId: "catalog-worker",
+        updatedAt: Date.now(),
+      });
+      await ctx.db.patch(attempt!._id, {
+        status: "running",
+        updatedAt: Date.now(),
+      });
+    });
+    const completed = await t.mutation(internal.securityScan.completeCatalogSkillScanJobInternal, {
+      attemptId: attempt!._id,
+      scanId: attempt!.skillScanRequestId!,
+      jobId: attempt!.securityScanJobId!,
+      leaseToken: "lease-token",
+      artifactContentHash: attempt!.artifactContentHash!,
+      verdict: "failed",
+      runId: "clawscan-run",
+      llmAnalysis: { status: "error", checkedAt: Date.now() },
+    });
+
+    expect(completed).toEqual({ ok: true, applied: true, publicVisible: false });
+    expect((await collectAttempts(t, runId))[0]).toMatchObject({
+      status: "failed",
+      verdict: "failed",
+    });
+    expect(await t.run(async (ctx) => await ctx.db.get(attempt!.entryId))).toMatchObject({
+      scanStatus: "failed",
+      publicVisible: false,
+    });
+    expect(
+      await t.run(async (ctx) => await ctx.db.get(attempt!.skillScanRequestId!)),
+    ).toMatchObject({
+      status: "failed",
+      lastError: "Catalog scan analysis failed",
+    });
+    expect(await t.run(async (ctx) => await ctx.db.get(attempt!.securityScanJobId!))).toMatchObject(
+      {
+        status: "failed",
+        lastError: "Catalog scan analysis failed",
+      },
+    );
+    const runAfterCompletion = await t.query(internal.skillsShCatalog.getRunInternal, { runId });
+    const repeated = await t.mutation(internal.securityScan.completeCatalogSkillScanJobInternal, {
+      attemptId: attempt!._id,
+      scanId: attempt!.skillScanRequestId!,
+      jobId: attempt!.securityScanJobId!,
+      leaseToken: "lease-token",
+      artifactContentHash: attempt!.artifactContentHash!,
+      verdict: "failed",
+      runId: "clawscan-run",
+      llmAnalysis: { status: "error", checkedAt: Date.now() },
+    });
+    expect(repeated).toEqual({ ok: true, applied: true, publicVisible: false });
+    expect(await t.query(internal.skillsShCatalog.getRunInternal, { runId })).toEqual(
+      runAfterCompletion,
+    );
+    await expect(
+      t.mutation(internal.securityScan.completeCatalogSkillScanJobInternal, {
+        attemptId: attempt!._id,
+        scanId: attempt!.skillScanRequestId!,
+        jobId: attempt!.securityScanJobId!,
+        leaseToken: "lease-token",
+        artifactContentHash: attempt!.artifactContentHash!,
+        verdict: "clean",
+        runId: "clawscan-run",
+        llmAnalysis: { status: "clean", checkedAt: Date.now() },
+      }),
+    ).rejects.toThrow("Catalog scan terminal result mismatch");
   });
 });

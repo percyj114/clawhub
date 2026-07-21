@@ -268,7 +268,7 @@ export async function skillsShCatalogTestV1Handler(ctx: ActionCtx, request: Requ
           artifacts: stored.artifacts,
         });
       } catch (error) {
-        await Promise.all(
+        await Promise.allSettled(
           stored.storageIds.map(async (storageId) => await ctx.storage.delete(storageId)),
         );
         throw error;
@@ -277,7 +277,7 @@ export async function skillsShCatalogTestV1Handler(ctx: ActionCtx, request: Requ
       const unlinkedStorageIds = stored.artifacts
         .filter((artifact) => !admittedExternalIds.has(artifact.externalId))
         .flatMap((artifact) => artifact.files.map((file) => file.storageId));
-      await Promise.all(
+      await Promise.allSettled(
         unlinkedStorageIds.map(async (storageId) => await ctx.storage.delete(storageId)),
       );
       return json(result, 200, rate.headers);

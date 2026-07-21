@@ -106,6 +106,50 @@ describe("skills.sh catalog Test HTTP API", () => {
     expect(deleteStorage).toHaveBeenCalledWith("storage:skipped");
   });
 
+  it("does not report a committed admission as failed when skipped-file cleanup fails", async () => {
+    const storedIds = ["storage:linked", "storage:skipped"];
+    const store = vi.fn(async () => storedIds.shift()!);
+    const deleteStorage = vi.fn(async () => {
+      throw new Error("temporary storage cleanup outage");
+    });
+    const ctx = {
+      runQuery: vi.fn(async () => ({
+        environment: "test",
+        deploymentName: "academic-chihuahua-392",
+        buildSha: "test-sha",
+        control: {},
+      })),
+      runMutation: vi.fn(async () => ({
+        requested: 2,
+        admitted: 1,
+        skipped: 1,
+        admittedExternalIds: ["nvidia/skills/aiq-deploy"],
+      })),
+      storage: {
+        store,
+        delete: deleteStorage,
+      },
+    } as never;
+    const request = new Request("https://academic-chihuahua-392.convex.site/api/v1/ops", {
+      method: "POST",
+      body: JSON.stringify({
+        operation: "admit",
+        runId: "skillsShCatalogRuns:test",
+        externalIds: ["nvidia/skills/aiq-deploy", "nvidia/skills/aiq-toolkit"],
+        artifacts: [
+          artifact("nvidia/skills/aiq-deploy", "# Linked"),
+          artifact("nvidia/skills/aiq-toolkit", "# Skipped"),
+        ],
+      }),
+    });
+
+    const response = await skillsShCatalogTestV1Handler(ctx, request);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ admitted: 1, skipped: 1 });
+    expect(deleteStorage).toHaveBeenCalledWith("storage:skipped");
+  });
+
   it("resolves immutable owner ids through authenticated ClawHub GitHub headers", async () => {
     const githubFetch = vi.fn(async (url: string, init?: RequestInit) => {
       expect(init?.headers).toMatchObject({ Authorization: "Bearer placeholder" });
