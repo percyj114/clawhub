@@ -1,35 +1,62 @@
 {
   "verdict": "pass",
-  "generatedAt": "2026-07-21T03:06:00.212Z",
+  "generatedAt": "2026-07-21T03:34:15.693Z",
   "deployment": {
     "kind": "disposable-local-convex",
-    "name": "local-amantus-clawdhub-2342",
+    "name": "local-amantus-clawdhub-5123",
     "cloudUrl": "http://127.0.0.1:3210",
     "permanentTestDeployed": false,
     "productionDeployed": false
   },
   "runtime": {
-    "elapsedMs": 31577,
+    "elapsedMs": 25312,
     "memory": {
-      "backendPid": 30422,
-      "backendRssStartKiB": 822816,
-      "backendRssPeakKiB": 822816,
-      "backendRssEndKiB": 761776,
-      "driverRssStartBytes": 53248000,
-      "driverRssPeakBytes": 75513856,
-      "driverRssEndBytes": 75513856,
-      "driverHeapPeakBytes": 7509173,
-      "driverMaxRssStartBytes": 53248000,
-      "driverMaxRssEndBytes": 75513856
+      "backendPid": 17330,
+      "backendRssStartKiB": 741728,
+      "backendRssPeakKiB": 851744,
+      "backendRssEndKiB": 851728,
+      "driverRssStartBytes": 52805632,
+      "driverRssPeakBytes": 77348864,
+      "driverRssEndBytes": 77348864,
+      "driverHeapPeakBytes": 6942187
     },
     "clientCalls": {
-      "mutation": 150,
-      "query": 160,
-      "expectedErrors": 5,
+      "mutation": 153,
+      "query": 173,
+      "expectedErrors": 8,
       "unexpectedErrors": 0
     },
     "sourceFetchesDuringProof": 0,
     "frozenSnapshotCaptureFetches": 528
+  },
+  "defaultState": {
+    "controls": {
+      "discoveryEnabled": false,
+      "maxCatalogInFlight": 0,
+      "maxCatalogQueued": 0,
+      "maxEntriesPerBatch": 0,
+      "maxEntriesPerRun": 0,
+      "maxNativeInFlight": 0,
+      "maxNativeQueued": 0,
+      "maxPlannedScans": 0,
+      "maxScanAdmissionsPerBatch": 0,
+      "maxScanAdmissionsPerDay": 0,
+      "maxScanAdmissionsPerRun": 0,
+      "maxWritesPerBatch": 0,
+      "mode": "off",
+      "paused": true,
+      "publicVisibilityEnabled": false,
+      "realScanAllowlist": [],
+      "reason": null,
+      "scanAdmissionEnabled": false,
+      "scanPlanningEnabled": false,
+      "updatedAt": null,
+      "updatedBy": null,
+      "writesEnabled": false
+    },
+    "schedulesPresent": false,
+    "catalogScanAttempts": 0,
+    "realScanAttempts": 0
   },
   "discovery20000": {
     "observed": 20000,
@@ -102,6 +129,13 @@
         "functionCalls": 29
       }
     },
+    "pauseResume": {
+      "pausedCursor": 99,
+      "pausedObserved": 99,
+      "resumedFinalCursor": 500,
+      "resumedFinalObserved": 500,
+      "replayedCompletedBatch": false
+    },
     "identicalRerun": {
       "counts": {
         "inserted": 0,
@@ -160,7 +194,21 @@
       "queuedAtThresholdRejected": true,
       "inFlightAtThresholdRejected": true,
       "maxCatalogQueued": 1,
-      "maxCatalogInFlight": 1
+      "maxCatalogInFlight": 1,
+      "maxNativeQueued": 0,
+      "maxNativeInFlight": 0,
+      "queuedThresholdObserved": {
+        "nativeQueued": 0,
+        "nativeInFlight": 0,
+        "catalogQueued": 1,
+        "catalogInFlight": 0
+      },
+      "inFlightThresholdObserved": {
+        "nativeQueued": 0,
+        "nativeInFlight": 0,
+        "catalogQueued": 1,
+        "catalogInFlight": 1
+      }
     },
     "crossRunDaily": {
       "fulfilled": 1,
@@ -169,6 +217,29 @@
       "attemptsBeforeRace": 498
     },
     "finalCatalogAttemptsToday": 500
+  },
+  "admissionContainment": {
+    "deterministicOnlyInLocalProof": true,
+    "realDispatchOutsideStagingLiveRejected": true,
+    "realDispatchRejection": "requires staging-live controls"
+  },
+  "lifecycleContainment": {
+    "canceledRunningAttempts": 1,
+    "canceledQueuedAttempts": 1,
+    "canceledAttemptReadback": [
+      {
+        "dispatchKind": "deterministic",
+        "status": "canceled"
+      },
+      {
+        "dispatchKind": "deterministic",
+        "status": "canceled"
+      }
+    ],
+    "canceledRunAdmissionRejected": true,
+    "canceledRunAdmissionRejection": "Cannot admit scans for canceled run",
+    "killSwitchAdmissionRejected": true,
+    "killSwitchAdmissionRejection": "catalog controls are disabled"
   },
   "rollback": {
     "controls": {
@@ -191,7 +262,7 @@
       "reason": "visibility and control rollback proof",
       "scanAdmissionEnabled": false,
       "scanPlanningEnabled": false,
-      "updatedAt": 1784603159988,
+      "updatedAt": 1784604855460,
       "updatedBy": "claw-556-local-proof",
       "writesEnabled": false
     },

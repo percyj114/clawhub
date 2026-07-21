@@ -104,7 +104,7 @@ async function expectedFailure<T>(kind: CallKind, operation: () => Promise<T>, m
     assert(detail.includes(message), `expected error containing "${message}"`);
     calls.expectedErrors += 1;
     sampleMemory();
-    return detail;
+    return message;
   }
   throw new Error(`expected operation to fail with "${message}"`);
 }
@@ -174,10 +174,31 @@ async function main() {
   const query = <T>(operation: () => Promise<T>) => measured("query", operation);
   const mutation = <T>(operation: () => Promise<T>) => measured("mutation", operation);
 
+  const cronsSource = await readFile(resolve(process.cwd(), "convex/crons.ts"), "utf8");
+  const schedulesPresent =
+    cronsSource.includes("skillsShCatalog") || cronsSource.includes("skills-sh");
+  assert(!schedulesPresent, "skills.sh scheduler reference exists");
   const initial = await query(() => client.query(internal.skillsShCatalog.getStatusInternal, {}));
-  assert(initial.control.mode === "off", "catalog control must start off");
+  assert(
+    initial.control.mode === "off" &&
+      !initial.control.discoveryEnabled &&
+      !initial.control.writesEnabled &&
+      !initial.control.scanPlanningEnabled &&
+      !initial.control.scanAdmissionEnabled &&
+      !initial.control.publicVisibilityEnabled,
+    "catalog controls must start fail-closed",
+  );
   assert(initial.runs.length === 0, "proof requires a fresh local deployment");
   assert(initial.entries.length === 0, "proof requires no catalog entries");
+  const initialAttempts = await collectPage<Doc<"skillsShCatalogScanAttempts">>((cursor) =>
+    query(() =>
+      client.query(internal.skillsShCatalog.listScanAttemptsPageInternal, {
+        paginationOpts: { cursor, numItems: 100 },
+      }),
+    ),
+  );
+  const initialRealAttempts = initialAttempts.filter((attempt) => attempt.dispatchKind === "real");
+  assert(initialAttempts.length === 0, "proof requires no catalog scan attempts");
 
   const nativeBefore = {
     skills: await collectPage<Doc<"skills">>((cursor) =>
@@ -332,6 +353,10 @@ async function main() {
       pausedReadback.counts.observed === firstBatch.counts.observed,
     "pause replayed or advanced a completed batch",
   );
+  const pauseCheckpoint = {
+    cursor: pausedReadback.cursor,
+    observed: pausedReadback.counts.observed,
+  };
   await mutation(() =>
     client.mutation(internal.skillsShCatalog.setFixtureRunPausedInternal, {
       runId: firstStart.runId,
@@ -393,6 +418,20 @@ async function main() {
   assert(
     firstRun?.counts.scansAdmitted === 496 && firstRun.counts.scansCompleted === 496,
     "initial deterministic scans did not reconcile",
+  );
+  const realAdmissionCandidate = frozenEntries.find(
+    (entry) => !initialAdmissionIds.includes(entry.externalId),
+  );
+  assert(realAdmissionCandidate, "real admission gate needs an unadmitted planned entry");
+  const realAdmissionOutsideStagingLiveError = await expectedFailure(
+    "mutation",
+    () =>
+      client.mutation(internal.skillsShCatalog.admitFixtureScansInternal, {
+        runId: firstStart.runId,
+        externalIds: [realAdmissionCandidate.externalId],
+        dispatchKind: "real",
+      }),
+    "requires staging-live controls",
   );
 
   const repeatedStart = await mutation(() =>
@@ -507,6 +546,20 @@ async function main() {
     ),
   );
   assert(sameRunAttempts.length === 1, "same-run race persisted more than one attempt");
+  const activeAtQueuedThreshold = (
+    await collectPage<Doc<"skillsShCatalogScanAttempts">>((cursor) =>
+      query(() =>
+        client.query(internal.skillsShCatalog.listScanAttemptsPageInternal, {
+          paginationOpts: { cursor, numItems: 100 },
+        }),
+      ),
+    )
+  ).filter((attempt) => attempt.status === "queued" || attempt.status === "running");
+  assert(
+    activeAtQueuedThreshold.filter((attempt) => attempt.status === "queued").length === 1 &&
+      activeAtQueuedThreshold.filter((attempt) => attempt.status === "running").length === 0,
+    "queued threshold readback did not show exactly one queued catalog attempt",
+  );
 
   await configureSynthetic(3, 500);
   const queueHealthRunId = await runSynthetic(3);
@@ -535,7 +588,7 @@ async function main() {
       attemptId: sameRunAttempts[0]!._id,
     }),
   );
-  await mutation(() =>
+  const queueHealthAdmission = await mutation(() =>
     client.mutation(internal.skillsShCatalog.admitFixtureScansInternal, {
       runId: queueHealthRunId,
       externalIds: [queueHealthEntries[0]!.externalId],
@@ -551,6 +604,20 @@ async function main() {
     ),
   );
   assert(queueHealthAttempts.length === 1, "queue-health proof did not persist one queued attempt");
+  const activeAtInFlightThreshold = (
+    await collectPage<Doc<"skillsShCatalogScanAttempts">>((cursor) =>
+      query(() =>
+        client.query(internal.skillsShCatalog.listScanAttemptsPageInternal, {
+          paginationOpts: { cursor, numItems: 100 },
+        }),
+      ),
+    )
+  ).filter((attempt) => attempt.status === "queued" || attempt.status === "running");
+  assert(
+    activeAtInFlightThreshold.filter((attempt) => attempt.status === "queued").length === 1 &&
+      activeAtInFlightThreshold.filter((attempt) => attempt.status === "running").length === 1,
+    "in-flight threshold readback did not show one queued and one running catalog attempt",
+  );
   await expectedFailure(
     "mutation",
     () =>
@@ -559,17 +626,50 @@ async function main() {
       }),
     "scan start is blocked by queue health",
   );
-  await mutation(() =>
+  const canceledRunning = await mutation(() =>
     client.mutation(internal.skillsShCatalog.cancelCatalogRunInternal, {
       runId: sameRunId,
       limit: 10,
     }),
   );
-  await mutation(() =>
+  const canceledQueued = await mutation(() =>
     client.mutation(internal.skillsShCatalog.cancelCatalogRunInternal, {
       runId: queueHealthRunId,
       limit: 10,
     }),
+  );
+  assert(
+    canceledRunning.canceled === 1 && canceledQueued.canceled === 1,
+    "catalog cancellation did not cancel both active attempts",
+  );
+  const canceledAttemptReadback = (
+    await Promise.all(
+      [sameRunId, queueHealthRunId].map((runId) =>
+        collectPage<Doc<"skillsShCatalogScanAttempts">>((cursor) =>
+          query(() =>
+            client.query(internal.skillsShCatalog.listRunScanAttemptsPageInternal, {
+              runId,
+              paginationOpts: { cursor, numItems: 100 },
+            }),
+          ),
+        ),
+      ),
+    )
+  ).flat();
+  assert(
+    canceledAttemptReadback.length === 2 &&
+      canceledAttemptReadback.every((attempt) => attempt.status === "canceled"),
+    "catalog cancellation left an active attempt",
+  );
+  const canceledRunAdmissionError = await expectedFailure(
+    "mutation",
+    () =>
+      client.mutation(internal.skillsShCatalog.admitFixtureScansInternal, {
+        runId: queueHealthRunId,
+        externalIds: [queueHealthEntries[0]!.externalId],
+        dispatchKind: "deterministic",
+      }),
+    "Cannot admit scans for canceled run",
   );
 
   await configureSynthetic(4, 499);
@@ -722,10 +822,10 @@ async function main() {
     finalFrozenEntries.every((entry) => !entry.publicVisible),
     "catalog entries became publicly visible",
   );
-  assert(
-    allAttempts.every((attempt) => attempt.dispatchKind === "deterministic"),
-    "local proof created a real scan attempt",
+  const deterministicOnlyInLocalProof = allAttempts.every(
+    (attempt) => attempt.dispatchKind === "deterministic",
   );
+  assert(deterministicOnlyInLocalProof, "local proof created a real scan attempt");
 
   await mutation(() =>
     client.mutation(internal.skillsShCatalog.disableCatalogInternal, {
@@ -742,6 +842,16 @@ async function main() {
       !disabled.control.scanAdmissionEnabled &&
       !disabled.control.publicVisibilityEnabled,
     "catalog kill switches did not fail closed",
+  );
+  const killSwitchAdmissionError = await expectedFailure(
+    "mutation",
+    () =>
+      client.mutation(internal.skillsShCatalog.admitFixtureScansInternal, {
+        runId: changedStart.runId,
+        externalIds: [changedExternalId],
+        dispatchKind: "deterministic",
+      }),
+    "catalog controls are disabled",
   );
 
   const nativeAfter = {
@@ -762,12 +872,6 @@ async function main() {
   };
   const nativeAfterHash = stableHash(nativeAfter);
   assert(nativeAfterHash === nativeBeforeHash, "native skills or native scan jobs changed");
-
-  const cronsSource = await readFile(resolve(process.cwd(), "convex/crons.ts"), "utf8");
-  assert(
-    !cronsSource.includes("skillsShCatalog") && !cronsSource.includes("skills-sh"),
-    "skills.sh scheduler reference exists",
-  );
 
   memory.backendRssEndKiB = readNumber(["ps", "-o", "rss=", "-p", String(memory.backendPid)]);
   memory.backendRssPeakKiB = Math.max(memory.backendRssPeakKiB, memory.backendRssEndKiB);
@@ -790,6 +894,12 @@ async function main() {
       clientCalls: calls,
       sourceFetchesDuringProof: 0,
       frozenSnapshotCaptureFetches: firstRun?.snapshotCaptureFetches ?? 0,
+    },
+    defaultState: {
+      controls: initial.control,
+      schedulesPresent,
+      catalogScanAttempts: initialAttempts.length,
+      realScanAttempts: initialRealAttempts.length,
     },
     discovery20000: {
       observed: dryRun.counts.observed,
@@ -826,6 +936,13 @@ async function main() {
         batches: firstRun.budgetConsumed,
         operationEstimates: firstRun.operations,
       },
+      pauseResume: {
+        pausedCursor: pauseCheckpoint.cursor,
+        pausedObserved: pauseCheckpoint.observed,
+        resumedFinalCursor: firstRun.cursor,
+        resumedFinalObserved: firstRun.counts.observed,
+        replayedCompletedBatch: false,
+      },
       identicalRerun: {
         counts: repeatedRun.counts,
         authoritativeAttempts: repeatedAttempts.length,
@@ -854,6 +971,25 @@ async function main() {
         inFlightAtThresholdRejected: true,
         maxCatalogQueued: 1,
         maxCatalogInFlight: 1,
+        maxNativeQueued: 0,
+        maxNativeInFlight: 0,
+        queuedThresholdObserved: {
+          nativeQueued: queueHealthAdmission.queueHealth.nativeQueued,
+          nativeInFlight: queueHealthAdmission.queueHealth.nativeInFlight,
+          catalogQueued: activeAtQueuedThreshold.filter((attempt) => attempt.status === "queued")
+            .length,
+          catalogInFlight: activeAtQueuedThreshold.filter((attempt) => attempt.status === "running")
+            .length,
+        },
+        inFlightThresholdObserved: {
+          nativeQueued: queueHealthAdmission.queueHealth.nativeQueued,
+          nativeInFlight: queueHealthAdmission.queueHealth.nativeInFlight,
+          catalogQueued: activeAtInFlightThreshold.filter((attempt) => attempt.status === "queued")
+            .length,
+          catalogInFlight: activeAtInFlightThreshold.filter(
+            (attempt) => attempt.status === "running",
+          ).length,
+        },
       },
       crossRunDaily: {
         fulfilled: dailyFulfilled.length,
@@ -863,9 +999,26 @@ async function main() {
       },
       finalCatalogAttemptsToday: allAttempts.length,
     },
+    admissionContainment: {
+      deterministicOnlyInLocalProof,
+      realDispatchOutsideStagingLiveRejected: true,
+      realDispatchRejection: realAdmissionOutsideStagingLiveError,
+    },
+    lifecycleContainment: {
+      canceledRunningAttempts: canceledRunning.canceled,
+      canceledQueuedAttempts: canceledQueued.canceled,
+      canceledAttemptReadback: canceledAttemptReadback.map((attempt) => ({
+        dispatchKind: attempt.dispatchKind,
+        status: attempt.status,
+      })),
+      canceledRunAdmissionRejected: true,
+      canceledRunAdmissionRejection: canceledRunAdmissionError,
+      killSwitchAdmissionRejected: true,
+      killSwitchAdmissionRejection: killSwitchAdmissionError,
+    },
     rollback: {
       controls: disabled.control,
-      schedulesPresent: false,
+      schedulesPresent,
       nativeBefore: {
         skills: nativeBefore.skills.length,
         scanJobs: nativeBefore.scanJobs.length,
