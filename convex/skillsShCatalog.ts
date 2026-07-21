@@ -926,12 +926,11 @@ async function admitScans(ctx: MutationCtx, args: AdmitScansArgs) {
   const externalIds = Array.from(
     new Set(args.externalIds.map((externalId) => externalId.trim().toLowerCase())),
   ).filter(Boolean);
-  assertIntegerInRange(
-    "externalIds.length",
-    externalIds.length,
-    1,
+  const effectiveBatchAdmissionLimit = Math.min(
     run.budgets.maxScanAdmissionsPerBatch,
+    control.maxScanAdmissionsPerBatch,
   );
+  assertIntegerInRange("externalIds.length", externalIds.length, 1, effectiveBatchAdmissionLimit);
   if (args.dispatchKind === "deterministic") {
     assertFixtureMode(control);
     assertFixtureRun(run);
@@ -982,6 +981,10 @@ async function admitScans(ctx: MutationCtx, args: AdmitScansArgs) {
     run.budgets.maxScanAdmissionsPerDay,
     control.maxScanAdmissionsPerDay,
   );
+  const effectiveRunAdmissionLimit = Math.min(
+    run.budgets.maxScanAdmissionsPerRun,
+    control.maxScanAdmissionsPerRun,
+  );
   const admittedToday = await ctx.db
     .query("skillsShCatalogScanAttempts")
     .withIndex("by_created_at", (q) => q.gte("createdAt", dayStart.getTime()))
@@ -1030,7 +1033,7 @@ async function admitScans(ctx: MutationCtx, args: AdmitScansArgs) {
       skipped += 1;
       continue;
     }
-    if (run.counts.scansAdmitted + admitted >= run.budgets.maxScanAdmissionsPerRun) {
+    if (run.counts.scansAdmitted + admitted >= effectiveRunAdmissionLimit) {
       throw new ConvexError("skills.sh catalog run scan-admission budget exceeded");
     }
     if (admittedToday.length + admitted >= effectiveDailyAdmissionLimit) {
@@ -1928,16 +1931,36 @@ async function cancelAttempt(
   if (attempt.securityScanJobId) {
     const job = await ctx.db.get(attempt.securityScanJobId);
     dbReads += 1;
-    if (
+    const activeRealJobLease =
       attempt.dispatchKind === "real" &&
       job?.source === "skills-sh-catalog-test" &&
       job.status === "running" &&
-      !options.allowRunningRealJob
-    ) {
+      typeof job.leaseExpiresAt === "number" &&
+      job.leaseExpiresAt > now;
+    if (activeRealJobLease && !options.allowRunningRealJob) {
       return { canceled: false, dbReads, dbWrites };
     }
-    if (job?.source === "skills-sh-catalog-test" && job.status === "queued") {
-      await ctx.db.delete(job._id);
+    if (
+      job?.source === "skills-sh-catalog-test" &&
+      (job.status === "queued" || job.status === "running")
+    ) {
+      const cancellationError =
+        job.status === "running" && !activeRealJobLease && !options.allowRunningRealJob
+          ? "Catalog run canceled after scan lease expired"
+          : "Catalog run canceled before scan completion";
+      if (job.status === "queued") {
+        await ctx.db.delete(job._id);
+      } else {
+        await ctx.db.patch(job._id, {
+          status: "failed",
+          lastError: cancellationError,
+          completedAt: now,
+          leaseToken: undefined,
+          leaseExpiresAt: undefined,
+          workerId: undefined,
+          updatedAt: now,
+        });
+      }
       dbWrites += 1;
       if (attempt.skillScanRequestId) {
         const request = await ctx.db.get(attempt.skillScanRequestId);
@@ -1945,7 +1968,10 @@ async function cancelAttempt(
         if (request) {
           await ctx.db.patch(request._id, {
             status: "failed",
-            lastError: "Catalog run canceled before scan start",
+            lastError:
+              job.status === "queued"
+                ? "Catalog run canceled before scan start"
+                : cancellationError,
             completedAt: now,
             updatedAt: now,
           });

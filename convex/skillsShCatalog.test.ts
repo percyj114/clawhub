@@ -1184,6 +1184,61 @@ describe("skills.sh catalog overload control plane", () => {
     expect(await collectAttempts(t, runId)).toHaveLength(1);
   });
 
+  it("applies lowered current batch and run admission caps to an existing run", async () => {
+    useEnvironment(LOCAL_ENV);
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.skillsShCatalog.configureFixtureControlInternal, {
+      ...BASE_CONTROL,
+      maxEntriesPerRun: 2,
+      maxEntriesPerBatch: 2,
+      maxPlannedScans: 2,
+      maxScanAdmissionsPerBatch: 2,
+      maxScanAdmissionsPerRun: 2,
+      maxScanAdmissionsPerDay: 2,
+      maxCatalogQueued: 2,
+      maxCatalogInFlight: 1,
+    });
+    const { runId } = await t.mutation(internal.skillsShCatalog.startFixtureRunInternal, {
+      fixtureId: "synthetic-20000-v1",
+      actor: "codex-test",
+      reason: "current batch and run caps override stale run budgets",
+    });
+    await processToTerminal(t, runId);
+    const entries = await collectEntries(t);
+    await t.mutation(internal.skillsShCatalog.configureFixtureControlInternal, {
+      ...BASE_CONTROL,
+      maxEntriesPerRun: 2,
+      maxEntriesPerBatch: 2,
+      maxPlannedScans: 2,
+      maxScanAdmissionsPerBatch: 1,
+      maxScanAdmissionsPerRun: 1,
+      maxScanAdmissionsPerDay: 2,
+      maxCatalogQueued: 2,
+      maxCatalogInFlight: 1,
+    });
+
+    await expect(
+      t.mutation(internal.skillsShCatalog.admitFixtureScansInternal, {
+        runId,
+        externalIds: entries.map((entry) => entry.externalId),
+        dispatchKind: "deterministic",
+      }),
+    ).rejects.toThrow("externalIds.length");
+    await t.mutation(internal.skillsShCatalog.admitFixtureScansInternal, {
+      runId,
+      externalIds: [entries[0]!.externalId],
+      dispatchKind: "deterministic",
+    });
+    await expect(
+      t.mutation(internal.skillsShCatalog.admitFixtureScansInternal, {
+        runId,
+        externalIds: [entries[1]!.externalId],
+        dispatchKind: "deterministic",
+      }),
+    ).rejects.toThrow("run scan-admission budget exceeded");
+    expect(await collectAttempts(t, runId)).toHaveLength(1);
+  });
+
   it("completes deterministic work when real in-flight capacity is zero", async () => {
     useEnvironment(LOCAL_ENV);
     const t = convexTest(schema, modules);
@@ -1786,6 +1841,8 @@ describe("skills.sh catalog overload control plane", () => {
       });
       await ctx.db.patch(attempt!.securityScanJobId!, {
         status: "running",
+        leaseToken: "active-cancel-lease",
+        leaseExpiresAt: Date.now() + 60_000,
         updatedAt: Date.now(),
       });
       await ctx.db.patch(attempt!._id, {
@@ -1817,6 +1874,99 @@ describe("skills.sh catalog overload control plane", () => {
       status: "canceled",
       counts: { scansCanceled: 1 },
     });
+  });
+
+  it("terminalizes an expired running real job during catalog cancellation", async () => {
+    useEnvironment(TEST_ENV);
+    const t = convexTest(schema, modules);
+    const actorUserId = await t.run(
+      async (ctx) =>
+        await ctx.db.insert("users", {
+          handle: "catalog-expired-cancel-operator",
+          displayName: "Catalog Expired Cancel Operator",
+          role: "admin",
+        }),
+    );
+    await t.mutation(internal.skillsShCatalog.configureFixtureControlInternal, {
+      ...BASE_CONTROL,
+      mode: "staging-live",
+      maxEntriesPerRun: 500,
+      maxEntriesPerBatch: 1,
+      maxScanAdmissionsPerBatch: 1,
+      maxScanAdmissionsPerRun: 1,
+      maxScanAdmissionsPerDay: 1,
+      maxCatalogQueued: 1,
+      maxCatalogInFlight: 1,
+      realScanAllowlist: ["nvidia/skills/aiq-deploy"],
+    });
+    const { runId } = await t.mutation(internal.skillsShCatalog.startStagingLiveRunInternal, {
+      actor: "catalog-expired-cancel-operator",
+      reason: "terminalize expired running real cancellation",
+      snapshotId: "skills-sh-test-live-500:cancel-expired-running",
+      sourceCapturedAt: "2026-07-21T00:00:00.000Z",
+      snapshotCaptureFetches: 528,
+      fixtureLength: 500,
+    });
+    await t.mutation(internal.skillsShCatalog.processStagingLiveBatchInternal, {
+      runId,
+      cursor: 0,
+      rows: [frozenSnapshot.rows.find((row) => row.externalId === "nvidia/skills/aiq-deploy")!],
+    });
+    const artifact = await storeTestArtifact(
+      t,
+      "nvidia/skills/aiq-deploy",
+      "expired running cancellation artifact",
+    );
+    await t.action(internal.skillsShCatalog.admitRealScansInternal, {
+      runId,
+      externalIds: ["nvidia/skills/aiq-deploy"],
+      actorUserId,
+      artifacts: [artifact],
+    });
+    const [attempt] = await collectAttempts(t, runId);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(attempt!.skillScanRequestId!, {
+        status: "running",
+        updatedAt: Date.now(),
+      });
+      await ctx.db.patch(attempt!.securityScanJobId!, {
+        status: "running",
+        leaseToken: "expired-cancel-lease",
+        leaseExpiresAt: Date.now() - 1,
+        workerId: "expired-catalog-worker",
+        updatedAt: Date.now(),
+      });
+      await ctx.db.patch(attempt!._id, {
+        status: "running",
+        updatedAt: Date.now(),
+      });
+    });
+
+    const canceled = await t.mutation(internal.skillsShCatalog.cancelCatalogRunInternal, {
+      runId,
+      limit: 10,
+    });
+
+    expect(canceled).toMatchObject({ canceled: 1, hasMore: false, status: "canceled" });
+    expect((await collectAttempts(t, runId))[0]).toMatchObject({ status: "canceled" });
+    expect(await t.run(async (ctx) => await ctx.db.get(attempt!.entryId))).toMatchObject({
+      scanStatus: "canceled",
+      publicVisible: false,
+    });
+    expect(
+      await t.run(async (ctx) => await ctx.db.get(attempt!.skillScanRequestId!)),
+    ).toMatchObject({
+      status: "failed",
+      lastError: "Catalog run canceled after scan lease expired",
+    });
+    const job = await t.run(async (ctx) => await ctx.db.get(attempt!.securityScanJobId!));
+    expect(job).toMatchObject({
+      status: "failed",
+      lastError: "Catalog run canceled after scan lease expired",
+    });
+    expect(job).not.toHaveProperty("leaseToken");
+    expect(job).not.toHaveProperty("leaseExpiresAt");
+    expect(job).not.toHaveProperty("workerId");
   });
 
   it("fixture queue cleanup leaves real staging attempts untouched", async () => {
