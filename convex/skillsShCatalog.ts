@@ -911,6 +911,9 @@ export const admitFixtureScansInternal = internalMutation({
       if (control.mode !== "staging-live") {
         throw new ConvexError("real skills.sh scan admission requires staging-live controls");
       }
+      if (run.sourceKind !== "staging-live" || run.fixtureId !== "skills-sh-test-live-500") {
+        throw new ConvexError("real skills.sh scan admission requires a staging-live run");
+      }
       if (environment.environment !== "test") {
         throw new ConvexError(
           "real skills.sh scan admission requires the permanent Test environment",
@@ -943,10 +946,14 @@ export const admitFixtureScansInternal = internalMutation({
     }
     const dayStart = new Date();
     dayStart.setUTCHours(0, 0, 0, 0);
+    const effectiveDailyAdmissionLimit = Math.min(
+      run.budgets.maxScanAdmissionsPerDay,
+      control.maxScanAdmissionsPerDay,
+    );
     const admittedToday = await ctx.db
       .query("skillsShCatalogScanAttempts")
       .withIndex("by_created_at", (q) => q.gte("createdAt", dayStart.getTime()))
-      .take(run.budgets.maxScanAdmissionsPerDay + 1);
+      .take(effectiveDailyAdmissionLimit + 1);
 
     const fixture =
       run.fixtureId === "skills-sh-test-live-500" ? null : getSkillsShCatalogFixture(run.fixtureId);
@@ -993,7 +1000,7 @@ export const admitFixtureScansInternal = internalMutation({
       if (run.counts.scansAdmitted + admitted >= run.budgets.maxScanAdmissionsPerRun) {
         throw new ConvexError("skills.sh catalog run scan-admission budget exceeded");
       }
-      if (admittedToday.length + admitted >= run.budgets.maxScanAdmissionsPerDay) {
+      if (admittedToday.length + admitted >= effectiveDailyAdmissionLimit) {
         throw new ConvexError("skills.sh catalog daily scan-admission budget exceeded");
       }
       if (queueHealth.catalogQueued + admitted >= control.maxCatalogQueued) {
@@ -1131,7 +1138,7 @@ export const completeDeterministicScansInternal = internalMutation({
       throw new ConvexError(`Cannot complete scans for ${run.status} run`);
     }
     const queueHealth = await readQueueHealth(ctx, control);
-    if (!queueHealth.healthy || queueHealth.catalogInFlight >= control.maxCatalogInFlight) {
+    if (!queueHealth.healthy) {
       throw new ConvexError("skills.sh deterministic scan completion is blocked by queue health");
     }
     const attempts = await ctx.db
@@ -1225,13 +1232,15 @@ export const recordRealScanResultInternal = internalMutation({
     const run = await ctx.db.get(attempt.runId);
     if (run?.status === "canceling" || run?.status === "canceled") {
       const now = Date.now();
-      const canceledOperations = await cancelAttempt(ctx, attempt, now);
+      const canceledOperations = await cancelAttempt(ctx, attempt, now, {
+        allowRunningRealJob: true,
+      });
       const hasMore = await hasActiveScanAttemptsForRun(ctx, run._id);
       await ctx.db.patch(run._id, {
         status: hasMore ? "canceling" : "canceled",
         counts: {
           ...run.counts,
-          scansCanceled: run.counts.scansCanceled + 1,
+          scansCanceled: run.counts.scansCanceled + (canceledOperations.canceled ? 1 : 0),
         },
         operations: addOperations(run.operations, {
           functionCalls: 1,
@@ -1325,7 +1334,7 @@ export const recordFixtureScanResultInternal = internalMutation({
         status: hasMore ? "canceling" : "canceled",
         counts: {
           ...run.counts,
-          scansCanceled: run.counts.scansCanceled + 1,
+          scansCanceled: run.counts.scansCanceled + (canceledOperations.canceled ? 1 : 0),
         },
         operations: addOperations(run.operations, {
           functionCalls: 1,
@@ -1413,18 +1422,22 @@ export const cancelCatalogRunInternal = internalMutation({
         .take(args.limit + 1),
     ]);
     const active = [...queued, ...running].slice(0, args.limit);
-    const hasMore = queued.length + running.length > active.length;
     const now = Date.now();
     let attemptReads = 0;
     let attemptWrites = 0;
+    let canceled = 0;
+    let deferred = 0;
     for (const attempt of active) {
       const operations = await cancelAttempt(ctx, attempt, now);
       attemptReads += operations.dbReads;
       attemptWrites += operations.dbWrites;
+      if (operations.canceled) canceled += 1;
+      else deferred += 1;
     }
+    const hasMore = queued.length + running.length > active.length || deferred > 0;
     const counts = {
       ...run.counts,
-      scansCanceled: run.counts.scansCanceled + active.length,
+      scansCanceled: run.counts.scansCanceled + canceled,
     };
     await ctx.db.patch(run._id, {
       status: hasMore ? "canceling" : "canceled",
@@ -1437,7 +1450,7 @@ export const cancelCatalogRunInternal = internalMutation({
       updatedAt: now,
     });
     return {
-      canceled: active.length,
+      canceled,
       hasMore,
       status: hasMore ? ("canceling" as const) : ("canceled" as const),
       counts,
@@ -1728,12 +1741,23 @@ async function cancelAttempt(
   ctx: MutationCtx,
   attempt: Doc<"skillsShCatalogScanAttempts">,
   now: number,
+  options: {
+    allowRunningRealJob?: boolean;
+  } = {},
 ) {
   let dbReads = 1;
-  let dbWrites = 1;
+  let dbWrites = 0;
   if (attempt.securityScanJobId) {
     const job = await ctx.db.get(attempt.securityScanJobId);
     dbReads += 1;
+    if (
+      attempt.dispatchKind === "real" &&
+      job?.source === "skills-sh-catalog-test" &&
+      job.status === "running" &&
+      !options.allowRunningRealJob
+    ) {
+      return { canceled: false, dbReads, dbWrites };
+    }
     if (job?.source === "skills-sh-catalog-test" && job.status === "queued") {
       await ctx.db.delete(job._id);
       dbWrites += 1;
@@ -1757,6 +1781,7 @@ async function cancelAttempt(
     completedAt: now,
     updatedAt: now,
   });
+  dbWrites += 1;
   const entry = await ctx.db.get(attempt.entryId);
   if (entry?.scanStatus === "queued" && entry.sourceContentHash === attempt.sourceContentHash) {
     await ctx.db.patch(entry._id, {
@@ -1764,9 +1789,9 @@ async function cancelAttempt(
       publicVisible: false,
       updatedAt: now,
     });
-    return { dbReads, dbWrites: dbWrites + 1 };
+    return { canceled: true, dbReads, dbWrites: dbWrites + 1 };
   }
-  return { dbReads, dbWrites };
+  return { canceled: true, dbReads, dbWrites };
 }
 
 async function hasActiveScanAttemptsForRun(ctx: MutationCtx, runId: Id<"skillsShCatalogRuns">) {
