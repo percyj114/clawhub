@@ -1,0 +1,221 @@
+{
+  "verdict": "pass",
+  "generatedAt": "2026-07-21T03:06:00.212Z",
+  "deployment": {
+    "kind": "disposable-local-convex",
+    "name": "local-amantus-clawdhub-2342",
+    "cloudUrl": "http://127.0.0.1:3210",
+    "permanentTestDeployed": false,
+    "productionDeployed": false
+  },
+  "runtime": {
+    "elapsedMs": 31577,
+    "memory": {
+      "backendPid": 30422,
+      "backendRssStartKiB": 822816,
+      "backendRssPeakKiB": 822816,
+      "backendRssEndKiB": 761776,
+      "driverRssStartBytes": 53248000,
+      "driverRssPeakBytes": 75513856,
+      "driverRssEndBytes": 75513856,
+      "driverHeapPeakBytes": 7509173,
+      "driverMaxRssStartBytes": 53248000,
+      "driverMaxRssEndBytes": 75513856
+    },
+    "clientCalls": {
+      "mutation": 150,
+      "query": 160,
+      "expectedErrors": 5,
+      "unexpectedErrors": 0
+    },
+    "sourceFetchesDuringProof": 0,
+    "frozenSnapshotCaptureFetches": 528
+  },
+  "discovery20000": {
+    "observed": 20000,
+    "plannedScans": 20000,
+    "wouldInsert": 20000,
+    "persistedInserts": 0,
+    "authoritativePersistedEntries": 0,
+    "authoritativeScanAttempts": 0,
+    "authoritativeNativeScanJobs": 0,
+    "batches": 80,
+    "operationEstimates": {
+      "dbReads": 20161,
+      "dbWrites": 81,
+      "functionCalls": 81
+    }
+  },
+  "frozen500": {
+    "capture": {
+      "snapshotId": "skills-sh-500-2026-07-21",
+      "capturedAt": "2026-07-21T02:35:28.482Z",
+      "sourceFetches": 528
+    },
+    "configuredBudgets": {
+      "maxEntriesPerBatch": 125,
+      "maxEntriesPerRun": 500,
+      "maxPlannedScans": 500,
+      "maxScanAdmissionsPerBatch": 50,
+      "maxScanAdmissionsPerDay": 500,
+      "maxScanAdmissionsPerRun": 500,
+      "maxWritesPerBatch": 100
+    },
+    "firstRun": {
+      "expectedActions": {
+        "wouldInsert": 500,
+        "wouldUpdate": 0,
+        "scansPlanned": 500
+      },
+      "persistedActions": {
+        "inserted": 500,
+        "updated": 0,
+        "authoritativeEntries": 500,
+        "authoritativeAttempts": 496,
+        "completedDeterministicAttempts": 496
+      },
+      "counts": {
+        "inserted": 500,
+        "observed": 500,
+        "rejected": 0,
+        "scansAdmitted": 496,
+        "scansCanceled": 0,
+        "scansCompleted": 496,
+        "scansPlanned": 500,
+        "unchanged": 0,
+        "updated": 0,
+        "wouldInsert": 500,
+        "wouldUpdate": 0
+      },
+      "batches": {
+        "batchesProcessed": 6,
+        "entriesObserved": 500,
+        "lastBatchReads": 7,
+        "lastBatchWrites": 6,
+        "scanAdmissionBatches": 10,
+        "scansAdmitted": 496,
+        "scansPlanned": 500
+      },
+      "operationEstimates": {
+        "dbReads": 2149,
+        "dbWrites": 2513,
+        "functionCalls": 29
+      }
+    },
+    "identicalRerun": {
+      "counts": {
+        "inserted": 0,
+        "observed": 500,
+        "rejected": 0,
+        "scansAdmitted": 0,
+        "scansCanceled": 0,
+        "scansCompleted": 0,
+        "scansPlanned": 0,
+        "unchanged": 500,
+        "updated": 0,
+        "wouldInsert": 0,
+        "wouldUpdate": 0
+      },
+      "authoritativeAttempts": 0,
+      "operationEstimates": {
+        "dbReads": 1009,
+        "dbWrites": 5,
+        "functionCalls": 5
+      }
+    },
+    "changedRerun": {
+      "counts": {
+        "inserted": 0,
+        "observed": 500,
+        "rejected": 0,
+        "scansAdmitted": 1,
+        "scansCanceled": 0,
+        "scansCompleted": 1,
+        "scansPlanned": 1,
+        "unchanged": 498,
+        "updated": 2,
+        "wouldInsert": 0,
+        "wouldUpdate": 2
+      },
+      "authoritativeAttempts": 1,
+      "exactSourceHashRescan": "665c585455decbcb02116bc928adf5148b9cd0f67b7eb4908c8c0d647c00f680",
+      "artifactHash": null,
+      "hashSemantics": "sourceContentHash is the upstream observation; deterministic fixture completion is not an independent ClawScan artifact hash",
+      "operationEstimates": {
+        "dbReads": 1026,
+        "dbWrites": 13,
+        "functionCalls": 7
+      }
+    },
+    "finalAuthoritativeEntries": 500,
+    "allEntriesDark": true
+  },
+  "concurrency": {
+    "sameRun": {
+      "fulfilled": 1,
+      "rejected": 1,
+      "cap": 1
+    },
+    "queueHealth": {
+      "queuedAtThresholdRejected": true,
+      "inFlightAtThresholdRejected": true,
+      "maxCatalogQueued": 1,
+      "maxCatalogInFlight": 1
+    },
+    "crossRunDaily": {
+      "fulfilled": 1,
+      "rejected": 1,
+      "cap": 499,
+      "attemptsBeforeRace": 498
+    },
+    "finalCatalogAttemptsToday": 500
+  },
+  "rollback": {
+    "controls": {
+      "discoveryEnabled": false,
+      "maxCatalogInFlight": 10,
+      "maxCatalogQueued": 50,
+      "maxEntriesPerBatch": 125,
+      "maxEntriesPerRun": 500,
+      "maxNativeInFlight": 0,
+      "maxNativeQueued": 0,
+      "maxPlannedScans": 500,
+      "maxScanAdmissionsPerBatch": 50,
+      "maxScanAdmissionsPerDay": 500,
+      "maxScanAdmissionsPerRun": 500,
+      "maxWritesPerBatch": 100,
+      "mode": "off",
+      "paused": true,
+      "publicVisibilityEnabled": false,
+      "realScanAllowlist": [],
+      "reason": "visibility and control rollback proof",
+      "scanAdmissionEnabled": false,
+      "scanPlanningEnabled": false,
+      "updatedAt": 1784603159988,
+      "updatedBy": "claw-556-local-proof",
+      "writesEnabled": false
+    },
+    "schedulesPresent": false,
+    "nativeBefore": {
+      "skills": 0,
+      "scanJobs": 0,
+      "sha256": "3da07503745b0261278284c398b652c73edeb004df305c460686e5b0b12c05b0"
+    },
+    "nativeAfter": {
+      "skills": 0,
+      "scanJobs": 0,
+      "sha256": "3da07503745b0261278284c398b652c73edeb004df305c460686e5b0b12c05b0"
+    },
+    "nativeStateUnchanged": true
+  },
+  "limits": {
+    "operationCountsAreEstimates": true,
+    "realTestQueueIntegration": "not deployed; real attempts require an allowlisted Test control and an external artifact fetch before completion",
+    "statusPreviewLimit": {
+      "entries": 50,
+      "runs": 20,
+      "scanAttempts": 50
+    },
+    "authoritativeReadback": "all entry, attempt, native skill, and native scan-job counts above use paginated internal queries"
+  }
+}
