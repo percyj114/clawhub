@@ -238,8 +238,8 @@ describe("skills.sh Vercel source boundary", () => {
       payload: {
         owner_id: "team_pLdjXbfy0XvPRiNmAygTjTSH",
         project_id: "prj_UVAJPNPYrBwTEkPJwkpEySsge8Mc",
-        environment: "preview",
-        sub: "owner:project:preview",
+        environment: "test",
+        sub: "owner:project:test",
         aud: "https://vercel.com",
         iss: "https://oidc.vercel.com",
       },
@@ -340,6 +340,39 @@ describe("skills.sh Vercel source boundary", () => {
     ).rejects.toThrow("unexpected Vercel project");
   });
 
+  it("rejects a verified ClawHub Preview token without the custom Test environment claim", async () => {
+    await expect(
+      fetchSkillsShCatalogTestPage({
+        env: {
+          VERCEL_ENV: "preview",
+          VERCEL_TARGET_ENV: "test",
+          VITE_CLAWHUB_DEPLOY_ENV: "test",
+          VITE_CONVEX_URL: "https://academic-chihuahua-392.convex.cloud",
+          CLAWHUB_SKILLS_SH_TEST_LIVE_FETCH_ENABLED: "1",
+        },
+        getOidcToken: async () => "ordinary-preview-token",
+        verifyOidcToken: async () => ({
+          payload: {
+            owner_id: "team_pLdjXbfy0XvPRiNmAygTjTSH",
+            project_id: "prj_UVAJPNPYrBwTEkPJwkpEySsge8Mc",
+            environment: "preview",
+            sub: "owner:project:preview",
+            aud: "https://vercel.com",
+            iss: "https://oidc.vercel.com",
+          },
+        }),
+        readConvexControl: async () => ({
+          mode: "staging-live",
+          discoveryEnabled: true,
+          writesEnabled: true,
+          scanPlanningEnabled: true,
+          maxEntriesPerRun: 500,
+          publicVisibilityEnabled: false,
+        }),
+      }),
+    ).rejects.toThrow("verified ClawHub Vercel identity");
+  });
+
   it("fetches through the verified request token only when the dark Convex control allows it", async () => {
     const rows = Array.from({ length: 500 }, (_, index) => ({
       id: `owner/repo/skill-${index}`,
@@ -375,8 +408,8 @@ describe("skills.sh Vercel source boundary", () => {
       payload: {
         owner_id: "team_pLdjXbfy0XvPRiNmAygTjTSH",
         project_id: "prj_UVAJPNPYrBwTEkPJwkpEySsge8Mc",
-        environment: "preview",
-        sub: "owner:project:preview",
+        environment: "test",
+        sub: "owner:project:test",
         aud: "https://vercel.com",
         iss: "https://oidc.vercel.com",
       },
@@ -402,7 +435,7 @@ describe("skills.sh Vercel source boundary", () => {
     expect(verifyOidcToken).toHaveBeenCalledWith("request-token", {
       projectId: "prj_UVAJPNPYrBwTEkPJwkpEySsge8Mc",
       ownerId: "team_pLdjXbfy0XvPRiNmAygTjTSH",
-      environment: "preview",
+      environment: "test",
     });
     expect(result.controls).toEqual({
       maxDiscoveryRows: 500,

@@ -72,7 +72,7 @@ describe("skills.sh permanent Test operator route", () => {
         verifiedIdentity: {
           ownerId: "team",
           projectId: "project",
-          environment: "preview",
+          environment: "test",
         },
         selection: {
           rows: 500,

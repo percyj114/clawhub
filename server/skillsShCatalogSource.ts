@@ -289,12 +289,12 @@ async function authorizeSkillsShCatalogTestRequest(
   const verified = await verifyOidcToken(token, {
     projectId: CLAWHUB_VERCEL_PROJECT_ID,
     ownerId: CLAWHUB_VERCEL_OWNER_ID,
-    environment: "preview",
+    environment: "test",
   });
   if (
     verified.payload.project_id !== CLAWHUB_VERCEL_PROJECT_ID ||
     verified.payload.owner_id !== CLAWHUB_VERCEL_OWNER_ID ||
-    verified.payload.environment !== "preview"
+    verified.payload.environment !== "test"
   ) {
     throw new Error("skills.sh live Test discovery requires verified ClawHub Vercel identity");
   }
