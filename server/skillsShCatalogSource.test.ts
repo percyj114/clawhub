@@ -115,7 +115,7 @@ describe("skills.sh Vercel source boundary", () => {
         name: "lark-doc",
         slug: "lark-doc",
         source: "open.feishu.cn",
-        sourceType: "well-known",
+        sourceType: "Well-Known",
         url: "https://www.skills.sh/site/open.feishu.cn/lark-doc",
       }),
     ).toMatchObject({
@@ -125,6 +125,96 @@ describe("skills.sh Vercel source boundary", () => {
       slug: "lark-doc",
       upstreamInstalls: 7,
     });
+  });
+
+  it("uses an exact GitHub install identity when the source type marker drifts", () => {
+    const liveRow = {
+      id: "larksuite/cli/lark-doc",
+      installUrl: "https://github.com/larksuite/cli.git",
+      installs: 383_123,
+      name: "lark-doc",
+      slug: "lark-doc",
+      source: "larksuite/cli",
+      sourceType: " GitHub-Repository ",
+      url: "https://skills.sh/larksuite/cli/lark-doc",
+    };
+    expect(buildSkillsShMirrorObservation(liveRow)).toMatchObject({
+      externalId: "larksuite/cli/lark-doc",
+      sourceType: "github",
+      owner: "larksuite",
+      repo: "cli",
+      slug: "lark-doc",
+      canonicalRepoUrl: "https://github.com/larksuite/cli",
+      upstreamInstalls: 383_123,
+    });
+
+    expect(buildSkillsShMirrorObservation({ ...liveRow, installUrl: null })).toMatchObject({
+      externalId: "larksuite/cli/lark-doc",
+      sourceType: "github",
+      canonicalRepoUrl: "https://github.com/larksuite/cli",
+    });
+  });
+
+  it("rejects conflicting GitHub structural identity without exposing the install URL", () => {
+    const liveRow = {
+      id: "larksuite/cli/lark-doc",
+      installUrl: "https://github.com/larksuite/cli",
+      installs: 383_123,
+      name: "lark-doc",
+      slug: "lark-doc",
+      source: "larksuite/cli",
+      sourceType: "repository",
+      url: "https://skills.sh/larksuite/cli/lark-doc",
+    };
+    const invalidRows = [
+      { ...liveRow, installUrl: "https://github.com/larksuite/docs" },
+      { ...liveRow, installUrl: "https://github.com/larksuite/cli/tree/main" },
+      { ...liveRow, id: "larksuite/docs/lark-doc" },
+      { ...liveRow, source: "larksuite/docs" },
+      { ...liveRow, slug: "lark-sheets" },
+      { ...liveRow, installUrl: null, url: "https://skills.sh/larksuite/cli/other-skill" },
+      { ...liveRow, installUrl: "https://example.com/larksuite/cli" },
+      { ...liveRow, installUrl: "https://github.com:8443/larksuite/cli" },
+      { ...liveRow, installUrl: null, url: "https://skills.sh:8443/larksuite/cli/lark-doc" },
+    ];
+    for (const row of invalidRows) {
+      try {
+        buildSkillsShMirrorObservation(row);
+        throw new Error("expected invalid skills.sh identity to be rejected");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        expect(message).toContain("Unsupported skills.sh mirror identity");
+        expect(message).toContain("sourceType=repository");
+        expect(message).toContain(`installUrlPresent=${row.installUrl !== null}`);
+        if (row.installUrl) expect(message).not.toContain(row.installUrl);
+      }
+    }
+  });
+
+  it("requires the exact skills.sh site route for well-known identity", () => {
+    const liveRow = {
+      id: "open.feishu.cn/lark-doc",
+      installUrl: null,
+      installs: 7,
+      name: "lark-doc",
+      slug: "lark-doc",
+      source: "open.feishu.cn",
+      sourceType: "well-known",
+      url: "https://skills.sh/site/open.feishu.cn/lark-doc",
+    };
+    expect(() =>
+      buildSkillsShMirrorObservation({
+        ...liveRow,
+        url: "https://skills.sh/open.feishu.cn/lark-doc",
+      }),
+    ).toThrow("Unsupported skills.sh mirror identity");
+    expect(() =>
+      buildSkillsShMirrorObservation({
+        ...liveRow,
+        installUrl: "https://github.com/attacker/repo",
+        sourceType: "github",
+      }),
+    ).toThrow("Unsupported skills.sh mirror identity");
   });
 
   it("stores only one bounded detail document from the upstream file tree", () => {

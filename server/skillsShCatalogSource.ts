@@ -194,10 +194,78 @@ async function fetchSkillsShMirrorAudit(id: string, options: SkillsShFetchOption
   return response === null ? null : ((await response.json()) as SkillsShCatalogAudit);
 }
 
+function hasExactSkillsShPagePath(sourceUrl: string, pathParts: string[]) {
+  let url: URL;
+  try {
+    url = new URL(sourceUrl);
+  } catch {
+    return false;
+  }
+  return (
+    url.protocol === "https:" &&
+    ["skills.sh", "www.skills.sh"].includes(url.hostname) &&
+    !url.port &&
+    !url.username &&
+    !url.password &&
+    !url.search &&
+    !url.hash &&
+    url.pathname.toLowerCase() === `/${pathParts.join("/")}`
+  );
+}
+
+function parseExactGitHubInstallIdentity(
+  source: string,
+  installUrl: string | null,
+  sourceUrl: string,
+  slug: string,
+) {
+  const [owner, repo, ...rest] = source.split("/");
+  if (!owner || !repo || rest.length > 0) return null;
+  if (!installUrl) {
+    return hasExactSkillsShPagePath(sourceUrl, [owner, repo, slug])
+      ? {
+          owner,
+          repo,
+          canonicalRepoUrl: `https://github.com/${owner}/${repo}`,
+        }
+      : null;
+  }
+  let url: URL;
+  try {
+    url = new URL(installUrl);
+  } catch {
+    return null;
+  }
+  const pathParts = url.pathname.split("/").filter(Boolean);
+  if (
+    url.protocol !== "https:" ||
+    url.hostname !== "github.com" ||
+    url.port ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    pathParts.length !== 2
+  ) {
+    return null;
+  }
+  const installOwner = pathParts[0]?.toLowerCase();
+  const installRepo = pathParts[1]?.replace(/\.git$/i, "").toLowerCase();
+  if (installOwner !== owner || installRepo !== repo) return null;
+  return {
+    owner,
+    repo,
+    canonicalRepoUrl: `https://github.com/${owner}/${repo}`,
+  };
+}
+
 export function buildSkillsShMirrorObservation(row: SkillsShCatalogListRow) {
   const externalId = row.id.trim().toLowerCase();
   const slug = row.slug.trim().toLowerCase();
   const source = row.source.trim().toLowerCase();
+  const sourceType =
+    typeof row.sourceType === "string" ? row.sourceType.trim().toLowerCase() : "missing";
+  const installUrl = row.installUrl?.trim() || null;
   const base = {
     externalId,
     slug,
@@ -205,30 +273,20 @@ export function buildSkillsShMirrorObservation(row: SkillsShCatalogListRow) {
     sourceUrl: row.url.trim(),
     upstreamInstalls: row.installs,
   };
-  if (row.sourceType === "github") {
-    const [owner, repo, ...rest] = source.split("/");
-    if (
-      !owner ||
-      !repo ||
-      rest.length > 0 ||
-      externalId !== `${owner}/${repo}/${slug}` ||
-      !row.installUrl
-    ) {
-      throw new Error(`Invalid GitHub skills.sh mirror identity: ${row.id}`);
-    }
+  const githubIdentity = parseExactGitHubInstallIdentity(source, installUrl, base.sourceUrl, slug);
+  if (githubIdentity && externalId === `${githubIdentity.owner}/${githubIdentity.repo}/${slug}`) {
     return {
       ...base,
       sourceType: "github" as const,
-      owner,
-      repo,
-      canonicalRepoUrl: row.installUrl.trim(),
+      ...githubIdentity,
     };
   }
   if (
-    row.sourceType === "well-known" &&
+    !installUrl &&
     source &&
     !source.includes("/") &&
-    externalId === `${source}/${slug}`
+    externalId === `${source}/${slug}` &&
+    hasExactSkillsShPagePath(base.sourceUrl, ["site", source, slug])
   ) {
     return {
       ...base,
@@ -236,7 +294,11 @@ export function buildSkillsShMirrorObservation(row: SkillsShCatalogListRow) {
       sourceHost: source,
     };
   }
-  throw new Error(`Unsupported skills.sh mirror identity: ${row.id}`);
+  throw new Error(
+    `Unsupported skills.sh mirror identity: ${externalId} ` +
+      `(sourceType=${sourceType || "missing"}, source=${source || "missing"}, ` +
+      `installUrlPresent=${installUrl !== null})`,
+  );
 }
 
 function mirrorDetailFile(file: NonNullable<SkillsShCatalogDetail["files"]>[number]) {
