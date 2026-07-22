@@ -6,6 +6,21 @@ on:
     types: [completed]
     branches: [main]
   workflow_dispatch:
+    inputs:
+      deploy_sha:
+        description: "Exact CLAW-558 source SHA"
+        required: true
+        default: "d66137a23b27defbe31e96f8957e72854e57ce21"
+        type: string
+      claw558_action:
+        description: "Temporary CLAW-558 Test action"
+        required: true
+        default: "deploy"
+        type: choice
+        options:
+          - deploy
+          - proof
+          - cleanup
 
 concurrency:
   group: deploy-test
@@ -18,7 +33,9 @@ jobs:
   deploy-test:
     if: >-
       (github.event_name == 'workflow_dispatch' &&
-      github.ref == 'refs/heads/main') ||
+      ((github.ref == 'refs/heads/main' && inputs.claw558_action == 'deploy') ||
+      (github.ref == 'refs/heads/pe/claw-558-test-gate' &&
+      inputs.claw558_action == 'deploy'))) ||
       (github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
@@ -34,16 +51,34 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.deploy_sha || github.ref }}
 
       - name: Resolve deployment revision
         id: revision
+        env:
+          REQUESTED_DEPLOY_SHA: ${{ inputs.deploy_sha }}
+          WORKFLOW_REF: ${{ github.ref }}
+          WORKFLOW_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           deploy_sha="$(git rev-parse HEAD)"
           git fetch --no-tags origin main
           main_sha="$(git rev-parse origin/main)"
-          if [[ "$deploy_sha" != "$main_sha" ]]; then
+          if [[ "$WORKFLOW_REF" == "refs/heads/pe/claw-558-test-gate" ]]; then
+            if [[ "$REQUESTED_DEPLOY_SHA" != "d66137a23b27defbe31e96f8957e72854e57ce21" ]]; then
+              echo "::error::CLAW-558 Test deploy must use the authorized exact source SHA"
+              exit 1
+            fi
+            if [[ "$deploy_sha" != "$REQUESTED_DEPLOY_SHA" ]]; then
+              echo "::error::Checked out $deploy_sha instead of requested $REQUESTED_DEPLOY_SHA"
+              exit 1
+            fi
+            git fetch --no-tags origin "$WORKFLOW_REF"
+            if ! git merge-base --is-ancestor "$deploy_sha" "$WORKFLOW_SHA"; then
+              echo "::error::Requested CLAW-558 source must be an ancestor of the wrapper"
+              exit 1
+            fi
+          elif [[ "$deploy_sha" != "$main_sha" ]]; then
             echo "::error::Refusing stale Test deploy: $deploy_sha is not current main $main_sha"
             exit 1
           fi
@@ -230,3 +265,121 @@ jobs:
             echo "- Fixture version: \`${FIXTURE_VERSION:-unresolved}\`"
             echo "- Result: \`${{ job.status }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  claw558-proof:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/pe/claw-558-test-gate' &&
+      inputs.claw558_action == 'proof' &&
+      inputs.deploy_sha == 'd66137a23b27defbe31e96f8957e72854e57ce21'
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    timeout-minutes: 45
+    environment:
+      name: Test
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: wrapper
+
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: d66137a23b27defbe31e96f8957e72854e57ce21
+          path: source
+
+      - uses: ./source/.github/actions/setup-bun
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install real scan dependencies
+        working-directory: source
+        run: |
+          set -euo pipefail
+          npm install -g @openai/codex@0.142.3 @openclaw/clawscan@0.1.6
+          python -m venv "$RUNNER_TEMP/skillspector-venv"
+          source "$RUNNER_TEMP/skillspector-venv/bin/activate"
+          python -m pip install --upgrade pip
+          python -m pip install 'git+https://github.com/NVIDIA/skillspector.git@8f37cfa'
+          echo "$RUNNER_TEMP/skillspector-venv/bin" >> "$GITHUB_PATH"
+          codex --version
+          clawscan --version
+          skillspector --help >/dev/null
+
+      - name: Authenticate Codex CLI
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: printf '%s' "$OPENAI_API_KEY" | codex login --with-api-key
+
+      - name: Run controlled scanned-route proof
+        working-directory: source
+        env:
+          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY || secrets.OPENAI_API_KEY }}
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
+          CONVEX_URL: ${{ vars.VITE_CONVEX_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENCLAW_GH_TOKEN: ${{ github.token }}
+          SECURITY_SCAN_WORKER_TOKEN: ${{ secrets.SECURITY_SCAN_WORKER_TOKEN }}
+          TEST_SITE_URL: ${{ vars.SITE_URL }}
+          VITE_CONVEX_URL: ${{ vars.VITE_CONVEX_URL }}
+        run: bash ../wrapper/.github/scripts/claw558-test-gate.sh proof
+
+      - name: Scan proof artifacts for verified secrets
+        if: ${{ !cancelled() }}
+        working-directory: source
+        run: |
+          docker run --rm \
+            -v "$PWD/.artifacts/claw558-test:/scan:ro" \
+            ghcr.io/trufflesecurity/trufflehog:3.95.5@sha256:56c25710275c4b8d74c4f1346a5e7c606fa7ff4afe996f680b288d0fae3fcd9c \
+            filesystem /scan \
+            --only-verified \
+            --fail \
+            --no-update \
+            --github-actions
+
+      - name: Upload CLAW-558 Test proof
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: claw558-scanned-route-proof
+          if-no-files-found: error
+          path: source/.artifacts/claw558-test
+
+  claw558-cleanup:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/pe/claw-558-test-gate' &&
+      inputs.claw558_action == 'cleanup' &&
+      inputs.deploy_sha == 'd66137a23b27defbe31e96f8957e72854e57ce21'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: Test
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: wrapper
+
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: d66137a23b27defbe31e96f8957e72854e57ce21
+          path: source
+
+      - uses: ./source/.github/actions/setup-bun
+
+      - name: Roll back and disable CLAW-558 Test state
+        working-directory: source
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
+          VITE_CONVEX_URL: ${{ vars.VITE_CONVEX_URL }}
+        run: bash ../wrapper/.github/scripts/claw558-test-gate.sh cleanup
+
+      - name: Upload CLAW-558 cleanup proof
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: claw558-cleanup-proof
+          if-no-files-found: warn
+          path: source/.artifacts/claw558-test
