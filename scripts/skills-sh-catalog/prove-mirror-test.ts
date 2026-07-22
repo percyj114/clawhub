@@ -2,6 +2,7 @@
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { buildMirrorProofHeaders } from "./prove-mirror-request";
 
 const OUTPUT_PATH = resolve("proof/claw-563/skills-sh-mirror-test-proof.json");
 const PROJECTED_SCALE = 700_000;
@@ -14,15 +15,16 @@ function requireEnv(name: string) {
 
 const targetUrl = requireEnv("CLAWHUB_TEST_MIRROR_GATE_URL");
 const operatorAuthorization = requireEnv("CLAWHUB_TEST_OPERATOR_TOKEN");
+const vercelAutomationBypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
 
 async function callRaw(body: Record<string, unknown>) {
   const startedAt = performance.now();
   const response = await fetch(targetUrl, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${operatorAuthorization}`,
-      "Content-Type": "application/json",
-    },
+    headers: buildMirrorProofHeaders(
+      operatorAuthorization,
+      vercelAutomationBypassSecret,
+    ),
     body: JSON.stringify(body),
   });
   const text = await response.text();
