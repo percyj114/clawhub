@@ -104,6 +104,55 @@ configure_controls() {
   )"
 }
 
+seed_canary_fixture() {
+  bunx convex env set GITHUB_TOKEN "$OPENCLAW_GH_TOKEN" --prod >/dev/null
+  convex_run skillsShCatalog:configureFixtureControlInternal '{
+    "actor":"CLAW-558 exact-head Test proof",
+    "reason":"Recreate the exact authenticated hidden CLAW-557 canary before scan admission",
+    "confirm":"enable-skills-sh-fixture-control",
+    "mode":"fixture",
+    "discoveryEnabled":true,
+    "writesEnabled":true,
+    "scanPlanningEnabled":true,
+    "scanAdmissionEnabled":false,
+    "publicVisibilityEnabled":false,
+    "maxEntriesPerRun":1,
+    "maxEntriesPerBatch":1,
+    "maxWritesPerBatch":2,
+    "maxPlannedScans":1,
+    "maxScanAdmissionsPerBatch":0,
+    "maxScanAdmissionsPerRun":0,
+    "maxScanAdmissionsPerDay":0,
+    "maxCatalogQueued":0,
+    "maxCatalogInFlight":0,
+    "maxNativeQueued":0,
+    "maxNativeInFlight":0,
+    "realScanAllowlist":[]
+  }' > "$ARTIFACT_DIR/control-canary-seed.json"
+  operator_post "$ARTIFACT_DIR/canary-seed-start.json" \
+    '{"operation":"start-canary","reason":"CLAW-558 exact authenticated canary seed"}'
+  local run_id
+  run_id="$(jq -r '.runId' "$ARTIFACT_DIR/canary-seed-start.json")"
+  [[ -n "$run_id" ]]
+  operator_post "$ARTIFACT_DIR/canary-seed-run.json" "$(
+    jq -nc --arg runId "$run_id" '{operation:"process-fixture",runId:$runId}'
+  )"
+  operator_post "$ARTIFACT_DIR/canary-seed-reconcile.json" "$(
+    jq -nc --arg runId "$run_id" '{operation:"reconcile",runId:$runId}'
+  )"
+  jq -e '
+    .status == "completed" and
+    .cursor == 1 and
+    .counts.observed == 1 and
+    .counts.scansAdmitted == 0
+  ' "$ARTIFACT_DIR/canary-seed-run.json" >/dev/null
+  jq -e '
+    .reconciled == true and
+    (.mismatches | length) == 0 and
+    (.entries | length) == 1
+  ' "$ARTIFACT_DIR/canary-seed-reconcile.json" >/dev/null
+}
+
 set_publication() {
   local enabled="$1"
   operator_post "$ARTIFACT_DIR/set-publication-${enabled}.json" "$(
@@ -320,13 +369,14 @@ disable_catalog() {
 proof() {
   assert_exact_test
   seed_operator_token
+  seed_canary_fixture
   read_status "$ARTIFACT_DIR/status-before.json"
   jq -e \
     --arg externalId "$CANARY_ID" \
     --arg commit "$CANARY_COMMIT" \
     --arg hash "$CANARY_FOLDER_HASH" \
     '
-      [.scanAttempts[] | select(.status == "queued" or .status == "running")] | length == 0 and
+      ([.scanAttempts[] | select(.status == "queued" or .status == "running")] | length) == 0 and
       ([.entries[] |
         select(
           .externalId == $externalId and
@@ -400,7 +450,7 @@ proof() {
     --arg commit "$CANARY_COMMIT" \
     --arg hash "$CANARY_FOLDER_HASH" \
     '
-      [.scanAttempts[] |
+      ([.scanAttempts[] |
         select(
           ._id == $attemptId and
           .dispatchKind == "real" and
@@ -417,8 +467,10 @@ proof() {
           .githubContentHash == $hash and
           .artifactContentHash == "c3e39b71c040e694d041b94eabdd5f80defe5c82e09bb744825a6810bd0d8515"
         )
-      ] | length == 1 and
-      [.entries[] | select(.externalId == "patrick-erichsen/skills/html" and .publicVisible == false)] | length == 1
+      ] | length) == 1 and
+      ([.entries[] |
+        select(.externalId == "patrick-erichsen/skills/html" and .publicVisible == false)
+      ] | length) == 1
     ' "$ARTIFACT_DIR/status-a-scanned.json" >/dev/null
 
   set_publication true
@@ -552,6 +604,7 @@ cleanup() {
     rollback_attempt "$ARTIFACT_DIR/cleanup-rollback.json" "$published_attempt"
   fi
   disable_catalog "CLAW-558 permanent Test cleanup" > "$ARTIFACT_DIR/cleanup-disabled.json"
+  bunx convex env remove GITHUB_TOKEN --prod >/dev/null
   read_status "$ARTIFACT_DIR/cleanup-after.json"
   jq -e '
     .control.mode == "off" and
@@ -588,6 +641,7 @@ cleanup() {
       controlsDisabled:true,
       activeCatalogWork:0,
       publicCanary:false,
+      githubTokenRemoved:true,
       usedOperatorTokenRevoked:($revokedStatus == "401"),
       revokedStatus:$revokedStatus
     }' > "$ARTIFACT_DIR/cleanup-summary.json"
