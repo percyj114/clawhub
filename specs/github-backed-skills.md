@@ -250,6 +250,23 @@ returns:
 OpenClaw downloads the GitHub archive for that commit and extracts only the skill
 path. The local lock/origin version is the commit SHA.
 
+Controlled unclaimed skills.sh catalog entries use the repository-qualified
+reference `skills-sh/<owner>/<repo>/<slug>`. The colon form
+`skills-sh:<owner>/<repo>/<slug>` is invalid and must be rejected by clients and
+HTTP handlers.
+
+In Local and the permanent Test environment, an unclaimed catalog entry remains
+hidden and non-installable until a real low-priority ClawHub scan completes for
+the exact catalog identity, immutable GitHub owner ID, repository, path, commit,
+folder content hash, source content hash, and scan attempt. Clean and suspicious
+verdicts may publish only that exact attempt. Malicious, failed, canceled, or
+stale callbacks cannot publish it.
+
+The public Test route is `/skills-sh/<owner>/<repo>/<slug>`. Its install resolver
+returns the same commit-pinned GitHub descriptor used by native GitHub-backed
+skills. Catalog pause, kill, publication disable, and exact-attempt rollback
+must fail closed without disabling or mutating native scan work.
+
 Pending verification keeps the skill visible in ClawHub search and detail UI,
 but normal install/update returns a structured block:
 

@@ -3,7 +3,7 @@ import { ConvexError, type Infer, v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
-import { internalAction, internalMutation, internalQuery } from "./functions";
+import { internalAction, internalMutation, internalQuery, query } from "./functions";
 import {
   assertSkillsShCatalogControlMutationAllowed,
   assertSkillsShFixtureEnvironmentAllowed,
@@ -13,6 +13,11 @@ import {
   getSkillsShCatalogFixture,
   type SkillsShCatalogFixtureRow,
 } from "./lib/skillsShCatalogFixtures";
+import {
+  buildSkillsShCatalogInstallResolution,
+  isExactSkillsShCatalogAttempt,
+  shouldPublishSkillsShCatalogEntry,
+} from "./lib/skillsShCatalogPublication";
 import { validateFilePath } from "./lib/skillZip";
 import { enqueueSkillsShCatalogScanRequest } from "./securityScan";
 
@@ -20,6 +25,9 @@ const CONTROL_KEY = "global";
 const ENABLE_FIXTURE_CONFIRM = "enable-skills-sh-fixture-control";
 const DISABLE_CATALOG_CONFIRM = "disable-skills-sh-catalog";
 const ROLLBACK_CONTROLLED_CANARY_CONFIRM = "rollback-skills-sh-controlled-canary";
+const SET_PUBLICATION_CONFIRM = "set-skills-sh-test-publication";
+const SET_CATALOG_PAUSE_CONFIRM = "set-skills-sh-test-pause";
+const ROLLBACK_PUBLICATION_CONFIRM = "rollback-skills-sh-test-publication";
 const CONTROLLED_CANARY_FIXTURE_ID = "patrick-html-canary-v1";
 const STATUS_LIMIT = 50;
 const MAX_DISCOVERY_ROWS = 20_000;
@@ -309,6 +317,7 @@ export const configureFixtureControlInternal = internalMutation({
     writesEnabled: v.boolean(),
     scanPlanningEnabled: v.boolean(),
     scanAdmissionEnabled: v.boolean(),
+    publicVisibilityEnabled: v.optional(v.boolean()),
     maxEntriesPerRun: v.number(),
     maxEntriesPerBatch: v.number(),
     maxWritesPerBatch: v.number(),
@@ -393,6 +402,17 @@ export const configureFixtureControlInternal = internalMutation({
     ) {
       throw new ConvexError("skills.sh Test controls are capped at 500 discoveries and 10 scans");
     }
+    if (
+      args.publicVisibilityEnabled &&
+      (mode !== "staging-live" ||
+        !args.scanAdmissionEnabled ||
+        realScanAllowlist.length < 1 ||
+        realScanAllowlist.length > 3)
+    ) {
+      throw new ConvexError(
+        "skills.sh Test publication requires staging-live admission and an allowlist of 1-3 entries",
+      );
+    }
 
     const now = Date.now();
     const existing = await getControlDoc(ctx);
@@ -402,7 +422,7 @@ export const configureFixtureControlInternal = internalMutation({
       writesEnabled: args.writesEnabled,
       scanPlanningEnabled: args.scanPlanningEnabled,
       scanAdmissionEnabled: args.scanAdmissionEnabled,
-      publicVisibilityEnabled: false,
+      publicVisibilityEnabled: args.publicVisibilityEnabled ?? false,
       paused: false,
       maxEntriesPerRun: args.maxEntriesPerRun,
       maxEntriesPerBatch: args.maxEntriesPerBatch,
@@ -467,6 +487,244 @@ export const disableCatalogInternal = internalMutation({
       });
     }
     return next;
+  },
+});
+
+export const setPublicationEnabledInternal = internalMutation({
+  args: {
+    enabled: v.boolean(),
+    actor: v.string(),
+    reason: v.string(),
+    confirm: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const environment = assertSkillsShFixtureEnvironmentAllowed();
+    if (environment.environment !== "test") {
+      throw new ConvexError(
+        "skills.sh publication controls require the permanent Test environment",
+      );
+    }
+    if (args.confirm !== SET_PUBLICATION_CONFIRM) {
+      throw new ConvexError(`Pass confirm="${SET_PUBLICATION_CONFIRM}" to change publication.`);
+    }
+    const control = await getControlDoc(ctx);
+    if (!control) throw new ConvexError("skills.sh catalog controls are not configured");
+    if (
+      args.enabled &&
+      (control.mode !== "staging-live" ||
+        control.paused ||
+        !control.scanAdmissionEnabled ||
+        control.realScanAllowlist.length < 1 ||
+        control.realScanAllowlist.length > 3)
+    ) {
+      throw new ConvexError(
+        "skills.sh publication requires active staging-live controls and an allowlist of 1-3 entries",
+      );
+    }
+    const now = Date.now();
+    await ctx.db.patch(control._id, {
+      publicVisibilityEnabled: args.enabled,
+      updatedBy: args.actor.trim(),
+      reason: args.reason.trim(),
+      updatedAt: now,
+    });
+    return { enabled: args.enabled, updatedAt: now };
+  },
+});
+
+export const setCatalogPausedInternal = internalMutation({
+  args: {
+    paused: v.boolean(),
+    actor: v.string(),
+    reason: v.string(),
+    confirm: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const environment = assertSkillsShFixtureEnvironmentAllowed();
+    if (environment.environment !== "test") {
+      throw new ConvexError("skills.sh pause controls require the permanent Test environment");
+    }
+    if (args.confirm !== SET_CATALOG_PAUSE_CONFIRM) {
+      throw new ConvexError(`Pass confirm="${SET_CATALOG_PAUSE_CONFIRM}" to change pause state.`);
+    }
+    const control = await getControlDoc(ctx);
+    if (!control) throw new ConvexError("skills.sh catalog controls are not configured");
+    if (
+      !args.paused &&
+      (control.mode !== "staging-live" ||
+        !control.scanAdmissionEnabled ||
+        control.realScanAllowlist.length < 1 ||
+        control.realScanAllowlist.length > 3)
+    ) {
+      throw new ConvexError(
+        "skills.sh resume requires staging-live admission and an allowlist of 1-3 entries",
+      );
+    }
+    const now = Date.now();
+    await ctx.db.patch(control._id, {
+      paused: args.paused,
+      updatedBy: args.actor.trim(),
+      reason: args.reason.trim(),
+      updatedAt: now,
+    });
+    return { paused: args.paused, updatedAt: now };
+  },
+});
+
+export const startControlledCanaryScanRunInternal = internalMutation({
+  args: {
+    actor: v.string(),
+    reason: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const environment = assertSkillsShFixtureEnvironmentAllowed();
+    const control = assertScanAdmissionEnabled(await getControlDoc(ctx));
+    if (
+      environment.environment !== "test" ||
+      control.mode !== "staging-live" ||
+      control.realScanAllowlist.length !== 1
+    ) {
+      throw new ConvexError("controlled canary scan requires one-entry permanent Test controls");
+    }
+    const fixture = getSkillsShCatalogFixture(CONTROLLED_CANARY_FIXTURE_ID);
+    const expected = normalizeIdentity(fixture.rowAt(0));
+    if (control.realScanAllowlist[0] !== expected.externalId) {
+      throw new ConvexError(
+        "controlled canary scan allowlist does not match the committed fixture",
+      );
+    }
+    const entry = await ctx.db
+      .query("skillsShCatalogEntries")
+      .withIndex("by_external_id", (q) => q.eq("externalId", expected.externalId))
+      .unique();
+    if (
+      !entry ||
+      entry.githubOwnerId !== expected.githubOwnerId ||
+      entry.githubPath !== expected.githubPath ||
+      entry.githubCommit !== expected.githubCommit ||
+      entry.githubContentHash !== expected.githubContentHash ||
+      entry.sourceContentHash !== expected.sourceContentHash
+    ) {
+      throw new ConvexError("controlled canary row does not match the committed fixture");
+    }
+    const existingAttempt = await ctx.db
+      .query("skillsShCatalogScanAttempts")
+      .withIndex("by_entry_and_source_content_hash", (q) =>
+        q.eq("entryId", entry._id).eq("sourceContentHash", entry.sourceContentHash),
+      )
+      .filter((q) =>
+        q.and(
+          q.eq(q.field("dispatchKind"), "real"),
+          q.eq(q.field("source"), "skills-sh-catalog-test"),
+        ),
+      )
+      .order("desc")
+      .first();
+    const existingAttemptIsExact =
+      existingAttempt?.githubOwnerId !== undefined &&
+      existingAttempt.owner !== undefined &&
+      existingAttempt.repo !== undefined &&
+      existingAttempt.slug !== undefined &&
+      isExactSkillsShCatalogAttempt(entry, {
+        externalId: existingAttempt.externalId,
+        githubOwnerId: existingAttempt.githubOwnerId,
+        owner: existingAttempt.owner,
+        repo: existingAttempt.repo,
+        slug: existingAttempt.slug,
+        githubPath: existingAttempt.githubPath,
+        githubCommit: existingAttempt.githubCommit,
+        githubContentHash: existingAttempt.githubContentHash,
+        sourceContentHash: existingAttempt.sourceContentHash,
+      });
+    if (
+      existingAttemptIsExact &&
+      (existingAttempt.status === "queued" || existingAttempt.status === "running")
+    ) {
+      throw new ConvexError("controlled canary scan attempt is already active");
+    }
+    if (
+      existingAttemptIsExact &&
+      existingAttempt.status === "succeeded" &&
+      (existingAttempt.verdict === "clean" || existingAttempt.verdict === "suspicious") &&
+      existingAttempt.publicationRolledBackAt === undefined
+    ) {
+      const shouldPublish = shouldPublishSkillsShCatalogEntry({
+        control,
+        entry,
+        attempt: {
+          externalId: existingAttempt.externalId,
+          githubOwnerId: existingAttempt.githubOwnerId!,
+          owner: existingAttempt.owner!,
+          repo: existingAttempt.repo!,
+          slug: existingAttempt.slug!,
+          githubPath: existingAttempt.githubPath,
+          githubCommit: existingAttempt.githubCommit,
+          githubContentHash: existingAttempt.githubContentHash,
+          sourceContentHash: existingAttempt.sourceContentHash,
+          dispatchKind: existingAttempt.dispatchKind,
+          source: existingAttempt.source,
+        },
+        verdict: existingAttempt.verdict,
+      });
+      if (
+        shouldPublish &&
+        (!entry.publicVisible ||
+          entry.publishedScanAttemptId !== existingAttempt._id ||
+          entry.scanStatus !== existingAttempt.verdict)
+      ) {
+        await ctx.db.patch(entry._id, {
+          scanStatus: existingAttempt.verdict,
+          publicVisible: true,
+          publishedScanAttemptId: existingAttempt._id,
+          updatedAt: Date.now(),
+        });
+      }
+      return {
+        runId: existingAttempt.runId,
+        externalId: expected.externalId,
+        reused: true as const,
+      };
+    }
+    const now = Date.now();
+    const runId = await ctx.db.insert("skillsShCatalogRuns", {
+      fixtureId: CONTROLLED_CANARY_FIXTURE_ID,
+      snapshotId: fixture.snapshotId,
+      sourceKind: fixture.sourceKind,
+      ...(fixture.capturedAt ? { sourceCapturedAt: fixture.capturedAt } : {}),
+      snapshotCaptureFetches: fixture.snapshotCaptureFetches,
+      dryRun: false,
+      status: "completed",
+      cursor: 1,
+      scanCursor: 0,
+      fixtureLength: 1,
+      counts: { ...emptyCounts(), observed: 1, unchanged: 1, scansPlanned: 1 },
+      budgets: {
+        maxEntriesPerRun: control.maxEntriesPerRun,
+        maxEntriesPerBatch: control.maxEntriesPerBatch,
+        maxWritesPerBatch: control.maxWritesPerBatch,
+        maxPlannedScans: control.maxPlannedScans,
+        maxScanAdmissionsPerBatch: control.maxScanAdmissionsPerBatch,
+        maxScanAdmissionsPerRun: control.maxScanAdmissionsPerRun,
+        maxScanAdmissionsPerDay: control.maxScanAdmissionsPerDay,
+      },
+      operations: { functionCalls: 1, dbReads: 2, dbWrites: 2 },
+      actor: args.actor.trim(),
+      reason: args.reason.trim(),
+      batchesProcessed: 0,
+      scanAdmissionBatches: 0,
+      lastBatchWrites: 2,
+      lastBatchReads: 2,
+      startedAt: now,
+      completedAt: now,
+      updatedAt: now,
+    });
+    await ctx.db.patch(entry._id, {
+      scanStatus: "planned",
+      publicVisible: false,
+      publishedScanAttemptId: undefined,
+      updatedAt: now,
+    });
+    return { runId, externalId: expected.externalId, reused: false as const };
   },
 });
 
@@ -1119,7 +1377,12 @@ async function admitScans(ctx: MutationCtx, args: AdmitScansArgs) {
     if (control.mode !== "staging-live") {
       throw new ConvexError("real skills.sh scan admission requires staging-live controls");
     }
-    if (run.sourceKind !== "staging-live" || run.fixtureId !== "skills-sh-test-live-500") {
+    const controlledCanaryRun =
+      run.fixtureId === CONTROLLED_CANARY_FIXTURE_ID && run.fixtureLength === 1;
+    if (
+      !controlledCanaryRun &&
+      (run.sourceKind !== "staging-live" || run.fixtureId !== "skills-sh-test-live-500")
+    ) {
       throw new ConvexError("real skills.sh scan admission requires a staging-live run");
     }
     if (environment.environment !== "test") {
@@ -1206,11 +1469,44 @@ async function admitScans(ctx: MutationCtx, args: AdmitScansArgs) {
       .withIndex("by_entry_and_source_content_hash", (q) =>
         q.eq("entryId", entry._id).eq("sourceContentHash", entry.sourceContentHash),
       )
-      .filter((q) => q.neq(q.field("status"), "canceled"))
+      .filter((q) => {
+        const expectedSource =
+          args.dispatchKind === "real" ? "skills-sh-catalog-test" : "skills-sh-catalog-fixture";
+        return q.and(
+          q.neq(q.field("status"), "canceled"),
+          q.eq(q.field("dispatchKind"), args.dispatchKind),
+          q.eq(q.field("source"), expectedSource),
+        );
+      })
       .order("desc")
       .first();
     readsUsed += 1;
-    if (existingAttempt) {
+    const existingAttemptIsExact =
+      existingAttempt?.githubOwnerId !== undefined &&
+      existingAttempt.owner !== undefined &&
+      existingAttempt.repo !== undefined &&
+      existingAttempt.slug !== undefined &&
+      isExactSkillsShCatalogAttempt(entry, {
+        externalId: existingAttempt.externalId,
+        githubOwnerId: existingAttempt.githubOwnerId,
+        owner: existingAttempt.owner,
+        repo: existingAttempt.repo,
+        slug: existingAttempt.slug,
+        githubPath: existingAttempt.githubPath,
+        githubCommit: existingAttempt.githubCommit,
+        githubContentHash: existingAttempt.githubContentHash,
+        sourceContentHash: existingAttempt.sourceContentHash,
+      });
+    const existingAttemptBlocksAdmission =
+      existingAttemptIsExact &&
+      (existingAttempt.status === "queued" ||
+        existingAttempt.status === "running" ||
+        (existingAttempt.status === "succeeded" &&
+          (existingAttempt.verdict === "clean" || existingAttempt.verdict === "suspicious") &&
+          existingAttempt.publicationRolledBackAt === undefined &&
+          entry.publicVisible &&
+          entry.publishedScanAttemptId === existingAttempt._id));
+    if (existingAttemptBlocksAdmission) {
       skipped += 1;
       continue;
     }
@@ -1234,6 +1530,15 @@ async function admitScans(ctx: MutationCtx, args: AdmitScansArgs) {
           `real Test scan admission requires a fetched artifact: ${externalId}`,
         );
       }
+      const authenticatedContentHash = await computeGitHubArtifactContentHash(artifact.files);
+      if (
+        !entry.githubContentHash ||
+        authenticatedContentHash !== entry.githubContentHash.toLowerCase()
+      ) {
+        throw new ConvexError(
+          `real Test scan artifact does not match authenticated GitHub content: ${externalId}`,
+        );
+      }
     }
     // skillScanRequests embeds its validated file manifest in one document, so file count
     // does not change the six real-admission writes before the final run patch.
@@ -1245,6 +1550,13 @@ async function admitScans(ctx: MutationCtx, args: AdmitScansArgs) {
       entryId: entry._id,
       runId: run._id,
       externalId,
+      githubOwnerId: entry.githubOwnerId,
+      owner: entry.owner,
+      repo: entry.repo,
+      slug: entry.slug,
+      githubPath: entry.githubPath,
+      githubCommit: entry.githubCommit,
+      githubContentHash: entry.githubContentHash,
       sourceContentHash: entry.sourceContentHash,
       dispatchKind: args.dispatchKind,
       artifactContentHash: artifact?.artifactContentHash.toLowerCase(),
@@ -1269,6 +1581,7 @@ async function admitScans(ctx: MutationCtx, args: AdmitScansArgs) {
     await ctx.db.patch(entry._id, {
       scanStatus: "queued",
       publicVisible: false,
+      publishedScanAttemptId: undefined,
       updatedAt: now,
     });
     writesUsed += 2;
@@ -2004,7 +2317,7 @@ export const getRunReconciliationInternal = internalQuery({
         ...entry,
         resolution: {
           externalRoute: `/skills-sh/${entry.externalId}`,
-          installRef: `skills-sh:${entry.externalId}`,
+          installRef: `skills-sh/${entry.externalId}`,
           installable: false,
         },
       });
@@ -2201,7 +2514,7 @@ export const getStatusInternal = internalQuery({
         ...entry,
         resolution: {
           externalRoute: `/skills-sh/${entry.externalId}`,
-          installRef: `skills-sh:${entry.externalId}`,
+          installRef: `skills-sh/${entry.externalId}`,
           installable: false,
         },
       })),
@@ -2211,6 +2524,177 @@ export const getStatusInternal = internalQuery({
         entries: STATUS_LIMIT,
         scanAttempts: STATUS_LIMIT,
       },
+    };
+  },
+});
+
+export const getPublicEntry = query({
+  args: {
+    owner: v.string(),
+    repo: v.string(),
+    slug: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const environment = getSkillsShFixtureEnvironmentPolicy();
+    if (!environment.allowed) return null;
+    const externalId = `${args.owner.trim().toLowerCase()}/${args.repo
+      .trim()
+      .toLowerCase()}/${args.slug.trim().toLowerCase()}`;
+    const [control, entry] = await Promise.all([
+      getControlDoc(ctx),
+      ctx.db
+        .query("skillsShCatalogEntries")
+        .withIndex("by_external_id", (q) => q.eq("externalId", externalId))
+        .unique(),
+    ]);
+    if (
+      !control ||
+      control.mode !== "staging-live" ||
+      control.paused ||
+      !control.publicVisibilityEnabled ||
+      !entry?.publicVisible ||
+      (entry.scanStatus !== "clean" && entry.scanStatus !== "suspicious")
+    ) {
+      return null;
+    }
+    const attempt = entry.publishedScanAttemptId
+      ? await ctx.db.get(entry.publishedScanAttemptId)
+      : null;
+    if (
+      !attempt ||
+      attempt.status !== "succeeded" ||
+      attempt.publicationRolledBackAt !== undefined ||
+      attempt.verdict !== entry.scanStatus ||
+      !shouldPublishSkillsShCatalogEntry({
+        control,
+        entry,
+        attempt: {
+          externalId: attempt.externalId,
+          githubOwnerId: attempt.githubOwnerId ?? 0,
+          owner: attempt.owner ?? "",
+          repo: attempt.repo ?? "",
+          slug: attempt.slug ?? "",
+          githubPath: attempt.githubPath,
+          githubCommit: attempt.githubCommit,
+          githubContentHash: attempt.githubContentHash,
+          sourceContentHash: attempt.sourceContentHash,
+          dispatchKind: attempt.dispatchKind,
+          source: attempt.source,
+        },
+        verdict: attempt.verdict,
+      })
+    ) {
+      return null;
+    }
+    const install = buildSkillsShCatalogInstallResolution(entry);
+    if (!install) return null;
+    return {
+      ref: `skills-sh/${entry.externalId}`,
+      route: `/skills-sh/${entry.externalId}`,
+      displayName: entry.displayName,
+      summary:
+        entry.scanStatus === "suspicious"
+          ? "GitHub-backed skill indexed by skills.sh and flagged as suspicious by ClawHub."
+          : "GitHub-backed skill indexed by skills.sh and verified by ClawHub.",
+      owner: {
+        handle: entry.owner,
+        githubUrl: `https://github.com/${entry.owner}`,
+      },
+      repository: `${entry.owner}/${entry.repo}`,
+      githubPath: entry.githubPath,
+      githubCommit: entry.githubCommit,
+      githubContentHash: entry.githubContentHash,
+      sourceUrl: entry.sourceUrl,
+      installs: entry.installs,
+      security: {
+        verdict: entry.scanStatus,
+        source: "clawhub" as const,
+        attemptId: attempt._id,
+        scannedAt: attempt.completedAt ?? attempt.updatedAt,
+      },
+      install,
+    };
+  },
+});
+
+export const rollbackPublicationInternal = internalMutation({
+  args: {
+    externalId: v.string(),
+    attemptId: v.id("skillsShCatalogScanAttempts"),
+    actor: v.string(),
+    reason: v.string(),
+    confirm: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const environment = assertSkillsShFixtureEnvironmentAllowed();
+    if (environment.environment !== "test") {
+      throw new ConvexError("skills.sh publication rollback requires permanent Test");
+    }
+    if (args.confirm !== ROLLBACK_PUBLICATION_CONFIRM) {
+      throw new ConvexError(
+        `Pass confirm="${ROLLBACK_PUBLICATION_CONFIRM}" to roll back publication.`,
+      );
+    }
+    const entry = await ctx.db
+      .query("skillsShCatalogEntries")
+      .withIndex("by_external_id", (q) => q.eq("externalId", args.externalId.trim().toLowerCase()))
+      .unique();
+    const attempt = await ctx.db.get(args.attemptId);
+    const attemptIdentity =
+      attempt?.githubOwnerId !== undefined &&
+      attempt.owner !== undefined &&
+      attempt.repo !== undefined &&
+      attempt.slug !== undefined
+        ? {
+            externalId: attempt.externalId,
+            githubOwnerId: attempt.githubOwnerId,
+            owner: attempt.owner,
+            repo: attempt.repo,
+            slug: attempt.slug,
+            githubPath: attempt.githubPath,
+            githubCommit: attempt.githubCommit,
+            githubContentHash: attempt.githubContentHash,
+            sourceContentHash: attempt.sourceContentHash,
+          }
+        : null;
+    if (
+      !entry ||
+      !attempt ||
+      attempt.entryId !== entry._id ||
+      !attemptIdentity ||
+      !isExactSkillsShCatalogAttempt(entry, attemptIdentity) ||
+      attempt.status !== "succeeded" ||
+      attempt.dispatchKind !== "real" ||
+      attempt.source !== "skills-sh-catalog-test" ||
+      (attempt.verdict !== "clean" && attempt.verdict !== "suspicious")
+    ) {
+      throw new ConvexError("skills.sh publication rollback identity mismatch");
+    }
+    if (attempt.publicationRolledBackAt !== undefined) {
+      return {
+        externalId: entry.externalId,
+        publicVisible: entry.publicVisible,
+        alreadyRolledBack: true,
+        actor: args.actor.trim(),
+        reason: args.reason.trim(),
+      };
+    }
+    if (entry.publishedScanAttemptId !== attempt._id) {
+      throw new ConvexError("skills.sh publication rollback attempt is not currently published");
+    }
+    const now = Date.now();
+    await ctx.db.patch(attempt._id, { publicationRolledBackAt: now, updatedAt: now });
+    await ctx.db.patch(entry._id, {
+      publicVisible: false,
+      publishedScanAttemptId: undefined,
+      updatedAt: now,
+    });
+    return {
+      externalId: entry.externalId,
+      publicVisible: false,
+      alreadyRolledBack: false,
+      actor: args.actor.trim(),
+      reason: args.reason.trim(),
     };
   },
 });
@@ -2284,6 +2768,14 @@ async function sha256Hex(bytes: Uint8Array) {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+async function computeGitHubArtifactContentHash(files: StagingLiveArtifact["files"]) {
+  const manifest = [...files]
+    .sort((left, right) => left.path.localeCompare(right.path))
+    .map((file) => `${file.path}\0${file.size}\0${file.sha256.toLowerCase()}`)
+    .join("\n");
+  return await sha256Hex(new TextEncoder().encode(manifest));
+}
+
 async function validateRealScanArtifacts(
   ctx: ActionCtx,
   externalIds: string[],
@@ -2349,6 +2841,13 @@ async function insertCatalogScanAttempt(
     entryId: Id<"skillsShCatalogEntries">;
     runId: Id<"skillsShCatalogRuns">;
     externalId: string;
+    githubOwnerId: number;
+    owner: string;
+    repo: string;
+    slug: string;
+    githubPath?: string;
+    githubCommit?: string;
+    githubContentHash?: string;
     sourceContentHash: string;
     dispatchKind: "deterministic" | "real";
     artifactContentHash?: string;
@@ -2359,6 +2858,13 @@ async function insertCatalogScanAttempt(
     entryId: args.entryId,
     runId: args.runId,
     externalId: args.externalId,
+    githubOwnerId: args.githubOwnerId,
+    owner: args.owner,
+    repo: args.repo,
+    slug: args.slug,
+    ...(args.githubPath ? { githubPath: args.githubPath } : {}),
+    ...(args.githubCommit ? { githubCommit: args.githubCommit } : {}),
+    ...(args.githubContentHash ? { githubContentHash: args.githubContentHash } : {}),
     sourceContentHash: args.sourceContentHash,
     ...(args.artifactContentHash ? { artifactContentHash: args.artifactContentHash } : {}),
     source: args.dispatchKind === "real" ? "skills-sh-catalog-test" : "skills-sh-catalog-fixture",

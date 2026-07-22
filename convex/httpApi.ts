@@ -332,6 +332,7 @@ async function cliTelemetryInstallHandler(ctx: ActionCtx, request: Request) {
         userId,
         slug: args.slug,
         ownerHandle: args.ownerHandle,
+        sourceRef: args.sourceRef,
         version: args.version,
       });
     }

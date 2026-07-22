@@ -24,9 +24,13 @@ export const reportCliInstallInternal = internalMutation({
     userId: v.id("users"),
     slug: v.string(),
     ownerHandle: v.optional(v.string()),
+    sourceRef: v.optional(v.string()),
     version: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    // Unclaimed catalog installs have no native skill row yet. Keep the source
+    // identity in the request without guessing from a same-slug native skill.
+    if (args.sourceRef?.trim().toLowerCase().startsWith("skills-sh/")) return;
     await upsertUserSkillInstall(ctx, args);
   },
 });

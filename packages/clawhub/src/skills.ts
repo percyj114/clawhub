@@ -16,6 +16,7 @@ export type SkillOrigin = {
   registry: string;
   slug: string;
   ownerHandle?: string;
+  sourceRef?: string;
   installedVersion: string;
   installedAt: number;
   fingerprint?: string;
@@ -152,6 +153,16 @@ export function hashSkillFiles(files: Array<{ relPath: string; bytes: Uint8Array
   return { files: hashed, fingerprint: buildSkillFingerprint(hashed) };
 }
 
+export function buildGitHubFolderContentHash(
+  files: Array<{ path: string; sha256: string; size: number }>,
+) {
+  const payload = [...files]
+    .sort((left, right) => left.path.localeCompare(right.path))
+    .map((file) => `${file.path}\0${file.size}\0${file.sha256.toLowerCase()}`)
+    .join("\n");
+  return createHash("sha256").update(payload).digest("hex");
+}
+
 export function hashSkillZip(zipBytes: Uint8Array) {
   const entries = unzipSync(zipBytes);
   const hashed = Object.entries(entries)
@@ -205,6 +216,7 @@ export async function readSkillOrigin(skillFolder: string): Promise<SkillOrigin 
         registry: parsed.registry,
         slug: parsed.slug,
         ownerHandle: typeof parsed.ownerHandle === "string" ? parsed.ownerHandle : undefined,
+        sourceRef: typeof parsed.sourceRef === "string" ? parsed.sourceRef : undefined,
         installedVersion: parsed.installedVersion,
         installedAt: parsed.installedAt,
         fingerprint: typeof parsed.fingerprint === "string" ? parsed.fingerprint : undefined,

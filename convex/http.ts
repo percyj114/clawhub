@@ -60,6 +60,7 @@ import {
   whoamiV1Http,
   contentRightsV1Http,
   skillsShCatalogTestV1Http,
+  skillsShCatalogPublicV1Http,
 } from "./httpApiV1";
 import { preflightHandler } from "./httpPreflight";
 import { installRateLimitedRoutes } from "./lib/httpRouteRateLimit";
@@ -329,6 +330,12 @@ http.route({
   path: "/api/v1/operator/skills-sh/catalog-test",
   method: "GET",
   handler: skillsShCatalogTestV1Http,
+});
+
+http.route({
+  pathPrefix: "/api/v1/skills-sh/",
+  method: "GET",
+  handler: skillsShCatalogPublicV1Http,
 });
 
 http.route({

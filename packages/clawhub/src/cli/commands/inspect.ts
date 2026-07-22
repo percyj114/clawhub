@@ -3,6 +3,7 @@ import {
   ApiRoutes,
   PLATFORM_SKILL_LICENSE,
   PLATFORM_SKILL_LICENSE_SUMMARY,
+  ApiV1SkillsShCatalogEntrySchema,
   ApiV1SkillModerationResponseSchema,
   ApiV1SkillResponseSchema,
   ApiV1SkillVerifyResponseSchema,
@@ -261,7 +262,14 @@ export async function cmdVerifySkill(
   slug: string,
   options: VerifySkillOptions = {},
 ) {
-  const requested = parseSkillRef(slug);
+  if (slug.trim().toLowerCase().startsWith("skills-sh:")) {
+    fail("Invalid skills.sh ref: use skills-sh/owner/repo/slug");
+  }
+  const skillsShRef = parseSkillsShCatalogRef(slug);
+  if (skillsShRef && (options.version || options.tag || options.card)) {
+    fail("skills.sh verification does not support --version, --tag, or --card");
+  }
+  const requested = skillsShRef ? { slug: skillsShRef.slug } : parseSkillRef(slug);
   const trimmed = requested.slug;
   if (!trimmed) fail("Skill required");
   if (options.version && options.tag) fail("Use either --version or --tag");
@@ -270,6 +278,23 @@ export async function cmdVerifySkill(
   const registry = await getRegistry(opts, { cache: true });
   const spinner = createCrabLoader("Fetching skill verification");
   try {
+    if (skillsShRef) {
+      const result = await apiRequest(
+        registry,
+        {
+          method: "GET",
+          path: `${ApiRoutes.skillsSh}/${encodeURIComponent(
+            skillsShRef.owner,
+          )}/${encodeURIComponent(skillsShRef.repo)}/${encodeURIComponent(skillsShRef.slug)}`,
+          token,
+        },
+        ApiV1SkillsShCatalogEntrySchema,
+      );
+      spinner.stop();
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
     const url = registryUrl(`${ApiRoutes.skills}/${encodeURIComponent(trimmed)}/verify`, registry);
     if (requested.ownerHandle) url.searchParams.set("ownerHandle", requested.ownerHandle);
     if (options.version) {
@@ -304,6 +329,24 @@ export async function cmdVerifySkill(
     spinner.fail(formatError(error));
     throw error;
   }
+}
+
+function parseSkillsShCatalogRef(raw: string) {
+  const value = raw.trim().toLowerCase();
+  if (!value.startsWith("skills-sh/")) return null;
+  const segments = value.split("/");
+  if (
+    segments.length !== 4 ||
+    segments[0] !== "skills-sh" ||
+    segments.slice(1).some((segment) => !segment || segment.includes(":") || segment.includes(".."))
+  ) {
+    fail("Invalid skills.sh ref: use skills-sh/owner/repo/slug");
+  }
+  return {
+    owner: segments[1]!,
+    repo: segments[2]!,
+    slug: segments[3]!,
+  };
 }
 
 function parseSkillRef(raw: string) {

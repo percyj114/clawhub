@@ -22,6 +22,10 @@ import {
   serializedSkillScanRequestFilesBytes,
 } from "./lib/skillScanRequestFiles";
 import { getSkillsShFixtureEnvironmentPolicy } from "./lib/skillsShCatalogEnvironment";
+import {
+  isExactSkillsShCatalogAttempt,
+  shouldPublishSkillsShCatalogEntry,
+} from "./lib/skillsShCatalogPublication";
 import { redactWorkerPublicText } from "./lib/workerTextRedaction";
 import { requestSecurityScanDispatch } from "./securityScanDispatch";
 
@@ -1994,7 +1998,12 @@ export const completeCatalogSkillScanJobInternal = internalMutation({
           (request.lastError === "Catalog scan analysis failed" &&
             job.lastError === "Catalog scan analysis failed"))
       ) {
-        return { ok: true as const, applied: true as const, publicVisible: false as const };
+        const terminalEntry = await ctx.db.get(attempt.entryId);
+        return {
+          ok: true as const,
+          applied: true as const,
+          publicVisible: terminalEntry?.publicVisible === true,
+        };
       }
       if (
         attempt.status === "canceled" &&
@@ -2019,9 +2028,13 @@ export const completeCatalogSkillScanJobInternal = internalMutation({
       throw new ConvexError("Catalog scan job lease mismatch");
     }
 
-    const [run, entry] = await Promise.all([
+    const [run, entry, control] = await Promise.all([
       ctx.db.get(attempt.runId),
       ctx.db.get(attempt.entryId),
+      ctx.db
+        .query("skillsShCatalogControls")
+        .withIndex("by_key", (q) => q.eq("key", "global"))
+        .unique(),
     ]);
     const now = Date.now();
     const terminalizeWithoutResult = async (reason: "run-canceled" | "stale-attempt") => {
@@ -2091,11 +2104,38 @@ export const completeCatalogSkillScanJobInternal = internalMutation({
     if (run?.status === "canceling" || run?.status === "canceled") {
       return await terminalizeWithoutResult("run-canceled");
     }
-    if (!entry || entry.sourceContentHash !== attempt.sourceContentHash) {
+    const attemptIdentity =
+      attempt.githubOwnerId !== undefined &&
+      attempt.owner !== undefined &&
+      attempt.repo !== undefined &&
+      attempt.slug !== undefined
+        ? {
+            externalId: attempt.externalId,
+            githubOwnerId: attempt.githubOwnerId,
+            owner: attempt.owner,
+            repo: attempt.repo,
+            slug: attempt.slug,
+            githubPath: attempt.githubPath,
+            githubCommit: attempt.githubCommit,
+            githubContentHash: attempt.githubContentHash,
+            sourceContentHash: attempt.sourceContentHash,
+            dispatchKind: attempt.dispatchKind,
+            source: attempt.source,
+          }
+        : null;
+    if (!entry || !attemptIdentity || !isExactSkillsShCatalogAttempt(entry, attemptIdentity)) {
       return await terminalizeWithoutResult("stale-attempt");
     }
 
     const scanFailed = args.verdict === "failed";
+    const publicVisible =
+      attempt.publicationRolledBackAt === undefined &&
+      shouldPublishSkillsShCatalogEntry({
+        control,
+        entry,
+        attempt: attemptIdentity,
+        verdict: args.verdict,
+      });
     await ctx.db.patch(attempt._id, {
       status: scanFailed ? "failed" : "succeeded",
       verdict: args.verdict,
@@ -2104,7 +2144,8 @@ export const completeCatalogSkillScanJobInternal = internalMutation({
     });
     await ctx.db.patch(entry._id, {
       scanStatus: args.verdict,
-      publicVisible: false,
+      publicVisible,
+      publishedScanAttemptId: publicVisible ? attempt._id : undefined,
       updatedAt: now,
     });
     await ctx.db.patch(request._id, {
@@ -2142,7 +2183,7 @@ export const completeCatalogSkillScanJobInternal = internalMutation({
         updatedAt: now,
       });
     }
-    return { ok: true as const, applied: true as const, publicVisible: false as const };
+    return { ok: true as const, applied: true as const, publicVisible };
   },
 });
 

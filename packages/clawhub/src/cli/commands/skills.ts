@@ -19,6 +19,7 @@ import {
   type SkillReportStatus,
 } from "../../schema/index.js";
 import {
+  buildGitHubFolderContentHash,
   extractGitHubZipPathToDir,
   extractZipToDir,
   hashSkillFiles,
@@ -68,6 +69,11 @@ type SkillReportTriageOptions = {
 type SkillRef = {
   slug: string;
   ownerHandle?: string;
+  sourceRef?: string;
+  skillsSh?: {
+    owner: string;
+    repo: string;
+  };
 };
 
 function normalizeOwnerHandle(raw: string | null | undefined) {
@@ -104,6 +110,21 @@ function normalizeSkillSlugForRemote(raw: unknown) {
 function parseSkillRefOrFail(raw: string): SkillRef {
   const ref = raw.trim();
   if (!ref) fail("Slug required");
+  if (ref.toLowerCase().startsWith("skills-sh:")) {
+    fail("Invalid skills.sh ref: use skills-sh/owner/repo/slug");
+  }
+  if (ref.toLowerCase().startsWith("skills-sh/")) {
+    const segments = ref.split("/");
+    if (segments.length !== 4 || segments[0]?.toLowerCase() !== "skills-sh") {
+      fail("Invalid skills.sh ref: use skills-sh/owner/repo/slug");
+    }
+    const [, rawOwner, rawRepo, rawSlug] = segments;
+    const owner = normalizeSkillsShSegment(rawOwner, ref);
+    const repo = normalizeSkillsShSegment(rawRepo, ref);
+    const slug = normalizeSkillsShSegment(rawSlug, ref);
+    const sourceRef = `skills-sh/${owner}/${repo}/${slug}`;
+    return { slug, sourceRef, skillsSh: { owner, repo } };
+  }
   const slashIndex = ref.indexOf("/");
   if (slashIndex < 0) {
     return { slug: normalizeSkillSlugOrFail(ref) };
@@ -121,19 +142,43 @@ function parseSkillRefOrFail(raw: string): SkillRef {
   return { slug, ownerHandle };
 }
 
+function normalizeSkillsShSegment(raw: string | undefined, ref: string) {
+  const segment = raw?.trim().toLowerCase() ?? "";
+  if (
+    !segment ||
+    segment.includes("\\") ||
+    segment.includes(":") ||
+    segment.includes("..") ||
+    !isSafeSkillSlug(segment)
+  ) {
+    fail(`Invalid skills.sh ref: ${ref}`);
+  }
+  return segment;
+}
+
 function isSafeSkillSlug(slug: string) {
   return Boolean(slug) && !slug.includes("/") && !slug.includes("\\") && !slug.includes("..");
 }
 
 function skillIdentity(ref: SkillRef) {
+  if (ref.sourceRef) return ref.sourceRef;
   return ref.ownerHandle ? `@${ref.ownerHandle}/${ref.slug}` : ref.slug;
 }
 
 function skillTarget(dir: string, ref: SkillRef) {
+  if (ref.sourceRef) return join(dir, ref.slug);
   return ref.ownerHandle ? join(dir, `@${ref.ownerHandle}`, ref.slug) : join(dir, ref.slug);
 }
 
 function isSafeSkillIdentity(value: string) {
+  if (value.toLowerCase().startsWith("skills-sh/")) {
+    const segments = value.split("/");
+    return (
+      segments.length === 4 &&
+      segments[0]?.toLowerCase() === "skills-sh" &&
+      segments.slice(1).every((segment) => isSafeSkillSlug(segment) && !segment.includes(":"))
+    );
+  }
   const slashIndex = value.indexOf("/");
   if (slashIndex < 0) return isSafeSkillSlug(value);
   if (value.indexOf("/", slashIndex + 1) >= 0) return false;
@@ -143,11 +188,16 @@ function isSafeSkillIdentity(value: string) {
 }
 
 function findExistingLockKey(
-  lock: { skills: Record<string, { ownerHandle?: string }> },
+  lock: { skills: Record<string, { ownerHandle?: string; sourceRef?: string }> },
   ref: SkillRef,
 ) {
   const key = skillIdentity(ref);
   if (lock.skills[key]) return key;
+  if (ref.sourceRef) {
+    const legacyEntry = lock.skills[ref.slug];
+    if (legacyEntry?.sourceRef === ref.sourceRef) return ref.slug;
+    return key;
+  }
   if (ref.ownerHandle) {
     const legacyEntry = lock.skills[ref.slug];
     if (legacyEntry && normalizeOwnerHandle(legacyEntry.ownerHandle) === ref.ownerHandle) {
@@ -296,6 +346,9 @@ export async function cmdInstall(
 ) {
   const requested = parseSkillRefOrFail(slug);
   const trimmed = requested.slug;
+  if (requested.sourceRef && versionFlag) {
+    fail("--version is not supported for skills.sh catalog references");
+  }
 
   const token = await getOptionalAuthToken();
 
@@ -306,6 +359,18 @@ export async function cmdInstall(
   const localRef = lockKey === skillIdentity(requested) ? requested : parseSkillRefOrFail(lockKey);
   const target = skillTarget(opts.dir, localRef);
   const targetExists = await fileExists(target);
+  const existingOrigin = requested.sourceRef && targetExists ? await readSkillOrigin(target) : null;
+  if (requested.sourceRef) {
+    assertSkillsShTargetOwnership({
+      dir: opts.dir,
+      lock,
+      lockKey,
+      requested,
+      target,
+      targetExists,
+      existingOrigin,
+    });
+  }
   if (!force && targetExists) {
     fail(`Already installed: ${target} (use --force)`);
   }
@@ -319,6 +384,51 @@ export async function cmdInstall(
 
   const spinner = createCrabLoader(`Resolving ${trimmed}`);
   try {
+    if (requested.sourceRef && requested.skillsSh) {
+      const resolvedInstall = await resolveSkillsShCatalogInstall(registry, requested, token);
+      spinner.text = `Downloading ${trimmed} ${formatGitHubVersion(resolvedInstall.github.commit)}`;
+      await installSkillWithOptionalStaging(target, targetExists, (installTarget) =>
+        installGitHubSkill(registry, resolvedInstall, installTarget, {
+          expectedContentHash: resolvedInstall.github.contentHash,
+        }),
+      );
+      const installedFiles = await listSkillFiles(target);
+      const installedFingerprint =
+        installedFiles.length > 0 ? hashSkillFiles(installedFiles).fingerprint : undefined;
+      const installedAt = Date.now();
+      await writeSkillOrigin(target, {
+        version: 1,
+        registry,
+        slug: trimmed,
+        sourceRef: requested.sourceRef,
+        installedVersion: resolvedInstall.github.commit,
+        installedAt,
+        fingerprint: installedFingerprint,
+      });
+      lock.skills[lockKey] = {
+        ...withPinnedMetadata(resolvedInstall.github.commit, installedAt, existingEntry),
+        sourceRef: requested.sourceRef,
+      };
+      await writeLockfile(opts.workdir, lock);
+      await reportInstalledSkillsTelemetryIfEnabled({
+        token,
+        registry,
+        slug: trimmed,
+        sourceRef: requested.sourceRef,
+        version: resolvedInstall.github.commit,
+      });
+      spinner.succeed(
+        `${styleText("Installed", "brand")} ${styleText(
+          requested.sourceRef,
+          "strong",
+        )} ${styleText(formatGitHubVersion(resolvedInstall.github.commit), "muted")} -> ${styleText(
+          target,
+          "muted",
+        )}`,
+      );
+      return;
+    }
+
     // Fetch skill metadata including moderation status
     const skillMeta = await apiRequest(
       registry,
@@ -456,6 +566,9 @@ export async function cmdUpdate(
   if (slug && all) fail("Use either <skill> or --all");
   if (options.version && !slug) fail("--version requires a single <skill>");
   if (options.version && !semver.valid(options.version)) fail("--version must be valid semver");
+  if (requestedRef?.sourceRef && options.version) {
+    fail("--version is not supported for skills.sh catalog references");
+  }
   const lock = await readLockfile(opts.workdir);
   const requestedLockKey = requestedRef ? findExistingLockKey(lock, requestedRef) : undefined;
   if (requestedLockKey && isPinnedSkillEntry(lock.skills[requestedLockKey])) {
@@ -500,13 +613,110 @@ export async function cmdUpdate(
   };
 
   for (const entry of slugs) {
-    const entryRef = parseSkillRefOrFail(entry);
     const entryLock = lock.skills[entry];
+    const entryRef = parseSkillRefOrFail(entryLock?.sourceRef ?? entry);
     const spinner = createCrabLoader(`Checking ${entry}`);
     try {
       const target = skillTarget(opts.dir, entryRef);
       const exists = await fileExists(target);
       const existingOrigin = exists ? await readSkillOrigin(target) : null;
+      if (entryRef.sourceRef && entryRef.skillsSh) {
+        assertSkillsShTargetOwnership({
+          dir: opts.dir,
+          lock,
+          lockKey: entry,
+          requested: entryRef,
+          target,
+          targetExists: exists,
+          existingOrigin,
+        });
+        const filesOnDisk = exists ? await listSkillFiles(target) : [];
+        const localFingerprint =
+          filesOnDisk.length > 0 ? hashSkillFiles(filesOnDisk).fingerprint : null;
+        const latestInstall = await resolveSkillsShCatalogInstall(registry, entryRef, token);
+        const targetVersion = latestInstall.github.commit;
+        const originFingerprint =
+          existingOrigin?.sourceRef === entryRef.sourceRef ? existingOrigin.fingerprint : undefined;
+        const hasLocalChanges = Boolean(
+          exists &&
+          localFingerprint &&
+          (!originFingerprint || originFingerprint !== localFingerprint),
+        );
+        const matched =
+          existingOrigin?.sourceRef === entryRef.sourceRef &&
+          originFingerprint &&
+          localFingerprint &&
+          originFingerprint === localFingerprint
+            ? existingOrigin.installedVersion
+            : null;
+
+        if (hasLocalChanges && !options.force) {
+          spinner.stop();
+          if (!allowPrompt) {
+            console.log(`${entry}: local changes (no match). Use --force to overwrite.`);
+            continue;
+          }
+          const confirm = await promptConfirm(
+            `${entry}: local changes (no match). Overwrite with ${formatGitHubVersion(
+              targetVersion,
+            )}?`,
+          );
+          if (!confirm) {
+            console.log(`${entry}: skipped`);
+            continue;
+          }
+          spinner.start(`Updating ${entry} -> ${formatGitHubVersion(targetVersion)}`);
+        }
+
+        if (matched === targetVersion && !options.force && !hasLocalChanges) {
+          if (
+            lock.skills[entry]?.version !== targetVersion ||
+            lock.skills[entry]?.sourceRef !== entryRef.sourceRef
+          ) {
+            lock.skills[entry] = {
+              ...withPinnedMetadata(
+                targetVersion,
+                lock.skills[entry]?.installedAt ?? Date.now(),
+                lock.skills[entry],
+              ),
+              sourceRef: entryRef.sourceRef,
+            };
+            markLockDirty();
+            await flushLockfile();
+          }
+          spinner.succeed(`${entry}: up to date (${formatGitHubVersion(targetVersion)})`);
+          continue;
+        }
+
+        spinner.text = `Updating ${entry} -> ${formatGitHubVersion(targetVersion)}`;
+        await installSkillWithOptionalStaging(target, exists, (installTarget) =>
+          installGitHubSkill(registry, latestInstall, installTarget, {
+            expectedContentHash: latestInstall.github.contentHash,
+          }),
+        );
+        const installedFiles = await listSkillFiles(target);
+        const installedFingerprint =
+          installedFiles.length > 0 ? hashSkillFiles(installedFiles).fingerprint : undefined;
+        const installedAt = existingOrigin?.installedAt ?? Date.now();
+        await writeSkillOrigin(target, {
+          version: 1,
+          registry: existingOrigin?.registry ?? registry,
+          slug: entryRef.slug,
+          sourceRef: entryRef.sourceRef,
+          installedVersion: targetVersion,
+          installedAt,
+          fingerprint: installedFingerprint,
+        });
+        lock.skills[entry] = {
+          ...withPinnedMetadata(targetVersion, installedAt, lock.skills[entry]),
+          sourceRef: entryRef.sourceRef,
+        };
+        markLockDirty();
+        await flushLockfile();
+        spinner.succeed(`${entry}: updated -> ${formatGitHubVersion(targetVersion)}`);
+        continue;
+      }
+
       const requestedOwnerHandle = normalizeOwnerHandle(
         requestedRef?.ownerHandle ??
           entryRef.ownerHandle ??
@@ -812,7 +1022,13 @@ export async function cmdUpdate(
 export async function cmdList(opts: GlobalOpts) {
   const lock = await readLockfile(opts.workdir);
   const entries = Object.entries(lock.skills);
-  const manualSkills = await listManualSkills(opts.dir, new Set(Object.keys(lock.skills)));
+  const trackedTargets = new Set(
+    Object.keys(lock.skills).map((entry) => {
+      const ref = parseSkillRefOrFail(entry);
+      return ref.sourceRef ? ref.slug : entry;
+    }),
+  );
+  const manualSkills = await listManualSkills(opts.dir, trackedTargets);
   if (entries.length === 0 && manualSkills.length === 0) {
     console.log("No installed skills.");
     return;
@@ -1215,15 +1431,78 @@ async function resolveLatestSkillInstall(
   );
 }
 
+async function resolveSkillsShCatalogInstall(registry: string, ref: SkillRef, token?: string) {
+  if (!ref.sourceRef || !ref.skillsSh) {
+    fail("Invalid skills.sh ref: use skills-sh/owner/repo/slug");
+  }
+  const path = `${ApiRoutes.skillsSh}/${encodeURIComponent(
+    ref.skillsSh.owner,
+  )}/${encodeURIComponent(ref.skillsSh.repo)}/${encodeURIComponent(ref.slug)}/install`;
+  const resolution = await apiRequest(
+    registry,
+    { method: "GET", path, token },
+    ApiV1SkillInstallResolveResponseSchema,
+  );
+  if (!resolution.ok) fail(resolution.message);
+  if (resolution.installKind !== "github") {
+    fail("skills.sh catalog resolver did not return a GitHub install");
+  }
+  return resolution;
+}
+
 async function installGitHubSkill(
   registry: string,
   resolution: GitHubInstallResolution,
   target: string,
+  options: { expectedContentHash?: string } = {},
 ) {
   const zip = await fetchBinary(registry, {
     url: gitHubZipUrl(resolution.github.repo, resolution.github.commit),
   });
   await extractGitHubZipPathToDir(zip, target, resolution.github.path);
+  if (options.expectedContentHash) {
+    const installed = hashSkillFiles(await listSkillFiles(target));
+    const actualContentHash = buildGitHubFolderContentHash(installed.files);
+    if (actualContentHash !== options.expectedContentHash.toLowerCase()) {
+      await rm(target, { recursive: true, force: true });
+      fail("Downloaded skills.sh folder hash does not match the approved ClawHub resolver");
+    }
+  }
+}
+
+function assertSkillsShTargetOwnership(args: {
+  dir: string;
+  lock: { skills: Record<string, { sourceRef?: string }> };
+  lockKey: string;
+  requested: SkillRef;
+  target: string;
+  targetExists: boolean;
+  existingOrigin: Awaited<ReturnType<typeof readSkillOrigin>>;
+}) {
+  if (!args.requested.sourceRef) return;
+  for (const [key, entry] of Object.entries(args.lock.skills)) {
+    if (key === args.lockKey) continue;
+    const identity = entry.sourceRef ?? key;
+    if (!isSafeSkillIdentity(identity)) continue;
+    const ref = parseSkillRefOrFail(identity);
+    if (skillTarget(args.dir, ref) === args.target) {
+      fail(`Install target collision: ${args.target} is owned by ${identity}`);
+    }
+  }
+  if (!args.targetExists) return;
+  const lockedSource = args.lock.skills[args.lockKey]?.sourceRef;
+  if (
+    args.existingOrigin?.sourceRef &&
+    args.existingOrigin.sourceRef !== args.requested.sourceRef
+  ) {
+    fail(`Install target collision: ${args.target} is owned by ${args.existingOrigin.sourceRef}`);
+  }
+  if (!args.existingOrigin?.sourceRef && lockedSource !== args.requested.sourceRef) {
+    const owner = args.existingOrigin?.ownerHandle
+      ? `@${args.existingOrigin.ownerHandle}/${args.existingOrigin.slug}`
+      : (args.existingOrigin?.slug ?? "another local skill");
+    fail(`Install target collision: ${args.target} is owned by ${owner}`);
+  }
 }
 
 async function installSkillWithOptionalStaging(

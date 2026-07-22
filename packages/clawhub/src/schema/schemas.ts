@@ -24,6 +24,7 @@ export const LockfileSchema = type({
       version: "string|null",
       installedAt: "number",
       ownerHandle: "string?",
+      sourceRef: "string?",
       pinned: "boolean?",
       pinReason: "string?",
     },
@@ -163,10 +164,47 @@ export const ApiV1SkillInstallResolveResponseSchema = type({
 export type ApiV1SkillInstallResolveResponse =
   (typeof ApiV1SkillInstallResolveResponseSchema)[inferred];
 
+export const ApiV1SkillsShCatalogEntrySchema = type({
+  ref: "string",
+  route: "string",
+  displayName: "string",
+  summary: "string",
+  owner: {
+    handle: "string",
+    githubUrl: "string",
+  },
+  repository: "string",
+  githubPath: "string",
+  githubCommit: "string",
+  githubContentHash: "string",
+  sourceUrl: "string",
+  installs: "number",
+  security: {
+    verdict: '"clean"|"suspicious"',
+    source: '"clawhub"',
+    attemptId: "string",
+    scannedAt: "number",
+  },
+  install: {
+    ok: "true",
+    slug: "string",
+    installKind: '"github"',
+    github: {
+      repo: "string",
+      path: "string",
+      commit: "string",
+      contentHash: "string",
+      sourceUrl: "string",
+    },
+  },
+});
+export type ApiV1SkillsShCatalogEntry = (typeof ApiV1SkillsShCatalogEntrySchema)[inferred];
+
 export const CliTelemetryInstallRequestSchema = type({
   event: '"install"',
   slug: "string",
   ownerHandle: "string?",
+  sourceRef: "string?",
   version: "string?",
   // Deprecated compatibility fields accepted and ignored by the backend.
   rootId: "string?",

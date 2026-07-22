@@ -30,8 +30,11 @@ vi.mock("./shared", async (importOriginal) => {
 const { requireAdminOrResponse, requireApiTokenUserOrResponse } = await import("./shared");
 const { buildGitHubApiHeaders } = await import("../lib/githubAuth");
 const { computeGitHubSkillFolderContentHash } = await import("../lib/githubSkillSync");
-const { skillsShCatalogTestV1Handler, verifyControlledCanaryGitHubSource } =
-  await import("./skillsShCatalogV1");
+const {
+  skillsShCatalogPublicV1Handler,
+  skillsShCatalogTestV1Handler,
+  verifyControlledCanaryGitHubSource,
+} = await import("./skillsShCatalogV1");
 
 function sha256(value: string) {
   return createHash("sha256").update(value).digest("hex");
@@ -564,5 +567,203 @@ describe("skills.sh catalog Test HTTP API", () => {
       },
     });
     expect(JSON.stringify(runMutation.mock.calls[0]?.[1])).not.toContain("client-controlled");
+  });
+
+  it.each([
+    {
+      operation: "start-canary-scan",
+      input: { reason: "scan the exact canary" },
+      expected: {
+        actor: "catalog-operator",
+        reason: "scan the exact canary",
+      },
+    },
+    {
+      operation: "set-publication",
+      input: {
+        enabled: true,
+        reason: "enable exact-version publication",
+        confirm: "set-skills-sh-test-publication",
+      },
+      expected: {
+        enabled: true,
+        actor: "catalog-operator",
+        reason: "enable exact-version publication",
+        confirm: "set-skills-sh-test-publication",
+      },
+    },
+    {
+      operation: "set-pause",
+      input: {
+        paused: true,
+        reason: "pause catalog-only work",
+        confirm: "set-skills-sh-test-pause",
+      },
+      expected: {
+        paused: true,
+        actor: "catalog-operator",
+        reason: "pause catalog-only work",
+        confirm: "set-skills-sh-test-pause",
+      },
+    },
+    {
+      operation: "rollback-publication",
+      input: {
+        externalId: "patrick-erichsen/skills/html",
+        attemptId: "skillsShCatalogScanAttempts:canary",
+        reason: "hide the exact published attempt",
+        confirm: "rollback-skills-sh-test-publication",
+      },
+      expected: {
+        externalId: "patrick-erichsen/skills/html",
+        attemptId: "skillsShCatalogScanAttempts:canary",
+        actor: "catalog-operator",
+        reason: "hide the exact published attempt",
+        confirm: "rollback-skills-sh-test-publication",
+      },
+    },
+  ])("forwards the $operation operator command", async ({ operation, input, expected }) => {
+    const runMutation = vi.fn(async (_ref: unknown, _args: unknown) => ({ ok: true }));
+    const ctx = {
+      runQuery: vi.fn(async () => ({
+        environment: "test",
+        deploymentName: "academic-chihuahua-392",
+        buildSha: "test-sha",
+        control: {},
+      })),
+      runMutation,
+    } as never;
+    const request = new Request("https://academic-chihuahua-392.convex.site/api/v1/ops", {
+      method: "POST",
+      body: JSON.stringify({ operation, ...input }),
+    });
+
+    const response = await skillsShCatalogTestV1Handler(ctx, request);
+
+    expect(response.status).toBe(200);
+    expect(runMutation).toHaveBeenCalledOnce();
+    expect(runMutation.mock.calls[0]?.[1]).toEqual(expected);
+  });
+
+  it.each([
+    { operation: "set-publication", field: "enabled", value: undefined },
+    { operation: "set-publication", field: "enabled", value: "true" },
+    { operation: "set-publication", field: "enabled", value: null },
+    { operation: "set-pause", field: "paused", value: undefined },
+    { operation: "set-pause", field: "paused", value: "false" },
+    { operation: "set-pause", field: "paused", value: 0 },
+  ])("rejects malformed $operation $field controls", async ({ operation, field, value }) => {
+    const runMutation = vi.fn(async (_ref: unknown, _args: unknown) => ({ ok: true }));
+    const ctx = {
+      runQuery: vi.fn(async () => ({
+        environment: "test",
+        deploymentName: "academic-chihuahua-392",
+        buildSha: "test-sha",
+        control: {},
+      })),
+      runMutation,
+    } as never;
+    const request = new Request("https://academic-chihuahua-392.convex.site/api/v1/ops", {
+      method: "POST",
+      body: JSON.stringify({
+        operation,
+        ...(value === undefined ? {} : { [field]: value }),
+        reason: "exercise strict operator input validation",
+        confirm:
+          operation === "set-publication"
+            ? "set-skills-sh-test-publication"
+            : "set-skills-sh-test-pause",
+      }),
+    });
+
+    const response = await skillsShCatalogTestV1Handler(ctx, request);
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe(`${field} is required`);
+    expect(runMutation).not.toHaveBeenCalled();
+  });
+});
+
+describe("skills.sh public HTTP API", () => {
+  const publicEntry = {
+    ref: "skills-sh/patrick-erichsen/skills/html",
+    route: "/skills-sh/patrick-erichsen/skills/html",
+    displayName: "HTML Artifact Chooser",
+    security: {
+      verdict: "clean",
+      source: "clawhub",
+      attemptId: "skillsShCatalogScanAttempts:canary",
+    },
+    install: {
+      ok: true,
+      slug: "skills-sh/patrick-erichsen/skills/html",
+      installKind: "github",
+      github: {
+        repo: "patrick-erichsen/skills",
+        path: "skills/html",
+        commit: "050daba89f6b6636470add5cb300aac46a412cf8",
+        contentHash: "a47adb2c1ac33c088f664b5187971b63d2b958a7b9f01516d26005ca941a108f",
+        sourceUrl:
+          "https://github.com/patrick-erichsen/skills/tree/050daba89f6b6636470add5cb300aac46a412cf8/skills/html",
+      },
+    },
+  };
+
+  it.each([
+    {
+      suffix: "",
+      expected: publicEntry,
+    },
+    {
+      suffix: "/install",
+      expected: publicEntry.install,
+    },
+  ])("serves an approved slash route$suffix", async ({ suffix, expected }) => {
+    const runQuery = vi.fn(async () => publicEntry);
+    const ctx = { runQuery } as never;
+    const response = await skillsShCatalogPublicV1Handler(
+      ctx,
+      new Request(
+        `https://academic-chihuahua-392.convex.site/api/v1/skills-sh/patrick-erichsen/skills/html${suffix}`,
+      ),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(expected);
+    expect(runQuery).toHaveBeenCalledWith(expect.anything(), {
+      owner: "patrick-erichsen",
+      repo: "skills",
+      slug: "html",
+    });
+  });
+
+  it.each([
+    "/api/v1/skills-sh:patrick-erichsen/skills/html/install",
+    "/api/v1/skills-sh/patrick-erichsen/skills/html/extra",
+    "/api/v1/skills-sh/patrick-erichsen/skills%3Ahtml/install",
+    "/api/v1/skills-sh/patrick-erichsen/%/html/install",
+  ])("rejects malformed or colon-form references at %s", async (path) => {
+    const runQuery = vi.fn();
+    const ctx = { runQuery } as never;
+    const response = await skillsShCatalogPublicV1Handler(
+      ctx,
+      new Request(`https://academic-chihuahua-392.convex.site${path}`),
+    );
+
+    expect(response.status).toBe(404);
+    expect(runQuery).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 while the exact entry is not public", async () => {
+    const ctx = { runQuery: vi.fn(async () => null) } as never;
+    const response = await skillsShCatalogPublicV1Handler(
+      ctx,
+      new Request(
+        "https://academic-chihuahua-392.convex.site/api/v1/skills-sh/patrick-erichsen/skills/html/install",
+      ),
+    );
+
+    expect(response.status).toBe(404);
+    expect(await response.text()).toBe("Skill not found");
   });
 });

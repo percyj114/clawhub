@@ -21,6 +21,7 @@ export declare const LockfileSchema: import("arktype/internal/variants/object.ts
             version: string | null;
             installedAt: number;
             ownerHandle?: string | undefined;
+            sourceRef?: string | undefined;
             pinned?: boolean | undefined;
             pinReason?: string | undefined;
         };
@@ -160,10 +161,46 @@ export declare const ApiV1SkillInstallResolveResponseSchema: import("arktype/int
     status: number;
 }, {}>;
 export type ApiV1SkillInstallResolveResponse = (typeof ApiV1SkillInstallResolveResponseSchema)[inferred];
+export declare const ApiV1SkillsShCatalogEntrySchema: import("arktype/internal/variants/object.ts").ObjectType<{
+    ref: string;
+    route: string;
+    displayName: string;
+    summary: string;
+    owner: {
+        handle: string;
+        githubUrl: string;
+    };
+    repository: string;
+    githubPath: string;
+    githubCommit: string;
+    githubContentHash: string;
+    sourceUrl: string;
+    installs: number;
+    security: {
+        verdict: "clean" | "suspicious";
+        source: "clawhub";
+        attemptId: string;
+        scannedAt: number;
+    };
+    install: {
+        ok: true;
+        slug: string;
+        installKind: "github";
+        github: {
+            repo: string;
+            path: string;
+            commit: string;
+            contentHash: string;
+            sourceUrl: string;
+        };
+    };
+}, {}>;
+export type ApiV1SkillsShCatalogEntry = (typeof ApiV1SkillsShCatalogEntrySchema)[inferred];
 export declare const CliTelemetryInstallRequestSchema: import("arktype/internal/variants/object.ts").ObjectType<{
     event: "install";
     slug: string;
     ownerHandle?: string | undefined;
+    sourceRef?: string | undefined;
     version?: string | undefined;
     rootId?: string | undefined;
     rootLabel?: string | undefined;

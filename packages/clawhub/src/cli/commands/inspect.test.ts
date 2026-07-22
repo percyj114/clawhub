@@ -360,6 +360,57 @@ describe("cmdInspect", () => {
 });
 
 describe("cmdVerifySkill", () => {
+  it("prints skills.sh catalog security evidence from the slash route", async () => {
+    const sourceRef = "skills-sh/patrick-erichsen/skills/html";
+    const payload = {
+      ref: sourceRef,
+      route: "/skills-sh/patrick-erichsen/skills/html",
+      displayName: "HTML Artifact Chooser",
+      summary: "GitHub-backed skill indexed by skills.sh and verified by ClawHub.",
+      owner: {
+        handle: "patrick-erichsen",
+        githubUrl: "https://github.com/patrick-erichsen",
+      },
+      repository: "patrick-erichsen/skills",
+      githubPath: "skills/html",
+      githubCommit: "a".repeat(40),
+      githubContentHash: "b".repeat(64),
+      sourceUrl: "https://www.skills.sh/patrick-erichsen/skills/html",
+      installs: 0,
+      security: {
+        verdict: "clean",
+        source: "clawhub",
+        attemptId: "skillsShCatalogScanAttempts:canary",
+        scannedAt: 123,
+      },
+      install: {
+        ok: true,
+        slug: sourceRef,
+        installKind: "github",
+        github: {
+          repo: "patrick-erichsen/skills",
+          path: "skills/html",
+          commit: "a".repeat(40),
+          contentHash: "b".repeat(64),
+          sourceUrl: `https://github.com/patrick-erichsen/skills/tree/${"a".repeat(40)}/skills/html`,
+        },
+      },
+    };
+    httpMocks.apiRequest.mockResolvedValueOnce(payload);
+
+    await cmdVerifySkill(makeGlobalOpts(), sourceRef);
+
+    const request = httpMocks.apiRequest.mock.calls[0]?.[1];
+    expect(request?.path).toBe(`${ApiRoutes.skillsSh}/patrick-erichsen/skills/html`);
+    expect(JSON.parse(String(mockLog.mock.calls[0]?.[0]))).toEqual(payload);
+  });
+
+  it("rejects colon-form skills.sh verification references", async () => {
+    await expect(
+      cmdVerifySkill(makeGlobalOpts(), "skills-sh:patrick-erichsen/skills/html"),
+    ).rejects.toThrow("Invalid skills.sh ref: use skills-sh/owner/repo/slug");
+  });
+
   it("fetches and prints JSON verification by default", async () => {
     const payload = {
       schema: "clawhub.skill.verify.v1",

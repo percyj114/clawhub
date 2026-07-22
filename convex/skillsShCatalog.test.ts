@@ -103,6 +103,28 @@ async function storeTestArtifactFiles(
   };
 }
 
+async function storeAuthenticatedTestArtifact<
+  T extends { externalId: string; githubContentHash?: string },
+>(t: CatalogTest, row: T, content: string, path = "SKILL.md") {
+  return await storeAuthenticatedTestArtifactFiles(t, row, [{ path, content }]);
+}
+
+async function storeAuthenticatedTestArtifactFiles<
+  T extends { externalId: string; githubContentHash?: string },
+>(t: CatalogTest, row: T, inputs: Array<{ path: string; content: string }>) {
+  const artifact = await storeTestArtifactFiles(t, row.externalId, inputs);
+  const manifest = artifact.files
+    .map((file) => `${file.path}\0${file.size}\0${file.sha256.toLowerCase()}`)
+    .join("\n");
+  return {
+    artifact,
+    row: {
+      ...row,
+      githubContentHash: await sha256Hex(manifest),
+    },
+  };
+}
+
 async function processToTerminal(
   t: CatalogTest,
   runId: Id<"skillsShCatalogRuns">,
@@ -590,9 +612,14 @@ describe("skills.sh catalog overload control plane", () => {
   it("replans unchanged staging content after its prior attempt was canceled", async () => {
     useEnvironment(TEST_ENV);
     const t = convexTest(schema, modules);
-    const row = frozenSnapshot.rows.find(
+    const sourceRow = frozenSnapshot.rows.find(
       (candidate) => candidate.externalId === "nvidia/skills/aiq-deploy",
     )!;
+    const { artifact, row } = await storeAuthenticatedTestArtifact(
+      t,
+      sourceRow,
+      "staging retry artifact",
+    );
     const actorUserId = await t.run(async (ctx) => {
       return await ctx.db.insert("users", {
         handle: "catalog-retry-operator",
@@ -600,7 +627,6 @@ describe("skills.sh catalog overload control plane", () => {
         role: "admin",
       });
     });
-    const artifact = await storeTestArtifact(t, row.externalId, "staging retry artifact");
     await t.mutation(internal.skillsShCatalog.configureFixtureControlInternal, {
       ...BASE_CONTROL,
       mode: "staging-live",
@@ -1656,7 +1682,17 @@ describe("skills.sh catalog overload control plane", () => {
       realScanAllowlist: ["nvidia/skills/aiq-deploy"],
     });
 
-    const rows = frozenSnapshot.rows.map((row) => ({ ...row }));
+    const sourceRow = frozenSnapshot.rows.find(
+      (row) => row.externalId === "nvidia/skills/aiq-deploy",
+    )!;
+    const { artifact, row: authenticatedRow } = await storeAuthenticatedTestArtifact(
+      t,
+      sourceRow,
+      "hello catalog",
+    );
+    const rows = frozenSnapshot.rows.map((row) =>
+      row.externalId === authenticatedRow.externalId ? authenticatedRow : { ...row },
+    );
     const { runId } = await t.mutation(internal.skillsShCatalog.startStagingLiveRunInternal, {
       actor: "catalog-test-operator",
       reason: "prove exact live Test batching",
@@ -1686,7 +1722,6 @@ describe("skills.sh catalog overload control plane", () => {
     });
     expect((await collectEntries(t)).every((entry) => !entry.publicVisible)).toBe(true);
 
-    const artifact = await storeTestArtifact(t, "nvidia/skills/aiq-deploy", "hello catalog");
     const admitted = await t.action(internal.skillsShCatalog.admitRealScansInternal, {
       runId,
       externalIds: ["nvidia/skills/aiq-deploy"],
@@ -1804,6 +1839,14 @@ describe("skills.sh catalog overload control plane", () => {
       maxCatalogInFlight: 1,
       realScanAllowlist: ["nvidia/skills/aiq-deploy"],
     });
+    const sourceRow = frozenSnapshot.rows.find(
+      (row) => row.externalId === "nvidia/skills/aiq-deploy",
+    )!;
+    const { artifact, row } = await storeAuthenticatedTestArtifact(
+      t,
+      sourceRow,
+      "active expiry artifact",
+    );
     const { runId } = await t.mutation(internal.skillsShCatalog.startStagingLiveRunInternal, {
       actor: "catalog-expiry-operator",
       reason: "prove active request expiry is deferred",
@@ -1815,13 +1858,8 @@ describe("skills.sh catalog overload control plane", () => {
     await t.mutation(internal.skillsShCatalog.processStagingLiveBatchInternal, {
       runId,
       cursor: 0,
-      rows: [frozenSnapshot.rows.find((row) => row.externalId === "nvidia/skills/aiq-deploy")!],
+      rows: [row],
     });
-    const artifact = await storeTestArtifact(
-      t,
-      "nvidia/skills/aiq-deploy",
-      "active expiry artifact",
-    );
     await t.action(internal.skillsShCatalog.admitRealScansInternal, {
       runId,
       externalIds: ["nvidia/skills/aiq-deploy"],
@@ -1927,6 +1965,14 @@ describe("skills.sh catalog overload control plane", () => {
       maxCatalogInFlight: 1,
       realScanAllowlist: ["nvidia/skills/aiq-deploy"],
     });
+    const sourceRow = frozenSnapshot.rows.find(
+      (row) => row.externalId === "nvidia/skills/aiq-deploy",
+    )!;
+    const { artifact, row } = await storeAuthenticatedTestArtifact(
+      t,
+      sourceRow,
+      "running cancellation artifact",
+    );
     const { runId } = await t.mutation(internal.skillsShCatalog.startStagingLiveRunInternal, {
       actor: "catalog-cancel-operator",
       reason: "defer running real cancellation",
@@ -1938,13 +1984,8 @@ describe("skills.sh catalog overload control plane", () => {
     await t.mutation(internal.skillsShCatalog.processStagingLiveBatchInternal, {
       runId,
       cursor: 0,
-      rows: [frozenSnapshot.rows.find((row) => row.externalId === "nvidia/skills/aiq-deploy")!],
+      rows: [row],
     });
-    const artifact = await storeTestArtifact(
-      t,
-      "nvidia/skills/aiq-deploy",
-      "running cancellation artifact",
-    );
     await t.action(internal.skillsShCatalog.admitRealScansInternal, {
       runId,
       externalIds: ["nvidia/skills/aiq-deploy"],
@@ -2017,6 +2058,14 @@ describe("skills.sh catalog overload control plane", () => {
       maxCatalogInFlight: 1,
       realScanAllowlist: ["nvidia/skills/aiq-deploy"],
     });
+    const sourceRow = frozenSnapshot.rows.find(
+      (row) => row.externalId === "nvidia/skills/aiq-deploy",
+    )!;
+    const { artifact, row } = await storeAuthenticatedTestArtifact(
+      t,
+      sourceRow,
+      "expired running cancellation artifact",
+    );
     const { runId } = await t.mutation(internal.skillsShCatalog.startStagingLiveRunInternal, {
       actor: "catalog-expired-cancel-operator",
       reason: "terminalize expired running real cancellation",
@@ -2028,13 +2077,8 @@ describe("skills.sh catalog overload control plane", () => {
     await t.mutation(internal.skillsShCatalog.processStagingLiveBatchInternal, {
       runId,
       cursor: 0,
-      rows: [frozenSnapshot.rows.find((row) => row.externalId === "nvidia/skills/aiq-deploy")!],
+      rows: [row],
     });
-    const artifact = await storeTestArtifact(
-      t,
-      "nvidia/skills/aiq-deploy",
-      "expired running cancellation artifact",
-    );
     await t.action(internal.skillsShCatalog.admitRealScansInternal, {
       runId,
       externalIds: ["nvidia/skills/aiq-deploy"],
@@ -2290,6 +2334,10 @@ describe("skills.sh catalog overload control plane", () => {
       maxCatalogInFlight: 1,
       realScanAllowlist: ["nvidia/skills/aiq-deploy"],
     });
+    const sourceRow = frozenSnapshot.rows.find(
+      (row) => row.externalId === "nvidia/skills/aiq-deploy",
+    )!;
+    const { artifact, row } = await storeAuthenticatedTestArtifact(t, sourceRow, "budget artifact");
     const { runId } = await t.mutation(internal.skillsShCatalog.startStagingLiveRunInternal, {
       actor: "catalog-budget-operator",
       reason: "prove admission write reservation",
@@ -2301,9 +2349,8 @@ describe("skills.sh catalog overload control plane", () => {
     await t.mutation(internal.skillsShCatalog.processStagingLiveBatchInternal, {
       runId,
       cursor: 0,
-      rows: [frozenSnapshot.rows.find((row) => row.externalId === "nvidia/skills/aiq-deploy")!],
+      rows: [row],
     });
-    const artifact = await storeTestArtifact(t, "nvidia/skills/aiq-deploy", "budget artifact");
 
     await expect(
       t.action(internal.skillsShCatalog.admitRealScansInternal, {
@@ -2342,6 +2389,13 @@ describe("skills.sh catalog overload control plane", () => {
       maxCatalogInFlight: 1,
       realScanAllowlist: ["nvidia/skills/aiq-deploy"],
     });
+    const sourceRow = frozenSnapshot.rows.find(
+      (row) => row.externalId === "nvidia/skills/aiq-deploy",
+    )!;
+    const { artifact, row } = await storeAuthenticatedTestArtifactFiles(t, sourceRow, [
+      { path: "SKILL.md", content: "six write artifact" },
+      { path: "references/context.md", content: "second embedded artifact file" },
+    ]);
     const { runId } = await t.mutation(internal.skillsShCatalog.startStagingLiveRunInternal, {
       actor: "catalog-six-write-operator",
       reason: "prove exact admission write reservation",
@@ -2353,12 +2407,8 @@ describe("skills.sh catalog overload control plane", () => {
     await t.mutation(internal.skillsShCatalog.processStagingLiveBatchInternal, {
       runId,
       cursor: 0,
-      rows: [frozenSnapshot.rows.find((row) => row.externalId === "nvidia/skills/aiq-deploy")!],
+      rows: [row],
     });
-    const artifact = await storeTestArtifactFiles(t, "nvidia/skills/aiq-deploy", [
-      { path: "SKILL.md", content: "six write artifact" },
-      { path: "references/context.md", content: "second embedded artifact file" },
-    ]);
 
     const result = await t.action(internal.skillsShCatalog.admitRealScansInternal, {
       runId,
@@ -2432,7 +2482,7 @@ describe("skills.sh catalog overload control plane", () => {
       {
         runId: unchanged.runId,
         cursor: 0,
-        rows: [frozenSnapshot.rows.find((row) => row.externalId === "nvidia/skills/aiq-deploy")!],
+        rows: [row],
       },
     );
     expect(unchangedRun.counts).toMatchObject({

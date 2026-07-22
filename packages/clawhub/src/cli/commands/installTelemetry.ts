@@ -6,6 +6,7 @@ export async function reportInstalledSkillsTelemetryIfEnabled(params: {
   registry: string;
   slug: string;
   ownerHandle?: string | null;
+  sourceRef?: string | null;
   version?: string | null;
 }) {
   if (!params.token || isTelemetryDisabled()) return;
@@ -23,6 +24,7 @@ export async function reportInstalledSkillsTelemetryIfEnabled(params: {
           event: "install",
           slug,
           ownerHandle: params.ownerHandle ?? undefined,
+          sourceRef: params.sourceRef ?? undefined,
           version: params.version ?? undefined,
         },
       },

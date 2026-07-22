@@ -36,7 +36,13 @@ const reportCliInstallHandler = (
   reportCliInstallInternal as unknown as {
     _handler: (
       ctx: unknown,
-      args: { userId: string; slug: string; ownerHandle?: string; version?: string },
+      args: {
+        userId: string;
+        slug: string;
+        ownerHandle?: string;
+        sourceRef?: string;
+        version?: string;
+      },
     ) => Promise<void>;
   }
 )._handler;
@@ -185,6 +191,22 @@ describe("telemetry install events", () => {
       "skillStatEvents",
       expect.objectContaining({ skillId: "skills:demo", kind: "install_new" }),
     );
+  });
+
+  it("does not attribute an unclaimed skills.sh install to a same-slug native skill", async () => {
+    const query = vi.fn();
+    const insert = vi.fn();
+    const ctx = { db: { query, insert, patch: vi.fn() } };
+
+    await reportCliInstallHandler(ctx, {
+      userId: "users:one",
+      slug: "demo",
+      sourceRef: "skills-sh/alice/skills/demo",
+      version: "a".repeat(40),
+    });
+
+    expect(query).not.toHaveBeenCalled();
+    expect(insert).not.toHaveBeenCalled();
   });
 
   it("uses owner identity when recording an owner-qualified install", async () => {

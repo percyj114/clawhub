@@ -1,4 +1,4 @@
-import { internal } from "../_generated/api";
+import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import type { ActionCtx } from "../_generated/server";
 import { buildGitHubApiHeaders } from "../lib/githubAuth";
@@ -20,6 +20,10 @@ const internalRefs = internal as unknown as {
     processStagingLiveBatchInternal: unknown;
     resolveKnownGitHubOwnersInternal: unknown;
     rollbackFixtureRunInternal: unknown;
+    rollbackPublicationInternal: unknown;
+    setCatalogPausedInternal: unknown;
+    setPublicationEnabledInternal: unknown;
+    startControlledCanaryScanRunInternal: unknown;
     startFixtureRunInternal: unknown;
     startStagingLiveRunInternal: unknown;
   };
@@ -64,6 +68,12 @@ function requireString(record: Record<string, unknown>, key: string) {
 function requireNumber(record: Record<string, unknown>, key: string) {
   const value = record[key];
   if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${key} is required`);
+  return value;
+}
+
+function requireBoolean(record: Record<string, unknown>, key: string) {
+  const value = record[key];
+  if (typeof value !== "boolean") throw new Error(`${key} is required`);
   return value;
 }
 
@@ -423,6 +433,57 @@ export async function skillsShCatalogTestV1Handler(ctx: ActionCtx, request: Requ
       );
       return json({ ...result, sourceVerification: verification }, 200, rate.headers);
     }
+    if (operation === "start-canary-scan") {
+      return json(
+        await runMutationRef(
+          ctx,
+          internalRefs.skillsShCatalog.startControlledCanaryScanRunInternal,
+          {
+            actor: auth.user.handle,
+            reason: requireString(body, "reason"),
+          },
+        ),
+        200,
+        rate.headers,
+      );
+    }
+    if (operation === "set-publication") {
+      return json(
+        await runMutationRef(ctx, internalRefs.skillsShCatalog.setPublicationEnabledInternal, {
+          enabled: requireBoolean(body, "enabled"),
+          actor: auth.user.handle,
+          reason: requireString(body, "reason"),
+          confirm: requireString(body, "confirm"),
+        }),
+        200,
+        rate.headers,
+      );
+    }
+    if (operation === "set-pause") {
+      return json(
+        await runMutationRef(ctx, internalRefs.skillsShCatalog.setCatalogPausedInternal, {
+          paused: requireBoolean(body, "paused"),
+          actor: auth.user.handle,
+          reason: requireString(body, "reason"),
+          confirm: requireString(body, "confirm"),
+        }),
+        200,
+        rate.headers,
+      );
+    }
+    if (operation === "rollback-publication") {
+      return json(
+        await runMutationRef(ctx, internalRefs.skillsShCatalog.rollbackPublicationInternal, {
+          externalId: requireString(body, "externalId"),
+          attemptId: requireString(body, "attemptId"),
+          actor: auth.user.handle,
+          reason: requireString(body, "reason"),
+          confirm: requireString(body, "confirm"),
+        }),
+        200,
+        rate.headers,
+      );
+    }
     if (operation === "process-fixture") {
       return json(
         await runMutationRef(ctx, internalRefs.skillsShCatalog.processFixtureBatchInternal, {
@@ -520,4 +581,34 @@ export async function skillsShCatalogTestV1Handler(ctx: ActionCtx, request: Requ
       message.includes("permanent Test") || message.includes("available only in permanent Test");
     return text(unavailable ? "Not found" : message, unavailable ? 404 : 400, rate.headers);
   }
+}
+
+export async function skillsShCatalogPublicV1Handler(ctx: ActionCtx, request: Request) {
+  const rate = await applyRateLimit(ctx, request, "read");
+  if (!rate.ok) return rate.response;
+  if (request.method !== "GET") return text("Not found", 404, rate.headers);
+  const prefix = "/api/v1/skills-sh/";
+  const pathname = new URL(request.url).pathname;
+  if (!pathname.startsWith(prefix)) return text("Not found", 404, rate.headers);
+  let segments: string[];
+  try {
+    segments = pathname
+      .slice(prefix.length)
+      .split("/")
+      .filter(Boolean)
+      .map((segment) => decodeURIComponent(segment).trim().toLowerCase());
+  } catch {
+    return text("Not found", 404, rate.headers);
+  }
+  const install = segments.at(-1) === "install";
+  if ((install && segments.length !== 4) || (!install && segments.length !== 3)) {
+    return text("Not found", 404, rate.headers);
+  }
+  const [owner, repo, slug] = segments;
+  if (!owner || !repo || !slug || [owner, repo, slug].some((part) => part.includes(":"))) {
+    return text("Not found", 404, rate.headers);
+  }
+  const entry = await ctx.runQuery(api.skillsShCatalog.getPublicEntry, { owner, repo, slug });
+  if (!entry) return text("Skill not found", 404, rate.headers);
+  return json(install ? entry.install : entry, 200, rate.headers);
 }

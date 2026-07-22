@@ -327,6 +327,7 @@ describe("httpApi handlers", () => {
           event: "install",
           slug: "weather",
           ownerHandle: "openclaw",
+          sourceRef: "skills-sh/openclaw/skills/weather",
           version: "1.0.0",
           rootId: "abc",
           rootLabel: "~/skills",
@@ -339,6 +340,7 @@ describe("httpApi handlers", () => {
       userId: "users:1",
       slug: "weather",
       ownerHandle: "openclaw",
+      sourceRef: "skills-sh/openclaw/skills/weather",
       version: "1.0.0",
     });
   });
