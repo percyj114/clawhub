@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly SOURCE_SHA="d66137a23b27defbe31e96f8957e72854e57ce21"
+readonly SOURCE_SHA="6df7f62eb72151802a7bf9b43618c421b361ebaa"
 readonly DEPLOYMENT="academic-chihuahua-392"
 readonly CONVEX_URL_EXPECTED="https://${DEPLOYMENT}.convex.cloud"
 readonly CONVEX_SITE="https://${DEPLOYMENT}.convex.site"
