@@ -28,16 +28,21 @@ const internalRefs = internal as unknown as {
     startStagingLiveRunInternal: unknown;
   };
   skillsShMirror: {
+    claimBatchLeaseInternal: unknown;
     configureInternal: unknown;
     getByExternalIdInternal: unknown;
+    getClassificationStatesInternal: unknown;
     getDetailByExternalIdInternal: unknown;
     getIsolationInternal: unknown;
+    getReplayRowsInternal: unknown;
     getRunInternal: unknown;
     getStatusInternal: unknown;
     listDetailsPageInternal: unknown;
     listDigestsPageInternal: unknown;
+    listFacetsPageInternal: unknown;
     processBatchInternal: unknown;
     reconcileBatchInternal: unknown;
+    releaseBatchLeaseInternal: unknown;
     setPausedInternal: unknown;
     startRunInternal: unknown;
   };
@@ -102,6 +107,19 @@ function requireBoolean(record: Record<string, unknown>, key: string) {
   const value = record[key];
   if (typeof value !== "boolean") throw new Error(`${key} is required`);
   return value;
+}
+
+function requireStringArray(record: Record<string, unknown>, key: string, maxItems: number) {
+  const value = record[key];
+  if (
+    !Array.isArray(value) ||
+    value.length < 1 ||
+    value.length > maxItems ||
+    value.some((item) => typeof item !== "string" || !item.trim())
+  ) {
+    throw new Error(`${key} must contain between 1 and ${maxItems} strings`);
+  }
+  return value as string[];
 }
 
 async function sha256Hex(bytes: Uint8Array) {
@@ -469,6 +487,22 @@ export async function skillsShCatalogTestV1Handler(ctx: ActionCtx, request: Requ
       ]);
       return json({ digest, detail }, 200, rate.headers);
     }
+    if (operation === "mirror-classification-states") {
+      const states = await runQueryRef(
+        ctx,
+        internalRefs.skillsShMirror.getClassificationStatesInternal,
+        {
+          externalIds: requireStringArray(body, "externalIds", 50),
+        },
+      );
+      return json({ states }, 200, rate.headers);
+    }
+    if (operation === "mirror-replay-rows") {
+      const rows = await runQueryRef(ctx, internalRefs.skillsShMirror.getReplayRowsInternal, {
+        externalIds: requireStringArray(body, "externalIds", 50),
+      });
+      return json({ rows }, 200, rate.headers);
+    }
     if (operation === "mirror-page") {
       const cursor =
         body.cursor === null || typeof body.cursor === "string"
@@ -494,6 +528,22 @@ export async function skillsShCatalogTestV1Handler(ctx: ActionCtx, request: Requ
             })();
       return json(
         await runQueryRef(ctx, internalRefs.skillsShMirror.listDetailsPageInternal, {
+          cursor,
+          limit: requireNumber(body, "limit"),
+        }),
+        200,
+        rate.headers,
+      );
+    }
+    if (operation === "mirror-facet-page") {
+      const cursor =
+        body.cursor === null || typeof body.cursor === "string"
+          ? body.cursor
+          : (() => {
+              throw new Error("cursor is required");
+            })();
+      return json(
+        await runQueryRef(ctx, internalRefs.skillsShMirror.listFacetsPageInternal, {
           cursor,
           limit: requireNumber(body, "limit"),
         }),
@@ -535,6 +585,7 @@ export async function skillsShCatalogTestV1Handler(ctx: ActionCtx, request: Requ
       return json(
         await runMutationRef(ctx, internalRefs.skillsShMirror.processBatchInternal, {
           runId: requireString(body, "runId"),
+          leaseToken: requireString(body, "leaseToken"),
           page: requireNumber(body, "page"),
           offset: requireNumber(body, "offset"),
           pageLength: requireNumber(body, "pageLength"),
@@ -544,6 +595,25 @@ export async function skillsShCatalogTestV1Handler(ctx: ActionCtx, request: Requ
           sourceBytes: requireNumber(body, "sourceBytes"),
           rows: body.rows,
         }),
+        200,
+        rate.headers,
+      );
+    }
+    if (operation === "mirror-batch-claim" || operation === "mirror-batch-release") {
+      const args = {
+        runId: requireString(body, "runId"),
+        page: requireNumber(body, "page"),
+        offset: requireNumber(body, "offset"),
+        leaseToken: requireString(body, "leaseToken"),
+      };
+      return json(
+        await runMutationRef(
+          ctx,
+          operation === "mirror-batch-claim"
+            ? internalRefs.skillsShMirror.claimBatchLeaseInternal
+            : internalRefs.skillsShMirror.releaseBatchLeaseInternal,
+          args,
+        ),
         200,
         rate.headers,
       );
