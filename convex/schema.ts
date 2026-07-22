@@ -2989,6 +2989,8 @@ const skillsShMirrorRunCountsValidator = v.object({
   updated: v.number(),
   unchanged: v.number(),
   rejected: v.number(),
+  quarantined: v.optional(v.number()),
+  quarantinedPreserved: v.optional(v.number()),
   conflicts: v.number(),
   detailsInserted: v.number(),
   detailsUpdated: v.number(),
@@ -3045,6 +3047,7 @@ const skillsShMirrorUpstreamScannerValidator = v.object({
 const skillsShMirrorDigests = defineTable({
   externalId: v.string(),
   sourceType: v.union(v.literal("github"), v.literal("well-known")),
+  upstreamSourceType: v.optional(v.string()),
   owner: v.optional(v.string()),
   repo: v.optional(v.string()),
   sourceHost: v.optional(v.string()),
@@ -3066,7 +3069,7 @@ const skillsShMirrorDigests = defineTable({
     socket: skillsShMirrorUpstreamScannerValidator,
     snyk: skillsShMirrorUpstreamScannerValidator,
   }),
-  sourceFreshnessStatus: v.literal("observed-only"),
+  sourceFreshnessStatus: v.union(v.literal("observed-only"), v.literal("stale")),
   detailStatus: v.union(v.literal("available"), v.literal("missing")),
   observationFingerprint: v.string(),
   sourceSnapshotId: v.string(),
@@ -3092,6 +3095,10 @@ const skillsShMirrorDigests = defineTable({
   })
   .index("by_active_and_normalized_display_name_first_token", {
     fields: ["active", "normalizedDisplayNameFirstToken"],
+  })
+  .index("by_active_and_source_type_and_owner_and_repo_and_external_id", {
+    fields: ["active", "sourceType", "owner", "repo", "externalId"],
+    staged: true,
   })
   .index("by_active_and_upstream_installs", {
     fields: ["active", "upstreamInstalls"],
@@ -3131,7 +3138,13 @@ const skillsShMirrorDetails = defineTable({
 const skillsShMirrorConflicts = defineTable({
   runId: v.id("skillsShMirrorRuns"),
   externalId: v.string(),
-  kind: v.union(v.literal("same-run-drift"), v.literal("identity-mismatch")),
+  kind: v.union(
+    v.literal("same-run-drift"),
+    v.literal("identity-mismatch"),
+    v.literal("source-quarantine"),
+  ),
+  reason: v.optional(v.string()),
+  upstreamSourceType: v.optional(v.string()),
   previousFingerprint: v.optional(v.string()),
   observedFingerprint: v.string(),
   page: v.number(),
