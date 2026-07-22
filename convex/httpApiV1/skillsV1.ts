@@ -50,6 +50,11 @@ import {
   getSkillFileModerationInfoFromSkill,
   isSkillVersionForSkill,
 } from "../lib/skillFileAccess";
+import {
+  buildUnclaimedSkillsShInstallResolution,
+  buildUnclaimedSkillsShVerifyResponse,
+  type SkillsShMirrorDigest,
+} from "../lib/skillsShMirrorPublic";
 import { readCanonicalStat } from "../lib/skillStats";
 import {
   buildDeterministicZip,
@@ -367,6 +372,9 @@ const internalRefs = internal as unknown as {
     listSkillAppealsInternal: unknown;
     resolveSkillAppealForUserInternal: unknown;
     setSkillFeaturedForUserInternal: unknown;
+  };
+  skillsShMirror: {
+    getByExternalIdInternal: unknown;
   };
 };
 
@@ -1835,9 +1843,15 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
       if (!catalogRef || catalogRef.slug !== slug) {
         return text("Invalid skills.sh reference", 400, rate.headers);
       }
-      const entry = await ctx.runQuery(api.skillsShCatalog.getPublicEntry, catalogRef);
-      if (!entry) return text("Skill not found", 404, rate.headers);
-      return json(entry.install, 200, rate.headers);
+      const digest = await runQueryRef<SkillsShMirrorDigest | null>(
+        ctx,
+        internalRefs.skillsShMirror.getByExternalIdInternal,
+        { externalId: `${catalogRef.owner}/${catalogRef.repo}/${catalogRef.slug}` },
+      );
+      const resolution = digest ? buildUnclaimedSkillsShInstallResolution(digest) : null;
+      return resolution
+        ? json(resolution, 200, rate.headers)
+        : text("Skill not found", 404, rate.headers);
     }
     const forceInstall = parseBooleanQueryParam(installUrl.searchParams.get("forceInstall"));
     const skill = (await runQueryRef<
@@ -2286,65 +2300,20 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
       if (!catalogRef || catalogRef.slug !== slug || versionParam || tagParam) {
         return text("Invalid skills.sh reference", 400, rate.headers);
       }
-      const entry = await ctx.runQuery(api.skillsShCatalog.getPublicEntry, catalogRef);
-      if (!entry?.artifact) return text("Skill not found", 404, rate.headers);
-      const securityPassed = entry.security.verdict === "clean";
-      const reasons = securityPassed ? [] : ["security.status_not_clean"];
-      return json(
-        {
-          schema: "clawhub.skill.verify.v1",
-          ok: securityPassed,
-          decision: securityPassed ? "pass" : "fail",
-          reasons,
-          slug: entry.ref,
-          displayName: entry.displayName,
-          pageUrl: `${publicApiOrigin(request)}${entry.route}`,
-          publisherHandle: null,
-          publisherDisplayName: null,
-          publisherProfileUrl: null,
-          version: entry.githubCommit,
-          resolvedFrom: "latest",
-          tag: null,
-          createdAt: entry.security.scannedAt,
-          card: {
-            available: false,
-            path: "skill-card.md",
-            url: null,
-            sha256: null,
-            size: null,
-            contentType: null,
-          },
-          artifact: {
-            sourceFingerprint: entry.githubContentHash,
-            bundleFingerprints: [entry.artifact.contentHash],
-            files: entry.artifact.files,
-          },
-          provenance: {
-            source: "skills-sh-catalog",
-            reference: entry.ref,
-            repository: entry.repository,
-            path: entry.githubPath,
-            commit: entry.githubCommit,
-            contentHash: entry.githubContentHash,
-            scanAttemptId: entry.security.attemptId,
-            artifactContentHash: entry.artifact.contentHash,
-          },
-          security: {
-            status: entry.security.verdict,
-            passed: securityPassed,
-            rawStatus: entry.security.verdict,
-            verdict: entry.security.verdict,
-            source: entry.security.source,
-            attemptId: entry.security.attemptId,
-            checkedAt: entry.security.scannedAt,
-          },
-          signature: {
-            status: "unsigned",
-          },
-        },
-        200,
-        rate.headers,
+      const digest = await runQueryRef<SkillsShMirrorDigest | null>(
+        ctx,
+        internalRefs.skillsShMirror.getByExternalIdInternal,
+        { externalId: `${catalogRef.owner}/${catalogRef.repo}/${catalogRef.slug}` },
       );
+      const verification = digest
+        ? buildUnclaimedSkillsShVerifyResponse({
+            digest,
+            origin: publicApiOrigin(request),
+          })
+        : null;
+      return verification
+        ? json(verification, 200, rate.headers)
+        : text("Skill not found", 404, rate.headers);
     }
 
     const skillResult = (await runQueryRef<GetBySlugResult>(

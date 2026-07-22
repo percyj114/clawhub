@@ -1,4 +1,4 @@
-import { api, internal } from "../_generated/api";
+import { internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import type { ActionCtx } from "../_generated/server";
 import { buildGitHubApiHeaders } from "../lib/githubAuth";
@@ -8,6 +8,12 @@ import {
   getSkillsShCatalogFixture,
   type SkillsShCatalogFixtureRow,
 } from "../lib/skillsShCatalogFixtures";
+import {
+  buildSkillsShMirrorCatalogDetail,
+  buildUnclaimedSkillsShInstallResolution,
+  type SkillsShMirrorDetail,
+  type SkillsShMirrorDigest,
+} from "../lib/skillsShMirrorPublic";
 import { json, requireAdminOrResponse, requireApiTokenUserOrResponse, text } from "./shared";
 
 const internalRefs = internal as unknown as {
@@ -27,6 +33,10 @@ const internalRefs = internal as unknown as {
     startFixtureRunInternal: unknown;
     startStagingLiveRunInternal: unknown;
   };
+  skillsShMirror: {
+    getByExternalIdInternal: unknown;
+    getDetailByExternalIdInternal: unknown;
+  };
 };
 const MAX_GITHUB_OWNER_RESOLUTIONS = 500;
 const GITHUB_OWNER_RESOLUTION_CONCURRENCY = 8;
@@ -34,16 +44,20 @@ const CONTROLLED_CANARY_FIXTURE_ID = "patrick-html-canary-v1";
 const MAX_CONTROLLED_CANARY_FILES = 100;
 
 export function parseSkillsShCatalogReference(value: string) {
-  const segments = value
-    .trim()
-    .split("/")
-    .map((segment) => segment.trim().toLowerCase());
-  if (segments.length !== 4 || segments[0] !== "skills-sh") return null;
-  const [owner, repo, slug] = segments.slice(1);
+  const normalized = value.trim().toLowerCase();
+  const externalId = normalized.startsWith("skills-sh:")
+    ? normalized.slice("skills-sh:".length)
+    : normalized.startsWith("skills-sh/")
+      ? normalized.slice("skills-sh/".length)
+      : null;
+  if (!externalId) return null;
+  const segments = externalId.split("/").map((segment) => segment.trim().toLowerCase());
+  if (segments.length !== 3) return null;
+  const [owner, repo, slug] = segments;
   if (!owner || !repo || !slug || [owner, repo, slug].some((part) => part.includes(":"))) {
     return null;
   }
-  return { owner, repo, slug };
+  return { owner, repo, slug, reference: `skills-sh:${owner}/${repo}/${slug}` };
 }
 
 async function runMutationRef<T>(
@@ -621,7 +635,24 @@ export async function skillsShCatalogPublicV1Handler(ctx: ActionCtx, request: Re
   if (!owner || !repo || !slug || [owner, repo, slug].some((part) => part.includes(":"))) {
     return text("Not found", 404, rate.headers);
   }
-  const entry = await ctx.runQuery(api.skillsShCatalog.getPublicEntry, { owner, repo, slug });
-  if (!entry) return text("Skill not found", 404, rate.headers);
-  return json(install ? entry.install : entry, 200, rate.headers);
+  const externalId = `${owner}/${repo}/${slug}`;
+  const digest = await runQueryRef<SkillsShMirrorDigest | null>(
+    ctx,
+    internalRefs.skillsShMirror.getByExternalIdInternal,
+    { externalId },
+  );
+  if (!digest) return text("Skill not found", 404, rate.headers);
+  if (install) {
+    const resolution = buildUnclaimedSkillsShInstallResolution(digest);
+    return resolution
+      ? json(resolution, 200, rate.headers)
+      : text("Skill not found", 404, rate.headers);
+  }
+  const detail = await runQueryRef<SkillsShMirrorDetail | null>(
+    ctx,
+    internalRefs.skillsShMirror.getDetailByExternalIdInternal,
+    { externalId },
+  );
+  const entry = buildSkillsShMirrorCatalogDetail({ digest, detail });
+  return entry ? json(entry, 200, rate.headers) : text("Skill not found", 404, rate.headers);
 }

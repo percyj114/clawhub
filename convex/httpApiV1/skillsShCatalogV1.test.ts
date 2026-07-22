@@ -685,41 +685,105 @@ describe("skills.sh catalog Test HTTP API", () => {
 });
 
 describe("skills.sh public HTTP API", () => {
-  const publicEntry = {
-    ref: "skills-sh/patrick-erichsen/skills/html",
-    route: "/skills-sh/patrick-erichsen/skills/html",
+  const digest = {
+    externalId: "patrick-erichsen/skills/html",
+    sourceType: "github",
+    owner: "patrick-erichsen",
+    repo: "skills",
+    slug: "html",
     displayName: "HTML Artifact Chooser",
-    security: {
-      verdict: "clean",
-      source: "clawhub",
-      attemptId: "skillsShCatalogScanAttempts:canary",
+    sourceUrl: "https://skills.sh/patrick-erichsen/skills/html",
+    canonicalRepoUrl: "https://github.com/patrick-erichsen/skills",
+    githubPath: "skills/html",
+    githubCommit: "050daba89f6b6636470add5cb300aac46a412cf8",
+    sourceContentHash: "a47adb2c1ac33c088f664b5187971b63d2b958a7b9f01516d26005ca941a108f",
+    upstreamInstalls: 100,
+    upstreamScannerStatus: "unavailable",
+    sourceFreshnessStatus: "observed-only",
+    detailStatus: "available",
+    active: true,
+    publicVisible: false,
+    installable: false,
+    lastObservedAt: 123,
+  };
+  const detail = {
+    externalId: digest.externalId,
+    contentKind: "skill-md",
+    path: "skills/html/SKILL.md",
+    content: "# HTML",
+    contentBytes: 6,
+    sourceBytes: 6,
+    sourceFileCount: 1,
+    truncated: false,
+    sourceContentHash: digest.sourceContentHash,
+    updatedAt: 123,
+  };
+  const publicEntry = {
+    source: "skills.sh",
+    externalId: "patrick-erichsen/skills/html",
+    route: "/skills-sh/patrick-erichsen/skills/html",
+    reference: "skills-sh:patrick-erichsen/skills/html",
+    owner: "patrick-erichsen",
+    repo: "skills",
+    slug: "html",
+    displayName: "HTML Artifact Chooser",
+    upstreamInstalls: 100,
+    lastObservedAt: 123,
+    sourceUrl: "https://skills.sh/patrick-erichsen/skills/html",
+    canonicalRepoUrl: "https://github.com/patrick-erichsen/skills",
+    githubPath: "skills/html",
+    githubCommit: "050daba89f6b6636470add5cb300aac46a412cf8",
+    sourceContentHash: "a47adb2c1ac33c088f664b5187971b63d2b958a7b9f01516d26005ca941a108f",
+    upstreamChecks: [
+      { scanner: "Gen Agent Trust Hub", status: "unavailable" },
+      { scanner: "Socket", status: "unavailable" },
+      { scanner: "Snyk", status: "unavailable" },
+    ],
+    content: {
+      kind: "skill-md",
+      path: "skills/html/SKILL.md",
+      markdown: "# HTML",
+      bytes: 6,
+      truncated: false,
     },
-    install: {
-      ok: true,
-      slug: "skills-sh/patrick-erichsen/skills/html",
-      installKind: "github",
-      github: {
-        repo: "patrick-erichsen/skills",
-        path: "skills/html",
-        commit: "050daba89f6b6636470add5cb300aac46a412cf8",
-        contentHash: "a47adb2c1ac33c088f664b5187971b63d2b958a7b9f01516d26005ca941a108f",
-        sourceUrl:
-          "https://github.com/patrick-erichsen/skills/tree/050daba89f6b6636470add5cb300aac46a412cf8/skills/html",
-      },
+  };
+  const install = {
+    ok: true,
+    slug: "skills-sh:patrick-erichsen/skills/html",
+    installKind: "github",
+    github: {
+      repo: "patrick-erichsen/skills",
+      path: "skills/html",
+      commit: "050daba89f6b6636470add5cb300aac46a412cf8",
+      contentHash: "a47adb2c1ac33c088f664b5187971b63d2b958a7b9f01516d26005ca941a108f",
+      sourceUrl:
+        "https://github.com/patrick-erichsen/skills/tree/050daba89f6b6636470add5cb300aac46a412cf8/skills/html",
     },
+    provenance: {
+      source: "skills.sh",
+      reference: "skills-sh:patrick-erichsen/skills/html",
+    },
+    trust: {
+      clawhubScan: "unscanned",
+      label: "Not scanned by ClawHub",
+    },
+    canonicalRef: null,
   };
 
   it.each([
     {
       suffix: "",
       expected: publicEntry,
+      responses: [digest, detail],
     },
     {
       suffix: "/install",
-      expected: publicEntry.install,
+      expected: install,
+      responses: [digest],
     },
-  ])("serves an approved slash route$suffix", async ({ suffix, expected }) => {
-    const runQuery = vi.fn(async () => publicEntry);
+  ])("serves an unclaimed mirrored route$suffix", async ({ suffix, expected, responses }) => {
+    const runQuery = vi.fn();
+    for (const response of responses) runQuery.mockResolvedValueOnce(response);
     const ctx = { runQuery } as never;
     const response = await skillsShCatalogPublicV1Handler(
       ctx,
@@ -731,9 +795,7 @@ describe("skills.sh public HTTP API", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual(expected);
     expect(runQuery).toHaveBeenCalledWith(expect.anything(), {
-      owner: "patrick-erichsen",
-      repo: "skills",
-      slug: "html",
+      externalId: "patrick-erichsen/skills/html",
     });
   });
 
@@ -754,7 +816,7 @@ describe("skills.sh public HTTP API", () => {
     expect(runQuery).not.toHaveBeenCalled();
   });
 
-  it("returns 404 while the exact entry is not public", async () => {
+  it("returns 404 while the exact mirror entry is unavailable", async () => {
     const ctx = { runQuery: vi.fn(async () => null) } as never;
     const response = await skillsShCatalogPublicV1Handler(
       ctx,

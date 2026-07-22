@@ -1,0 +1,73 @@
+export const SKILLS_SH_TRUST_LABEL = "Not scanned by ClawHub";
+
+export type SkillsShUpstreamCheckStatus = "passed" | "warning" | "failed" | "unavailable";
+
+export type SkillsShUpstreamCheck = {
+  scanner: string;
+  status: SkillsShUpstreamCheckStatus;
+  checkedAt?: number;
+  url?: string;
+};
+
+export type SkillsShSearchResult = {
+  source: "skills.sh";
+  externalId: string;
+  route: string;
+  reference: string;
+  owner?: string;
+  repo?: string;
+  sourceHost?: string;
+  slug: string;
+  displayName: string;
+  summary?: string;
+  upstreamInstalls: number;
+  lastObservedAt: number;
+};
+
+export type SkillsShSearchEntry = SkillsShSearchResult & {
+  score: number;
+};
+
+export type SkillsShCatalogContent = {
+  kind: "skill-md" | "readme";
+  path: string;
+  markdown: string;
+  bytes: number;
+  truncated: boolean;
+};
+
+export type SkillsShCatalogDetail = SkillsShSearchResult & {
+  sourceUrl: string;
+  canonicalRepoUrl?: string;
+  githubPath?: string;
+  githubCommit?: string;
+  sourceContentHash?: string;
+  upstreamChecks: SkillsShUpstreamCheck[];
+  content: SkillsShCatalogContent | null;
+};
+
+export function skillsShRepositoryLabel(result: SkillsShSearchResult) {
+  if (result.owner && result.repo) return `${result.owner}/${result.repo}`;
+  return result.sourceHost ?? "skills.sh";
+}
+
+export function buildSkillsShInstallCommands(reference: string) {
+  return [
+    {
+      client: "OpenClaw",
+      command: `openclaw skills install ${reference}`,
+    },
+    {
+      client: "ClawHub",
+      command: `clawhub install ${reference}`,
+    },
+  ] as const;
+}
+
+export function isSkillsShSearchResult(value: unknown): value is SkillsShSearchEntry {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    (value as { source?: unknown }).source === "skills.sh"
+  );
+}
