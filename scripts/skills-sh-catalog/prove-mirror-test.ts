@@ -209,11 +209,16 @@ function assertZeroCounts(counts: Record<string, number>, names: string[]) {
 function assertRunProof(runResult: MirrorRunProof, mode: "first" | "identical") {
   const counts = runCounts(runResult);
   const total = Number(runResult.source.total);
+  const quarantined = counts.quarantined ?? 0;
+  const accepted = total - quarantined;
   if (counts.observed !== total) {
     throw new Error(`mirror observed ${String(counts.observed)} of ${total} source rows`);
   }
-  assertZeroCounts(counts, ["rejected", "conflicts", "scansPlanned", "scansAdmitted"]);
-  if ((counts.inserted ?? 0) + (counts.updated ?? 0) + (counts.unchanged ?? 0) !== total) {
+  assertZeroCounts(counts, ["scansPlanned", "scansAdmitted"]);
+  if (counts.rejected !== quarantined || counts.conflicts !== quarantined) {
+    throw new Error("mirror rejected rows outside the bounded source quarantine path");
+  }
+  if ((counts.inserted ?? 0) + (counts.updated ?? 0) + (counts.unchanged ?? 0) !== accepted) {
     throw new Error(`${mode} run digest accounting does not equal the source total`);
   }
   if (
@@ -221,7 +226,7 @@ function assertRunProof(runResult: MirrorRunProof, mode: "first" | "identical") 
       (counts.detailsUpdated ?? 0) +
       (counts.detailsUnchanged ?? 0) +
       (counts.detailsMissing ?? 0) !==
-    total
+    accepted
   ) {
     throw new Error(`${mode} run detail accounting does not equal the source total`);
   }
@@ -234,7 +239,7 @@ function assertRunProof(runResult: MirrorRunProof, mode: "first" | "identical") 
       "tombstoned",
       "reactivated",
     ]);
-    if (counts.unchanged !== total) throw new Error("identical rerun changed a digest");
+    if (counts.unchanged !== accepted) throw new Error("identical rerun changed a digest");
   }
 }
 
@@ -252,6 +257,7 @@ function validateDigest(document: Record<string, unknown>) {
     "normalizedDisplayName",
     "normalizedDisplayNameFirstToken",
     "searchText",
+    "upstreamSourceType",
   ]) {
     if (typeof document[field] !== "string" || !document[field]) {
       throw new Error(`mirror digest lacks ${field}: ${String(document.externalId)}`);
@@ -328,6 +334,10 @@ try {
   const statusBefore = (await call({ operation: "status" })).payload;
   const recoverableRun = findRecoverableMirrorRun(statusBefore);
   const firstRun = await runMirror("CLAW-563 complete authenticated mirror", true, recoverableRun);
+  const statusAfterFirstRun = (await call({ operation: "status" })).payload;
+  const latestRunConflicts = Array.isArray(statusAfterFirstRun.latestRunConflicts)
+    ? (statusAfterFirstRun.latestRunConflicts as Record<string, unknown>[])
+    : [];
   const identicalRerun = await runMirror(
     "CLAW-563 complete authenticated mirror identical rerun",
     false,
@@ -338,10 +348,23 @@ try {
     collectPages("page", validateDigest),
     collectPages("detail-page", validateDetail),
   ]);
-  if (digests.count !== firstRun.source.total) {
+  const firstCounts = runCounts(firstRun);
+  const quarantinedCount = firstCounts.quarantined ?? 0;
+  const quarantinedPreservedCount = firstCounts.quarantinedPreserved ?? 0;
+  const acceptedCount = Number(firstRun.source.total) - quarantinedCount;
+  const expectedDigestCount = acceptedCount + quarantinedPreservedCount;
+  if (digests.count !== expectedDigestCount) {
     throw new Error(
-      `mirror digest count ${digests.count} does not match source total ${String(firstRun.source.total)}`,
+      `mirror digest count ${digests.count} does not match accepted or preserved total ${expectedDigestCount}`,
     );
+  }
+  const quarantineSamples = latestRunConflicts
+    .filter(
+      (conflict) => conflict.runId === firstRun.runId && conflict.kind === "source-quarantine",
+    )
+    .slice(0, 50);
+  if (quarantineSamples.length !== Math.min(quarantinedCount, 50)) {
+    throw new Error("mirror status did not expose the latest run quarantine samples");
   }
   const sampleIndexes = [0, Math.floor(digests.count / 2), digests.count - 1];
   const sampleExternalIds = sampleIndexes.map((index) => {
@@ -357,12 +380,13 @@ try {
   const firstOperations = firstRun.run.operations as Record<string, number>;
   const serializedStorageBytes = digests.serializedBytes + details.serializedBytes;
   const rows = digests.count;
+  const sourceRows = Number(firstRun.source.total);
   const perRow = {
     serializedStorageBytes: serializedStorageBytes / rows,
-    dbWrites: firstOperations.dbWrites / rows,
-    dbReads: firstOperations.dbReads / rows,
-    sourceRequests: firstOperations.sourceRequests / rows,
-    sourceBytes: firstOperations.sourceBytes / rows,
+    dbWrites: firstOperations.dbWrites / sourceRows,
+    dbReads: firstOperations.dbReads / sourceRows,
+    sourceRequests: firstOperations.sourceRequests / sourceRows,
+    sourceBytes: firstOperations.sourceBytes / sourceRows,
   };
   proof = {
     generatedAt: new Date().toISOString(),
@@ -388,11 +412,19 @@ try {
         mirrorBatchRows: 50,
         sourcePageRows: 500,
         detailAndPageConcurrency: 8,
+        identityPage:
+          "512 KiB structural HTML fallback only for exact no-install well-known owner/repo rows",
         recovery: "durable cursor restart after source failure",
       },
     },
     firstRun,
     identicalRerun,
+    quarantine: {
+      rejected: firstCounts.rejected,
+      quarantined: quarantinedCount,
+      preserved: quarantinedPreservedCount,
+      samples: quarantineSamples,
+    },
     storage: {
       digests: {
         count: digests.count,

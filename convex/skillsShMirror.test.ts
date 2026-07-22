@@ -21,6 +21,7 @@ function useTestEnvironment() {
 const githubRow = {
   externalId: "vercel-labs/skills/find-skills",
   sourceType: "github" as const,
+  upstreamSourceType: "github",
   owner: "vercel-labs",
   repo: "skills",
   slug: "find-skills",
@@ -57,6 +58,7 @@ const githubRow = {
 const wellKnownRow = {
   externalId: "open.feishu.cn/lark-doc",
   sourceType: "well-known" as const,
+  upstreamSourceType: "well-known",
   sourceHost: "open.feishu.cn",
   slug: "lark-doc",
   displayName: "lark-doc",
@@ -235,6 +237,294 @@ describe("skills.sh external mirror", () => {
         limit: 10,
       }),
     ).rejects.toThrow("prefix is required");
+  });
+
+  it("records a quarantined source row and continues the batch cursor", async () => {
+    useTestEnvironment();
+    const t = convexTest(schema, modules);
+    await configure(t);
+    const { runId } = await startRun(t, "snapshot:quarantine", 2);
+
+    const result = await t.mutation(internal.skillsShMirror.processBatchInternal, {
+      runId,
+      page: 0,
+      offset: 0,
+      pageLength: 2,
+      hasMore: false,
+      sourceTotal: 2,
+      sourceRequests: 4,
+      sourceBytes: 2_048,
+      rows: [
+        {
+          quarantined: true,
+          externalId: "larksuite/cli/lark-doc",
+          upstreamSourceType: "well-known",
+          reason: "identity-page-fetch-failed",
+        },
+        githubRow,
+      ],
+    });
+
+    expect(result).toMatchObject({
+      status: "reconciling",
+      page: 1,
+      offset: 0,
+      counts: {
+        observed: 2,
+        inserted: 1,
+        rejected: 1,
+        quarantined: 1,
+        scansPlanned: 0,
+        scansAdmitted: 0,
+      },
+    });
+    expect(
+      await t.run(async (ctx) => await ctx.db.query("skillsShMirrorConflicts").collect()),
+    ).toEqual([
+      expect.objectContaining({
+        externalId: "larksuite/cli/lark-doc",
+        kind: "source-quarantine",
+        reason: "identity-page-fetch-failed",
+      }),
+    ]);
+    expect(
+      await t.query(internal.skillsShMirror.getByExternalIdInternal, {
+        externalId: "larksuite/cli/lark-doc",
+      }),
+    ).toBeNull();
+    expect(await t.query(internal.skillsShMirror.getStatusInternal, {})).toMatchObject({
+      latestRunConflicts: [
+        {
+          externalId: "larksuite/cli/lark-doc",
+          kind: "source-quarantine",
+          reason: "identity-page-fetch-failed",
+        },
+      ],
+    });
+  });
+
+  it("preserves an existing digest when identity-page transport is quarantined", async () => {
+    useTestEnvironment();
+    const t = convexTest(schema, modules);
+    await configure(t);
+    const firstRun = await startRun(t, "snapshot:before-transient-quarantine", 1);
+    await t.mutation(internal.skillsShMirror.processBatchInternal, {
+      runId: firstRun.runId,
+      page: 0,
+      offset: 0,
+      pageLength: 1,
+      hasMore: false,
+      sourceTotal: 1,
+      sourceRequests: 3,
+      sourceBytes: 1_024,
+      rows: [githubRow],
+    });
+    await t.mutation(internal.skillsShMirror.reconcileBatchInternal, {
+      runId: firstRun.runId,
+      limit: 10,
+    });
+    await t.run(async (ctx) => {
+      const existing = await ctx.db
+        .query("skillsShMirrorDigests")
+        .withIndex("by_external_id", (q) => q.eq("externalId", githubRow.externalId))
+        .unique();
+      expect(existing).not.toBeNull();
+      await ctx.db.patch(existing!._id, { upstreamSourceType: undefined });
+    });
+
+    const secondRun = await startRun(t, "snapshot:transient-quarantine", 1);
+    const result = await t.mutation(internal.skillsShMirror.processBatchInternal, {
+      runId: secondRun.runId,
+      page: 0,
+      offset: 0,
+      pageLength: 1,
+      hasMore: false,
+      sourceTotal: 1,
+      sourceRequests: 2,
+      sourceBytes: 1_024,
+      rows: [
+        {
+          quarantined: true,
+          externalId: githubRow.externalId,
+          upstreamSourceType: "well-known",
+          reason: "identity-page-fetch-failed",
+        },
+      ],
+    });
+    await t.mutation(internal.skillsShMirror.reconcileBatchInternal, {
+      runId: secondRun.runId,
+      limit: 10,
+    });
+
+    expect(result.counts).toMatchObject({
+      quarantined: 1,
+      quarantinedPreserved: 1,
+      tombstoned: 0,
+    });
+    expect(
+      await t.query(internal.skillsShMirror.getByExternalIdInternal, {
+        externalId: githubRow.externalId,
+      }),
+    ).toMatchObject({
+      active: true,
+      lastObservedRunId: secondRun.runId,
+      sourceFreshnessStatus: "stale",
+      upstreamSourceType: "well-known",
+    });
+    expect(
+      await t.query(internal.skillsShMirror.getDetailByExternalIdInternal, {
+        externalId: githubRow.externalId,
+      }),
+    ).toMatchObject({
+      lastObservedRunId: firstRun.runId,
+    });
+
+    const disappearanceRun = await startRun(t, "snapshot:disappearance-before-quarantine", 1);
+    await t.mutation(internal.skillsShMirror.processBatchInternal, {
+      runId: disappearanceRun.runId,
+      page: 0,
+      offset: 0,
+      pageLength: 1,
+      hasMore: false,
+      sourceTotal: 1,
+      sourceRequests: 3,
+      sourceBytes: 1_024,
+      rows: [wellKnownRow],
+    });
+    await t.mutation(internal.skillsShMirror.reconcileBatchInternal, {
+      runId: disappearanceRun.runId,
+      limit: 10,
+    });
+
+    const inactiveQuarantineRun = await startRun(t, "snapshot:inactive-quarantine", 1);
+    const inactiveResult = await t.mutation(internal.skillsShMirror.processBatchInternal, {
+      runId: inactiveQuarantineRun.runId,
+      page: 0,
+      offset: 0,
+      pageLength: 1,
+      hasMore: false,
+      sourceTotal: 1,
+      sourceRequests: 2,
+      sourceBytes: 1_024,
+      rows: [
+        {
+          quarantined: true,
+          externalId: githubRow.externalId,
+          upstreamSourceType: "well-known",
+          reason: "identity-page-fetch-failed",
+        },
+      ],
+    });
+    expect(inactiveResult.counts.quarantinedPreserved).toBe(0);
+    expect(
+      await t.query(internal.skillsShMirror.getByExternalIdInternal, {
+        externalId: githubRow.externalId,
+      }),
+    ).toMatchObject({
+      active: false,
+      lastObservedRunId: secondRun.runId,
+    });
+  });
+
+  it("keeps a successful same-run observation authoritative over a later quarantine", async () => {
+    useTestEnvironment();
+    const t = convexTest(schema, modules);
+    await configure(t);
+    const { runId } = await startRun(t, "snapshot:same-run-quarantine", 2);
+
+    const result = await t.mutation(internal.skillsShMirror.processBatchInternal, {
+      runId,
+      page: 0,
+      offset: 0,
+      pageLength: 2,
+      hasMore: false,
+      sourceTotal: 2,
+      sourceRequests: 4,
+      sourceBytes: 2_048,
+      rows: [
+        githubRow,
+        {
+          quarantined: true,
+          externalId: githubRow.externalId,
+          upstreamSourceType: "well-known",
+          reason: "identity-page-http-404",
+        },
+      ],
+    });
+
+    expect(result.counts).toMatchObject({
+      inserted: 1,
+      quarantined: 1,
+      quarantinedPreserved: 0,
+    });
+    expect(
+      await t.query(internal.skillsShMirror.getByExternalIdInternal, {
+        externalId: githubRow.externalId,
+      }),
+    ).toMatchObject({
+      active: true,
+      lastObservedRunId: runId,
+      sourceFreshnessStatus: "observed-only",
+    });
+  });
+
+  it("accepts a valid observation after preserving an earlier-run quarantined digest", async () => {
+    useTestEnvironment();
+    const t = convexTest(schema, modules);
+    await configure(t);
+    const firstRun = await startRun(t, "snapshot:before-quarantine-first", 1);
+    await t.mutation(internal.skillsShMirror.processBatchInternal, {
+      runId: firstRun.runId,
+      page: 0,
+      offset: 0,
+      pageLength: 1,
+      hasMore: false,
+      sourceTotal: 1,
+      sourceRequests: 3,
+      sourceBytes: 1_024,
+      rows: [githubRow],
+    });
+    await t.mutation(internal.skillsShMirror.reconcileBatchInternal, {
+      runId: firstRun.runId,
+      limit: 10,
+    });
+
+    const secondRun = await startRun(t, "snapshot:quarantine-first", 2);
+    const result = await t.mutation(internal.skillsShMirror.processBatchInternal, {
+      runId: secondRun.runId,
+      page: 0,
+      offset: 0,
+      pageLength: 2,
+      hasMore: false,
+      sourceTotal: 2,
+      sourceRequests: 4,
+      sourceBytes: 2_048,
+      rows: [
+        {
+          quarantined: true,
+          externalId: githubRow.externalId,
+          upstreamSourceType: "well-known",
+          reason: "identity-page-fetch-failed",
+        },
+        { ...githubRow, upstreamInstalls: githubRow.upstreamInstalls + 1 },
+      ],
+    });
+
+    expect(result.counts).toMatchObject({
+      updated: 1,
+      quarantined: 1,
+      quarantinedPreserved: 0,
+    });
+    expect(
+      await t.query(internal.skillsShMirror.getByExternalIdInternal, {
+        externalId: githubRow.externalId,
+      }),
+    ).toMatchObject({
+      active: true,
+      lastObservedRunId: secondRun.runId,
+      sourceFreshnessStatus: "observed-only",
+      upstreamInstalls: githubRow.upstreamInstalls + 1,
+    });
   });
 
   it("pauses and resumes from the exact page and offset", async () => {

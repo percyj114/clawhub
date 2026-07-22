@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { getVercelOidcToken, verifyVercelOidcToken, type VercelOidcPayload } from "@vercel/oidc";
 import { getClawHubRolloutCapabilities } from "clawhub-schema";
+import { parse, type DefaultTreeAdapterMap } from "parse5";
 
 const SKILLS_SH_API_BASE = "https://skills.sh/api/v1";
 const MAX_SOURCE_PAGE_SIZE = 500;
@@ -9,6 +10,9 @@ const MAX_TEST_SCAN_ADMISSIONS = 10;
 const DETAIL_CONCURRENCY = 8;
 const MAX_UPSTREAM_SCANNER_STATUS_LENGTH = 32;
 const MAX_UPSTREAM_SCANNER_URL_LENGTH = 2_048;
+const MAX_UPSTREAM_SOURCE_TYPE_LENGTH = 64;
+const MAX_IDENTITY_PAGE_BYTES = 512 * 1024;
+const MAX_IDENTITY_PAGE_REDIRECTS = 2;
 const CLAWHUB_VERCEL_OWNER_ID = "team_pLdjXbfy0XvPRiNmAygTjTSH";
 const CLAWHUB_VERCEL_PROJECT_ID = "prj_UVAJPNPYrBwTEkPJwkpEySsge8Mc";
 const CLAWHUB_TEST_CONVEX_URL = "https://academic-chihuahua-392.convex.cloud";
@@ -84,6 +88,32 @@ type SkillsShCatalogSearch = {
 type HashQualifiedSkillsShCatalogDetail = SkillsShCatalogDetail & {
   hash: string;
 };
+
+type SkillsShMirrorQuarantineReason =
+  | "identity-page-content-type"
+  | "identity-page-fetch-failed"
+  | "identity-page-http-404"
+  | "identity-page-http-error"
+  | "identity-page-repository-conflict"
+  | "identity-page-repository-mismatch"
+  | "identity-page-repository-missing"
+  | "identity-page-redirect"
+  | "identity-page-required"
+  | "identity-page-too-large"
+  | "unsupported-identity";
+
+type HtmlNode = DefaultTreeAdapterMap["node"];
+type HtmlElement = DefaultTreeAdapterMap["element"];
+
+class SkillsShMirrorIdentityError extends Error {
+  constructor(
+    readonly reason: SkillsShMirrorQuarantineReason,
+    message: string = reason,
+  ) {
+    super(message);
+    this.name = "SkillsShMirrorIdentityError";
+  }
+}
 
 const UPSTREAM_SCANNER_PROVIDERS = {
   "agent-trust-hub": "genAgentTrustHub",
@@ -185,6 +215,15 @@ function normalizeSkillsShId(id: string) {
   return parts.map((part) => encodeURIComponent(part)).join("/");
 }
 
+function normalizeUpstreamSourceType(value: unknown) {
+  const normalized = (typeof value === "string" ? value : "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, "");
+  return (normalized || "missing").slice(0, MAX_UPSTREAM_SOURCE_TYPE_LENGTH);
+}
+
 async function fetchSkillsShMirrorAudit(id: string, options: SkillsShFetchOptions = {}) {
   const response = await fetchSkillsShApiResponse(
     `/skills/audit/${normalizeSkillsShId(id)}`,
@@ -192,6 +231,139 @@ async function fetchSkillsShMirrorAudit(id: string, options: SkillsShFetchOption
     true,
   );
   return response === null ? null : ((await response.json()) as SkillsShCatalogAudit);
+}
+
+function isHtmlElement(node: HtmlNode): node is HtmlElement {
+  return "tagName" in node;
+}
+
+function htmlText(node: HtmlNode): string {
+  if ("value" in node) return node.value;
+  return "childNodes" in node ? node.childNodes.map(htmlText).join("") : "";
+}
+
+function htmlElements(node: HtmlNode, predicate: (element: HtmlElement) => boolean): HtmlElement[] {
+  const matches: HtmlElement[] = [];
+  if (isHtmlElement(node) && predicate(node)) matches.push(node);
+  if ("childNodes" in node) {
+    for (const child of node.childNodes) matches.push(...htmlElements(child, predicate));
+  }
+  return matches;
+}
+
+function htmlAttribute(element: HtmlElement, name: string) {
+  return element.attrs.find((attribute) => attribute.name === name)?.value;
+}
+
+function parseExactGitHubRepositoryUrl(value: string) {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  const pathParts = url.pathname.split("/").filter(Boolean);
+  if (
+    url.protocol !== "https:" ||
+    url.hostname.toLowerCase() !== "github.com" ||
+    url.port ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    pathParts.length !== 2
+  ) {
+    return null;
+  }
+  const owner = pathParts[0]?.toLowerCase();
+  const repo = pathParts[1]?.replace(/\.git$/i, "").toLowerCase();
+  if (!owner || !repo) return null;
+  return {
+    owner,
+    repo,
+    canonicalRepoUrl: `https://github.com/${owner}/${repo}`,
+  };
+}
+
+/*
+ * Repository identity is read only from the page's metadata row. Rendered
+ * README content can contain arbitrary labels and links and is not authoritative.
+ */
+function repositoryIdentityFromHtml(html: string, expectedOwner: string, expectedRepo: string) {
+  const document = parse(html);
+  const metadataContainers = htmlElements(document, (element) => {
+    const classes = new Set((htmlAttribute(element, "class") ?? "").split(/\s+/));
+    return (
+      classes.has("bg-background") &&
+      classes.has("py-8") &&
+      element.childNodes.some(
+        (child) => isHtmlElement(child) && htmlText(child).trim().toLowerCase() === "repository",
+      )
+    );
+  });
+  const repositoryLinks = new Set<string>();
+  for (const container of metadataContainers) {
+    const links = container.childNodes.filter(
+      (node): node is HtmlElement =>
+        isHtmlElement(node) && node.tagName === "a" && htmlAttribute(node, "href") !== undefined,
+    );
+    for (const link of links) {
+      const href = htmlAttribute(link, "href");
+      const repository = href ? parseExactGitHubRepositoryUrl(href) : null;
+      if (repository) {
+        repositoryLinks.add(
+          `${repository.owner}/${repository.repo}|${repository.canonicalRepoUrl}`,
+        );
+      }
+    }
+  }
+  const candidates = Array.from(repositoryLinks, (value) => {
+    const [identity, canonicalRepoUrl] = value.split("|");
+    const [owner, repo] = identity!.split("/");
+    return { owner: owner!, repo: repo!, canonicalRepoUrl: canonicalRepoUrl! };
+  });
+  if (candidates.length === 0) {
+    throw new SkillsShMirrorIdentityError("identity-page-repository-missing");
+  }
+  if (candidates.length > 1) {
+    throw new SkillsShMirrorIdentityError("identity-page-repository-conflict");
+  }
+  const [candidate] = candidates;
+  if (candidate!.owner !== expectedOwner || candidate!.repo !== expectedRepo) {
+    throw new SkillsShMirrorIdentityError("identity-page-repository-mismatch");
+  }
+  return candidate!;
+}
+
+function exactSkillsShIdentityPageUrl(value: string, expectedPath: string) {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  return url.protocol === "https:" &&
+    ["skills.sh", "www.skills.sh"].includes(url.hostname) &&
+    !url.port &&
+    !url.username &&
+    !url.password &&
+    !url.search &&
+    !url.hash &&
+    url.pathname.toLowerCase() === expectedPath
+    ? url
+    : null;
+}
+
+async function cancelResponseBody(response: Response) {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // The response may already be closed by the runtime.
+  }
+}
+
+function isRedirectStatus(status: number) {
+  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
 }
 
 function hasExactSkillsShPagePath(sourceUrl: string, pathParts: string[]) {
@@ -213,72 +385,69 @@ function hasExactSkillsShPagePath(sourceUrl: string, pathParts: string[]) {
   );
 }
 
-function parseExactGitHubInstallIdentity(
-  source: string,
-  installUrl: string | null,
-  sourceUrl: string,
-  slug: string,
-) {
+function parseExactGitHubInstallIdentity(source: string, installUrl: string | null) {
   const [owner, repo, ...rest] = source.split("/");
   if (!owner || !repo || rest.length > 0) return null;
-  if (!installUrl) {
-    return hasExactSkillsShPagePath(sourceUrl, [owner, repo, slug])
-      ? {
-          owner,
-          repo,
-          canonicalRepoUrl: `https://github.com/${owner}/${repo}`,
-        }
-      : null;
-  }
-  let url: URL;
-  try {
-    url = new URL(installUrl);
-  } catch {
-    return null;
-  }
-  const pathParts = url.pathname.split("/").filter(Boolean);
-  if (
-    url.protocol !== "https:" ||
-    url.hostname !== "github.com" ||
-    url.port ||
-    url.username ||
-    url.password ||
-    url.search ||
-    url.hash ||
-    pathParts.length !== 2
-  ) {
-    return null;
-  }
-  const installOwner = pathParts[0]?.toLowerCase();
-  const installRepo = pathParts[1]?.replace(/\.git$/i, "").toLowerCase();
-  if (installOwner !== owner || installRepo !== repo) return null;
-  return {
-    owner,
-    repo,
-    canonicalRepoUrl: `https://github.com/${owner}/${repo}`,
-  };
+  if (!installUrl) return null;
+  const repository = parseExactGitHubRepositoryUrl(installUrl);
+  return repository?.owner === owner && repository.repo === repo ? repository : null;
 }
 
-export function buildSkillsShMirrorObservation(row: SkillsShCatalogListRow) {
+export function buildSkillsShMirrorObservation(
+  row: SkillsShCatalogListRow,
+  sourcePageHtml?: string,
+) {
   const externalId = row.id.trim().toLowerCase();
   const slug = row.slug.trim().toLowerCase();
   const source = row.source.trim().toLowerCase();
-  const sourceType =
-    typeof row.sourceType === "string" ? row.sourceType.trim().toLowerCase() : "missing";
+  const upstreamSourceType = normalizeUpstreamSourceType(row.sourceType);
   const installUrl = row.installUrl?.trim() || null;
+  const identityError = (reason: SkillsShMirrorQuarantineReason) =>
+    new SkillsShMirrorIdentityError(
+      reason,
+      `Unsupported skills.sh mirror identity: ${externalId} ` +
+        `(sourceType=${upstreamSourceType}, source=${source || "missing"}, ` +
+        `installUrlPresent=${installUrl !== null})`,
+    );
   const base = {
     externalId,
     slug,
     displayName: row.name.trim() || slug,
     sourceUrl: row.url.trim(),
     upstreamInstalls: row.installs,
+    upstreamSourceType,
   };
-  const githubIdentity = parseExactGitHubInstallIdentity(source, installUrl, base.sourceUrl, slug);
+  const githubIdentity = parseExactGitHubInstallIdentity(source, installUrl);
   if (githubIdentity && externalId === `${githubIdentity.owner}/${githubIdentity.repo}/${slug}`) {
     return {
       ...base,
       sourceType: "github" as const,
       ...githubIdentity,
+    };
+  }
+  const [owner, repo, ...sourceRest] = source.split("/");
+  const structurallyAmbiguousGithub =
+    !installUrl &&
+    upstreamSourceType === "well-known" &&
+    Boolean(owner && repo) &&
+    sourceRest.length === 0 &&
+    externalId === `${owner}/${repo}/${slug}` &&
+    hasExactSkillsShPagePath(base.sourceUrl, [owner!, repo!, slug]);
+  if (structurallyAmbiguousGithub) {
+    if (sourcePageHtml === undefined) {
+      throw identityError("identity-page-required");
+    }
+    let repositoryIdentity: ReturnType<typeof repositoryIdentityFromHtml>;
+    try {
+      repositoryIdentity = repositoryIdentityFromHtml(sourcePageHtml, owner!, repo!);
+    } catch (error) {
+      if (error instanceof SkillsShMirrorIdentityError) throw identityError(error.reason);
+      throw error;
+    }
+    return {
+      ...base,
+      sourceType: "github" as const,
+      ...repositoryIdentity,
     };
   }
   if (
@@ -294,11 +463,205 @@ export function buildSkillsShMirrorObservation(row: SkillsShCatalogListRow) {
       sourceHost: source,
     };
   }
-  throw new Error(
+  throw identityError("unsupported-identity");
+}
+
+function safeMirrorIdentityError(row: SkillsShCatalogListRow, error: unknown) {
+  const externalId = row.id.trim().toLowerCase().slice(0, 512) || "missing";
+  const upstreamSourceType = normalizeUpstreamSourceType(row.sourceType);
+  const reason =
+    error instanceof SkillsShMirrorIdentityError ? error.reason : "unsupported-identity";
+  const source = row.source.trim().toLowerCase().slice(0, 256) || "missing";
+  const installUrl = row.installUrl?.trim() || null;
+  console.warn(
     `Unsupported skills.sh mirror identity: ${externalId} ` +
-      `(sourceType=${sourceType || "missing"}, source=${source || "missing"}, ` +
+      `(sourceType=${upstreamSourceType}, source=${source}, ` +
       `installUrlPresent=${installUrl !== null})`,
   );
+  return {
+    quarantined: true as const,
+    externalId,
+    upstreamSourceType,
+    reason,
+  };
+}
+
+async function fetchSkillsShIdentityPage(
+  sourceUrl: string,
+  options: SkillsShFetchOptions,
+): Promise<
+  | { ok: true; html: string; sourceBytes: number }
+  | { ok: false; reason: SkillsShMirrorQuarantineReason; sourceBytes: number }
+> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  let sourceBytes = 0;
+  const failure = (reason: SkillsShMirrorQuarantineReason) => ({
+    ok: false as const,
+    reason,
+    sourceBytes,
+  });
+  let expectedPath: string;
+  try {
+    expectedPath = new URL(sourceUrl).pathname.toLowerCase();
+  } catch {
+    return failure("identity-page-redirect");
+  }
+  const initialUrl = exactSkillsShIdentityPageUrl(sourceUrl, expectedPath);
+  if (!initialUrl) return failure("identity-page-redirect");
+  attemptLoop: for (let attempt = 0; attempt < MAX_SOURCE_ATTEMPTS; attempt += 1) {
+    let requestUrl = initialUrl.href;
+    for (let redirects = 0; redirects <= MAX_IDENTITY_PAGE_REDIRECTS; redirects += 1) {
+      let response: Response;
+      try {
+        response = await fetchImpl(requestUrl, {
+          headers: { Accept: "text/html" },
+          redirect: "manual",
+        });
+      } catch {
+        if (attempt === MAX_SOURCE_ATTEMPTS - 1) {
+          return failure("identity-page-fetch-failed");
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
+        continue attemptLoop;
+      }
+      if (isRedirectStatus(response.status)) {
+        const location = response.headers.get("location");
+        await cancelResponseBody(response);
+        if (!location || redirects === MAX_IDENTITY_PAGE_REDIRECTS) {
+          return failure("identity-page-redirect");
+        }
+        let target: URL;
+        try {
+          target = new URL(location, requestUrl);
+        } catch {
+          return failure("identity-page-redirect");
+        }
+        const validatedTarget = exactSkillsShIdentityPageUrl(
+          target.href,
+          initialUrl.pathname.toLowerCase(),
+        );
+        if (!validatedTarget) return failure("identity-page-redirect");
+        requestUrl = validatedTarget.href;
+        continue;
+      }
+      if (response.status === 404) {
+        await cancelResponseBody(response);
+        return failure("identity-page-http-404");
+      }
+      if (!response.ok) {
+        if (response.status === 429 || response.status >= 500) {
+          if (attempt < MAX_SOURCE_ATTEMPTS - 1) {
+            await cancelResponseBody(response);
+            await waitForSkillsShRetry(response, attempt);
+            continue attemptLoop;
+          }
+          await cancelResponseBody(response);
+          return failure("identity-page-fetch-failed");
+        }
+        await cancelResponseBody(response);
+        return failure("identity-page-http-error");
+      }
+      const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+      if (!contentType.includes("text/html")) {
+        await cancelResponseBody(response);
+        return failure("identity-page-content-type");
+      }
+      const contentLength = Number(response.headers.get("content-length"));
+      if (Number.isFinite(contentLength) && contentLength > MAX_IDENTITY_PAGE_BYTES) {
+        await cancelResponseBody(response);
+        return failure("identity-page-too-large");
+      }
+      const body = await readBoundedResponseBytes(response, MAX_IDENTITY_PAGE_BYTES);
+      sourceBytes += body.sourceBytes;
+      if (!body.ok) {
+        await cancelResponseBody(response);
+        if (attempt === MAX_SOURCE_ATTEMPTS - 1) {
+          return failure("identity-page-fetch-failed");
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
+        continue attemptLoop;
+      }
+      if (body.bytes === null) {
+        return failure("identity-page-too-large");
+      }
+      return {
+        ok: true,
+        html: new TextDecoder().decode(body.bytes),
+        sourceBytes,
+      };
+    }
+  }
+  return failure("identity-page-fetch-failed");
+}
+
+async function readBoundedResponseBytes(response: Response, maximumBytes: number) {
+  if (!response.body) {
+    return { ok: true as const, bytes: new Uint8Array(), sourceBytes: 0 };
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      byteLength += chunk.value.byteLength;
+      if (byteLength > maximumBytes) {
+        await reader.cancel();
+        return { ok: true as const, bytes: null, sourceBytes: byteLength };
+      }
+      chunks.push(chunk.value);
+    }
+  } catch {
+    return { ok: false as const, sourceBytes: byteLength };
+  }
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { ok: true as const, bytes, sourceBytes: byteLength };
+}
+
+async function resolveSkillsShMirrorObservation(
+  row: SkillsShCatalogListRow,
+  options: SkillsShFetchOptions,
+) {
+  try {
+    return {
+      row: buildSkillsShMirrorObservation(row),
+      identitySourceBytes: 0,
+    };
+  } catch (error) {
+    if (
+      !(error instanceof SkillsShMirrorIdentityError) ||
+      error.reason !== "identity-page-required"
+    ) {
+      return {
+        row: safeMirrorIdentityError(row, error),
+        identitySourceBytes: 0,
+      };
+    }
+  }
+  const sourcePage = await fetchSkillsShIdentityPage(row.url.trim(), options);
+  if (!sourcePage.ok) {
+    return {
+      row: safeMirrorIdentityError(row, new SkillsShMirrorIdentityError(sourcePage.reason)),
+      identitySourceBytes: sourcePage.sourceBytes,
+    };
+  }
+  try {
+    return {
+      row: buildSkillsShMirrorObservation(row, sourcePage.html),
+      identitySourceBytes: sourcePage.sourceBytes,
+    };
+  } catch (error) {
+    return {
+      row: safeMirrorIdentityError(row, error),
+      identitySourceBytes: sourcePage.sourceBytes,
+    };
+  }
 }
 
 function mirrorDetailFile(file: NonNullable<SkillsShCatalogDetail["files"]>[number]) {
@@ -499,6 +862,7 @@ export async function fetchSkillsShMirrorBatch(
   assertIntegerInRange("maxDetailBytes", args.maxDetailBytes, 1, 64 * 1024);
   const baseFetch = options.fetchImpl ?? fetch;
   let sourceRequests = 0;
+  // Count every list, detail, audit, and identity-page attempt through one wrapper.
   const monitoredFetch: typeof fetch = async (input, init) => {
     sourceRequests += 1;
     return await baseFetch(input, init);
@@ -519,8 +883,24 @@ export async function fetchSkillsShMirrorBatch(
     throw new Error("skills.sh mirror offset is outside the source page");
   }
   const listRows = sourcePage.data.slice(args.offset, args.offset + args.limit);
-  const details = Array.from<SkillsShCatalogDetail>({ length: listRows.length });
-  const audits = Array.from<SkillsShCatalogAudit | null>({ length: listRows.length });
+  const rows = Array.from<
+    | (ReturnType<typeof buildSkillsShMirrorObservation> & {
+        upstreamScanners: SkillsShMirrorUpstreamScanners;
+        sourceContentHash?: string;
+        detail?: {
+          contentKind: "skill-md" | "readme";
+          path: string;
+          content: string;
+          contentBytes: number;
+          sourceBytes: number;
+          sourceFileCount: number;
+          truncated: boolean;
+        };
+      })
+    | ReturnType<typeof safeMirrorIdentityError>
+  >({ length: listRows.length });
+  // Count only response-body bytes the mirror consumed; canceled unread bodies contribute zero.
+  let rowSourceBytes = 0;
   let nextIndex = 0;
   await Promise.all(
     Array.from({ length: Math.min(DETAIL_CONCURRENCY, listRows.length) }, async () => {
@@ -528,35 +908,41 @@ export async function fetchSkillsShMirrorBatch(
         const index = nextIndex;
         nextIndex += 1;
         const listRow = listRows[index]!;
-        [details[index], audits[index]] = await Promise.all([
+        const identity = await resolveSkillsShMirrorObservation(listRow, fetchOptions);
+        rowSourceBytes += identity.identitySourceBytes;
+        if ("quarantined" in identity.row) {
+          rows[index] = identity.row;
+          continue;
+        }
+        const [detailPayload, auditPayload] = await Promise.all([
           fetchSkillsShMirrorDetail(listRow.id, fetchOptions),
           fetchSkillsShMirrorAudit(listRow.id, fetchOptions),
         ]);
+        rowSourceBytes +=
+          Buffer.byteLength(JSON.stringify(detailPayload), "utf8") +
+          (auditPayload === null ? 0 : Buffer.byteLength(JSON.stringify(auditPayload), "utf8"));
+        const detail = buildSkillsShMirrorDetail(detailPayload, args.maxDetailBytes);
+        rows[index] = {
+          ...identity.row,
+          ...(detail.sourceContentHash ? { sourceContentHash: detail.sourceContentHash } : {}),
+          upstreamScanners: buildSkillsShMirrorUpstreamScanners(auditPayload, listRow.url),
+          ...(detail.contentKind === "none"
+            ? {}
+            : {
+                detail: {
+                  contentKind: detail.contentKind,
+                  path: detail.path,
+                  content: detail.content,
+                  contentBytes: detail.contentBytes,
+                  sourceBytes: detail.sourceBytes,
+                  sourceFileCount: detail.sourceFileCount,
+                  truncated: detail.truncated,
+                },
+              }),
+        };
       }
     }),
   );
-  const rows = listRows.map((listRow, index) => {
-    const observation = buildSkillsShMirrorObservation(listRow);
-    const detail = buildSkillsShMirrorDetail(details[index]!, args.maxDetailBytes);
-    return {
-      ...observation,
-      ...(detail.sourceContentHash ? { sourceContentHash: detail.sourceContentHash } : {}),
-      upstreamScanners: buildSkillsShMirrorUpstreamScanners(audits[index] ?? null, listRow.url),
-      ...(detail.contentKind === "none"
-        ? {}
-        : {
-            detail: {
-              contentKind: detail.contentKind,
-              path: detail.path,
-              content: detail.content,
-              contentBytes: detail.contentBytes,
-              sourceBytes: detail.sourceBytes,
-              sourceFileCount: detail.sourceFileCount,
-              truncated: detail.truncated,
-            },
-          }),
-    };
-  });
   return {
     page: args.page,
     offset: args.offset,
@@ -564,17 +950,7 @@ export async function fetchSkillsShMirrorBatch(
     sourceTotal: sourcePage.pagination.total,
     hasMore: sourcePage.pagination.hasMore,
     sourceRequests,
-    sourceBytes:
-      Buffer.byteLength(JSON.stringify(sourcePage), "utf8") +
-      details.reduce(
-        (total, detail) => total + Buffer.byteLength(JSON.stringify(detail), "utf8"),
-        0,
-      ) +
-      audits.reduce(
-        (total, audit) =>
-          total + (audit === null ? 0 : Buffer.byteLength(JSON.stringify(audit), "utf8")),
-        0,
-      ),
+    sourceBytes: Buffer.byteLength(JSON.stringify(sourcePage), "utf8") + rowSourceBytes,
     rows,
   };
 }
