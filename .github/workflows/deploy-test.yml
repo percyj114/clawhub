@@ -34,7 +34,7 @@ jobs:
     if: >-
       (github.event_name == 'workflow_dispatch' &&
       ((github.ref == 'refs/heads/main' && inputs.claw558_action == 'deploy') ||
-      (github.ref == 'refs/heads/pe/claw-558-test-gate' &&
+      (github.ref == 'refs/heads/pe/claw-557-test-admin-gate' &&
       inputs.claw558_action == 'deploy'))) ||
       (github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push')
@@ -64,7 +64,7 @@ jobs:
           deploy_sha="$(git rev-parse HEAD)"
           git fetch --no-tags origin main
           main_sha="$(git rev-parse origin/main)"
-          if [[ "$WORKFLOW_REF" == "refs/heads/pe/claw-558-test-gate" ]]; then
+          if [[ "$WORKFLOW_REF" == "refs/heads/pe/claw-557-test-admin-gate" ]]; then
             if [[ "$REQUESTED_DEPLOY_SHA" != "d66137a23b27defbe31e96f8957e72854e57ce21" ]]; then
               echo "::error::CLAW-558 Test deploy must use the authorized exact source SHA"
               exit 1
@@ -269,7 +269,7 @@ jobs:
   claw558-proof:
     if: >-
       github.event_name == 'workflow_dispatch' &&
-      github.ref == 'refs/heads/pe/claw-558-test-gate' &&
+      github.ref == 'refs/heads/pe/claw-557-test-admin-gate' &&
       inputs.claw558_action == 'proof' &&
       inputs.deploy_sha == 'd66137a23b27defbe31e96f8957e72854e57ce21'
     runs-on: blacksmith-16vcpu-ubuntu-2404
@@ -349,7 +349,7 @@ jobs:
   claw558-cleanup:
     if: >-
       github.event_name == 'workflow_dispatch' &&
-      github.ref == 'refs/heads/pe/claw-558-test-gate' &&
+      github.ref == 'refs/heads/pe/claw-557-test-admin-gate' &&
       inputs.claw558_action == 'cleanup' &&
       inputs.deploy_sha == 'd66137a23b27defbe31e96f8957e72854e57ce21'
     runs-on: ubuntu-latest
