@@ -226,6 +226,9 @@ export const RETENTION_POLICIES = {
   skillsShMirrorDigests: permanent("Normalized skills.sh external search digests."),
   skillsShMirrorDetails: permanent("Bounded skills.sh external detail content."),
   skillsShMirrorConflicts: permanent("Skills.sh external observation conflict audit history."),
+  skillsShAdoptions: permanent(
+    "Verified ownership, frozen source identity, destination intent, and scan outcome are durable adoption audit history.",
+  ),
   publisherAbuseScoreRuns: permanent("Abuse scoring run history."),
   publisherAbuseTemporalScanSamples: ephemeral(
     "Exact temporal percentile samples are temporary scan working state.",
