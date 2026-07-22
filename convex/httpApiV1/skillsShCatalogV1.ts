@@ -33,6 +33,19 @@ const GITHUB_OWNER_RESOLUTION_CONCURRENCY = 8;
 const CONTROLLED_CANARY_FIXTURE_ID = "patrick-html-canary-v1";
 const MAX_CONTROLLED_CANARY_FILES = 100;
 
+export function parseSkillsShCatalogReference(value: string) {
+  const segments = value
+    .trim()
+    .split("/")
+    .map((segment) => segment.trim().toLowerCase());
+  if (segments.length !== 4 || segments[0] !== "skills-sh") return null;
+  const [owner, repo, slug] = segments.slice(1);
+  if (!owner || !repo || !slug || [owner, repo, slug].some((part) => part.includes(":"))) {
+    return null;
+  }
+  return { owner, repo, slug };
+}
+
 async function runMutationRef<T>(
   ctx: ActionCtx,
   ref: unknown,

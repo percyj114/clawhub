@@ -81,6 +81,7 @@ import {
   text,
   toOptionalNumber,
 } from "./shared";
+import { parseSkillsShCatalogReference } from "./skillsShCatalogV1";
 
 const MAX_EXPORT_FILE_COUNT = 10_000;
 const MAX_EXPORT_PAGE_LIMIT = 250;
@@ -1828,6 +1829,16 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
 
   if (second === "install" && segments.length === 2) {
     const installUrl = new URL(request.url);
+    if (installUrl.searchParams.has("reference")) {
+      const reference = installUrl.searchParams.get("reference") ?? "";
+      const catalogRef = parseSkillsShCatalogReference(reference);
+      if (!catalogRef || catalogRef.slug !== slug) {
+        return text("Invalid skills.sh reference", 400, rate.headers);
+      }
+      const entry = await ctx.runQuery(api.skillsShCatalog.getPublicEntry, catalogRef);
+      if (!entry) return text("Skill not found", 404, rate.headers);
+      return json(entry.install, 200, rate.headers);
+    }
     const forceInstall = parseBooleanQueryParam(installUrl.searchParams.get("forceInstall"));
     const skill = (await runQueryRef<
       | (InstallResolverSkill & {

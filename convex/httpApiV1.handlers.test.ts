@@ -2864,6 +2864,93 @@ describe("httpApiV1 handlers", () => {
     });
   });
 
+  it("skill install resolver returns the exact approved skills.sh GitHub descriptor", async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      expect(args).toEqual({
+        owner: "patrick-erichsen",
+        repo: "skills",
+        slug: "html",
+      });
+      return {
+        install: {
+          ok: true,
+          slug: "skills-sh/patrick-erichsen/skills/html",
+          installKind: "github",
+          github: {
+            repo: "patrick-erichsen/skills",
+            path: "skills/html",
+            commit: "050daba89f6b6636470add5cb300aac46a412cf8",
+            contentHash: "a47adb2c1ac33c088f664b5187971b63d2b958a7b9f01516d26005ca941a108f",
+            sourceUrl:
+              "https://github.com/patrick-erichsen/skills/tree/050daba89f6b6636470add5cb300aac46a412cf8/skills/html",
+          },
+        },
+      };
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request(
+        "https://example.com/api/v1/skills/html/install?reference=skills-sh%2Fpatrick-erichsen%2Fskills%2Fhtml",
+      ),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      slug: "skills-sh/patrick-erichsen/skills/html",
+      installKind: "github",
+      github: {
+        repo: "patrick-erichsen/skills",
+        path: "skills/html",
+        commit: "050daba89f6b6636470add5cb300aac46a412cf8",
+      },
+    });
+    expect(runQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["skills-sh:patrick-erichsen/skills/html", "skills-sh/patrick-erichsen/skills/weather"])(
+    "skill install resolver rejects invalid exact catalog reference %s",
+    async (reference) => {
+      const runQuery = vi.fn();
+      const runMutation = vi.fn().mockResolvedValue(okRate());
+
+      const response = await __handlers.skillsGetRouterV1Handler(
+        makeCtx({ runQuery, runMutation }),
+        new Request(
+          `https://example.com/api/v1/skills/html/install?reference=${encodeURIComponent(reference)}`,
+        ),
+      );
+
+      expect(response.status).toBe(400);
+      expect(runQuery).not.toHaveBeenCalled();
+    },
+  );
+
+  it("skill install resolver never falls back to a native slug for a hidden catalog reference", async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      expect(args).toEqual({
+        owner: "patrick-erichsen",
+        repo: "skills",
+        slug: "html",
+      });
+      return null;
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request(
+        "https://example.com/api/v1/skills/html/install?reference=skills-sh%2Fpatrick-erichsen%2Fskills%2Fhtml",
+      ),
+    );
+
+    expect(response.status).toBe(404);
+    await expect(response.text()).resolves.toBe("Skill not found");
+    expect(runQuery).toHaveBeenCalledTimes(1);
+  });
+
   it("skill install resolver returns a pinned GitHub descriptor for scan-clean source-backed skills", async () => {
     const runQuery = makeInstallResolverRunQuery({
       skill: {
