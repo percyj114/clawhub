@@ -640,7 +640,7 @@ cleanup() {
     jq -r \
       --arg externalId "$CANARY_ID" \
       '[.entries[] |
-        select(.externalId == $externalId and .publicVisible == true)
+        select(.externalId == $externalId and .publishedScanAttemptId != null)
       ] | first | .publishedScanAttemptId // empty' \
       "$ARTIFACT_DIR/cleanup-before.json"
   )"
@@ -661,7 +661,10 @@ cleanup() {
     .control.realScanAllowlist == [] and
     ([.scanAttempts[] | select(.status == "queued" or .status == "running")] | length) == 0 and
     ([.entries[] |
-      select(.externalId == "patrick-erichsen/skills/html" and .publicVisible == true)
+      select(
+        .externalId == "patrick-erichsen/skills/html" and
+        (.publicVisible == true or .publishedScanAttemptId != null)
+      )
     ] | length) == 0
   ' "$ARTIFACT_DIR/cleanup-after.json" >/dev/null
   assert_hidden "$ARTIFACT_DIR/cleanup-public.txt"
