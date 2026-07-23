@@ -940,11 +940,11 @@ export async function resolveSkillsShMirrorGitHubLocators<T extends SkillsShMirr
             ) {
               return false;
             }
-            const folder = blob.path.slice(0, -relativePath.length).replace(/\/+$/, "");
+            const folder = blob.path.split("/").slice(0, -1).join("/");
             return folder.split("/").at(-1)?.toLowerCase() === row.slug!.toLowerCase();
           });
           if (matches.length !== 1) continue;
-          const githubPath = matches[0]!.path.slice(0, -relativePath.length).replace(/\/+$/, "");
+          const githubPath = matches[0]!.path.split("/").slice(0, -1).join("/");
           if (!githubPath) continue;
           nextRows[index] = {
             ...row,

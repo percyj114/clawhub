@@ -352,6 +352,45 @@ describe("skills.sh catalog Test HTTP API", () => {
     expect(runQuery).toHaveBeenCalledTimes(2);
   });
 
+  it("cancels one stale active mirror run with explicit confirmation", async () => {
+    const runQuery = vi.fn().mockResolvedValue({
+      environment: "test",
+      deploymentName: "academic-chihuahua-392",
+      buildSha: "test-sha",
+      control: {},
+    });
+    const runMutation = vi.fn().mockResolvedValue({
+      runId: "skillsShMirrorRuns:stale",
+      status: "canceled",
+    });
+    const ctx = { runQuery, runMutation } as never;
+    const request = new Request("https://academic-chihuahua-392.convex.site/api/v1/ops", {
+      method: "POST",
+      body: JSON.stringify({
+        operation: "mirror-cancel",
+        runId: "skillsShMirrorRuns:stale",
+        reason: "discard stale captured recovery",
+        confirm: "cancel-skills-sh-mirror-test-run",
+      }),
+    });
+
+    const response = await skillsShCatalogTestV1Handler(ctx, request);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      runId: "skillsShMirrorRuns:stale",
+      status: "canceled",
+    });
+    expect(runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        runId: "skillsShMirrorRuns:stale",
+        reason: "discard stale captured recovery",
+        confirm: "cancel-skills-sh-mirror-test-run",
+      }),
+    );
+  });
+
   it("reads bounded mirror conflicts for an exact completed run", async () => {
     const runQuery = vi
       .fn()

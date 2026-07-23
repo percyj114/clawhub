@@ -179,6 +179,32 @@ describe("skills.sh external mirror", () => {
     expect(started.runId).toEqual(expect.any(String));
   });
 
+  it("cancels a stale captured run so a fresh authenticated run can start", async () => {
+    useTestEnvironment();
+    const t = convexTest(schema, modules);
+    await configure(t);
+    const stale = await startRun(t, "skills-sh-captured:missing-live-run");
+
+    await expect(startRun(t, "skills-sh:fresh-blocked")).rejects.toThrow(
+      "already has an active run",
+    );
+    await expect(
+      t.mutation(internal.skillsShMirror.cancelRunInternal, {
+        runId: stale.runId,
+        actor: "codex-test",
+        reason: "discard stale captured recovery",
+        confirm: "cancel-skills-sh-mirror-test-run",
+      }),
+    ).resolves.toMatchObject({
+      runId: stale.runId,
+      status: "canceled",
+    });
+    await expect(startRun(t, "skills-sh:fresh-live")).resolves.toMatchObject({
+      status: "running",
+      snapshotId: "skills-sh:fresh-live",
+    });
+  });
+
   it("allows only one active batch lease for an exact durable cursor", async () => {
     useTestEnvironment();
     const t = convexTest(schema, modules);
