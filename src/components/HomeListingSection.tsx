@@ -49,6 +49,7 @@ import type { PublicSkill, PublicUser } from "../lib/publicUser";
 import {
   isSkillsShSearchResult,
   SKILLS_SH_TRUST_LABEL,
+  skillsShRepositoryLabel,
   type SkillsShSearchEntry,
   type SkillsShSearchResult,
 } from "../lib/skillsShCatalog";
@@ -270,9 +271,7 @@ function HomeListingSkillsShRow({ result }: { result: SkillsShSearchResult }) {
           <span className="home-v2-listing-row-name" title={result.displayName}>
             {truncateText(result.displayName, PUBLIC_CATALOG_NAME_PREVIEW_LENGTH)}
           </span>
-          <span className="home-v2-listing-row-by">
-            {result.owner}/{result.repo}
-          </span>
+          <span className="home-v2-listing-row-by">{skillsShRepositoryLabel(result)}</span>
           <Badge variant="warning" size="sm">
             {SKILLS_SH_TRUST_LABEL}
           </Badge>
@@ -391,9 +390,7 @@ function HomeListingSkillsShCard({ result }: { result: SkillsShSearchResult }) {
           <span className="home-v2-listing-card-name" title={result.displayName}>
             {truncateText(result.displayName, PUBLIC_CATALOG_NAME_PREVIEW_LENGTH)}
           </span>
-          <span className="home-v2-listing-card-by">
-            {result.owner}/{result.repo}
-          </span>
+          <span className="home-v2-listing-card-by">{skillsShRepositoryLabel(result)}</span>
         </div>
         <Badge variant="warning" size="sm">
           {SKILLS_SH_TRUST_LABEL}

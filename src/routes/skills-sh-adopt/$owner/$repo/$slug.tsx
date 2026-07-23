@@ -151,6 +151,8 @@ export function SkillsShAdoptionPage() {
     : null;
   const destination = preview?.destination;
   const isReplacement = destination?.kind === "replace";
+  const resultBlocksRetry =
+    resultStatus !== null && resultStatus !== "stale" && resultStatus !== "canceled";
 
   const handleStart = async () => {
     if (!preview?.canStart || !preview.destination.fingerprint || !selected || !confirmed) return;
@@ -332,14 +334,16 @@ export function SkillsShAdoptionPage() {
                 <Button
                   className="mt-5"
                   variant="primary"
-                  disabled={!confirmed || resultStatus !== null}
+                  disabled={!confirmed || resultBlocksRetry}
                   loading={submitting}
                   onClick={handleStart}
                 >
                   <ShieldCheck aria-hidden="true" size={16} />
-                  {resultStatus
-                    ? adoptionStatusButtonLabel(resultStatus)
-                    : "Create adoption request"}
+                  {resultStatus === "stale" || resultStatus === "canceled"
+                    ? "Retry adoption request"
+                    : resultStatus
+                      ? adoptionStatusButtonLabel(resultStatus)
+                      : "Create adoption request"}
                 </Button>
               </section>
             ) : null}

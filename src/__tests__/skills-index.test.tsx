@@ -280,7 +280,7 @@ describe("SkillsIndex", () => {
     expect(screen.queryByText(/\d+ loaded/)).toBeNull();
   });
 
-  it("does not restart native pagination while mirrored pages continue", async () => {
+  it("continues mirrored pagination without restarting the native stream", async () => {
     searchMock = { sort: "downloads" };
     vi.stubGlobal("IntersectionObserver", undefined);
     const searchAction = vi.fn().mockResolvedValue([]);
@@ -339,11 +339,6 @@ describe("SkillsIndex", () => {
 
     render(<SkillsIndex />);
     expect(await screen.findByText("External 1")).toBeTruthy();
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Load more" }));
-    });
-
     expect(await screen.findByText("External 2")).toBeTruthy();
     expect(convexHttpMock.query).toHaveBeenCalledTimes(1);
     expect(mirrorAction).toHaveBeenNthCalledWith(2, {
@@ -352,6 +347,108 @@ describe("SkillsIndex", () => {
       categorySlug: undefined,
       topic: undefined,
     });
+  });
+
+  it("keeps native browse results when mirrored browse fails", async () => {
+    searchMock = { sort: "downloads" };
+    vi.stubGlobal("IntersectionObserver", undefined);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const searchAction = vi.fn().mockResolvedValue([]);
+    const mirrorAction = vi.fn().mockRejectedValue(new Error("mirror unavailable"));
+    convexReactMocks.useAction.mockImplementation((ref: unknown) =>
+      getFunctionName(ref as never) === "search:listSkillsShMirrorBrowse"
+        ? mirrorAction
+        : searchAction,
+    );
+    convexHttpMock.query.mockResolvedValue({
+      page: [makeListResult("native-survives", "Native survives", { downloads: 100 })],
+      hasMore: false,
+      nextCursor: null,
+    });
+
+    render(<SkillsIndex />);
+
+    expect(await screen.findByText("Native survives")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Load more" })).toBeTruthy();
+  });
+
+  it("keeps mirrored results in direct ascending Top URLs by canonicalizing the direction", async () => {
+    searchMock = { sort: "downloads", dir: "asc" };
+    const searchAction = vi.fn().mockResolvedValue([]);
+    const mirrorAction = vi.fn().mockResolvedValue({
+      page: [makeExternalResult("external-top", 100)],
+      nextCursor: null,
+      hasMore: false,
+    });
+    convexReactMocks.useAction.mockImplementation((ref: unknown) =>
+      getFunctionName(ref as never) === "search:listSkillsShMirrorBrowse"
+        ? mirrorAction
+        : searchAction,
+    );
+    convexHttpMock.query.mockResolvedValue({
+      page: [makeListResult("native-top", "Native Top", { downloads: 90 })],
+      hasMore: false,
+      nextCursor: null,
+    });
+
+    render(<SkillsIndex />);
+
+    expect(await screen.findByText("External 100")).toBeTruthy();
+    expect(getLastListPageArgs()).toEqual(expect.objectContaining({ dir: "desc" }));
+    expect(mirrorAction).toHaveBeenCalledTimes(1);
+  });
+
+  it("buffers mixed popularity pages before exposing lower-ranked mirrored rows", async () => {
+    searchMock = { sort: "downloads" };
+    vi.stubGlobal("IntersectionObserver", undefined);
+    const searchAction = vi.fn().mockResolvedValue([]);
+    const mirrorAction = vi.fn().mockResolvedValue({
+      page: Array.from({ length: 25 }, (_, index) =>
+        makeExternalResult(`external-${100 - index}`, 100 - index),
+      ),
+      nextCursor: "external:2",
+      hasMore: true,
+    });
+    convexReactMocks.useAction.mockImplementation((ref: unknown) =>
+      getFunctionName(ref as never) === "search:listSkillsShMirrorBrowse"
+        ? mirrorAction
+        : searchAction,
+    );
+    convexHttpMock.query
+      .mockResolvedValueOnce({
+        page: Array.from({ length: 25 }, (_, index) =>
+          makeListResult(`native-${200 - index}`, `Native ${200 - index}`, {
+            downloads: 200 - index,
+          }),
+        ),
+        hasMore: true,
+        nextCursor: "native:2",
+      })
+      .mockResolvedValueOnce({
+        page: Array.from({ length: 25 }, (_, index) =>
+          makeListResult(`native-${175 - index}`, `Native ${175 - index}`, {
+            downloads: 175 - index,
+          }),
+        ),
+        hasMore: false,
+        nextCursor: null,
+      });
+
+    render(<SkillsIndex />);
+
+    expect(await screen.findByText("Native 200")).toBeTruthy();
+    expect(screen.getByText("Native 176")).toBeTruthy();
+    expect(screen.queryByText("External 100")).toBeNull();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    });
+
+    expect(await screen.findByText("Native 175")).toBeTruthy();
+    expect(screen.getByText("Native 151")).toBeTruthy();
+    expect(screen.queryByText("External 100")).toBeNull();
+    expect(convexHttpMock.query).toHaveBeenCalledTimes(2);
+    expect(mirrorAction).toHaveBeenCalledTimes(1);
   });
 
   it("includes mirrored rows in recommended category browse", async () => {
@@ -878,11 +975,12 @@ describe("SkillsIndex", () => {
     expect(args).toEqual(
       expect.objectContaining({
         categorySlug: "development",
-        officialFirst: true,
+        sort: "downloads",
         categoryKeywords: expect.arrayContaining(["developer"]),
         excludeCategoryKeywords: undefined,
       }),
     );
+    expect(args).not.toHaveProperty("officialFirst");
     expect(screen.getByText("Blockscout for Web3 Dev")).toBeTruthy();
     expect(screen.getByText("Developer Utils")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Clear" })).toBeNull();
@@ -997,7 +1095,7 @@ describe("SkillsIndex", () => {
     expect(screen.queryByRole("radio", { name: "All topics" })).toBeNull();
   });
 
-  it("preserves backend official-first ordering on category pages", async () => {
+  it("uses the shared popularity order when category browse includes the mirror", async () => {
     searchMock = { category: "development" };
     convexHttpMock.query.mockResolvedValue({
       page: [
@@ -1020,7 +1118,8 @@ describe("SkillsIndex", () => {
       (node) => node.textContent,
     );
     expect(titles).toEqual(["Official Dev", "Community Dev"]);
-    expect(getLastListPageArgs()).toEqual(expect.objectContaining({ officialFirst: true }));
+    expect(getLastListPageArgs()).toEqual(expect.objectContaining({ sort: "downloads" }));
+    expect(getLastListPageArgs()).not.toHaveProperty("officialFirst");
   });
 
   it("does not render the warning filter", async () => {
@@ -1229,6 +1328,7 @@ function makeListResult(
     summary?: string;
     topics?: string[];
     categories?: string[];
+    downloads?: number;
     official?: boolean;
   } = {},
 ) {
@@ -1243,7 +1343,7 @@ function makeListResult(
       badges: options.official ? { official: { byUserId: "users:admin", at: 1 } } : {},
       tags: {},
       stats: {
-        downloads: 0,
+        downloads: options.downloads ?? 0,
         installs: 0,
         stars: 0,
         versions: 1,
@@ -1255,6 +1355,23 @@ function makeListResult(
     },
     latestVersion: null,
     ownerHandle: null,
+  };
+}
+
+function makeExternalResult(slug: string, upstreamInstalls: number) {
+  return {
+    source: "skills.sh" as const,
+    externalId: `acme/skills/${slug}`,
+    route: `/skills-sh/acme/skills/${slug}`,
+    reference: `skills-sh:acme/skills/${slug}`,
+    owner: "acme",
+    repo: "skills",
+    slug,
+    displayName: `External ${upstreamInstalls}`,
+    categories: ["development"],
+    topics: [],
+    upstreamInstalls,
+    lastObservedAt: 1,
   };
 }
 

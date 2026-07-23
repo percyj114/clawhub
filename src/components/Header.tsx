@@ -32,6 +32,7 @@ import { PRIMARY_NAV_ITEMS, SECONDARY_NAV_ITEMS } from "../lib/nav-items";
 import { buildPublisherProfileHref, buildSkillDetailHref } from "../lib/ownerRoute";
 import { buildPluginDetailHref, displayPluginPackageName } from "../lib/pluginRoutes";
 import { SITE_NAME } from "../lib/site";
+import { skillsShRepositoryLabel } from "../lib/skillsShCatalog";
 import { applyTheme, useThemeMode } from "../lib/theme";
 import { clearAuthError, setAuthError } from "../lib/useAuthError";
 import { useAuthStatus } from "../lib/useAuthStatus";
@@ -1084,7 +1085,7 @@ function getTypeaheadRowBody(item: TypeaheadItem) {
     if (item.result.type === "skills-sh") {
       return {
         title: item.result.result.displayName,
-        meta: `skills.sh · ${item.result.result.owner}/${item.result.result.repo}`,
+        meta: `skills.sh · ${skillsShRepositoryLabel(item.result.result)}`,
       };
     }
     const owner = item.result.ownerHandle ? `@${item.result.ownerHandle}` : "Skill";

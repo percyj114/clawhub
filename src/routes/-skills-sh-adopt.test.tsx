@@ -375,4 +375,40 @@ describe("skills.sh adoption page", () => {
     );
     expect(screen.getByRole("button", { name: "Scan rejected" })).toBeTruthy();
   });
+
+  it.each(["stale", "canceled"] as const)(
+    "keeps a %s adoption request retryable",
+    async (retryableStatus) => {
+      startMirroredAdoptionMock
+        .mockResolvedValueOnce({
+          adoptionId: "skillsShAdoptions:1",
+          status: retryableStatus,
+          destinationKind: "replace",
+          destinationSkillId: "skills:demo",
+          created: false,
+        })
+        .mockResolvedValueOnce({
+          adoptionId: "skillsShAdoptions:2",
+          status: "pending_scan",
+          destinationKind: "replace",
+          destinationSkillId: "skills:demo",
+          created: true,
+        });
+      render(<SkillsShAdoptionPage />);
+      await screen.findByText("acme/skills");
+      fireEvent.click(
+        screen.getByRole("checkbox", {
+          name: /replace the active content at @alice\/demo after this exact candidate passes/i,
+        }),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Create adoption request" }));
+
+      const retry = await screen.findByRole("button", { name: "Retry adoption request" });
+      expect((retry as HTMLButtonElement).disabled).toBe(false);
+      fireEvent.click(retry);
+
+      await waitFor(() => expect(startMirroredAdoptionMock).toHaveBeenCalledTimes(2));
+      expect(screen.getByRole("button", { name: "Waiting for scan" })).toBeTruthy();
+    },
+  );
 });

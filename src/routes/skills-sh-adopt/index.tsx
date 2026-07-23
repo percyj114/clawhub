@@ -43,6 +43,10 @@ type PreviewItem = PreviewResult["page"][number];
 
 const PAGE_SIZE = 20;
 
+function isRetryableAdoptionResult(status: string | undefined) {
+  return status === "stale" || status === "canceled";
+}
+
 export function SkillsShBulkAdoptionPage() {
   const { isAuthenticated, isLoading, me } = useAuthStatus();
   const memberships = useQuery(
@@ -99,10 +103,18 @@ export function SkillsShBulkAdoptionPage() {
     (entry) => entry.publisher.handle === publisherHandle,
   );
   const eligible =
-    preview?.page.filter((item) => item.canStart && item.start && !results[item.externalId]) ?? [];
+    preview?.page.filter(
+      (item) =>
+        item.canStart &&
+        item.start &&
+        (!results[item.externalId] || isRetryableAdoptionResult(results[item.externalId])),
+    ) ?? [];
   const selectedItems =
     preview?.page.filter(
-      (item) => selected.has(item.externalId) && item.start && !results[item.externalId],
+      (item) =>
+        selected.has(item.externalId) &&
+        item.start &&
+        (!results[item.externalId] || isRetryableAdoptionResult(results[item.externalId])),
     ) ?? [];
 
   const fetchPreview = async (cursor: string | null, append: boolean) => {
@@ -316,7 +328,9 @@ function BulkPreviewRow({
         type="checkbox"
         aria-label={`Select ${item.displayName}`}
         checked={selected}
-        disabled={!item.canStart || !item.start || Boolean(result)}
+        disabled={
+          !item.canStart || !item.start || (Boolean(result) && !isRetryableAdoptionResult(result))
+        }
         onChange={onToggle}
       />
       <div className="skills-sh-bulk-row-main">

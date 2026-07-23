@@ -393,6 +393,37 @@ describe("HomeListingSection", () => {
     });
   });
 
+  it("labels well-known mirrored results without undefined repository segments", async () => {
+    mockSearchSkillsResult([
+      {
+        source: "skills.sh",
+        externalId: "example.com/html",
+        route: "/skills-sh/site/example.com/html",
+        reference: "skills-sh:example.com/html",
+        sourceHost: "example.com",
+        slug: "html",
+        displayName: "Well-known HTML",
+        categories: ["development"],
+        topics: [],
+        upstreamInstalls: 50,
+        lastObservedAt: 1,
+        score: 2,
+      },
+    ]);
+
+    renderSkillsListing();
+    fireEvent.click(screen.getByRole("button", { name: "Search catalog" }));
+    fireEvent.change(await screen.findByRole("searchbox", { name: "Search skills" }), {
+      target: { value: "html" },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Well-known HTML")).toBeTruthy();
+      expect(screen.getByText("example.com")).toBeTruthy();
+      expect(screen.queryByText("undefined/undefined")).toBeNull();
+    });
+  });
+
   it("searches skills inside the selected category before truncating results", async () => {
     mockSearchSkillsResult([
       {

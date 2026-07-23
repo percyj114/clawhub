@@ -250,4 +250,42 @@ describe("skills.sh bulk adoption page", () => {
         .disabled,
     ).toBe(true);
   });
+
+  it.each(["stale", "canceled"] as const)(
+    "keeps a %s bulk result selectable for retry",
+    async (retryableStatus) => {
+      startAdoptionMock
+        .mockResolvedValueOnce({
+          adoptionId: "skillsShAdoptions:html",
+          status: retryableStatus,
+          destinationKind: "create",
+          destinationSkillId: null,
+          created: false,
+        })
+        .mockResolvedValueOnce({
+          adoptionId: "skillsShAdoptions:html-retry",
+          status: "pending_scan",
+          destinationKind: "create",
+          destinationSkillId: null,
+          created: true,
+        });
+      render(<SkillsShBulkAdoptionPage />);
+      fireEvent.click(screen.getByRole("button", { name: "Preview sources" }));
+      await screen.findByText("HTML");
+      fireEvent.click(screen.getByRole("checkbox", { name: "Select HTML" }));
+      fireEvent.click(
+        screen.getByRole("checkbox", { name: /Start one exact-source ClawHub scan/ }),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Start selected adoptions" }));
+
+      const selection = await screen.findByRole("checkbox", { name: "Select HTML" });
+      expect((selection as HTMLInputElement).disabled).toBe(false);
+      fireEvent.click(
+        screen.getByRole("checkbox", { name: /Start one exact-source ClawHub scan/ }),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Start selected adoptions" }));
+
+      await waitFor(() => expect(startAdoptionMock).toHaveBeenCalledTimes(2));
+    },
+  );
 });

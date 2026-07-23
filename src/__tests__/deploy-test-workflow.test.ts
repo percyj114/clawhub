@@ -39,7 +39,7 @@ async function readWorkflow() {
 }
 
 describe("Test deploy workflow", () => {
-  it("admits main CI and exact guarded CLAW-563 branch deploys", async () => {
+  it("admits main CI and exact guarded mirror integration branch deploys", async () => {
     const workflow = await readWorkflow();
     const job = workflow.jobs?.["deploy-test"];
     const steps = job?.steps ?? [];
@@ -64,6 +64,7 @@ describe("Test deploy workflow", () => {
     expect(job?.if).toContain("github.event.workflow_run.event == 'push'");
     expect(revision).toContain('deploy_sha" != "$main_sha');
     expect(revision).toContain("refs/heads/pe/claw-563-skills-sh-mirror-10k");
+    expect(revision).toContain("pe/claw-583-mirrored-search-journey");
     expect(revision).toContain("Patrick-Erichsen");
     expect(revision).toContain("deploy-claw-563-to-permanent-test");
     expect(revision).toContain("${{ inputs.expected_sha }}");

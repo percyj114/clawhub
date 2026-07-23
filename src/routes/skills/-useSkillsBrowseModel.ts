@@ -56,6 +56,32 @@ type SkillsNavigate = (options: {
 
 type ListStatus = "loading" | "idle" | "loadingMore" | "done";
 
+type BrowseStream = {
+  cursor: string | null | undefined;
+  buffer: SkillListEntry[];
+};
+
+type BrowsePageResult = {
+  page: SkillListEntry[];
+  hasMore: boolean;
+  nextCursor: string | null;
+};
+
+function mixedBrowsePopularity(entry: SkillListEntry) {
+  return isExternalSkillListEntry(entry)
+    ? entry.result.upstreamInstalls
+    : entry.skill.stats.downloads;
+}
+
+function compareMixedBrowseEntries(left: SkillListEntry, right: SkillListEntry) {
+  const popularity = mixedBrowsePopularity(right) - mixedBrowsePopularity(left);
+  if (popularity !== 0) return popularity;
+  if (isExternalSkillListEntry(left) !== isExternalSkillListEntry(right)) {
+    return isExternalSkillListEntry(left) ? 1 : -1;
+  }
+  return 0;
+}
+
 export function buildSkillsSearchKey({
   categorySlug,
   featuredOnly,
@@ -112,7 +138,16 @@ export function useSkillsBrowseModel({
         ? "relevance"
         : (requestedSort ?? (hasQuery ? "relevance" : "recommended"));
   const listSort = sort === "trending" ? undefined : toListSort(sort);
-  const dir = sort === "relevance" ? "desc" : parseDir(search.dir, sort);
+  const dir =
+    sort === "relevance" || sort === "recommended" || sort === "downloads"
+      ? "desc"
+      : parseDir(search.dir, sort);
+  const mixedPopularityBrowse =
+    !featuredOnly &&
+    dir === "desc" &&
+    (sort === "downloads" ||
+      (sort === "recommended" && (Boolean(activeCategory) || Boolean(activeTopic))));
+  const effectiveListSort = mixedPopularityBrowse ? "downloads" : listSort;
   const searchKey = buildSkillsSearchKey({
     query: trimmedQuery,
     featuredOnly,
@@ -132,28 +167,22 @@ export function useSkillsBrowseModel({
 
   // One-shot paginated fetches (no reactive subscription)
   const [listResults, setListResults] = useState<SkillListEntry[]>([]);
-  const [listCursor, setListCursor] = useState<string | null | undefined>(undefined);
-  const [externalListCursor, setExternalListCursor] = useState<string | null | undefined>(
-    undefined,
-  );
   const [listStatus, setListStatus] = useState<ListStatus>("loading");
   const [listAutoLoadPaused, setListAutoLoadPaused] = useState(false);
+  const nativeListStream = useRef<BrowseStream>({ cursor: undefined, buffer: [] });
+  const externalListStream = useRef<BrowseStream>({ cursor: undefined, buffer: [] });
   const fetchGeneration = useRef(0);
 
   const fetchPage = useCallback(
-    async (
-      cursor: string | null | undefined,
-      externalCursor: string | null | undefined,
-      generation: number,
-    ) => {
-      let pageCursor = cursor;
+    async (generation: number, replace: boolean) => {
+      const nativeStream = nativeListStream.current;
+      const externalStream = externalListStream.current;
       let consecutiveEmptyPages = 0;
-      const externalEligible =
-        !featuredOnly &&
-        (sort === "downloads" ||
-          (sort === "recommended" && (Boolean(activeCategory) || Boolean(activeTopic))));
-      try {
-        if (sort === "trending") {
+      let nativeFailed = false;
+      let externalFailed = false;
+
+      if (sort === "trending") {
+        try {
           const result = await convexHttp.query(api.skills.listPublicTrendingPage, {
             limit: pageSize,
             nonSuspiciousOnly: true,
@@ -162,119 +191,199 @@ export function useSkillsBrowseModel({
           });
           if (generation !== fetchGeneration.current) return;
           setListResults(result.items);
-          setListCursor(null);
-          setExternalListCursor(null);
           setListAutoLoadPaused(false);
           setListStatus("done");
+        } catch (err) {
+          if (generation !== fetchGeneration.current) return;
+          if (!isNavigationAbortError(err)) {
+            console.error("Failed to fetch skills page:", err);
+          }
+          setListAutoLoadPaused(true);
+          setListStatus("idle");
+        }
+        return;
+      }
+
+      if (!mixedPopularityBrowse) {
+        let result: BrowsePageResult | null = null;
+        try {
+          while (nativeStream.cursor !== null) {
+            const requestCursor: string | null | undefined = nativeStream.cursor;
+            result = (await convexHttp.query(api.skills.listPublicPageV4, {
+              cursor: requestCursor ?? undefined,
+              numItems: pageSize,
+              ...(effectiveListSort ? { sort: effectiveListSort } : {}),
+              dir,
+              highlightedOnly: featuredOnly,
+              categorySlug: activeCategory?.slug,
+              topic: activeTopic,
+              ...(activeCategory ? { officialFirst: true } : {}),
+              categoryKeywords,
+              excludeCategoryKeywords,
+            })) as BrowsePageResult;
+            if (generation !== fetchGeneration.current) return;
+            const nextCursor: string | null =
+              result.hasMore && result.nextCursor != null && result.nextCursor !== requestCursor
+                ? result.nextCursor
+                : null;
+            nativeStream.cursor = nextCursor;
+            if (result.page.length > 0 || !nextCursor) break;
+            consecutiveEmptyPages += 1;
+            if (consecutiveEmptyPages >= maxConsecutiveEmptyPagesPerFetch) break;
+          }
+        } catch (err) {
+          if (generation !== fetchGeneration.current) return;
+          if (!isNavigationAbortError(err)) {
+            console.error("Failed to fetch native skills page:", err);
+          }
+          setListAutoLoadPaused(nativeStream.cursor !== null);
+          setListStatus(nativeStream.cursor === null ? "done" : "idle");
           return;
         }
-        const externalPromise =
-          externalEligible && externalCursor !== null
-            ? listSkillsShMirrorBrowse({
-                limit: pageSize,
-                cursor: externalCursor ?? undefined,
-                categorySlug: activeCategory?.slug,
-                topic: activeTopic,
-              })
-            : Promise.resolve(null);
-        if (cursor === null) {
-          const externalResults = (await externalPromise) as {
-            page: SkillsShSearchResult[];
-            nextCursor: string | null;
-            hasMore: boolean;
-          } | null;
+        if (generation !== fetchGeneration.current) return;
+        const page = result?.page ?? [];
+        setListResults((current) => (replace ? page : [...current, ...page]));
+        const hasMore = nativeStream.cursor !== null;
+        setListAutoLoadPaused(page.length === 0 && hasMore);
+        setListStatus(hasMore ? "idle" : "done");
+        return;
+      }
+
+      const fillNativeBuffer = async () => {
+        if (nativeStream.buffer.length > 0 || nativeStream.cursor === null || nativeFailed) return;
+        while (nativeStream.buffer.length === 0 && nativeStream.cursor !== null) {
+          const requestCursor: string | null | undefined = nativeStream.cursor;
+          let result: BrowsePageResult;
+          try {
+            result = (await convexHttp.query(api.skills.listPublicPageV4, {
+              cursor: requestCursor ?? undefined,
+              numItems: pageSize,
+              ...(effectiveListSort ? { sort: effectiveListSort } : {}),
+              dir,
+              highlightedOnly: featuredOnly,
+              categorySlug: activeCategory?.slug,
+              topic: activeTopic,
+              ...(activeCategory && !mixedPopularityBrowse ? { officialFirst: true } : {}),
+              categoryKeywords,
+              excludeCategoryKeywords,
+            })) as BrowsePageResult;
+          } catch (err) {
+            nativeFailed = true;
+            if (!isNavigationAbortError(err)) {
+              console.error("Failed to fetch native skills page:", err);
+            }
+            return;
+          }
           if (generation !== fetchGeneration.current) return;
-          const externalEntries = (externalResults?.page ?? []).map(
-            (external): SkillListEntry => ({
-              source: "skills.sh",
-              result: external,
-            }),
-          );
-          const nextExternalCursor = externalResults?.hasMore ? externalResults.nextCursor : null;
-          setListResults((prev) => [...prev, ...externalEntries]);
-          setExternalListCursor(nextExternalCursor);
-          setListAutoLoadPaused(externalEntries.length === 0 && Boolean(nextExternalCursor));
-          setListStatus(nextExternalCursor ? "idle" : "done");
-          return;
-        }
-        while (true) {
-          const result = await convexHttp.query(api.skills.listPublicPageV4, {
-            cursor: pageCursor ?? undefined,
-            numItems: pageSize,
-            ...(listSort ? { sort: listSort } : {}),
-            dir,
-            highlightedOnly: featuredOnly,
-            categorySlug: activeCategory?.slug,
-            topic: activeTopic,
-            ...(activeCategory ? { officialFirst: true } : {}),
-            categoryKeywords,
-            excludeCategoryKeywords,
-          });
-          if (generation !== fetchGeneration.current) return;
-          const nextCursor =
-            result.hasMore && result.nextCursor != null && result.nextCursor !== pageCursor
+          const nextCursor: string | null =
+            result.hasMore && result.nextCursor != null && result.nextCursor !== requestCursor
               ? result.nextCursor
               : null;
-
-          // Filtered scans can yield empty transport pages before reaching visible results.
-          if (result.page.length === 0 && nextCursor) {
+          nativeStream.cursor = nextCursor;
+          nativeStream.buffer.push(...result.page);
+          if (nativeStream.buffer.length === 0 && nextCursor) {
             consecutiveEmptyPages += 1;
-            if (consecutiveEmptyPages < maxConsecutiveEmptyPagesPerFetch) {
-              pageCursor = nextCursor;
-              continue;
+            if (consecutiveEmptyPages >= maxConsecutiveEmptyPagesPerFetch) {
+              nativeFailed = true;
+              return;
             }
           }
+        }
+      };
 
-          const externalResults = (await externalPromise) as {
-            page: SkillsShSearchResult[];
-            nextCursor: string | null;
-            hasMore: boolean;
-          } | null;
-          if (generation !== fetchGeneration.current) return;
-          const externalEntries = (externalResults?.page ?? []).map(
+      const fillExternalBuffer = async () => {
+        if (
+          !mixedPopularityBrowse ||
+          externalStream.buffer.length > 0 ||
+          externalStream.cursor === null ||
+          externalFailed
+        ) {
+          return;
+        }
+        let externalResults: {
+          page: SkillsShSearchResult[];
+          nextCursor: string | null;
+          hasMore: boolean;
+        };
+        try {
+          const response = await listSkillsShMirrorBrowse({
+            limit: pageSize,
+            cursor: externalStream.cursor ?? undefined,
+            categorySlug: activeCategory?.slug,
+            topic: activeTopic,
+          });
+          externalResults = Array.isArray(response)
+            ? {
+                page: response as SkillsShSearchResult[],
+                nextCursor: null,
+                hasMore: false,
+              }
+            : (response as typeof externalResults);
+          if (
+            !externalResults ||
+            !Array.isArray(externalResults.page) ||
+            typeof externalResults.hasMore !== "boolean" ||
+            (externalResults.hasMore &&
+              (!externalResults.nextCursor || externalResults.nextCursor === externalStream.cursor))
+          ) {
+            throw new Error("Mirrored skills browse returned an invalid page");
+          }
+        } catch (err) {
+          externalFailed = true;
+          if (!isNavigationAbortError(err)) {
+            console.error("Failed to fetch mirrored skills page:", err);
+          }
+          return;
+        }
+        if (generation !== fetchGeneration.current) return;
+        externalStream.cursor = externalResults.hasMore ? externalResults.nextCursor : null;
+        externalStream.buffer.push(
+          ...externalResults.page.map(
             (external): SkillListEntry => ({
               source: "skills.sh",
               result: external,
             }),
-          );
-          const nextExternalCursor = externalResults?.hasMore ? externalResults.nextCursor : null;
-          const isInitialPage = cursor === undefined && externalCursor === undefined;
-          setListResults((prev) =>
-            isInitialPage
-              ? [...result.page, ...externalEntries]
-              : [...prev, ...result.page, ...externalEntries],
-          );
-          setListCursor(nextCursor);
-          setExternalListCursor(nextExternalCursor);
-          const hasMore = Boolean(nextCursor) || Boolean(nextExternalCursor);
-          setListAutoLoadPaused(
-            result.page.length === 0 && externalEntries.length === 0 && hasMore,
-          );
-          setListStatus(hasMore ? "idle" : "done");
-          return;
+          ),
+        );
+        if (externalStream.buffer.length === 0 && externalStream.cursor !== null) {
+          externalFailed = true;
         }
-      } catch (err) {
+      };
+
+      const page: SkillListEntry[] = [];
+      while (page.length < pageSize) {
+        await Promise.all([fillNativeBuffer(), fillExternalBuffer()]);
         if (generation !== fetchGeneration.current) return;
-        if (!isNavigationAbortError(err)) {
-          console.error("Failed to fetch skills page:", err);
+        const native = nativeStream.buffer[0];
+        const external = externalStream.buffer[0];
+        if (!native && !external) break;
+        if (!external || (native && compareMixedBrowseEntries(native, external) <= 0)) {
+          page.push(nativeStream.buffer.shift()!);
+        } else {
+          page.push(externalStream.buffer.shift()!);
         }
-        // Reset to idle so the user can retry via "Load more"
-        setListCursor(pageCursor);
-        setExternalListCursor(externalCursor);
-        const canRetry = pageCursor !== null || (externalEligible && externalCursor !== null);
-        setListAutoLoadPaused(canRetry);
-        setListStatus(canRetry ? "idle" : "done");
       }
+
+      if (generation !== fetchGeneration.current) return;
+      setListResults((current) => (replace ? page : [...current, ...page]));
+      const hasMore =
+        nativeStream.buffer.length > 0 ||
+        nativeStream.cursor !== null ||
+        externalStream.buffer.length > 0 ||
+        externalStream.cursor !== null;
+      setListAutoLoadPaused((nativeFailed || externalFailed || page.length === 0) && hasMore);
+      setListStatus(hasMore ? "idle" : "done");
     },
     [
       activeCategory?.slug,
       activeTopic,
       categoryKeywords,
       dir,
+      effectiveListSort,
       excludeCategoryKeywords,
       featuredOnly,
-      listSort,
       listSkillsShMirrorBrowse,
+      mixedPopularityBrowse,
       sort,
     ],
   );
@@ -286,16 +395,19 @@ export function useSkillsBrowseModel({
     }
     fetchGeneration.current += 1;
     const generation = fetchGeneration.current;
+    nativeListStream.current = { cursor: undefined, buffer: [] };
+    externalListStream.current = {
+      cursor: mixedPopularityBrowse ? undefined : null,
+      buffer: [],
+    };
     setListResults([]);
-    setListCursor(undefined);
-    setExternalListCursor(undefined);
     setListAutoLoadPaused(false);
     setListStatus("loading");
-    void fetchPage(undefined, undefined, generation);
+    void fetchPage(generation, true);
     return () => {
       fetchGeneration.current += 1;
     };
-  }, [hasQuery, fetchPage]);
+  }, [hasQuery, fetchPage, mixedPopularityBrowse]);
 
   const isLoadingList = listStatus === "loading";
   const canLoadMoreList = listStatus === "idle";
@@ -413,6 +525,9 @@ export function useSkillsBrowseModel({
               ),
         )
       : topicItems;
+    if (!hasQuery && mixedPopularityBrowse) {
+      return [...categoryItems].sort(compareMixedBrowseEntries);
+    }
     if (
       !hasQuery &&
       (sort !== "downloads" || !categoryItems.some((entry) => isExternalSkillListEntry(entry)))
@@ -466,7 +581,7 @@ export function useSkillsBrowseModel({
       }
     });
     return results;
-  }, [activeCategory, activeTopic, baseItems, dir, hasQuery, sort]);
+  }, [activeCategory, activeTopic, baseItems, dir, hasQuery, mixedPopularityBrowse, sort]);
 
   const isLoadingSkills = hasQuery ? isSearching && searchResults.length === 0 : isLoadingList;
   const canLoadMore = hasQuery
@@ -484,9 +599,9 @@ export function useSkillsBrowseModel({
       setSearchLimit((value) => value + pageSize);
     } else {
       setListStatus("loadingMore");
-      void fetchPage(listCursor, externalListCursor, fetchGeneration.current);
+      void fetchPage(fetchGeneration.current, false);
     }
-  }, [canLoadMore, externalListCursor, fetchPage, hasQuery, isLoadingMore, listCursor]);
+  }, [canLoadMore, fetchPage, hasQuery, isLoadingMore]);
 
   useEffect(() => {
     if (!isLoadingMore) {
