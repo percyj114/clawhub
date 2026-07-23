@@ -37,6 +37,7 @@ const internalRefs = internal as unknown as {
     getIsolationInternal: unknown;
     getReplayRowsInternal: unknown;
     getRunInternal: unknown;
+    getSourceCaptureSummaryInternal: unknown;
     getStatusInternal: unknown;
     listDetailsPageInternal: unknown;
     listDigestsPageInternal: unknown;
@@ -47,6 +48,7 @@ const internalRefs = internal as unknown as {
     releaseBatchLeaseInternal: unknown;
     setPausedInternal: unknown;
     startRunInternal: unknown;
+    storeSourcePageInternal: unknown;
   };
 };
 const MAX_GITHUB_OWNER_RESOLUTIONS = 500;
@@ -516,6 +518,15 @@ export async function skillsShCatalogTestV1Handler(ctx: ActionCtx, request: Requ
       });
       return json({ rows }, 200, rate.headers);
     }
+    if (operation === "mirror-source-summary") {
+      return json(
+        await runQueryRef(ctx, internalRefs.skillsShMirror.getSourceCaptureSummaryInternal, {
+          snapshotHash: requireString(body, "snapshotHash"),
+        }),
+        200,
+        rate.headers,
+      );
+    }
     if (operation === "mirror-page") {
       const cursor =
         body.cursor === null || typeof body.cursor === "string"
@@ -585,9 +596,34 @@ export async function skillsShCatalogTestV1Handler(ctx: ActionCtx, request: Requ
           actor: auth.user.handle,
           reason: requireString(body, "reason"),
           snapshotId: requireString(body, "snapshotId"),
+          ...(typeof body.sourceSnapshotHash === "string"
+            ? { sourceSnapshotHash: requireString(body, "sourceSnapshotHash") }
+            : {}),
+          ...(typeof body.sourceCaptureWrites === "number"
+            ? { sourceCaptureWrites: requireNumber(body, "sourceCaptureWrites") }
+            : {}),
           sourceTotal: requireNumber(body, "sourceTotal"),
           sourcePageSize: requireNumber(body, "sourcePageSize"),
           sourceMeasuredAt: requireString(body, "sourceMeasuredAt"),
+        }),
+        200,
+        rate.headers,
+      );
+    }
+    if (operation === "mirror-source-page-store") {
+      if (!Array.isArray(body.rows)) throw new Error("rows is required");
+      return json(
+        await runMutationRef(ctx, internalRefs.skillsShMirror.storeSourcePageInternal, {
+          snapshotHash: requireString(body, "snapshotHash"),
+          page: requireNumber(body, "page"),
+          sourceTotal: requireNumber(body, "sourceTotal"),
+          pageLength: requireNumber(body, "pageLength"),
+          hasMore: requireBoolean(body, "hasMore"),
+          identityHash: requireString(body, "identityHash"),
+          contentHash: requireString(body, "contentHash"),
+          sourceBytes: requireNumber(body, "sourceBytes"),
+          serializedBytes: requireNumber(body, "serializedBytes"),
+          rows: body.rows,
         }),
         200,
         rate.headers,
