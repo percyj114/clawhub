@@ -2487,7 +2487,7 @@ describe("skills.sh Vercel source boundary", () => {
     );
   });
 
-  it("requires the Test build, Preview runtime, baked backend, and explicit enable", () => {
+  it("requires the Test build, Vercel Test runtime, baked backend, and explicit enable", () => {
     expect(
       getSkillsShCatalogTestSourcePolicy({
         VERCEL_ENV: "preview",
@@ -2519,10 +2519,11 @@ describe("skills.sh Vercel source boundary", () => {
         VITE_CONVEX_URL: "https://academic-chihuahua-392.convex.cloud",
         CLAWHUB_SKILLS_SH_TEST_LIVE_FETCH_ENABLED: "1",
       }),
-    ).toMatchObject({
-      allowed: false,
+    ).toEqual({
+      allowed: true,
       environment: "test",
-      reason: "skills.sh live Test discovery requires the Vercel Preview runtime",
+      maxDiscoveryRows: 500,
+      maxRealScanAdmissions: 10,
     });
 
     expect(
@@ -2539,6 +2540,20 @@ describe("skills.sh Vercel source boundary", () => {
       environment: "test",
       maxDiscoveryRows: 500,
       maxRealScanAdmissions: 10,
+    });
+
+    expect(
+      getSkillsShCatalogTestSourcePolicy({
+        CLAWHUB_SKILLS_SH_ROLLOUT_MODE: "test",
+        VERCEL_ENV: "production",
+        VERCEL_TARGET_ENV: "test",
+        VITE_CLAWHUB_DEPLOY_ENV: "test",
+        VITE_CONVEX_URL: "https://academic-chihuahua-392.convex.cloud",
+        CLAWHUB_SKILLS_SH_TEST_LIVE_FETCH_ENABLED: "1",
+      }),
+    ).toMatchObject({
+      allowed: false,
+      environment: "production",
     });
   });
 

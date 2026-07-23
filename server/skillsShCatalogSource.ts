@@ -2203,11 +2203,17 @@ export function getSkillsShCatalogTestSourcePolicy(env: SkillsShCatalogSourceEnv
       reason: "skills.sh live Test discovery requires the Test build marker",
     };
   }
-  if (env.VERCEL_ENV !== "preview") {
+  const vercelEnvironment = env.VERCEL_ENV?.trim().toLowerCase();
+  const vercelTargetEnvironment = env.VERCEL_TARGET_ENV?.trim().toLowerCase();
+  if (
+    rollout.environment !== "test" ||
+    vercelTargetEnvironment !== "test" ||
+    (vercelEnvironment !== "preview" && vercelEnvironment !== "test")
+  ) {
     return {
       allowed: false as const,
-      environment: env.VERCEL_ENV?.trim() || "unknown",
-      reason: "skills.sh live Test discovery requires the Vercel Preview runtime",
+      environment: rollout.environment,
+      reason: "skills.sh live Test discovery requires the Vercel Test runtime",
     };
   }
   if (env.VITE_CONVEX_URL !== CLAWHUB_TEST_CONVEX_URL) {
