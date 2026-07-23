@@ -11,6 +11,7 @@ export type HomeListingTab = "featured" | "popular" | "trending";
 
 export type HomeNativeSkillListingEntry = {
   skill: PublicSkill;
+  nativeDownloads?: number;
   ownerHandle?: string | null;
   owner?: PublicUser | null;
 };
@@ -117,10 +118,10 @@ function sortHomeSkillEntries(entries: HomeSkillListingEntry[]) {
   return [...entries].sort((left, right) => {
     const leftDownloads = isHomeSkillsShListingEntry(left)
       ? left.result.upstreamInstalls
-      : (left.skill.nativeDownloads ?? left.skill.stats.downloads);
+      : (left.nativeDownloads ?? left.skill.stats.downloads);
     const rightDownloads = isHomeSkillsShListingEntry(right)
       ? right.result.upstreamInstalls
-      : (right.skill.nativeDownloads ?? right.skill.stats.downloads);
+      : (right.nativeDownloads ?? right.skill.stats.downloads);
     return rightDownloads - leftDownloads;
   });
 }

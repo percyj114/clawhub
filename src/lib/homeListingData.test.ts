@@ -260,12 +260,12 @@ describe("homeListingData", () => {
     convexQueryMock.mockResolvedValue({
       page: [
         {
+          nativeDownloads: 10,
           skill: {
             _id: "skills:native",
             slug: "native",
             displayName: "Native",
             categories: ["development"],
-            nativeDownloads: 10,
             stats: { downloads: 1_010 },
           },
         },

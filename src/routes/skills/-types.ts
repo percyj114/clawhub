@@ -4,6 +4,7 @@ import type { SkillsShSearchEntry, SkillsShSearchResult } from "../../lib/skills
 
 export type NativeSkillListEntry = {
   skill: PublicSkill;
+  nativeDownloads?: number;
   latestVersion: {
     version: string;
     createdAt: number;

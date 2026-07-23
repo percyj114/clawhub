@@ -140,6 +140,5 @@ export type PublicSkill = Omit<
   "stats"
 > & {
   stats: PublicSkillStats;
-  nativeDownloads?: number;
   githubSourceRepo?: string;
 };

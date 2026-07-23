@@ -1872,6 +1872,7 @@ async function hardDeleteSkillStep(
 
 type PublicSkillEntry = {
   skill: NonNullable<ReturnType<typeof toPublicSkill>>;
+  nativeDownloads: number;
   latestVersion: PublicSkillListVersion | null;
   ownerHandle: string | null;
   owner: PublicPublisher | null;
@@ -2074,6 +2075,7 @@ async function buildPublicSkillEntries(
           : toPublicSkillListVersion(latestVersionDoc);
       return {
         skill: publicSkill,
+        nativeDownloads: readCanonicalStat(skill, "downloads"),
         latestVersion,
         ownerHandle: ownerInfo.ownerHandle,
         owner: ownerInfo.owner,
@@ -5185,6 +5187,7 @@ export const listPublicPageV3 = query({
       if (isHostedSkillPendingPublicReview(hydratable) && !latestVersion) continue;
       items.push({
         skill: publicSkill,
+        nativeDownloads: readCanonicalStat(hydratable, "downloads"),
         latestVersion,
         ownerHandle: ownerInfo.ownerHandle,
         owner: ownerInfo.owner,
@@ -6050,6 +6053,7 @@ async function buildPublicSkillEntryFromDigest(
   if (isHostedSkillPendingPublicReview(hydratable) && !latestVersion) return null;
   return {
     skill: publicSkill,
+    nativeDownloads: readCanonicalStat(hydratable, "downloads"),
     latestVersion,
     ownerHandle: ownerInfo.ownerHandle,
     owner: ownerInfo.owner,

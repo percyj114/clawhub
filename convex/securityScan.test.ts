@@ -7,6 +7,7 @@ import {
   claimCodexScanJobLeases,
   clearQueuedBackfillJobsForLocalDev,
   claimQueuedJobsInternal,
+  completeCatalogSkillScanJobInternal,
   completeCodexScanJob,
   enqueueBulkSkillRescanBatchForAdminInternal,
   enqueuePackageReleaseScanInternal,
@@ -273,6 +274,69 @@ function makeFailurePersistenceCtx(docs: Record<string, Record<string, unknown>>
   };
 }
 
+function makeCatalogCompletionCtx(options: {
+  publishedSourceContentHash: string;
+  publishedGithubContentHash: string;
+}) {
+  const currentIdentity = {
+    externalId: "acme/skills/demo",
+    githubOwnerId: 123,
+    owner: "acme",
+    repo: "skills",
+    slug: "demo",
+    githubPath: "skills/demo",
+    githubCommit: "a".repeat(40),
+    githubContentHash: "current-github-hash",
+    sourceContentHash: "current-source-hash",
+  };
+  return makeFailurePersistenceCtx({
+    "securityScanJobs:catalog": {
+      _id: "securityScanJobs:catalog",
+      source: "skills-sh-catalog-test",
+      targetKind: "skillScanRequest",
+      skillScanRequestId: "skillScanRequests:catalog",
+      leaseToken: "lease-token",
+      status: "running",
+    },
+    "skillScanRequests:catalog": {
+      _id: "skillScanRequests:catalog",
+      sourceKind: "skills-sh-catalog",
+      securityScanJobId: "securityScanJobs:catalog",
+      skillsShCatalogAttemptId: "skillsShCatalogScanAttempts:current",
+      sha256hash: "artifact-hash",
+      status: "running",
+      writtenBack: false,
+    },
+    "skillsShCatalogEntries:catalog": {
+      _id: "skillsShCatalogEntries:catalog",
+      ...currentIdentity,
+      scanStatus: "running",
+      publicVisible: true,
+      publishedScanAttemptId: "skillsShCatalogScanAttempts:published",
+    },
+    "skillsShCatalogScanAttempts:current": {
+      _id: "skillsShCatalogScanAttempts:current",
+      ...currentIdentity,
+      entryId: "skillsShCatalogEntries:catalog",
+      runId: "skillsShCatalogRuns:missing",
+      dispatchKind: "real",
+      source: "skills-sh-catalog-test",
+      artifactContentHash: "artifact-hash",
+      skillScanRequestId: "skillScanRequests:catalog",
+      securityScanJobId: "securityScanJobs:catalog",
+      status: "running",
+    },
+    "skillsShCatalogScanAttempts:published": {
+      _id: "skillsShCatalogScanAttempts:published",
+      ...currentIdentity,
+      sourceContentHash: options.publishedSourceContentHash,
+      githubContentHash: options.publishedGithubContentHash,
+      status: "succeeded",
+      verdict: "clean",
+    },
+  });
+}
+
 const completeCodexScanJobHandler = (
   completeCodexScanJob as unknown as WrappedHandler<
     {
@@ -299,6 +363,26 @@ const completeCodexScanJobHandler = (
       runId?: string;
     },
     { ok: true }
+  >
+)._handler;
+
+const completeCatalogSkillScanJobInternalHandler = (
+  completeCatalogSkillScanJobInternal as unknown as WrappedHandler<
+    {
+      attemptId: string;
+      scanId: string;
+      jobId: string;
+      leaseToken: string;
+      artifactContentHash: string;
+      verdict: "clean" | "suspicious" | "malicious" | "failed";
+      runId?: string;
+      llmAnalysis: {
+        status: string;
+        verdict?: string;
+        checkedAt: number;
+      };
+    },
+    { ok: true; applied: boolean; publicVisible?: boolean }
   >
 )._handler;
 
@@ -4867,6 +4951,64 @@ describe("securityScan", () => {
       }),
     );
     expect(runMutation).toHaveBeenNthCalledWith(2, expect.anything(), {});
+  });
+
+  it("revokes catalog publication when the current content scans as malicious", async () => {
+    vi.stubEnv("CLAWHUB_ENV", "test");
+    vi.stubEnv("CLAWHUB_DISABLE_CRONS", "1");
+    vi.stubEnv("CLAWHUB_DEPLOYMENT_NAME", "academic-chihuahua-392");
+    vi.stubEnv("CONVEX_CLOUD_URL", "https://academic-chihuahua-392.convex.cloud");
+    const { ctx, records } = makeCatalogCompletionCtx({
+      publishedSourceContentHash: "current-source-hash",
+      publishedGithubContentHash: "current-github-hash",
+    });
+
+    await expect(
+      completeCatalogSkillScanJobInternalHandler(ctx, {
+        attemptId: "skillsShCatalogScanAttempts:current",
+        scanId: "skillScanRequests:catalog",
+        jobId: "securityScanJobs:catalog",
+        leaseToken: "lease-token",
+        artifactContentHash: "artifact-hash",
+        verdict: "malicious",
+        llmAnalysis: { status: "malicious", checkedAt: 123 },
+      }),
+    ).resolves.toEqual({ ok: true, applied: true, publicVisible: false });
+
+    expect(records.get("skillsShCatalogEntries:catalog")).toMatchObject({
+      scanStatus: "malicious",
+      publicVisible: false,
+      publishedScanAttemptId: "skillsShCatalogScanAttempts:published",
+    });
+  });
+
+  it("preserves a different published catalog artifact when changed content scans as malicious", async () => {
+    vi.stubEnv("CLAWHUB_ENV", "test");
+    vi.stubEnv("CLAWHUB_DISABLE_CRONS", "1");
+    vi.stubEnv("CLAWHUB_DEPLOYMENT_NAME", "academic-chihuahua-392");
+    vi.stubEnv("CONVEX_CLOUD_URL", "https://academic-chihuahua-392.convex.cloud");
+    const { ctx, records } = makeCatalogCompletionCtx({
+      publishedSourceContentHash: "previous-source-hash",
+      publishedGithubContentHash: "previous-github-hash",
+    });
+
+    await expect(
+      completeCatalogSkillScanJobInternalHandler(ctx, {
+        attemptId: "skillsShCatalogScanAttempts:current",
+        scanId: "skillScanRequests:catalog",
+        jobId: "securityScanJobs:catalog",
+        leaseToken: "lease-token",
+        artifactContentHash: "artifact-hash",
+        verdict: "malicious",
+        llmAnalysis: { status: "malicious", checkedAt: 123 },
+      }),
+    ).resolves.toEqual({ ok: true, applied: true, publicVisible: true });
+
+    expect(records.get("skillsShCatalogEntries:catalog")).toMatchObject({
+      scanStatus: "malicious",
+      publicVisible: true,
+      publishedScanAttemptId: "skillsShCatalogScanAttempts:published",
+    });
   });
 
   it("acknowledges a committed catalog completion when queue refill fails", async () => {

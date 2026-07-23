@@ -19,7 +19,12 @@ on:
         type: string
 
 concurrency:
-  group: deploy-test
+  group: >-
+    ${{
+      github.event_name == 'pull_request' &&
+      format('deploy-test-pr-{0}', github.event.pull_request.number) ||
+      'deploy-test'
+    }}
   cancel-in-progress: false
 
 permissions:
@@ -29,7 +34,13 @@ jobs:
   deploy-test:
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'pull_request' ||
+      (github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.repo.fork == false &&
+      github.event.pull_request.user.login == 'Patrick-Erichsen' &&
+      github.actor == 'Patrick-Erichsen' &&
+      (github.head_ref == 'pe/claw-563-skills-sh-mirror-10k' ||
+      github.head_ref == 'pe/claw-583-mirrored-search-journey')) ||
       (github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest

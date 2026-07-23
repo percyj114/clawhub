@@ -2050,6 +2050,10 @@ export const completeCatalogSkillScanJobInternal = internalMutation({
         .withIndex("by_key", (q) => q.eq("key", "global"))
         .unique(),
     ]);
+    const publishedAttempt = entry?.publishedScanAttemptId
+      ? await ctx.db.get(entry.publishedScanAttemptId)
+      : null;
+    const publishedAttemptReadCost = entry?.publishedScanAttemptId ? 1 : 0;
     const now = Date.now();
     const terminalizeWithoutResult = async (reason: "run-canceled" | "stale-attempt") => {
       const entryStillCurrent = entry
@@ -2164,8 +2168,14 @@ export const completeCatalogSkillScanJobInternal = internalMutation({
       });
     const pointerOnlyPromotion =
       candidatePromoted && !isExactSkillsShCatalogAttempt(entry, attemptIdentity);
+    const preservesPublishedArtifact =
+      entry.publicVisible &&
+      entry.publishedScanAttemptId !== undefined &&
+      (args.verdict !== "malicious" ||
+        (publishedAttempt !== null &&
+          !hasSameAdoptedContent(publishedAttempt, attemptIdentity)));
     const publicVisible =
-      candidatePromoted || (entry.publicVisible && entry.publishedScanAttemptId !== undefined);
+      candidatePromoted || preservesPublishedArtifact;
     await ctx.db.patch(attempt._id, {
       status: scanFailed ? "failed" : "succeeded",
       verdict: args.verdict,
@@ -2240,7 +2250,7 @@ export const completeCatalogSkillScanJobInternal = internalMutation({
         },
         operations: {
           functionCalls: run.operations.functionCalls + 1,
-          dbReads: run.operations.dbReads + 5,
+          dbReads: run.operations.dbReads + 5 + publishedAttemptReadCost,
           dbWrites: run.operations.dbWrites + (pointerOnlyPromotion ? 6 : 5),
         },
         updatedAt: now,

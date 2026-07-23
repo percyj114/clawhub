@@ -79,6 +79,7 @@ describe("public skill mapping", () => {
     expect(mapped?.stats.downloads).toBe(20);
     expect(mapped).not.toHaveProperty("statsSkillsShInstalls");
     expect(mapped).not.toHaveProperty("statsGithubStars");
+    expect(mapped).not.toHaveProperty("nativeDownloads");
   });
 
   it("exposes GitHub-backed skill source fields", () => {

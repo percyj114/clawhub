@@ -1365,6 +1365,7 @@ function makeListResult(
   } = {},
 ) {
   return {
+    nativeDownloads: options.nativeDownloads,
     skill: {
       _id: `skill_${slug}`,
       slug,
@@ -1381,7 +1382,6 @@ function makeListResult(
         versions: 1,
         comments: 0,
       },
-      nativeDownloads: options.nativeDownloads,
       isSuspicious: options.isSuspicious,
       createdAt: 0,
       updatedAt: 0,
