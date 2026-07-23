@@ -464,9 +464,17 @@ export default defineEventHandler(async (event) => {
                       catalogBatch.hasMore || snapshot.controlledSupplementExternalIds.length > 0,
                     sourceRequests: catalogBatch.sourceRequests + (overlay?.sourceRequests ?? 0),
                     sourceBytes: catalogBatch.sourceBytes + (overlay?.sourceBytes ?? 0),
-                    rows: catalogBatch.rows.map(
-                      (row) => overlayByExternalId.get(row.externalId) ?? row,
-                    ),
+                    rows: catalogBatch.rows.map((row) => {
+                      const controlled = overlayByExternalId.get(row.externalId);
+                      if (!controlled) return row;
+                      if ("quarantined" in row) return controlled;
+                      return {
+                        ...controlled,
+                        upstreamSourceType: row.upstreamSourceType,
+                        upstreamInstalls: row.upstreamInstalls,
+                        upstreamScanners: row.upstreamScanners,
+                      };
+                    }),
                   };
                 })()
               : (() => {

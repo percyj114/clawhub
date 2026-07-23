@@ -581,7 +581,17 @@ describe("skills.sh permanent Test mirror route", () => {
       sourceBytes: 5_000,
       sourcePageIdentityHash: "page-3",
       rows: [
-        { externalId: "patrick-erichsen/skills/html", sourceContentHash: "mutable" },
+        {
+          externalId: "patrick-erichsen/skills/html",
+          sourceContentHash: "mutable",
+          upstreamSourceType: "github",
+          upstreamInstalls: 123,
+          upstreamScanners: {
+            genAgentTrustHub: { status: "pass" },
+            socket: { status: "warn" },
+            snyk: { status: "unavailable" },
+          },
+        },
         { externalId: "vercel-labs/skills/find-skills" },
       ],
     });
@@ -597,6 +607,13 @@ describe("skills.sh permanent Test mirror route", () => {
         {
           externalId: "patrick-erichsen/skills/html",
           sourceContentHash: "pinned",
+          upstreamSourceType: "controlled-github",
+          upstreamInstalls: 0,
+          upstreamScanners: {
+            genAgentTrustHub: { status: "unavailable" },
+            socket: { status: "unavailable" },
+            snyk: { status: "unavailable" },
+          },
         },
       ],
     });
@@ -629,6 +646,13 @@ describe("skills.sh permanent Test mirror route", () => {
           {
             externalId: "patrick-erichsen/skills/html",
             sourceContentHash: "pinned",
+            upstreamSourceType: "github",
+            upstreamInstalls: 123,
+            upstreamScanners: {
+              genAgentTrustHub: { status: "pass" },
+              socket: { status: "warn" },
+              snyk: { status: "unavailable" },
+            },
           },
           { externalId: "vercel-labs/skills/find-skills" },
         ],
