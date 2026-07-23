@@ -2066,8 +2066,26 @@ export async function fetchSkillsShMirrorControlledBatch(
           );
         }
         if (response) {
+          const retryAfterMs =
+            response.status === 429 ? skillsShRetryAfterMs(response, attempt) : null;
+          if (
+            response.status === 429 &&
+            (attempt === MAX_SOURCE_ATTEMPTS - 1 ||
+              (retryAfterMs !== null && retryAfterMs > MAX_INLINE_RETRY_AFTER_MS))
+          ) {
+            await cancelResponseBody(response);
+            throw new SkillsShSourceHttpError(
+              response.status,
+              retryAfterMs === null ? null : Math.max(1, Math.ceil(retryAfterMs / 1_000)),
+            );
+          }
+          if (attempt === MAX_SOURCE_ATTEMPTS - 1) {
+            await cancelResponseBody(response);
+            break;
+          }
           await waitForSkillsShRetry(response, attempt);
         } else {
+          if (attempt === MAX_SOURCE_ATTEMPTS - 1) break;
           await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
         }
       }

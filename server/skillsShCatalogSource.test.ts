@@ -11,6 +11,7 @@ import {
   captureSkillsShCatalogTestSnapshot,
   fetchSkillsShCatalogDetail,
   fetchSkillsShMirrorBatch,
+  fetchSkillsShMirrorControlledBatch,
   fetchSkillsShCatalogPage,
   fetchSkillsShCatalogTestPage,
   getSkillsShCatalogTestSourcePolicy,
@@ -148,6 +149,61 @@ describe("skills.sh Vercel source boundary", () => {
         16,
       ),
     ).toThrow("controlled skills.sh mirror source hash changed");
+  });
+
+  it("delegates long controlled-source Retry-After waits to durable recovery", async () => {
+    const fetchImpl = vi.fn(async () => {
+      return new Response("rate limited", {
+        status: 429,
+        headers: { "retry-after": "120" },
+      });
+    });
+
+    const error = await fetchSkillsShMirrorControlledBatch(
+      {
+        page: 0,
+        offset: 0,
+        limit: 1,
+        maxDetailBytes: 64,
+        sourceTotal: 1,
+        externalIds: ["patrick-erichsen/skills/html"],
+      },
+      { fetchImpl: fetchImpl as typeof fetch },
+    ).catch((value: unknown) => value);
+
+    expect(skillsShSourceRetryAfterSeconds(error)).toBe(120);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not sleep after the final controlled-source rate-limit attempt", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn(async () => {
+      return new Response("rate limited", {
+        status: 429,
+        headers: { "retry-after": "1" },
+      });
+    });
+    let settled = false;
+    const resultPromise = fetchSkillsShMirrorControlledBatch(
+      {
+        page: 0,
+        offset: 0,
+        limit: 1,
+        maxDetailBytes: 64,
+        sourceTotal: 1,
+        externalIds: ["patrick-erichsen/skills/html"],
+      },
+      { fetchImpl: fetchImpl as typeof fetch },
+    ).catch((value: unknown) => value);
+    void resultPromise.then(() => {
+      settled = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(settled).toBe(true);
+    expect(skillsShSourceRetryAfterSeconds(await resultPromise)).toBe(1);
   });
 
   it("supplements only controlled identities absent from the authenticated catalog", async () => {
