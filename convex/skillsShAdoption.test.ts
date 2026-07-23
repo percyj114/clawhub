@@ -651,6 +651,33 @@ describe("skills.sh adoption", () => {
     });
   });
 
+  it("fails closed when a mirrored source is no longer freshly observed", async () => {
+    useLocalEnvironment();
+    const fixture = await seedAdoptionFixture({
+      githubProviderAccountId: "42",
+      destination: "none",
+    });
+    await insertMirrorDigest(fixture);
+    await fixture.t.run(async (ctx) => {
+      const digest = await ctx.db
+        .query("skillsShMirrorDigests")
+        .withIndex("by_external_id", (q) => q.eq("externalId", "acme/skills/demo"))
+        .unique();
+      if (!digest) throw new Error("mirror digest missing");
+      await ctx.db.patch(digest._id, { sourceFreshnessStatus: "stale" });
+    });
+
+    await expect(
+      fixture.t.query(internal.skillsShAdoption.getMirroredPreviewInternal, {
+        actorUserId: fixture.userId,
+        publisherId: fixture.publisherId,
+        externalId: "acme/skills/demo",
+        githubOwnerId: 42,
+        canonicalRepository: "acme/skills",
+      }),
+    ).resolves.toBeNull();
+  });
+
   it("does not rewrite frozen promoted provenance during an idempotent mirrored retry", async () => {
     useLocalEnvironment();
     const fixture = await seedAdoptionFixture({

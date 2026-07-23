@@ -391,6 +391,7 @@ function completeMirrorSource(digest: Doc<"skillsShMirrorDigests">) {
   if (
     digest.sourceType !== "github" ||
     !digest.active ||
+    digest.sourceFreshnessStatus !== "observed-only" ||
     !digest.owner ||
     !digest.repo ||
     !digest.githubPath ||

@@ -4,6 +4,7 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
 import { internalAction, internalMutation, internalQuery, query } from "./functions";
+import { newestReusableAllowedAttempt } from "./lib/skillsShAttemptHistory";
 import {
   assertSkillsShCatalogControlMutationAllowed,
   assertSkillsShFixtureEnvironmentAllowed,
@@ -1037,8 +1038,7 @@ export const processStagingLiveBatchInternal = internalMutation({
         !existingAttempt &&
         (!existing || contentChanged || existing.scanStatus !== "planned");
       const metricScheduleWriteCost = native.nativeMetricUpdate ? 1 : 0;
-      const observationWriteCost =
-        1 + (reusableAllowedRefresh ? 1 : 0) + metricScheduleWriteCost;
+      const observationWriteCost = 1 + (reusableAllowedRefresh ? 1 : 0) + metricScheduleWriteCost;
       if (writesUsed + observationWriteCost + 1 > run.budgets.maxWritesPerBatch) break;
 
       incrementReconciliationCounts(counts, native.reconciliation);
@@ -1265,8 +1265,7 @@ export const processFixtureBatchInternal = internalMutation({
         !existingAttempt &&
         (!existing || contentChanged || existing.scanStatus !== "planned");
       const entryWriteRequired = !run.dryRun;
-      const metricScheduleWriteCost =
-        entryWriteRequired && native.nativeMetricUpdate ? 1 : 0;
+      const metricScheduleWriteCost = entryWriteRequired && native.nativeMetricUpdate ? 1 : 0;
       if (
         entryWriteRequired &&
         writesUsed + 2 + metricScheduleWriteCost > run.budgets.maxWritesPerBatch
@@ -3173,13 +3172,7 @@ async function findAdoptedAttemptHistory(
     .filter((attempt) => hasSameAdoptedContent(row, attempt))
     .sort((left, right) => right._creationTime - left._creationTime);
   const existingAttempt = matchingAttempts[0] ?? null;
-  const reusableAllowedAttempt =
-    matchingAttempts.find(
-      (attempt) =>
-        attempt.status === "succeeded" &&
-        attempt.publicationRolledBackAt === undefined &&
-        (attempt.verdict === "clean" || attempt.verdict === "suspicious"),
-    ) ?? null;
+  const reusableAllowedAttempt = newestReusableAllowedAttempt(matchingAttempts);
   return { existingAttempt, reusableAllowedAttempt, readsUsed: attempts.length };
 }
 
