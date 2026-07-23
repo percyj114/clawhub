@@ -59,7 +59,15 @@ describe("Test deploy workflow", () => {
       "cancel-in-progress": false,
     });
     expect(job?.if).toContain("github.event_name == 'workflow_dispatch'");
+    expect(job?.if).toContain("github.ref == 'refs/heads/main'");
+    expect(job?.if).toContain("github.ref == 'refs/heads/pe/claw-563-skills-sh-mirror-10k'");
+    expect(job?.if).toContain("inputs.branch_test_confirm == 'deploy-claw-563-to-permanent-test'");
+    expect(job?.if).toContain("inputs.expected_sha != ''");
     expect(job?.if).toContain("github.event_name == 'pull_request'");
+    expect(job?.if).toContain(
+      "github.event.pull_request.head.ref == 'pe/claw-563-skills-sh-mirror-10k'",
+    );
+    expect(job?.if).toContain("github.actor == 'Patrick-Erichsen'");
     expect(job?.if).toContain("github.event.workflow_run.conclusion == 'success'");
     expect(job?.if).toContain("github.event.workflow_run.event == 'push'");
     expect(revision).toContain('deploy_sha" != "$main_sha');
