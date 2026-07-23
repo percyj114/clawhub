@@ -419,6 +419,100 @@ describe("skills.sh external mirror", () => {
     });
   });
 
+  it("preserves classifier topic labels and indexes their normalized topic slugs", async () => {
+    useTestEnvironment();
+    const t = convexTest(schema, modules);
+    await configure(t);
+    const { runId } = await startRun(t, "snapshot:topic-labels", 1);
+    const topicRow = {
+      ...githubRow,
+      inferredTopics: ["Code Review", "股票分析"],
+    };
+
+    await expect(
+      processBatch(t, {
+        runId,
+        page: 0,
+        offset: 0,
+        pageLength: 1,
+        hasMore: false,
+        sourceTotal: 1,
+        sourceRequests: 3,
+        sourceBytes: 1_024,
+        rows: [topicRow],
+      }),
+    ).resolves.toMatchObject({
+      counts: {
+        inserted: 1,
+        rejected: 0,
+        conflicts: 0,
+      },
+    });
+    await expect(
+      t.query(internal.skillsShMirror.getByExternalIdInternal, {
+        externalId: topicRow.externalId,
+      }),
+    ).resolves.toMatchObject({
+      inferredTopics: ["Code Review", "股票分析"],
+    });
+
+    for (const topic of ["Code Review", "股票分析"]) {
+      const result = await t.query(internal.skillsShMirror.listActiveByTopicInternal, {
+        topic,
+        paginationOpts: { cursor: null, numItems: 10 },
+      });
+      expect(result.page.map((digest) => digest.externalId)).toEqual([topicRow.externalId]);
+    }
+    await t.mutation(internal.skillsShMirror.reconcileBatchInternal, {
+      runId,
+      limit: 250,
+    });
+    await t.run(async (ctx) => {
+      const digest = await ctx.db
+        .query("skillsShMirrorDigests")
+        .withIndex("by_external_id", (q) => q.eq("externalId", topicRow.externalId))
+        .unique();
+      if (!digest) throw new Error("topic digest missing");
+      const canonical = await ctx.db
+        .query("skillsShMirrorFacets")
+        .withIndex("by_digest_id_and_kind_and_term", (q) => q.eq("digestId", digest._id))
+        .filter((q) => q.eq(q.field("term"), "code-review"))
+        .unique();
+      if (!canonical) throw new Error("canonical topic facet missing");
+      await ctx.db.delete(canonical._id);
+      await ctx.db.insert("skillsShMirrorFacets", {
+        digestId: canonical.digestId,
+        externalId: canonical.externalId,
+        kind: "topic",
+        term: "code review",
+        active: true,
+        installs: canonical.installs,
+        createdAt: canonical.createdAt,
+        updatedAt: canonical.updatedAt,
+      });
+    });
+    const replay = await startRun(t, "snapshot:topic-label-replay", 1);
+    await processBatch(t, {
+      runId: replay.runId,
+      page: 0,
+      offset: 0,
+      pageLength: 1,
+      hasMore: false,
+      sourceTotal: 1,
+      sourceRequests: 3,
+      sourceBytes: 1_024,
+      rows: [topicRow],
+    });
+    expect(
+      await t.run(async (ctx) =>
+        (await ctx.db.query("skillsShMirrorFacets").collect())
+          .filter((facet) => facet.kind === "topic" && facet.active)
+          .map((facet) => facet.term)
+          .sort(),
+      ),
+    ).toEqual(["code-review", "股票分析"]);
+  });
+
   it("serves bounded active exact, prefix, first-token, and full-text recall", async () => {
     useTestEnvironment();
     const t = convexTest(schema, modules);

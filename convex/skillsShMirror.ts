@@ -1,3 +1,8 @@
+import {
+  getCatalogTopicSlugs,
+  normalizeCatalogTopic,
+  normalizeCatalogTopics,
+} from "clawhub-schema";
 import { paginationOptsValidator } from "convex/server";
 import { ConvexError, type Infer, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -188,7 +193,7 @@ function normalizeRow(row: MirrorRow): MirrorRow {
       snyk: normalizeScanner(row.upstreamScanners.snyk),
     },
     inferredCategories: row.inferredCategories.map(normalizedSearchText),
-    inferredTopics: row.inferredTopics.map(normalizedSearchText),
+    inferredTopics: row.inferredTopics.map(normalizedTopicLabel),
     inferredClassifierVersion: row.inferredClassifierVersion.trim(),
     inferredTopicClassifierVersion: row.inferredTopicClassifierVersion.trim(),
     inferredInputHash: row.inferredInputHash.trim(),
@@ -241,6 +246,10 @@ function normalizedSearchText(value: string) {
   return value.trim().toLowerCase();
 }
 
+function normalizedTopicLabel(value: string) {
+  return value.normalize("NFKC").trim().replace(/\s+/g, " ");
+}
+
 function firstSearchToken(value: string) {
   return tokenize(value)[0] ?? normalizedSearchText(value);
 }
@@ -282,7 +291,7 @@ function searchFields(row: MirrorRow) {
   };
 }
 
-function validInferenceTerms(values: string[], min: number, max: number) {
+function validCategoryInferenceTerms(values: string[], min: number, max: number) {
   return (
     values.length >= min &&
     values.length <= max &&
@@ -293,10 +302,23 @@ function validInferenceTerms(values: string[], min: number, max: number) {
   );
 }
 
+function validTopicInferenceTerms(values: string[]) {
+  if (values.length > MAX_INFERRED_TOPICS) return false;
+  try {
+    const normalized = normalizeCatalogTopics(values);
+    return (
+      normalized.length === values.length &&
+      normalized.every((value, index) => value === values[index])
+    );
+  } catch {
+    return false;
+  }
+}
+
 function validInference(row: MirrorRow) {
   return (
-    validInferenceTerms(row.inferredCategories, 1, MAX_INFERRED_CATEGORIES) &&
-    validInferenceTerms(row.inferredTopics, 0, MAX_INFERRED_TOPICS) &&
+    validCategoryInferenceTerms(row.inferredCategories, 1, MAX_INFERRED_CATEGORIES) &&
+    validTopicInferenceTerms(row.inferredTopics) &&
     [
       row.inferredClassifierVersion,
       row.inferredTopicClassifierVersion,
@@ -392,7 +414,8 @@ async function syncFacets(
         kind: "category" as const,
         term,
       })),
-      ...row.inferredTopics.map((term) => ({
+      // Full mirror replay migrates legacy topic-label facets by replacing them with canonical slugs.
+      ...getCatalogTopicSlugs(row.inferredTopics).map((term) => ({
         key: `topic:${term}`,
         kind: "topic" as const,
         term,
@@ -1373,9 +1396,11 @@ export const listActiveByTopicInternal = internalQuery({
     paginationOpts: paginationOptsValidator,
   },
   handler: async (ctx, args) => {
+    const topic = normalizeCatalogTopic(args.topic);
+    if (!topic) throw new ConvexError("topic is required");
     return await listActiveByFacet(ctx, {
       kind: "topic",
-      term: requiredSearchValue("topic", args.topic),
+      term: topic,
       paginationOpts: args.paginationOpts,
     });
   },
