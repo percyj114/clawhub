@@ -51,7 +51,7 @@ describe("Test deploy workflow", () => {
       branches: ["main"],
     });
     expect(workflow.on?.pull_request).toEqual({
-      types: ["synchronize"],
+      types: ["synchronize", "labeled"],
     });
     expect(workflow.on?.workflow_dispatch).toBeDefined();
     expect(workflow.concurrency).toEqual({

@@ -6,7 +6,7 @@ on:
     types: [completed]
     branches: [main]
   pull_request:
-    types: [synchronize]
+    types: [synchronize, labeled]
   workflow_dispatch:
     inputs:
       expected_sha:
