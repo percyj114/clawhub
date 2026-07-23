@@ -355,9 +355,9 @@ OpenClaw downloads the GitHub archive for that commit and extracts only the skil
 path. The local lock/origin version is the commit SHA.
 
 Controlled skills.sh catalog entries use the repository-qualified reference
-`skills-sh/<owner>/<repo>/<slug>`. The colon form
-`skills-sh:<owner>/<repo>/<slug>` is invalid and must be rejected by clients and
-HTTP handlers.
+`skills-sh:<owner>/<repo>/<slug>`. The legacy slash form
+`skills-sh/<owner>/<repo>/<slug>` is invalid for new CLI input and must be
+rejected by clients.
 
 Unclaimed mirrored entries remain external and do not create ClawHub scan work.
 Their latest successful synchronized snapshot supplies the exact source pointer,

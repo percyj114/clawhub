@@ -119,6 +119,93 @@ async function createPersonalPublisher(t: ReturnType<typeof convexTest>) {
   });
 }
 
+async function insertMirrorDigest(
+  t: ReturnType<typeof convexTest>,
+  input: {
+    owner: string;
+    repo: string;
+    slug: string;
+  },
+) {
+  return await t.run(async (ctx) => {
+    const externalId = `${input.owner}/${input.repo}/${input.slug}`;
+    const runId = await ctx.db.insert("skillsShMirrorRuns", {
+      snapshotId: "mirror-snapshot",
+      status: "completed",
+      sourceTotal: 1,
+      sourcePageSize: 1,
+      sourceMeasuredAt: new Date(NOW).toISOString(),
+      page: 1,
+      offset: 0,
+      counts: {
+        observed: 1,
+        inserted: 1,
+        updated: 0,
+        unchanged: 0,
+        rejected: 0,
+        conflicts: 0,
+        tombstoned: 0,
+        reactivated: 0,
+        detailsInserted: 0,
+        detailsUpdated: 0,
+        detailsUnchanged: 0,
+        detailsMissing: 1,
+        detailsTruncated: 0,
+        scansPlanned: 0,
+        scansAdmitted: 0,
+      },
+      operations: {
+        functionCalls: 1,
+        dbReads: 0,
+        dbWrites: 1,
+        sourceRequests: 1,
+        sourceBytes: 1,
+      },
+      actor: "test",
+      reason: "test",
+      startedAt: NOW,
+      completedAt: NOW,
+      updatedAt: NOW,
+    });
+    return await ctx.db.insert("skillsShMirrorDigests", {
+      externalId,
+      sourceType: "github",
+      owner: input.owner,
+      repo: input.repo,
+      slug: input.slug,
+      normalizedSlug: input.slug,
+      normalizedSlugFirstToken: input.slug,
+      displayName: input.slug,
+      normalizedDisplayName: input.slug,
+      normalizedDisplayNameFirstToken: input.slug,
+      searchText: input.slug,
+      sourceUrl: `https://skills.sh/${externalId}`,
+      canonicalRepoUrl: `https://github.com/${input.owner}/${input.repo}`,
+      githubPath: `skills/${input.slug}`,
+      githubCommit: "a".repeat(40),
+      sourceContentHash: "c".repeat(64),
+      upstreamInstalls: 1_200,
+      upstreamScanners: {
+        genAgentTrustHub: { status: "unavailable" },
+        socket: { status: "unavailable" },
+        snyk: { status: "unavailable" },
+      },
+      sourceFreshnessStatus: "observed-only",
+      detailStatus: "missing",
+      observationFingerprint: "mirror-fingerprint",
+      sourceSnapshotId: "mirror-snapshot",
+      lastObservedRunId: runId,
+      active: true,
+      publicVisible: false,
+      installable: false,
+      firstObservedAt: NOW,
+      lastObservedAt: NOW,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+  });
+}
+
 function useEnvironment(env: Record<string, string>) {
   for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value);
 }
@@ -368,5 +455,103 @@ describe("skills.sh bulk adoption preview query", () => {
         paginationOpts: { cursor: null, numItems: 101 },
       }),
     ).rejects.toThrow("numItems must be an integer between 1 and 100");
+  });
+
+  it("previews active mirrored sources through immutable GitHub owner identity", async () => {
+    useEnvironment(LOCAL_ENV);
+    const t = convexTest(schema, modules);
+    const { userId, publisherId } = await t.run(async (ctx) => {
+      const actorUserId = await ctx.db.insert("users", {
+        handle: "legacy-patrick",
+        displayName: "Patrick",
+        createdAt: NOW,
+        updatedAt: NOW,
+      });
+      const actorPublisherId = await ctx.db.insert("publishers", {
+        kind: "user",
+        handle: "legacy-patrick",
+        displayName: "Patrick",
+        linkedUserId: actorUserId,
+        createdAt: NOW,
+        updatedAt: NOW,
+      });
+      await ctx.db.insert("publisherMembers", {
+        publisherId: actorPublisherId,
+        userId: actorUserId,
+        role: "owner",
+        createdAt: NOW,
+        updatedAt: NOW,
+      });
+      await ctx.db.insert("authAccounts", {
+        userId: actorUserId,
+        provider: "github",
+        providerAccountId: "42",
+      });
+      return { userId: actorUserId, publisherId: actorPublisherId };
+    });
+    await insertMirrorDigest(t, {
+      owner: "patrick-erichsen",
+      repo: "skills",
+      slug: "html",
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request) => {
+        const requestUrl = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+        if (requestUrl.endsWith("/user/42")) {
+          return new Response(
+            JSON.stringify({
+              id: 42,
+              login: "patrick-erichsen",
+            }),
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            id: 7,
+            full_name: "patrick-erichsen/skills",
+            owner: { id: 42, login: "patrick-erichsen" },
+            private: false,
+            visibility: "public",
+          }),
+        );
+      }),
+    );
+
+    const result = await t
+      .withIdentity({ subject: userId })
+      .action(api.skillsShBulkAdoption.previewMirroredPublisherEntries, {
+        publisherId,
+        paginationOpts: { cursor: null, numItems: 20 },
+      });
+
+    expect(result).toMatchObject({
+      publisher: {
+        _id: publisherId,
+        handle: "legacy-patrick",
+      },
+      ownership: {
+        kind: "personal",
+        githubOwnerId: 42,
+      },
+      isDone: true,
+      page: [
+        {
+          externalId: "patrick-erichsen/skills/html",
+          classification: "new-destination",
+          canStart: true,
+          source: {
+            repository: "patrick-erichsen/skills",
+            githubPath: "skills/html",
+            githubCommit: "a".repeat(40),
+            sourceContentHash: "c".repeat(64),
+          },
+          start: {
+            sourceContentHash: "c".repeat(64),
+            expectedDestinationFingerprint: expect.any(String),
+          },
+        },
+      ],
+    });
   });
 });

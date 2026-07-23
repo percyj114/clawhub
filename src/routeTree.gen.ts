@@ -39,6 +39,7 @@ import { Route as PluginsNameRouteImport } from './routes/plugins/$name'
 import { Route as PluginsNewRouteImport } from './routes/plugins/new'
 import { Route as PluginsPublishRouteImport } from './routes/plugins/publish'
 import { Route as PublishersIndexRouteImport } from './routes/publishers/index'
+import { Route as SkillsShAdoptIndexRouteImport } from './routes/skills-sh-adopt/index'
 import { Route as SkillsIndexRouteImport } from './routes/skills/index'
 import { Route as SkillsPublishRouteImport } from './routes/skills/publish'
 import { Route as UHandleRouteImport } from './routes/u/$handle'
@@ -213,6 +214,11 @@ const PublishersIndexRoute = PublishersIndexRouteImport.update({
   path: '/publishers/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SkillsShAdoptIndexRoute = SkillsShAdoptIndexRouteImport.update({
+  id: '/skills-sh-adopt/',
+  path: '/skills-sh-adopt/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SkillsIndexRoute = SkillsIndexRouteImport.update({
   id: '/skills/',
   path: '/skills/',
@@ -373,6 +379,7 @@ export interface FileRoutesByFullPath {
   '/packages/': typeof PackagesIndexRoute
   '/plugins/': typeof PluginsIndexRoute
   '/publishers/': typeof PublishersIndexRoute
+  '/skills-sh-adopt/': typeof SkillsShAdoptIndexRoute
   '/skills/': typeof SkillsIndexRoute
   '/users/': typeof UsersIndexRoute
   '/$owner/$slug/security-audit': typeof OwnerSlugSecurityAuditRoute
@@ -428,6 +435,7 @@ export interface FileRoutesByTo {
   '/packages': typeof PackagesIndexRoute
   '/plugins': typeof PluginsIndexRoute
   '/publishers': typeof PublishersIndexRoute
+  '/skills-sh-adopt': typeof SkillsShAdoptIndexRoute
   '/skills': typeof SkillsIndexRoute
   '/users': typeof UsersIndexRoute
   '/$owner/$slug/security-audit': typeof OwnerSlugSecurityAuditRoute
@@ -484,6 +492,7 @@ export interface FileRoutesById {
   '/packages/': typeof PackagesIndexRoute
   '/plugins/': typeof PluginsIndexRoute
   '/publishers/': typeof PublishersIndexRoute
+  '/skills-sh-adopt/': typeof SkillsShAdoptIndexRoute
   '/skills/': typeof SkillsIndexRoute
   '/users/': typeof UsersIndexRoute
   '/$owner/$slug/security-audit': typeof OwnerSlugSecurityAuditRoute
@@ -541,6 +550,7 @@ export interface FileRouteTypes {
     | '/packages/'
     | '/plugins/'
     | '/publishers/'
+    | '/skills-sh-adopt/'
     | '/skills/'
     | '/users/'
     | '/$owner/$slug/security-audit'
@@ -596,6 +606,7 @@ export interface FileRouteTypes {
     | '/packages'
     | '/plugins'
     | '/publishers'
+    | '/skills-sh-adopt'
     | '/skills'
     | '/users'
     | '/$owner/$slug/security-audit'
@@ -651,6 +662,7 @@ export interface FileRouteTypes {
     | '/packages/'
     | '/plugins/'
     | '/publishers/'
+    | '/skills-sh-adopt/'
     | '/skills/'
     | '/users/'
     | '/$owner/$slug/security-audit'
@@ -707,6 +719,7 @@ export interface RootRouteChildren {
   PackagesIndexRoute: typeof PackagesIndexRoute
   PluginsIndexRoute: typeof PluginsIndexRoute
   PublishersIndexRoute: typeof PublishersIndexRoute
+  SkillsShAdoptIndexRoute: typeof SkillsShAdoptIndexRoute
   SkillsIndexRoute: typeof SkillsIndexRoute
   UsersIndexRoute: typeof UsersIndexRoute
   OwnerPluginsSlugRoute: typeof OwnerPluginsSlugRouteWithChildren
@@ -927,6 +940,13 @@ declare module '@tanstack/react-router' {
       path: '/publishers'
       fullPath: '/publishers/'
       preLoaderRoute: typeof PublishersIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/skills-sh-adopt/': {
+      id: '/skills-sh-adopt/'
+      path: '/skills-sh-adopt'
+      fullPath: '/skills-sh-adopt/'
+      preLoaderRoute: typeof SkillsShAdoptIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/skills/': {
@@ -1199,6 +1219,7 @@ const rootRouteChildren: RootRouteChildren = {
   PackagesIndexRoute: PackagesIndexRoute,
   PluginsIndexRoute: PluginsIndexRoute,
   PublishersIndexRoute: PublishersIndexRoute,
+  SkillsShAdoptIndexRoute: SkillsShAdoptIndexRoute,
   SkillsIndexRoute: SkillsIndexRoute,
   UsersIndexRoute: UsersIndexRoute,
   OwnerPluginsSlugRoute: OwnerPluginsSlugRouteWithChildren,
