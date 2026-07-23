@@ -406,6 +406,58 @@ describe("skills.sh Vercel source boundary", () => {
     });
   });
 
+  it("derives the GitHub folder from a repository-relative detail path", async () => {
+    const content = "# Lark Doc\n";
+    const blobSha = createHash("sha1")
+      .update(`blob ${Buffer.byteLength(content)}\0`)
+      .update(content)
+      .digest("hex");
+    const commit = "050daba89f6b6636470add5cb300aac46a412cf8";
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === "https://github.com/larksuite/cli/archive/HEAD.zip") {
+        return new Response(null, {
+          status: 302,
+          headers: { location: `https://codeload.github.com/larksuite/cli/zip/${commit}` },
+        });
+      }
+      if (url.includes(`/git/trees/${commit}?recursive=1`)) {
+        return new Response(
+          JSON.stringify({
+            truncated: false,
+            tree: [{ path: "skills/lark-doc/SKILL.md", type: "blob", sha: blobSha }],
+          }),
+        );
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    const result = await resolveSkillsShMirrorGitHubLocators(
+      [
+        {
+          externalId: "larksuite/cli/lark-doc",
+          sourceType: "github",
+          owner: "larksuite",
+          repo: "cli",
+          slug: "lark-doc",
+          detail: {
+            path: "skills/lark-doc/SKILL.md",
+            content,
+            truncated: false,
+          },
+        },
+      ],
+      { fetchImpl: fetchImpl as typeof fetch },
+    );
+
+    expect(result.rows).toEqual([
+      expect.objectContaining({
+        githubPath: "skills/lark-doc",
+        githubCommit: commit,
+      }),
+    ]);
+  });
+
   it("propagates lease heartbeat failures during GitHub locator resolution", async () => {
     const beforeRequest = vi
       .fn<() => Promise<void>>()

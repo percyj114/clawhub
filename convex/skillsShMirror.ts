@@ -9,6 +9,7 @@ import { assertSkillsShFixtureEnvironmentAllowed } from "./lib/skillsShCatalogEn
 const CONTROL_KEY = "global";
 const ENABLE_CONFIRM = "enable-skills-sh-mirror-test";
 const PAUSE_CONFIRM = "set-skills-sh-mirror-pause";
+const CANCEL_CONFIRM = "cancel-skills-sh-mirror-test-run";
 const MAX_ROWS_PER_RUN = 10_000;
 const MAX_ROWS_PER_BATCH = 50;
 const MAX_DETAIL_BYTES = 64 * 1024;
@@ -623,6 +624,43 @@ export const setPausedInternal = internalMutation({
       updatedAt: now,
     });
     return { runId: run._id, status: args.paused ? ("paused" as const) : ("running" as const) };
+  },
+});
+
+export const cancelRunInternal = internalMutation({
+  args: {
+    runId: v.id("skillsShMirrorRuns"),
+    actor: v.string(),
+    reason: v.string(),
+    confirm: v.string(),
+  },
+  handler: async (ctx, args) => {
+    assertSkillsShFixtureEnvironmentAllowed();
+    if (args.confirm !== CANCEL_CONFIRM) {
+      throw new ConvexError(`Pass confirm="${CANCEL_CONFIRM}" to cancel a mirror run.`);
+    }
+    const run = await ctx.db.get(args.runId);
+    if (!run) throw new ConvexError("skills.sh mirror run not found");
+    if (!["running", "paused", "reconciling"].includes(run.status)) {
+      throw new ConvexError(`Cannot cancel a ${run.status} skills.sh mirror run`);
+    }
+    const now = Date.now();
+    const patch = {
+      status: "canceled" as const,
+      batchLeaseToken: undefined,
+      batchLeaseExpiresAt: undefined,
+      operations: addOperations(run.operations, {
+        functionCalls: 1,
+        dbReads: 1,
+        dbWrites: 1,
+      }),
+      actor: args.actor.trim(),
+      reason: args.reason.trim(),
+      completedAt: now,
+      updatedAt: now,
+    };
+    await ctx.db.patch(run._id, patch);
+    return summarizeRun({ ...run, ...patch });
   },
 });
 

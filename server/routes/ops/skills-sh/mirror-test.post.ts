@@ -30,6 +30,7 @@ type MirrorRequest = {
     | "step-replay"
     | "pause"
     | "resume"
+    | "discard"
     | "reconcile"
     | "conflicts"
     | "status"
@@ -399,6 +400,16 @@ export default defineEventHandler(async (event) => {
           paused: operation === "pause",
           reason: requireString(body.reason, "reason"),
           confirm: "set-skills-sh-mirror-pause",
+        }),
+      );
+    }
+    if (operation === "discard") {
+      return jsonResponse(
+        await callConvexOperator(authorization, {
+          operation: "mirror-cancel",
+          runId: requireString(body.runId, "runId"),
+          reason: requireString(body.reason, "reason"),
+          confirm: "cancel-skills-sh-mirror-test-run",
         }),
       );
     }

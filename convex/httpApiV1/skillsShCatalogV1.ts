@@ -29,6 +29,7 @@ const internalRefs = internal as unknown as {
     startStagingLiveRunInternal: unknown;
   };
   skillsShMirror: {
+    cancelRunInternal: unknown;
     claimBatchLeaseInternal: unknown;
     configureInternal: unknown;
     getByExternalIdInternal: unknown;
@@ -639,6 +640,18 @@ export async function skillsShCatalogTestV1Handler(ctx: ActionCtx, request: Requ
         await runMutationRef(ctx, internalRefs.skillsShMirror.setPausedInternal, {
           runId: requireString(body, "runId"),
           paused: requireBoolean(body, "paused"),
+          actor: auth.user.handle,
+          reason: requireString(body, "reason"),
+          confirm: requireString(body, "confirm"),
+        }),
+        200,
+        rate.headers,
+      );
+    }
+    if (operation === "mirror-cancel") {
+      return json(
+        await runMutationRef(ctx, internalRefs.skillsShMirror.cancelRunInternal, {
+          runId: requireString(body, "runId"),
           actor: auth.user.handle,
           reason: requireString(body, "reason"),
           confirm: requireString(body, "confirm"),
