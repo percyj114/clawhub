@@ -908,6 +908,49 @@ describe("skills.sh permanent Test mirror route", () => {
     });
   });
 
+  it("passes through only byte-safe detail proof pages", async () => {
+    readBodyMock.mockResolvedValue({ operation: "detail-page", cursor: null, limit: 50 });
+    const convexFetch = vi.fn(async (_url: string, init: RequestInit) => {
+      expect(JSON.parse(String(init.body))).toEqual({
+        operation: "mirror-detail-page",
+        cursor: null,
+        limit: 50,
+      });
+      return new Response(
+        JSON.stringify({
+          page: [{ externalId: "patrick-erichsen/skills/html" }],
+          isDone: true,
+          continueCursor: "",
+        }),
+      );
+    });
+    vi.stubGlobal("fetch", convexFetch);
+
+    const handler = (await import("./routes/ops/skills-sh/mirror-test.post")).default;
+    const response = (await handler({} as never)) as Response;
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      page: [{ externalId: "patrick-erichsen/skills/html" }],
+      isDone: true,
+    });
+  });
+
+  it("rejects detail proof pages that can exceed the response byte limit", async () => {
+    readBodyMock.mockResolvedValue({ operation: "detail-page", cursor: null, limit: 51 });
+    const convexFetch = vi.fn();
+    vi.stubGlobal("fetch", convexFetch);
+
+    const handler = (await import("./routes/ops/skills-sh/mirror-test.post")).default;
+    const response = (await handler({} as never)) as Response;
+
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({
+      message: "limit must be an integer between 1 and 50",
+    });
+    expect(convexFetch).not.toHaveBeenCalled();
+  });
+
   it("appends the bounded controlled GitHub proof page after the authenticated catalog", async () => {
     readBodyMock.mockResolvedValue({
       operation: "step",

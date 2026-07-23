@@ -1314,4 +1314,22 @@ describe("skills.sh external mirror", () => {
       await t.query(internal.skillsShMirror.getRunInternal, { runId: third.runId }),
     ).toMatchObject({ counts: { reactivated: 1 } });
   });
+
+  it("bounds detail proof pages below the worst-case response byte limit", async () => {
+    useTestEnvironment();
+    const t = convexTest(schema, modules);
+
+    await expect(
+      t.query(internal.skillsShMirror.listDetailsPageInternal, {
+        cursor: null,
+        limit: 50,
+      }),
+    ).resolves.toMatchObject({ page: [] });
+    await expect(
+      t.query(internal.skillsShMirror.listDetailsPageInternal, {
+        cursor: null,
+        limit: 51,
+      }),
+    ).rejects.toThrow("limit must be an integer between 1 and 50");
+  });
 });

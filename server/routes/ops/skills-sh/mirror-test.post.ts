@@ -21,6 +21,7 @@ const SOURCE_PAGE_SIZE = 500;
 const MIRROR_BATCH_SIZE = 50;
 const MAX_TEST_SOURCE_ROWS = 50_000;
 const MAX_DETAIL_BYTES = 64 * 1024;
+const MAX_DETAIL_PAGE_ROWS = 50;
 const BATCH_LEASE_HEARTBEAT_INTERVAL_MS = 60_000;
 
 type MirrorRequest = {
@@ -196,7 +197,7 @@ export default defineEventHandler(async (event) => {
         await callConvexOperator(authorization, {
           operation: "mirror-detail-page",
           cursor: body.cursor ?? null,
-          limit: requireInteger(body.limit, "limit", 1, 500),
+          limit: requireInteger(body.limit, "limit", 1, MAX_DETAIL_PAGE_ROWS),
         }),
       );
     }

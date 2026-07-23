@@ -18,6 +18,7 @@ const CANCEL_CONFIRM = "cancel-skills-sh-mirror-test-run";
 const MAX_ROWS_PER_RUN = 50_000;
 const MAX_ROWS_PER_BATCH = 50;
 const MAX_DETAIL_BYTES = 64 * 1024;
+const MAX_DETAIL_PAGE_ROWS = 50;
 const MAX_RECONCILE_ROWS = 250;
 const MAX_SOURCE_ATTEMPTS = 4;
 const MAX_SEARCH_ROWS = 50;
@@ -1692,7 +1693,7 @@ export const listDetailsPageInternal = internalQuery({
     limit: v.number(),
   },
   handler: async (ctx, args) => {
-    assertIntegerInRange("limit", args.limit, 1, 500);
+    assertIntegerInRange("limit", args.limit, 1, MAX_DETAIL_PAGE_ROWS);
     return await ctx.db
       .query("skillsShMirrorDetails")
       .withIndex("by_external_id")

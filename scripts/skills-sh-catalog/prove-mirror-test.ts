@@ -24,6 +24,7 @@ const OUTPUT_PATH = resolve("proof/claw-563/skills-sh-mirror-test-proof.json");
 const PROJECTED_SCALE = 700_000;
 const MAX_RATE_LIMIT_RETRIES_PER_RUN = 30;
 const MAX_RATE_LIMIT_WAIT_MS_PER_RUN = 30 * 60 * 1_000;
+const MAX_DETAIL_PAGE_ROWS = 50;
 
 function requireEnv(name: string) {
   const value = process.env[name]?.trim();
@@ -242,7 +243,11 @@ async function collectPages(
   let count = 0;
   let serializedBytes = 0;
   do {
-    const result = await call({ operation, cursor, limit: 500 });
+    const result = await call({
+      operation,
+      cursor,
+      limit: operation === "detail-page" ? MAX_DETAIL_PAGE_ROWS : 500,
+    });
     const page = result.payload.page;
     if (!Array.isArray(page)) throw new Error(`${operation} did not return a page`);
     for (const document of page as Record<string, unknown>[]) {
