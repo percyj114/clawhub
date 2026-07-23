@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/httpRateLimit", () => ({
   applyRateLimit: vi.fn(async () => ({ ok: true, headers: {} })),
+  markRateLimitApplied: vi.fn(),
 }));
 
 vi.mock("../lib/githubAuth", () => ({
@@ -1033,27 +1034,18 @@ describe("skills.sh public HTTP API", () => {
     },
   };
 
-  it.each([
-    {
-      suffix: "",
-      expected: publicEntry,
-    },
-    {
-      suffix: "/install",
-      expected: publicEntry.install,
-    },
-  ])("serves an approved slash route$suffix", async ({ suffix, expected }) => {
+  it("serves an approved slash detail route", async () => {
     const runQuery = vi.fn(async () => publicEntry);
     const ctx = { runQuery } as never;
     const response = await skillsShCatalogPublicV1Handler(
       ctx,
       new Request(
-        `https://academic-chihuahua-392.convex.site/api/v1/skills-sh/patrick-erichsen/skills/html${suffix}`,
+        "https://academic-chihuahua-392.convex.site/api/v1/skills-sh/patrick-erichsen/skills/html",
       ),
     );
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual(expected);
+    expect(await response.json()).toEqual(publicEntry);
     expect(runQuery).toHaveBeenCalledWith(expect.anything(), {
       owner: "patrick-erichsen",
       repo: "skills",

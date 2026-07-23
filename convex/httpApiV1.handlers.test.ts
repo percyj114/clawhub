@@ -3063,6 +3063,24 @@ describe("httpApiV1 handlers", () => {
     });
   });
 
+  it("direct skills.sh install route follows a promoted alias to its native archive", async () => {
+    const response = await __handlers.skillsShCatalogPublicV1Handler(
+      makeCtx({ runQuery: makePromotedInstallRunQuery() }),
+      new Request("https://example.com/api/v1/skills-sh/patrick-erichsen/skills/html/install"),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      slug: "skills-sh:patrick-erichsen/skills/html",
+      installKind: "archive",
+      trust: {
+        clawhubScan: "scanned",
+        label: "Scanned by ClawHub",
+      },
+      canonicalRef: "@openclaw/html",
+    });
+  });
+
   it("skill install resolver rejects a promoted alias whose native version is not scanned", async () => {
     const runQuery = makePromotedInstallRunQuery(promotedSkillsShAlias, {
       ...promotedNativeVersion,
@@ -3214,6 +3232,38 @@ describe("httpApiV1 handlers", () => {
       provenance: {
         source: "skills.sh",
         reference: "skills-sh:patrick-erichsen/skills/html",
+      },
+      trust: {
+        clawhubScan: "unscanned",
+        label: "Not scanned by ClawHub",
+      },
+      canonicalRef: null,
+    });
+    expect(runQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it("direct skills.sh install route returns the exact unscanned GitHub descriptor", async () => {
+    let lookupCount = 0;
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      expect(args).toEqual({
+        externalId: "patrick-erichsen/skills/html",
+      });
+      lookupCount += 1;
+      return lookupCount === 1 ? null : unclaimedSkillsShDigest;
+    });
+    const response = await __handlers.skillsShCatalogPublicV1Handler(
+      makeCtx({ runQuery }),
+      new Request("https://example.com/api/v1/skills-sh/patrick-erichsen/skills/html/install"),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      slug: "skills-sh:patrick-erichsen/skills/html",
+      installKind: "github",
+      github: {
+        repo: "patrick-erichsen/skills",
+        path: "skills/html",
+        commit: "050daba89f6b6636470add5cb300aac46a412cf8",
       },
       trust: {
         clawhubScan: "unscanned",

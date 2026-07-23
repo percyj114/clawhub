@@ -50,6 +50,7 @@ import {
   getSkillFileModerationInfoFromSkill,
   isSkillVersionForSkill,
 } from "../lib/skillFileAccess";
+import { parseSkillsShCatalogReference } from "../lib/skillsShCatalogReference";
 import {
   buildUnclaimedSkillsShInstallResolution,
   buildUnclaimedSkillsShVerifyResponse,
@@ -85,8 +86,6 @@ import {
   text,
   toOptionalNumber,
 } from "./shared";
-import { parseSkillsShCatalogReference } from "./skillsShCatalogV1";
-
 const MAX_EXPORT_FILE_COUNT = 10_000;
 const MAX_EXPORT_PAGE_LIMIT = 250;
 const DEFAULT_EXPORT_PAGE_LIMIT = 250;

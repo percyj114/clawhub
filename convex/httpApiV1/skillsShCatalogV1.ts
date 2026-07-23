@@ -3,12 +3,13 @@ import type { Id } from "../_generated/dataModel";
 import type { ActionCtx } from "../_generated/server";
 import { buildGitHubApiHeaders } from "../lib/githubAuth";
 import { computeGitHubSkillFolderContentHash } from "../lib/githubSkillSync";
-import { applyRateLimit } from "../lib/httpRateLimit";
+import { applyRateLimit, markRateLimitApplied } from "../lib/httpRateLimit";
 import {
   getSkillsShCatalogFixture,
   type SkillsShCatalogFixtureRow,
 } from "../lib/skillsShCatalogFixtures";
 import { json, requireAdminOrResponse, requireApiTokenUserOrResponse, text } from "./shared";
+import { skillsGetRouterV1Handler } from "./skillsV1";
 
 const internalRefs = internal as unknown as {
   skillsShCatalog: {
@@ -53,23 +54,6 @@ const MAX_GITHUB_OWNER_RESOLUTIONS = 500;
 const GITHUB_OWNER_RESOLUTION_CONCURRENCY = 8;
 const CONTROLLED_CANARY_FIXTURE_ID = "patrick-html-canary-v1";
 const MAX_CONTROLLED_CANARY_FILES = 100;
-
-export function parseSkillsShCatalogReference(value: string) {
-  const normalized = value.trim().toLowerCase();
-  const externalId = normalized.startsWith("skills-sh:")
-    ? normalized.slice("skills-sh:".length)
-    : normalized.startsWith("skills-sh/")
-      ? normalized.slice("skills-sh/".length)
-      : null;
-  if (!externalId) return null;
-  const segments = externalId.split("/").map((segment) => segment.trim().toLowerCase());
-  if (segments.length !== 3) return null;
-  const [owner, repo, slug] = segments;
-  if (!owner || !repo || !slug || [owner, repo, slug].some((part) => part.includes(":"))) {
-    return null;
-  }
-  return { owner, repo, slug, reference: `skills-sh:${owner}/${repo}/${slug}` };
-}
 
 async function runMutationRef<T>(
   ctx: ActionCtx,
@@ -869,7 +853,18 @@ export async function skillsShCatalogPublicV1Handler(ctx: ActionCtx, request: Re
   if (!owner || !repo || !slug || [owner, repo, slug].some((part) => part.includes(":"))) {
     return text("Not found", 404, rate.headers);
   }
+  if (install) {
+    const resolverUrl = new URL(`/api/v1/skills/${encodeURIComponent(slug)}/install`, request.url);
+    resolverUrl.searchParams.set("reference", `skills-sh:${owner}/${repo}/${slug}`);
+    const resolverRequest = new Request(resolverUrl, {
+      method: "GET",
+      headers: request.headers,
+      signal: request.signal,
+    });
+    markRateLimitApplied(resolverRequest, rate.headers);
+    return await skillsGetRouterV1Handler(ctx, resolverRequest);
+  }
   const entry = await ctx.runQuery(api.skillsShCatalog.getPublicEntry, { owner, repo, slug });
   if (!entry) return text("Skill not found", 404, rate.headers);
-  return json(install ? entry.install : entry, 200, rate.headers);
+  return json(entry, 200, rate.headers);
 }
