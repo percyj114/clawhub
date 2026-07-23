@@ -69,7 +69,14 @@ describe("Test deploy workflow", () => {
     expect(revision).toContain("pe/claw-583-mirrored-search-journey");
     expect(revision).toContain("Patrick-Erichsen");
     expect(revision).toContain("deploy-claw-563-to-permanent-test");
-    expect(revision).toContain("${{ inputs.expected_sha }}");
+    expect(revision).toContain('"$EXPECTED_SHA" == "$deploy_sha"');
+    expect(revision).not.toContain("${{ inputs.expected_sha }}");
+    expect(revision).not.toContain("${{ inputs.branch_test_confirm }}");
+    const revisionStep = steps.find((step) => step.name === "Resolve deployment revision");
+    expect(revisionStep?.env).toMatchObject({
+      BRANCH_TEST_CONFIRM: "${{ inputs.branch_test_confirm }}",
+      EXPECTED_SHA: "${{ inputs.expected_sha }}",
+    });
     expect(revision).toContain("${{ github.event.pull_request.head.sha }}");
   });
 

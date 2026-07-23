@@ -62,6 +62,9 @@ jobs:
 
       - name: Resolve deployment revision
         id: revision
+        env:
+          BRANCH_TEST_CONFIRM: ${{ inputs.branch_test_confirm }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: |
           set -euo pipefail
           deploy_sha="$(git rev-parse HEAD)"
@@ -72,8 +75,8 @@ jobs:
             if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]] &&
               [[ "$GITHUB_REF" == refs/heads/pe/claw-563-skills-sh-mirror-10k ]] &&
               [[ "$GITHUB_ACTOR" == Patrick-Erichsen ]] &&
-              [[ "${{ inputs.branch_test_confirm }}" == deploy-claw-563-to-permanent-test ]] &&
-              [[ "${{ inputs.expected_sha }}" == "$deploy_sha" ]]
+              [[ "$BRANCH_TEST_CONFIRM" == deploy-claw-563-to-permanent-test ]] &&
+              [[ "$EXPECTED_SHA" == "$deploy_sha" ]]
             then
               branch_test_allowed=true
             fi

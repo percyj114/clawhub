@@ -139,6 +139,24 @@ describe("skills.sh mirror public contract", () => {
         truncated: false,
       },
     });
+    expect(
+      buildSkillsShMirrorCatalogDetail({
+        digest,
+        detail: { ...detail, sourceContentHash: "0".repeat(64) },
+      }),
+    ).toMatchObject({ content: null });
+    expect(
+      buildSkillsShMirrorCatalogDetail({
+        digest,
+        detail: { ...detail, sourceContentHash: undefined },
+      }),
+    ).toMatchObject({ content: null });
+    expect(
+      buildSkillsShMirrorCatalogDetail({
+        digest: { ...digest, sourceContentHash: undefined },
+        detail,
+      }),
+    ).toMatchObject({ content: null });
   });
 
   it("fails verification instead of presenting an unscanned listing as passed", () => {

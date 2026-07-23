@@ -11,6 +11,7 @@ import {
   captureSkillsShCatalogTestSnapshot,
   fetchSkillsShCatalogDetail,
   fetchSkillsShMirrorBatch,
+  fetchSkillsShMirrorControlledBatch,
   fetchSkillsShCatalogPage,
   fetchSkillsShCatalogTestPage,
   getSkillsShCatalogTestSourcePolicy,
@@ -148,6 +149,61 @@ describe("skills.sh Vercel source boundary", () => {
         16,
       ),
     ).toThrow("controlled skills.sh mirror source hash changed");
+  });
+
+  it("does not wait after the final controlled-source retry is exhausted", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn(async () => {
+      return new Response("unavailable", {
+        status: 503,
+        headers: { "retry-after": "17" },
+      });
+    });
+    let failure: unknown;
+    const result = fetchSkillsShMirrorControlledBatch(
+      {
+        page: 20,
+        offset: 0,
+        limit: 1,
+        maxDetailBytes: 64 * 1024,
+        sourceTotal: 9_572,
+        externalIds: ["steipete/clawdis/discrawl"],
+      },
+      { fetchImpl: fetchImpl as typeof fetch },
+    ).catch((error: unknown) => {
+      failure = error;
+    });
+
+    await vi.advanceTimersByTimeAsync(51_000);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(failure).toBeInstanceOf(Error);
+    expect(vi.getTimerCount()).toBe(0);
+    await result;
+  });
+
+  it("delegates long controlled-source cooldowns without holding the batch lease", async () => {
+    const fetchImpl = vi.fn(async () => {
+      return new Response("rate limited", {
+        status: 429,
+        headers: { "retry-after": "120" },
+      });
+    });
+
+    const error = await fetchSkillsShMirrorControlledBatch(
+      {
+        page: 20,
+        offset: 0,
+        limit: 1,
+        maxDetailBytes: 64 * 1024,
+        sourceTotal: 9_572,
+        externalIds: ["steipete/clawdis/discrawl"],
+      },
+      { fetchImpl: fetchImpl as typeof fetch },
+    ).catch((value: unknown) => value);
+
+    expect(skillsShSourceRetryAfterSeconds(error)).toBe(120);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("supplements only controlled identities absent from the authenticated catalog", async () => {
@@ -1825,6 +1881,60 @@ describe("skills.sh Vercel source boundary", () => {
     expect(batch.sourceRequests).toBe(5);
   });
 
+  it("quarantines long identity-page cooldowns without holding the mirror lease", async () => {
+    let identityPageAttempts = 0;
+    const fetchImpl = vi.fn(async (urlInput: string | URL | Request) => {
+      const url = String(urlInput);
+      if (url.includes("?page=0&per_page=500")) {
+        return new Response(
+          JSON.stringify({
+            data: [
+              {
+                id: "larksuite/cli/lark-doc",
+                installUrl: null,
+                installs: 383_123,
+                name: "lark-doc",
+                slug: "lark-doc",
+                source: "larksuite/cli",
+                sourceType: "well-known",
+                url: "https://www.skills.sh/larksuite/cli/lark-doc",
+              },
+            ],
+            pagination: { page: 0, perPage: 500, total: 1, hasMore: false },
+          }),
+        );
+      }
+      if (url === "https://www.skills.sh/larksuite/cli/lark-doc") {
+        identityPageAttempts += 1;
+        return new Response("rate limited", {
+          status: 429,
+          headers: { "retry-after": "120" },
+        });
+      }
+      return new Response("unexpected request", { status: 500 });
+    });
+
+    const batch = await fetchSkillsShMirrorBatch(
+      { page: 0, offset: 0, limit: 1, maxDetailBytes: 64 },
+      {
+        oidcToken: "request-bound-oidc",
+        fetchImpl: fetchImpl as typeof fetch,
+        githubLocatorResolver: null,
+      },
+    );
+
+    expect(batch.rows).toEqual([
+      {
+        quarantined: true,
+        externalId: "larksuite/cli/lark-doc",
+        upstreamSourceType: "well-known",
+        reason: "identity-page-fetch-failed",
+      },
+    ]);
+    expect(identityPageAttempts).toBe(1);
+    expect(batch.sourceRequests).toBe(2);
+  });
+
   it("quarantines an identity page without an explicit HTML content type", async () => {
     const fetchImpl = vi.fn(async (urlInput: string | URL | Request) => {
       const url = String(urlInput);
@@ -2195,6 +2305,34 @@ describe("skills.sh Vercel source boundary", () => {
     await vi.advanceTimersByTimeAsync(1);
     await pagePromise;
     expect(attempts).toBe(2);
+  });
+
+  it("cancels failed API response bodies before retrying", async () => {
+    const cancel = vi.fn();
+    let attempts = 0;
+    const fetchImpl = vi.fn(async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        return new Response(new ReadableStream({ cancel }), {
+          status: 503,
+          headers: { "retry-after": "0" },
+        });
+      }
+      return new Response(
+        JSON.stringify({
+          data: [],
+          pagination: { page: 0, perPage: 500, total: 0, hasMore: false },
+        }),
+      );
+    });
+
+    await fetchSkillsShCatalogPage(
+      { page: 0, perPage: 500 },
+      { oidcToken: "request-bound-oidc", fetchImpl: fetchImpl as typeof fetch },
+    );
+
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it("preserves Retry-After when bounded source retries are exhausted", async () => {

@@ -95,6 +95,7 @@ export function buildSkillsShMirrorIdentity(
 }
 
 function isUnclaimedMirrorDigest(digest: SkillsShMirrorDigest) {
+  // publicVisible is reserved for native publication; explicit mirror routes use active unclaimed rows.
   return (
     digest.active &&
     digest.publicVisible === false &&
@@ -157,8 +158,12 @@ export function buildSkillsShMirrorCatalogDetail(args: {
 }) {
   const searchResult = buildSkillsShMirrorSearchResult(args.digest);
   if (!searchResult) return null;
+  const digestContentHash = args.digest.sourceContentHash?.trim().toLowerCase();
+  const detailContentHash = args.detail?.sourceContentHash?.trim().toLowerCase();
   const detail =
-    args.detail?.externalId.trim().toLowerCase() === searchResult.externalId
+    args.detail?.externalId.trim().toLowerCase() === searchResult.externalId &&
+    Boolean(digestContentHash) &&
+    detailContentHash === digestContentHash
       ? {
           kind: args.detail.contentKind,
           path: args.detail.path,
