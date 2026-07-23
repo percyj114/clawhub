@@ -19,12 +19,8 @@ on:
         type: string
 
 concurrency:
-  group: >-
-    ${{
-      github.event_name == 'pull_request' &&
-      format('deploy-test-pr-{0}', github.event.pull_request.number) ||
-      'deploy-test'
-    }}
+  group: deploy-test
+  queue: max
   cancel-in-progress: false
 
 permissions:

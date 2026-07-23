@@ -20,6 +20,7 @@ async function readWorkflow() {
   return parseYaml(await readFile(".github/workflows/deploy-test.yml", "utf8")) as {
     concurrency?: {
       group?: string;
+      queue?: string;
       "cancel-in-progress"?: boolean;
     };
     jobs?: Record<string, WorkflowJob>;
@@ -56,6 +57,7 @@ describe("Test deploy workflow", () => {
     expect(workflow.on?.workflow_dispatch).toBeDefined();
     expect(workflow.concurrency).toEqual({
       group: "deploy-test",
+      queue: "max",
       "cancel-in-progress": false,
     });
     expect(job?.if).toContain("github.event_name == 'workflow_dispatch'");
