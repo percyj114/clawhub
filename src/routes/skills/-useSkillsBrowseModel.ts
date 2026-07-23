@@ -70,7 +70,7 @@ type BrowsePageResult = {
 function mixedBrowsePopularity(entry: SkillListEntry) {
   return isExternalSkillListEntry(entry)
     ? entry.result.upstreamInstalls
-    : entry.skill.stats.downloads;
+    : (entry.skill.nativeDownloads ?? entry.skill.stats.downloads);
 }
 
 function compareMixedBrowseEntries(left: SkillListEntry, right: SkillListEntry) {
@@ -552,8 +552,12 @@ export function useSkillsBrowseModel({
           return ((a.searchScore ?? 0) - (b.searchScore ?? 0)) * multiplier;
         case "downloads":
           return (
-            ((isExternalSkillListEntry(a) ? a.result.upstreamInstalls : a.skill.stats.downloads) -
-              (isExternalSkillListEntry(b) ? b.result.upstreamInstalls : b.skill.stats.downloads)) *
+            ((isExternalSkillListEntry(a)
+              ? a.result.upstreamInstalls
+              : (a.skill.nativeDownloads ?? a.skill.stats.downloads)) -
+              (isExternalSkillListEntry(b)
+                ? b.result.upstreamInstalls
+                : (b.skill.nativeDownloads ?? b.skill.stats.downloads))) *
               multiplier || tieBreak()
           );
         case "stars":

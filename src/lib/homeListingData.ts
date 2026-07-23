@@ -117,10 +117,10 @@ function sortHomeSkillEntries(entries: HomeSkillListingEntry[]) {
   return [...entries].sort((left, right) => {
     const leftDownloads = isHomeSkillsShListingEntry(left)
       ? left.result.upstreamInstalls
-      : (left.skill.stats?.downloads ?? 0);
+      : (left.skill.nativeDownloads ?? left.skill.stats.downloads);
     const rightDownloads = isHomeSkillsShListingEntry(right)
       ? right.result.upstreamInstalls
-      : (right.skill.stats?.downloads ?? 0);
+      : (right.skill.nativeDownloads ?? right.skill.stats.downloads);
     return rightDownloads - leftDownloads;
   });
 }
@@ -202,31 +202,35 @@ export async function fetchHomeSkillListing(
             let cursor: string | null | undefined;
             let hasMore = false;
 
-            while (items.length < requestLimit) {
-              const result = (await convexHttp.action(api.search.listSkillsShMirrorBrowse, {
-                limit: Math.min(externalLimit, requestLimit - items.length),
-                cursor: cursor ?? undefined,
-                categorySlug: categorySlug ?? undefined,
-              })) as {
-                page: SkillsShSearchResult[];
-                nextCursor: string | null;
-                hasMore: boolean;
-              };
-              items.push(
-                ...result.page
-                  .filter((external) => skillsShMatchesAnyHomeCategory(external, categorySlugs))
-                  .map(
-                    (external): HomeSkillsShListingEntry => ({
-                      source: "skills.sh",
-                      result: external,
-                    }),
-                  ),
-              );
+            try {
+              while (items.length < requestLimit) {
+                const result = (await convexHttp.action(api.search.listSkillsShMirrorBrowse, {
+                  limit: Math.min(externalLimit, requestLimit - items.length),
+                  cursor: cursor ?? undefined,
+                  categorySlug: categorySlug ?? undefined,
+                })) as {
+                  page: SkillsShSearchResult[];
+                  nextCursor: string | null;
+                  hasMore: boolean;
+                };
+                items.push(
+                  ...result.page
+                    .filter((external) => skillsShMatchesAnyHomeCategory(external, categorySlugs))
+                    .map(
+                      (external): HomeSkillsShListingEntry => ({
+                        source: "skills.sh",
+                        result: external,
+                      }),
+                    ),
+                );
 
-              const nextCursor = result.hasMore ? result.nextCursor : null;
-              hasMore = Boolean(nextCursor);
-              if (!nextCursor || nextCursor === cursor) break;
-              cursor = nextCursor;
+                const nextCursor = result.hasMore ? result.nextCursor : null;
+                hasMore = Boolean(nextCursor);
+                if (!nextCursor || nextCursor === cursor) break;
+                cursor = nextCursor;
+              }
+            } catch {
+              return { items: [], hasMore: false };
             }
 
             return { items, hasMore };

@@ -1036,7 +1036,9 @@ export const processStagingLiveBatchInternal = internalMutation({
         // for automatic replanning; failed hashes require an explicit retry policy.
         !existingAttempt &&
         (!existing || contentChanged || existing.scanStatus !== "planned");
-      const observationWriteCost = 1 + (reusableAllowedRefresh ? 1 : 0);
+      const metricScheduleWriteCost = native.nativeMetricUpdate ? 1 : 0;
+      const observationWriteCost =
+        1 + (reusableAllowedRefresh ? 1 : 0) + metricScheduleWriteCost;
       if (writesUsed + observationWriteCost + 1 > run.budgets.maxWritesPerBatch) break;
 
       incrementReconciliationCounts(counts, native.reconciliation);
@@ -1155,6 +1157,7 @@ export const processStagingLiveBatchInternal = internalMutation({
             skillId: native.nativeMetricUpdate.skillId,
           },
         );
+        writesUsed += 1;
       }
     }
 
@@ -1262,7 +1265,12 @@ export const processFixtureBatchInternal = internalMutation({
         !existingAttempt &&
         (!existing || contentChanged || existing.scanStatus !== "planned");
       const entryWriteRequired = !run.dryRun;
-      if (entryWriteRequired && writesUsed + 2 > run.budgets.maxWritesPerBatch) {
+      const metricScheduleWriteCost =
+        entryWriteRequired && native.nativeMetricUpdate ? 1 : 0;
+      if (
+        entryWriteRequired &&
+        writesUsed + 2 + metricScheduleWriteCost > run.budgets.maxWritesPerBatch
+      ) {
         break;
       }
 
@@ -1319,6 +1327,7 @@ export const processFixtureBatchInternal = internalMutation({
               skillId: native.nativeMetricUpdate.skillId,
             },
           );
+          writesUsed += 1;
         }
         continue;
       }
@@ -1361,6 +1370,7 @@ export const processFixtureBatchInternal = internalMutation({
               skillId: native.nativeMetricUpdate.skillId,
             },
           );
+          writesUsed += 1;
         }
       }
     }

@@ -71,6 +71,9 @@ jobs:
               branch_test_allowed=true
             fi
             if [[ "$GITHUB_EVENT_NAME" == pull_request ]] &&
+              [[ "${{ github.event.pull_request.head.repo.full_name }}" == "$GITHUB_REPOSITORY" ]] &&
+              [[ "${{ github.event.pull_request.head.repo.fork }}" == false ]] &&
+              [[ "${{ github.event.pull_request.user.login }}" == Patrick-Erichsen ]] &&
               [[
                 "$GITHUB_HEAD_REF" == pe/claw-563-skills-sh-mirror-10k ||
                 "$GITHUB_HEAD_REF" == pe/claw-583-mirrored-search-journey

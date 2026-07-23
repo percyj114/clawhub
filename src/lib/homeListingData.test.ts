@@ -228,6 +228,79 @@ describe("homeListingData", () => {
     });
   });
 
+  it("keeps native Top results when mirrored browse is unavailable", async () => {
+    convexQueryMock.mockResolvedValue({
+      page: [
+        {
+          skill: {
+            _id: "skills:native",
+            slug: "native",
+            displayName: "Native",
+            categories: ["development"],
+            stats: { downloads: 10 },
+          },
+        },
+      ],
+      hasMore: false,
+      nextCursor: null,
+    });
+    convexActionMock.mockRejectedValue(new Error("mirror unavailable"));
+
+    const result = await fetchHomeSkillListing("popular", ["development"], 20);
+
+    expect(result.page).toEqual([
+      expect.objectContaining({
+        skill: expect.objectContaining({ slug: "native" }),
+      }),
+    ]);
+    expect(result.hasMore).toBe(false);
+  });
+
+  it("orders mixed Top results by native downloads without double-counting skills.sh installs", async () => {
+    convexQueryMock.mockResolvedValue({
+      page: [
+        {
+          skill: {
+            _id: "skills:native",
+            slug: "native",
+            displayName: "Native",
+            categories: ["development"],
+            nativeDownloads: 10,
+            stats: { downloads: 1_010 },
+          },
+        },
+      ],
+      hasMore: false,
+      nextCursor: null,
+    });
+    convexActionMock.mockResolvedValue({
+      page: [
+        {
+          source: "skills.sh",
+          externalId: "acme/skills/external",
+          route: "/skills-sh/acme/skills/external",
+          reference: "skills-sh:acme/skills/external",
+          owner: "acme",
+          repo: "skills",
+          slug: "external",
+          displayName: "External",
+          categories: ["development"],
+          topics: [],
+          upstreamInstalls: 100,
+          lastObservedAt: 1,
+        },
+      ],
+      nextCursor: null,
+      hasMore: false,
+    });
+
+    const result = await fetchHomeSkillListing("popular", ["development"], 20);
+
+    expect(
+      result.page.map((entry) => ("skill" in entry ? entry.skill.slug : entry.result.slug)),
+    ).toEqual(["external", "native"]);
+  });
+
   it("continues mirrored Top browse beyond the action page cap", async () => {
     convexQueryMock.mockResolvedValue({
       page: [],

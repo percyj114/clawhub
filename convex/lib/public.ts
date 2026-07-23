@@ -63,6 +63,7 @@ export type PublicSkill = Omit<
   "stats"
 > & {
   stats: PublicSkillStats;
+  nativeDownloads: number;
   githubSourceRepo?: string;
 };
 
@@ -182,6 +183,7 @@ export function toPublicSkill(skill: HydratableSkill | null | undefined): Public
     topics: skill.topics,
     badges: skill.badges,
     stats,
+    nativeDownloads: readCanonicalStat(skill, "downloads"),
     isSuspicious: skill.isSuspicious,
     createdAt: skill.createdAt,
     updatedAt: skill.updatedAt,

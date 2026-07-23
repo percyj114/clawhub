@@ -338,7 +338,10 @@ describe("skills.sh controlled hidden metadata canary", () => {
       githubStars: 300,
       seedDigest: true,
     });
-    await configureCanary(t);
+    await t.mutation(internal.skillsShCatalog.configureFixtureControlInternal, {
+      ...CANARY_CONTROL,
+      maxWritesPerBatch: 3,
+    });
 
     const { runId, run } = await runCanary(t);
     await t.finishAllScheduledFunctions(vi.runAllTimers);

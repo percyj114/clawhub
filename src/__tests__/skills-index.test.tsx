@@ -398,6 +398,37 @@ describe("SkillsIndex", () => {
     expect(mirrorAction).toHaveBeenCalledTimes(1);
   });
 
+  it("orders mixed Top results by native downloads without double-counting skills.sh installs", async () => {
+    searchMock = { sort: "downloads" };
+    const searchAction = vi.fn().mockResolvedValue([]);
+    const mirrorAction = vi.fn().mockResolvedValue({
+      page: [makeExternalResult("external-top", 100)],
+      nextCursor: null,
+      hasMore: false,
+    });
+    convexReactMocks.useAction.mockImplementation((ref: unknown) =>
+      getFunctionName(ref as never) === "search:listSkillsShMirrorBrowse"
+        ? mirrorAction
+        : searchAction,
+    );
+    convexHttpMock.query.mockResolvedValue({
+      page: [
+        makeListResult("native-top", "Native Top", {
+          downloads: 1_010,
+          nativeDownloads: 10,
+        }),
+      ],
+      hasMore: false,
+      nextCursor: null,
+    });
+
+    render(<SkillsIndex />);
+
+    expect(await screen.findByText("External 100")).toBeTruthy();
+    const pageText = document.body.textContent ?? "";
+    expect(pageText.indexOf("External 100")).toBeLessThan(pageText.indexOf("Native Top"));
+  });
+
   it("buffers mixed popularity pages before exposing lower-ranked mirrored rows", async () => {
     searchMock = { sort: "downloads" };
     vi.stubGlobal("IntersectionObserver", undefined);
@@ -1329,6 +1360,7 @@ function makeListResult(
     topics?: string[];
     categories?: string[];
     downloads?: number;
+    nativeDownloads?: number;
     official?: boolean;
   } = {},
 ) {
@@ -1349,6 +1381,7 @@ function makeListResult(
         versions: 1,
         comments: 0,
       },
+      nativeDownloads: options.nativeDownloads,
       isSuspicious: options.isSuspicious,
       createdAt: 0,
       updatedAt: 0,
