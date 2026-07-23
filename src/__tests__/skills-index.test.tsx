@@ -1,5 +1,6 @@
 /* @vitest-environment jsdom */
 import { act, fireEvent, render, screen } from "@testing-library/react";
+import { getFunctionName } from "convex/server";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Route as SkillsRoute, SkillsIndex } from "../routes/skills/index";
@@ -277,6 +278,154 @@ describe("SkillsIndex", () => {
 
     expect(screen.getByText("Skill 1")).toBeTruthy();
     expect(screen.queryByText(/\d+ loaded/)).toBeNull();
+  });
+
+  it("does not restart native pagination while mirrored pages continue", async () => {
+    searchMock = { sort: "downloads" };
+    vi.stubGlobal("IntersectionObserver", undefined);
+    const searchAction = vi.fn().mockResolvedValue([]);
+    const mirrorAction = vi
+      .fn()
+      .mockResolvedValueOnce({
+        page: [
+          {
+            source: "skills.sh",
+            externalId: "acme/skills/external-1",
+            route: "/skills-sh/acme/skills/external-1",
+            reference: "skills-sh:acme/skills/external-1",
+            owner: "acme",
+            repo: "skills",
+            slug: "external-1",
+            displayName: "External 1",
+            categories: ["development"],
+            topics: [],
+            upstreamInstalls: 100,
+            lastObservedAt: 1,
+          },
+        ],
+        nextCursor: "external:1",
+        hasMore: true,
+      })
+      .mockResolvedValueOnce({
+        page: [
+          {
+            source: "skills.sh",
+            externalId: "acme/skills/external-2",
+            route: "/skills-sh/acme/skills/external-2",
+            reference: "skills-sh:acme/skills/external-2",
+            owner: "acme",
+            repo: "skills",
+            slug: "external-2",
+            displayName: "External 2",
+            categories: ["development"],
+            topics: [],
+            upstreamInstalls: 90,
+            lastObservedAt: 1,
+          },
+        ],
+        nextCursor: null,
+        hasMore: false,
+      });
+    convexReactMocks.useAction.mockImplementation((ref: unknown) =>
+      getFunctionName(ref as never) === "search:listSkillsShMirrorBrowse"
+        ? mirrorAction
+        : searchAction,
+    );
+    convexHttpMock.query.mockResolvedValue({
+      page: [makeListResult("native-1", "Native 1")],
+      hasMore: false,
+      nextCursor: null,
+    });
+
+    render(<SkillsIndex />);
+    expect(await screen.findByText("External 1")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    });
+
+    expect(await screen.findByText("External 2")).toBeTruthy();
+    expect(convexHttpMock.query).toHaveBeenCalledTimes(1);
+    expect(mirrorAction).toHaveBeenNthCalledWith(2, {
+      limit: 25,
+      cursor: "external:1",
+      categorySlug: undefined,
+      topic: undefined,
+    });
+  });
+
+  it("includes mirrored rows in recommended category browse", async () => {
+    searchMock = { category: "development" };
+    const searchAction = vi.fn().mockResolvedValue([]);
+    const mirrorAction = vi.fn().mockResolvedValue({
+      page: [
+        {
+          source: "skills.sh",
+          externalId: "acme/skills/external",
+          route: "/skills-sh/acme/skills/external",
+          reference: "skills-sh:acme/skills/external",
+          owner: "acme",
+          repo: "skills",
+          slug: "external",
+          displayName: "External Category Skill",
+          categories: ["development"],
+          topics: [],
+          upstreamInstalls: 100,
+          lastObservedAt: 1,
+        },
+      ],
+      nextCursor: null,
+      hasMore: false,
+    });
+    convexReactMocks.useAction.mockImplementation((ref: unknown) =>
+      getFunctionName(ref as never) === "search:listSkillsShMirrorBrowse"
+        ? mirrorAction
+        : searchAction,
+    );
+    convexHttpMock.query.mockResolvedValue({
+      page: [],
+      hasMore: false,
+      nextCursor: null,
+    });
+
+    render(<SkillsIndex />);
+
+    expect(await screen.findByText("External Category Skill")).toBeTruthy();
+    expect(mirrorAction).toHaveBeenCalledWith({
+      limit: 25,
+      cursor: undefined,
+      categorySlug: "development",
+      topic: undefined,
+    });
+  });
+
+  it("keeps category name sorting native-only until the mirror has a matching index", async () => {
+    searchMock = { category: "development", sort: "name", dir: "asc" };
+    const searchAction = vi.fn().mockResolvedValue([]);
+    const mirrorAction = vi.fn().mockResolvedValue({
+      page: [],
+      nextCursor: null,
+      hasMore: false,
+    });
+    convexReactMocks.useAction.mockImplementation((ref: unknown) =>
+      getFunctionName(ref as never) === "search:listSkillsShMirrorBrowse"
+        ? mirrorAction
+        : searchAction,
+    );
+    convexHttpMock.query.mockResolvedValue({
+      page: [
+        makeListResult("native-1", "Native Name", {
+          categories: ["development"],
+        }),
+      ],
+      hasMore: false,
+      nextCursor: null,
+    });
+
+    render(<SkillsIndex />);
+
+    expect(await screen.findByText("Native Name")).toBeTruthy();
+    expect(mirrorAction).not.toHaveBeenCalled();
   });
 
   it("does not render the publish CTA on the skills browse page", async () => {

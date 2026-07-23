@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { Download } from "lucide-react";
+import { getSkillCategoryBySlug } from "../lib/categories";
 import { formatCompactStat } from "../lib/numberFormat";
 import {
   SKILLS_SH_TRUST_LABEL,
@@ -12,12 +13,13 @@ import { MarketplaceIcon } from "./MarketplaceIcon";
 import { Badge } from "./ui/badge";
 
 export function SkillsShListItem({ result }: { result: SkillsShSearchResult }) {
+  const category = getSkillCategoryBySlug(result.categories?.[0]);
   return (
     <Link
       to={result.route}
       className="skill-list-item skill-list-item-skill skill-list-item-with-taxonomy"
     >
-      <MarketplaceIcon kind="skill" label={result.displayName} />
+      <MarketplaceIcon kind="skill" label={result.displayName} categorySlug={category?.slug} />
       <div className="skill-list-item-body">
         <div className="skill-list-item-main">
           <span className="skill-list-item-identity">
@@ -35,7 +37,7 @@ export function SkillsShListItem({ result }: { result: SkillsShSearchResult }) {
         ) : null}
       </div>
       <div className="skill-list-item-taxonomy" aria-label="Source">
-        <span className="skill-list-item-category">Indexed from skills.sh</span>
+        <span className="skill-list-item-category">{category?.label ?? "Other"}</span>
       </div>
       <div className="skill-list-item-meta">
         <span className="skill-list-item-meta-item is-updated">

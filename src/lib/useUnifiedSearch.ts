@@ -14,7 +14,7 @@ export type UnifiedSearchType = "all" | "skills" | "plugins" | "creators";
 const MAX_UNIFIED_SEARCH_LIMIT = 100;
 const MAX_CREATOR_SEARCH_LIMIT = 50;
 
-export type UnifiedNativeSkillResult = {
+type UnifiedNativeSkillResult = {
   type: "skill";
   skill: {
     _id: string;
@@ -36,7 +36,7 @@ export type UnifiedNativeSkillResult = {
   score: number;
 };
 
-export type UnifiedSkillsShResult = {
+type UnifiedSkillsShResult = {
   type: "skills-sh";
   result: SkillsShSearchResult;
   score: number;

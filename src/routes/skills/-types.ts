@@ -27,7 +27,7 @@ export type NativeSkillListEntry = {
 export type ExternalSkillListEntry = {
   source: "skills.sh";
   result: SkillsShSearchResult;
-  searchScore: number;
+  searchScore?: number;
 };
 
 export type SkillListEntry = NativeSkillListEntry | ExternalSkillListEntry;

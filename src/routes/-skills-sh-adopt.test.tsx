@@ -7,7 +7,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SkillsShAdoptionPage } from "./skills-sh-adopt/$owner/$repo/$slug";
 
 const useQueryMock = vi.fn();
-const startAdoptionMock = vi.fn();
+const loadPreviewMock = vi.fn();
+const startLegacyAdoptionMock = vi.fn();
+const startMirroredAdoptionMock = vi.fn();
 const useAuthStatusMock = vi.fn();
 const { paramsMock } = vi.hoisted(() => ({
   paramsMock: vi.fn(() => ({ owner: "acme", repo: "skills", slug: "demo" })),
@@ -15,7 +17,11 @@ const { paramsMock } = vi.hoisted(() => ({
 
 vi.mock("convex/react", () => ({
   useQuery: (...args: unknown[]) => useQueryMock(...args),
-  useMutation: () => startAdoptionMock,
+  useMutation: () => startLegacyAdoptionMock,
+  useAction: (action: unknown) =>
+    getFunctionName(action as never) === "skillsShAdoption:getMirroredPreview"
+      ? loadPreviewMock
+      : startMirroredAdoptionMock,
 }));
 
 vi.mock("../lib/useAuthStatus", () => ({
@@ -139,10 +145,18 @@ describe("skills.sh adoption page", () => {
       const name = query ? getFunctionName(query) : "";
       if (args === "skip") return undefined;
       if (name === "publishers:listMine") return memberships;
-      if (name === "skillsShAdoption:getPreview") return preview;
+      if (name === "skillsShAdoption:getPreview") return null;
       return undefined;
     });
-    startAdoptionMock.mockResolvedValue({
+    loadPreviewMock.mockResolvedValue(preview);
+    startLegacyAdoptionMock.mockResolvedValue({
+      adoptionId: "skillsShAdoptions:1",
+      status: "pending_scan",
+      destinationKind: "replace",
+      destinationSkillId: "skills:demo",
+      created: true,
+    });
+    startMirroredAdoptionMock.mockResolvedValue({
       adoptionId: "skillsShAdoptions:1",
       status: "pending_scan",
       destinationKind: "replace",
@@ -154,6 +168,7 @@ describe("skills.sh adoption page", () => {
   it("shows the exact source and retained destination state before enabling replacement", async () => {
     render(<SkillsShAdoptionPage />);
 
+    await screen.findByText("acme/skills");
     expect(screen.getByText("acme/skills")).toBeTruthy();
     expect(screen.getByText("skills/demo")).toBeTruthy();
     expect(screen.getByText("a".repeat(40))).toBeTruthy();
@@ -174,11 +189,11 @@ describe("skills.sh adoption page", () => {
         name: /replace the active content at @alice\/demo after this exact candidate passes/i,
       }),
     );
-    expect(startButton.disabled).toBe(false);
+    await waitFor(() => expect(startButton.disabled).toBe(false));
     fireEvent.click(startButton);
 
     await waitFor(() =>
-      expect(startAdoptionMock).toHaveBeenCalledWith({
+      expect(startMirroredAdoptionMock).toHaveBeenCalledWith({
         publisherId: "publishers:alice",
         externalId: "acme/skills/demo",
         sourceContentHash: "c".repeat(64),
@@ -191,52 +206,91 @@ describe("skills.sh adoption page", () => {
     );
   });
 
-  it("renders fail-closed ownership guidance without a start action", () => {
+  it("keeps the production-capable catalog preview and mutation when available", async () => {
     useQueryMock.mockImplementation((query, args) => {
       const name = query ? getFunctionName(query) : "";
       if (args === "skip") return undefined;
       if (name === "publishers:listMine") return memberships;
-      if (name === "skillsShAdoption:getPreview") {
-        return {
-          ...preview,
-          canStart: false,
-          blockingReason: "github_identity_mismatch",
-          ownership: {
-            kind: "personal",
-            verified: false,
-            reason: "github_identity_mismatch",
-          },
-        };
-      }
+      if (name === "skillsShAdoption:getPreview") return preview;
       return undefined;
     });
 
     render(<SkillsShAdoptionPage />);
 
-    expect(screen.getByText("The connected GitHub account does not own this source.")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Create adoption request" })).toBeNull();
-  });
-
-  it("requires confirmation again when the reactive frozen preview changes", () => {
-    let currentPreview = preview;
-    useQueryMock.mockImplementation((query, args) => {
-      const name = query ? getFunctionName(query) : "";
-      if (args === "skip") return undefined;
-      if (name === "publishers:listMine") return memberships;
-      if (name === "skillsShAdoption:getPreview") return currentPreview;
-      return undefined;
-    });
-
-    const view = render(<SkillsShAdoptionPage />);
+    expect(await screen.findByText("acme/skills")).toBeTruthy();
+    expect(loadPreviewMock).not.toHaveBeenCalled();
     fireEvent.click(
       screen.getByRole("checkbox", {
         name: /replace the active content at @alice\/demo after this exact candidate passes/i,
       }),
     );
-    expect(
-      (screen.getByRole("button", { name: "Create adoption request" }) as HTMLButtonElement)
-        .disabled,
-    ).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Create adoption request" }));
+
+    await waitFor(() =>
+      expect(startLegacyAdoptionMock).toHaveBeenCalledWith({
+        publisherId: "publishers:alice",
+        externalId: "acme/skills/demo",
+        sourceContentHash: "c".repeat(64),
+        idempotencyKey: preview.idempotencyKey,
+        expectedDestinationFingerprint: preview.destination.fingerprint,
+      }),
+    );
+    expect(startMirroredAdoptionMock).not.toHaveBeenCalled();
+  });
+
+  it("renders fail-closed ownership guidance without a start action", async () => {
+    loadPreviewMock.mockResolvedValue({
+      ...preview,
+      canStart: false,
+      blockingReason: "github_identity_mismatch",
+      ownership: {
+        kind: "personal",
+        verified: false,
+        reason: "github_identity_mismatch",
+      },
+    });
+
+    render(<SkillsShAdoptionPage />);
+
+    await screen.findByText("The connected GitHub account does not own this source.");
+    expect(screen.getByText("The connected GitHub account does not own this source.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Create adoption request" })).toBeNull();
+  });
+
+  it("requires confirmation again when the publisher preview changes", async () => {
+    const bobMembership = {
+      publisher: {
+        _id: "publishers:bob",
+        handle: "bob",
+        displayName: "Bob",
+        kind: "user",
+        official: false,
+      },
+      role: "owner",
+    };
+    let currentPreview = preview;
+    useQueryMock.mockImplementation((query, args) => {
+      const name = query ? getFunctionName(query) : "";
+      if (args === "skip") return undefined;
+      if (name === "publishers:listMine") return [...memberships, bobMembership];
+      if (name === "skillsShAdoption:getPreview") return null;
+      return undefined;
+    });
+    loadPreviewMock.mockImplementation(async () => currentPreview);
+
+    render(<SkillsShAdoptionPage />);
+    await screen.findByText("acme/skills");
+    fireEvent.click(
+      screen.getByRole("checkbox", {
+        name: /replace the active content at @alice\/demo after this exact candidate passes/i,
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("button", { name: "Create adoption request" }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(false),
+    );
 
     currentPreview = {
       ...preview,
@@ -245,12 +299,16 @@ describe("skills.sh adoption page", () => {
         fingerprint: "destination-fingerprint-2",
       },
     };
-    view.rerender(<SkillsShAdoptionPage />);
+    fireEvent.change(screen.getByLabelText("Adopt into publisher"), {
+      target: { value: "bob" },
+    });
 
-    expect(
-      (screen.getByRole("button", { name: "Create adoption request" }) as HTMLButtonElement)
-        .disabled,
-    ).toBe(true);
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("button", { name: "Create adoption request" }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(true),
+    );
   });
 
   it("selects a remaining publisher when the current membership disappears", async () => {
@@ -269,7 +327,7 @@ describe("skills.sh adoption page", () => {
       const name = query ? getFunctionName(query) : "";
       if (args === "skip") return undefined;
       if (name === "publishers:listMine") return currentMemberships;
-      if (name === "skillsShAdoption:getPreview") return preview;
+      if (name === "skillsShAdoption:getPreview") return null;
       return undefined;
     });
 
@@ -288,17 +346,15 @@ describe("skills.sh adoption page", () => {
     );
     await waitFor(() =>
       expect(
-        useQueryMock.mock.calls.some(
-          ([query, args]) =>
-            getFunctionName(query) === "skillsShAdoption:getPreview" &&
-            args.publisherId === "publishers:bob",
+        loadPreviewMock.mock.calls.some(
+          ([args]) => (args as { publisherId?: string }).publisherId === "publishers:bob",
         ),
       ).toBe(true),
     );
   });
 
   it("shows the actual status of an existing idempotent request", async () => {
-    startAdoptionMock.mockResolvedValue({
+    startMirroredAdoptionMock.mockResolvedValue({
       adoptionId: "skillsShAdoptions:1",
       status: "rejected",
       destinationKind: "replace",
@@ -306,6 +362,7 @@ describe("skills.sh adoption page", () => {
       created: false,
     });
     render(<SkillsShAdoptionPage />);
+    await screen.findByText("acme/skills");
     fireEvent.click(
       screen.getByRole("checkbox", {
         name: /replace the active content at @alice\/demo after this exact candidate passes/i,

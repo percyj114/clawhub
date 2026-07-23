@@ -48,6 +48,8 @@ function makeResult(overrides: Partial<SkillsShSearchResult> = {}): SkillsShSear
     repo: "skills",
     slug: "html",
     displayName: "HTML Artifact Chooser",
+    categories: ["development"],
+    topics: [],
     upstreamInstalls: 100,
     lastObservedAt: Date.now(),
     ...overrides,

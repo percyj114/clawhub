@@ -41,6 +41,7 @@ vi.mock("../../convex/_generated/api", () => ({
     },
     search: {
       searchSkills: "search:searchSkills",
+      listSkillsShMirrorBrowse: "search:listSkillsShMirrorBrowse",
     },
   },
 }));
@@ -96,11 +97,22 @@ function renderSkillsListing() {
   return result;
 }
 
+function mockSearchSkillsResult(result: unknown[]) {
+  convexActionMock.mockImplementation((name: string) =>
+    Promise.resolve(
+      name === "search:listSkillsShMirrorBrowse"
+        ? { page: [], nextCursor: null, hasMore: false }
+        : result,
+    ),
+  );
+}
+
 describe("HomeListingSection", () => {
   beforeEach(() => {
     navigateMock.mockReset();
     convexQueryMock.mockReset();
     convexActionMock.mockReset();
+    convexActionMock.mockResolvedValue({ page: [], nextCursor: null, hasMore: false });
     fetchPluginCatalogMock.mockReset();
     convexQueryMock.mockResolvedValue({
       page: [
@@ -312,7 +324,7 @@ describe("HomeListingSection", () => {
   });
 
   it("opens listing search from the toolbar icon and with slash", async () => {
-    convexActionMock.mockResolvedValue([
+    mockSearchSkillsResult([
       {
         skill: {
           _id: "skills:1",
@@ -350,7 +362,7 @@ describe("HomeListingSection", () => {
   });
 
   it("renders mirrored skills.sh search results without native publisher ownership", async () => {
-    convexActionMock.mockResolvedValue([
+    mockSearchSkillsResult([
       {
         source: "skills.sh",
         externalId: "patrick-erichsen/skills/html",
@@ -360,6 +372,8 @@ describe("HomeListingSection", () => {
         repo: "skills",
         slug: "html",
         displayName: "HTML Artifact Chooser",
+        categories: ["development"],
+        topics: [],
         upstreamInstalls: 100,
         lastObservedAt: 1,
         score: 2,
@@ -380,7 +394,7 @@ describe("HomeListingSection", () => {
   });
 
   it("searches skills inside the selected category before truncating results", async () => {
-    convexActionMock.mockResolvedValue([
+    mockSearchSkillsResult([
       {
         skill: {
           _id: "skills:dev-alpha",
@@ -420,7 +434,7 @@ describe("HomeListingSection", () => {
   });
 
   it("keeps listing search fetch-on-query instead of serving repeated queries from tab cache", async () => {
-    convexActionMock.mockResolvedValue([
+    mockSearchSkillsResult([
       {
         skill: {
           _id: "skills:alpha",
@@ -627,7 +641,7 @@ describe("HomeListingSection", () => {
   });
 
   it("keeps Featured active for skill search", async () => {
-    convexActionMock.mockResolvedValue([
+    mockSearchSkillsResult([
       {
         skill: {
           _id: "skills:featured-search",

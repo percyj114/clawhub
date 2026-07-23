@@ -8,7 +8,7 @@ import {
   getSkillCategoryBySlug,
   getSkillCategoriesForSkill,
 } from "../../lib/categories";
-import { isSkillsShSearchResult } from "../../lib/skillsShCatalog";
+import { isSkillsShSearchResult, type SkillsShSearchResult } from "../../lib/skillsShCatalog";
 import { parseDir, parseSort, toListSort, type SortDir, type SortKey } from "./-params";
 import { isExternalSkillListEntry, type SkillListEntry, type SkillSearchEntry } from "./-types";
 
@@ -93,6 +93,7 @@ export function useSkillsBrowseModel({
   const view: SkillsView = normalizeSkillsView(search.view) ?? "list";
   const featuredOnly = search.featured ?? search.highlighted ?? false;
   const searchSkills = useAction(api.search.searchSkills);
+  const listSkillsShMirrorBrowse = useAction(api.search.listSkillsShMirrorBrowse);
 
   const trimmedQuery = useMemo(() => query.trim(), [query]);
   const urlCategory = useMemo(() => getSkillCategoryBySlug(search.category), [search.category]);
@@ -131,15 +132,26 @@ export function useSkillsBrowseModel({
 
   // One-shot paginated fetches (no reactive subscription)
   const [listResults, setListResults] = useState<SkillListEntry[]>([]);
-  const [listCursor, setListCursor] = useState<string | null>(null);
+  const [listCursor, setListCursor] = useState<string | null | undefined>(undefined);
+  const [externalListCursor, setExternalListCursor] = useState<string | null | undefined>(
+    undefined,
+  );
   const [listStatus, setListStatus] = useState<ListStatus>("loading");
   const [listAutoLoadPaused, setListAutoLoadPaused] = useState(false);
   const fetchGeneration = useRef(0);
 
   const fetchPage = useCallback(
-    async (cursor: string | null, generation: number) => {
+    async (
+      cursor: string | null | undefined,
+      externalCursor: string | null | undefined,
+      generation: number,
+    ) => {
       let pageCursor = cursor;
       let consecutiveEmptyPages = 0;
+      const externalEligible =
+        !featuredOnly &&
+        (sort === "downloads" ||
+          (sort === "recommended" && (Boolean(activeCategory) || Boolean(activeTopic))));
       try {
         if (sort === "trending") {
           const result = await convexHttp.query(api.skills.listPublicTrendingPage, {
@@ -151,8 +163,38 @@ export function useSkillsBrowseModel({
           if (generation !== fetchGeneration.current) return;
           setListResults(result.items);
           setListCursor(null);
+          setExternalListCursor(null);
           setListAutoLoadPaused(false);
           setListStatus("done");
+          return;
+        }
+        const externalPromise =
+          externalEligible && externalCursor !== null
+            ? listSkillsShMirrorBrowse({
+                limit: pageSize,
+                cursor: externalCursor ?? undefined,
+                categorySlug: activeCategory?.slug,
+                topic: activeTopic,
+              })
+            : Promise.resolve(null);
+        if (cursor === null) {
+          const externalResults = (await externalPromise) as {
+            page: SkillsShSearchResult[];
+            nextCursor: string | null;
+            hasMore: boolean;
+          } | null;
+          if (generation !== fetchGeneration.current) return;
+          const externalEntries = (externalResults?.page ?? []).map(
+            (external): SkillListEntry => ({
+              source: "skills.sh",
+              result: external,
+            }),
+          );
+          const nextExternalCursor = externalResults?.hasMore ? externalResults.nextCursor : null;
+          setListResults((prev) => [...prev, ...externalEntries]);
+          setExternalListCursor(nextExternalCursor);
+          setListAutoLoadPaused(externalEntries.length === 0 && Boolean(nextExternalCursor));
+          setListStatus(nextExternalCursor ? "idle" : "done");
           return;
         }
         while (true) {
@@ -183,10 +225,32 @@ export function useSkillsBrowseModel({
             }
           }
 
-          setListResults((prev) => (cursor ? [...prev, ...result.page] : result.page));
+          const externalResults = (await externalPromise) as {
+            page: SkillsShSearchResult[];
+            nextCursor: string | null;
+            hasMore: boolean;
+          } | null;
+          if (generation !== fetchGeneration.current) return;
+          const externalEntries = (externalResults?.page ?? []).map(
+            (external): SkillListEntry => ({
+              source: "skills.sh",
+              result: external,
+            }),
+          );
+          const nextExternalCursor = externalResults?.hasMore ? externalResults.nextCursor : null;
+          const isInitialPage = cursor === undefined && externalCursor === undefined;
+          setListResults((prev) =>
+            isInitialPage
+              ? [...result.page, ...externalEntries]
+              : [...prev, ...result.page, ...externalEntries],
+          );
           setListCursor(nextCursor);
-          setListAutoLoadPaused(result.page.length === 0 && Boolean(nextCursor));
-          setListStatus(nextCursor ? "idle" : "done");
+          setExternalListCursor(nextExternalCursor);
+          const hasMore = Boolean(nextCursor) || Boolean(nextExternalCursor);
+          setListAutoLoadPaused(
+            result.page.length === 0 && externalEntries.length === 0 && hasMore,
+          );
+          setListStatus(hasMore ? "idle" : "done");
           return;
         }
       } catch (err) {
@@ -196,8 +260,10 @@ export function useSkillsBrowseModel({
         }
         // Reset to idle so the user can retry via "Load more"
         setListCursor(pageCursor);
-        setListAutoLoadPaused(Boolean(pageCursor));
-        setListStatus(pageCursor ? "idle" : "done");
+        setExternalListCursor(externalCursor);
+        const canRetry = pageCursor !== null || (externalEligible && externalCursor !== null);
+        setListAutoLoadPaused(canRetry);
+        setListStatus(canRetry ? "idle" : "done");
       }
     },
     [
@@ -208,6 +274,7 @@ export function useSkillsBrowseModel({
       excludeCategoryKeywords,
       featuredOnly,
       listSort,
+      listSkillsShMirrorBrowse,
       sort,
     ],
   );
@@ -220,10 +287,11 @@ export function useSkillsBrowseModel({
     fetchGeneration.current += 1;
     const generation = fetchGeneration.current;
     setListResults([]);
-    setListCursor(null);
+    setListCursor(undefined);
+    setExternalListCursor(undefined);
     setListAutoLoadPaused(false);
     setListStatus("loading");
-    void fetchPage(null, generation);
+    void fetchPage(undefined, undefined, generation);
     return () => {
       fetchGeneration.current += 1;
     };
@@ -330,22 +398,25 @@ export function useSkillsBrowseModel({
 
   const sorted = useMemo(() => {
     const topicItems = activeTopic
-      ? baseItems.filter(
-          (entry) =>
-            !isExternalSkillListEntry(entry) &&
-            getCatalogTopicSlugs(entry.skill.topics).includes(activeTopic),
+      ? baseItems.filter((entry) =>
+          isExternalSkillListEntry(entry)
+            ? entry.result.topics?.includes(activeTopic)
+            : getCatalogTopicSlugs(entry.skill.topics).includes(activeTopic),
         )
       : baseItems;
     const categoryItems = activeCategory
-      ? topicItems.filter(
-          (entry) =>
-            !isExternalSkillListEntry(entry) &&
-            getSkillCategoriesForSkill(entry.skill).some(
-              (category) => category.slug === activeCategory.slug,
-            ),
+      ? topicItems.filter((entry) =>
+          isExternalSkillListEntry(entry)
+            ? entry.result.categories?.includes(activeCategory.slug)
+            : getSkillCategoriesForSkill(entry.skill).some(
+                (category) => category.slug === activeCategory.slug,
+              ),
         )
       : topicItems;
-    if (!hasQuery) {
+    if (
+      !hasQuery &&
+      (sort !== "downloads" || !categoryItems.some((entry) => isExternalSkillListEntry(entry)))
+    ) {
       return categoryItems;
     }
     const multiplier = dir === "asc" ? 1 : -1;
@@ -413,9 +484,9 @@ export function useSkillsBrowseModel({
       setSearchLimit((value) => value + pageSize);
     } else {
       setListStatus("loadingMore");
-      void fetchPage(listCursor, fetchGeneration.current);
+      void fetchPage(listCursor, externalListCursor, fetchGeneration.current);
     }
-  }, [canLoadMore, fetchPage, hasQuery, isLoadingMore, listCursor]);
+  }, [canLoadMore, externalListCursor, fetchPage, hasQuery, isLoadingMore, listCursor]);
 
   useEffect(() => {
     if (!isLoadingMore) {

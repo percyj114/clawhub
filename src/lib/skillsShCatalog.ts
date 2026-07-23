@@ -1,6 +1,6 @@
 export const SKILLS_SH_TRUST_LABEL = "Not scanned by ClawHub";
 
-export type SkillsShUpstreamCheckStatus = "passed" | "warning" | "failed" | "unavailable";
+type SkillsShUpstreamCheckStatus = "passed" | "warning" | "failed" | "unavailable";
 
 export type SkillsShUpstreamCheck = {
   scanner: string;
@@ -21,6 +21,8 @@ export type SkillsShSearchResult = {
   slug: string;
   displayName: string;
   summary?: string;
+  categories: string[];
+  topics: string[];
   upstreamInstalls: number;
   lastObservedAt: number;
 };
@@ -29,7 +31,7 @@ export type SkillsShSearchEntry = SkillsShSearchResult & {
   score: number;
 };
 
-export type SkillsShCatalogContent = {
+type SkillsShCatalogContent = {
   kind: "skill-md" | "readme";
   path: string;
   markdown: string;

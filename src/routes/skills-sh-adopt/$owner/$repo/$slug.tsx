@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useMutation, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { Check, ExternalLink, GitCommitHorizontal, ShieldCheck, TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -77,8 +77,9 @@ export function SkillsShAdoptionPage() {
   }, [manageablePublishers, params.owner, publisherHandle]);
 
   const selected = manageablePublishers.find((entry) => entry.publisher.handle === publisherHandle);
+  const selectedPublisherId = selected?.publisher._id;
   const externalId = `${params.owner}/${params.repo}/${params.slug}`.toLowerCase();
-  const preview = useQuery(
+  const legacyPreview = useQuery(
     api.skillsShAdoption.getPreview,
     me && selected
       ? {
@@ -87,7 +88,36 @@ export function SkillsShAdoptionPage() {
         }
       : "skip",
   );
-  const startAdoption = useMutation(api.skillsShAdoption.startInteractive);
+  const loadPreview = useAction(api.skillsShAdoption.getMirroredPreview);
+  const startLegacyAdoption = useMutation(api.skillsShAdoption.startInteractive);
+  const startMirroredAdoption = useAction(api.skillsShAdoption.startMirroredInteractive);
+  const [mirroredPreview, setMirroredPreview] = useState<
+    Awaited<ReturnType<typeof loadPreview>> | null | undefined
+  >(undefined);
+
+  useEffect(() => {
+    let active = true;
+    setMirroredPreview(undefined);
+    if (!me || !selectedPublisherId || legacyPreview !== null) {
+      setMirroredPreview(null);
+      return () => {
+        active = false;
+      };
+    }
+    void loadPreview({ publisherId: selectedPublisherId, externalId })
+      .then((value) => {
+        if (active) setMirroredPreview(value);
+      })
+      .catch(() => {
+        if (!active) return;
+        setMirroredPreview(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [externalId, legacyPreview, loadPreview, me, selectedPublisherId]);
+  const preview = legacyPreview === null ? mirroredPreview : legacyPreview;
+  const usesMirroredPreview = legacyPreview === null && mirroredPreview != null;
   const previewConfirmationKey = preview
     ? [
         preview.idempotencyKey,
@@ -126,13 +156,16 @@ export function SkillsShAdoptionPage() {
     if (!preview?.canStart || !preview.destination.fingerprint || !selected || !confirmed) return;
     setSubmitting(true);
     try {
-      const result = await startAdoption({
+      const startArgs = {
         publisherId: selected.publisher._id,
         externalId: preview.source.externalId,
         sourceContentHash: preview.source.sourceContentHash,
         idempotencyKey: preview.idempotencyKey,
         expectedDestinationFingerprint: preview.destination.fingerprint,
-      });
+      };
+      const result = usesMirroredPreview
+        ? await startMirroredAdoption(startArgs)
+        : await startLegacyAdoption(startArgs);
       setResultStatus(result.status);
       if (result.created) {
         toast.success("Adoption request created. Exact-source scan is waiting.");

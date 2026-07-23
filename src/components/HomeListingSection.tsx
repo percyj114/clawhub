@@ -33,11 +33,13 @@ import {
   homeListingCacheKey as listingCacheKey,
   itemMatchesAnyHomeCategory as itemMatchesAnyCategory,
   skillMatchesAnyHomeCategory as skillMatchesAnyCategory,
+  skillsShMatchesAnyHomeCategory,
   uniqueHomePlugins as uniquePlugins,
   type HomeListingCacheEntry,
   type HomeListingInitialData,
   type HomeListingKind as ListingKind,
   type HomeListingTab as ListingTab,
+  type HomeNativeSkillListingEntry,
   type HomeSkillListingEntry as SkillPageEntry,
 } from "../lib/homeListingData";
 import { formatCompactStat } from "../lib/numberFormat";
@@ -96,12 +98,7 @@ type SkillSearchHit =
       owner?: PublicUser | null;
     };
 
-type HomeSkillEntry =
-  | SkillPageEntry
-  | {
-      source: "skills.sh";
-      result: SkillsShSearchResult;
-    };
+type HomeSkillEntry = SkillPageEntry;
 
 function isHomeSkillsShEntry(
   entry: HomeSkillEntry,
@@ -204,7 +201,7 @@ function HomeListingResults({
   );
 }
 
-function skillLink(entry: SkillPageEntry) {
+function skillLink(entry: HomeNativeSkillListingEntry) {
   const owner =
     entry.ownerHandle?.trim() ||
     entry.owner?.handle?.trim() ||
@@ -212,7 +209,13 @@ function skillLink(entry: SkillPageEntry) {
   return `/${encodeURIComponent(owner)}/${encodeURIComponent(entry.skill.slug)}`;
 }
 
-function HomeListingSkillRow({ entry, showStats }: { entry: SkillPageEntry; showStats: boolean }) {
+function HomeListingSkillRow({
+  entry,
+  showStats,
+}: {
+  entry: HomeNativeSkillListingEntry;
+  showStats: boolean;
+}) {
   const handle = entry.ownerHandle || entry.owner?.handle;
   const name = entry.skill.displayName || entry.skill.slug;
 
@@ -255,7 +258,12 @@ function HomeListingSkillsShRow({ result }: { result: SkillsShSearchResult }) {
   return (
     <Link to={result.route} className="home-v2-listing-row">
       <span className="home-v2-listing-row-icon" aria-hidden="true">
-        <MarketplaceIcon kind="skill" label={result.displayName} size="sm" />
+        <MarketplaceIcon
+          kind="skill"
+          label={result.displayName}
+          categorySlug={result.categories?.[0]}
+          size="sm"
+        />
       </span>
       <div className="home-v2-listing-row-body">
         <div className="home-v2-listing-row-title">
@@ -320,7 +328,13 @@ function HomeListingPluginRow({ plugin }: { plugin: PackageListItem }) {
   );
 }
 
-function HomeListingSkillCard({ entry, showStats }: { entry: SkillPageEntry; showStats: boolean }) {
+function HomeListingSkillCard({
+  entry,
+  showStats,
+}: {
+  entry: HomeNativeSkillListingEntry;
+  showStats: boolean;
+}) {
   const handle = entry.ownerHandle || entry.owner?.handle;
   const name = entry.skill.displayName || entry.skill.slug;
 
@@ -366,7 +380,12 @@ function HomeListingSkillsShCard({ result }: { result: SkillsShSearchResult }) {
     <Link to={result.route} className="home-v2-listing-card oc-card oc-card-interactive">
       <div className="home-v2-listing-card-head">
         <span className="home-v2-listing-card-icon" aria-hidden="true">
-          <MarketplaceIcon kind="skill" label={result.displayName} size="sm" />
+          <MarketplaceIcon
+            kind="skill"
+            label={result.displayName}
+            categorySlug={result.categories?.[0]}
+            size="sm"
+          />
         </span>
         <div className="home-v2-listing-card-id">
           <span className="home-v2-listing-card-name" title={result.displayName}>
@@ -689,7 +708,7 @@ export function HomeListingSection({ initialListing = null }: HomeListingSection
                 results.flatMap((hits) =>
                   (hits as SkillSearchHit[]).flatMap((hit): HomeSkillEntry[] => {
                     if (isSkillsShSearchResult(hit)) {
-                      return categorySlugs.length === 0
+                      return skillsShMatchesAnyHomeCategory(hit, categorySlugs)
                         ? [{ source: "skills.sh", result: hit }]
                         : [];
                     }

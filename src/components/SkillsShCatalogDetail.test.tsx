@@ -60,6 +60,8 @@ function makeEntry(): SkillsShCatalogDetail {
     repo: "skills",
     slug: "html",
     displayName: "HTML Artifact Chooser",
+    categories: ["development"],
+    topics: [],
     sourceUrl: "https://skills.sh/patrick-erichsen/skills/html",
     canonicalRepoUrl: "https://github.com/patrick-erichsen/skills",
     githubPath: "skills/html",
