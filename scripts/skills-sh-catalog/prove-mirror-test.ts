@@ -6,10 +6,10 @@ import {
   buildMirrorStepRequest,
   buildMirrorProofHeaders,
   capturedMirrorSourceRunId,
-  findCompletedLiveMirrorRun,
   findRecoverableMirrorRun,
   mirrorRateLimitRetryDelayMs,
   reconcileMirrorRunToCompletion,
+  resolveCompletedLiveMirrorRun,
   mirrorRunFromPayload,
   mirrorRunAccounting,
   type CompletedLiveMirrorRun,
@@ -442,18 +442,39 @@ await call({
 try {
   const isolationBefore = (await call({ operation: "isolation" })).payload;
   const statusBefore = (await call({ operation: "status" })).payload;
-  const recoverableRun = findRecoverableMirrorRun(statusBefore);
+  let recoverableRun = findRecoverableMirrorRun(statusBefore);
   const recoveredLiveRunId = recoverableRun
     ? capturedMirrorSourceRunId(recoverableRun.snapshotId)
     : null;
-  const recoveredNormalizationRun = recoveredLiveRunId ? recoverableRun : null;
+  let recoveredNormalizationRun = recoveredLiveRunId ? recoverableRun : null;
   const completedLiveRun = recoveredLiveRunId
-    ? findCompletedLiveMirrorRun(statusBefore, recoveredLiveRunId)
+    ? await resolveCompletedLiveMirrorRun({
+        payload: statusBefore,
+        runId: recoveredLiveRunId,
+        readRun: async (runId) => (await call({ operation: "run", runId })).payload,
+      })
     : null;
+  let discardedStaleRecovery: Record<string, unknown> | null = null;
   if (recoveredNormalizationRun && !completedLiveRun) {
-    throw new Error(
-      `captured mirror recovery lacks completed live source run ${recoveredLiveRunId}`,
-    );
+    const discarded = (
+      await call({
+        operation: "discard",
+        runId: recoveredNormalizationRun.runId,
+        reason: `discard stale captured recovery without live source ${recoveredLiveRunId}`,
+      })
+    ).payload;
+    if (discarded.status !== "canceled" || discarded.runId !== recoveredNormalizationRun.runId) {
+      throw new Error(
+        `discard stale captured recovery returned unexpected payload: ${JSON.stringify(discarded)}`,
+      );
+    }
+    discardedStaleRecovery = {
+      runId: recoveredNormalizationRun.runId,
+      missingLiveRunId: recoveredLiveRunId,
+      status: discarded.status,
+    };
+    recoverableRun = null;
+    recoveredNormalizationRun = null;
   }
   const firstRun = completedLiveRun
     ? completedLiveRunProof(completedLiveRun)
@@ -586,6 +607,7 @@ try {
         recovery: "durable cursor retry with bounded Retry-After recovery",
       },
     },
+    discardedStaleRecovery,
     firstRun,
     normalizationRun,
     identicalRerun,

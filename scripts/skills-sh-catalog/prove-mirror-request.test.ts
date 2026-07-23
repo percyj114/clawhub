@@ -7,6 +7,7 @@ import {
   findRecoverableMirrorRun,
   mirrorRateLimitRetryDelayMs,
   reconcileMirrorRunToCompletion,
+  resolveCompletedLiveMirrorRun,
   mirrorRunFromPayload,
   mirrorRunAccounting,
 } from "./prove-mirror-request";
@@ -148,7 +149,139 @@ describe("skills.sh mirror proof request headers", () => {
     expect(capturedMirrorSourceRunId("skills-sh-captured:live-run")).toBe("live-run");
     expect(capturedMirrorSourceRunId("skills-sh:live-run")).toBeNull();
     expect(findCompletedLiveMirrorRun(payload, "live-run")).toEqual(liveRun);
+    expect(findCompletedLiveMirrorRun(liveRun, "live-run")).toEqual(liveRun);
     expect(findCompletedLiveMirrorRun(payload, "missing")).toBeNull();
+  });
+
+  it("resolves a completed captured ancestor to its authenticated live source run", async () => {
+    const liveRun = {
+      runId: "live-run",
+      snapshotId: "skills-sh:2026-07-22T21:18:13.365Z:9571",
+      status: "completed" as const,
+      page: 20,
+      offset: 0,
+      sourceTotal: 9_571,
+      sourcePageSize: 500,
+      sourceMeasuredAt: "2026-07-22T21:18:13.365Z",
+      startedAt: 1,
+      completedAt: 2,
+      counts: { observed: 9_571 },
+      operations: { sourceRequests: 18_360 },
+    };
+    const capturedRun = {
+      ...liveRun,
+      runId: "captured-run",
+      snapshotId: "skills-sh-captured:live-run",
+      startedAt: 3,
+      completedAt: 4,
+    };
+    const readRun = vi.fn(async (runId: string) => {
+      expect(runId).toBe("live-run");
+      return liveRun;
+    });
+
+    await expect(
+      resolveCompletedLiveMirrorRun({
+        payload: { runs: [capturedRun] },
+        runId: "captured-run",
+        readRun,
+      }),
+    ).resolves.toEqual(liveRun);
+    expect(readRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds cyclic captured-run lineage", async () => {
+    const completedRun = {
+      status: "completed" as const,
+      page: 20,
+      offset: 0,
+      sourceTotal: 9_571,
+      sourcePageSize: 500,
+      sourceMeasuredAt: "2026-07-22T21:18:13.365Z",
+      startedAt: 1,
+      completedAt: 2,
+      counts: { observed: 9_571 },
+      operations: { sourceRequests: 18_360 },
+    };
+    const first = {
+      ...completedRun,
+      runId: "first",
+      snapshotId: "skills-sh-captured:second",
+    };
+    const second = {
+      ...completedRun,
+      runId: "second",
+      snapshotId: "skills-sh-captured:first",
+    };
+    const readRun = vi.fn(async (runId: string) => (runId === "first" ? first : second));
+
+    await expect(
+      resolveCompletedLiveMirrorRun({
+        payload: { runs: [first] },
+        runId: "first",
+        readRun,
+      }),
+    ).resolves.toBeNull();
+    expect(readRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats a missing captured ancestor as stale lineage", async () => {
+    const capturedRun = {
+      runId: "captured-run",
+      snapshotId: "skills-sh-captured:missing-live-run",
+      status: "completed" as const,
+      page: 20,
+      offset: 0,
+      sourceTotal: 9_571,
+      sourcePageSize: 500,
+      sourceMeasuredAt: "2026-07-22T21:18:13.365Z",
+      startedAt: 1,
+      completedAt: 2,
+      counts: { observed: 9_571 },
+      operations: { sourceRequests: 18_360 },
+    };
+    const readRun = vi.fn(async () => null);
+
+    await expect(
+      resolveCompletedLiveMirrorRun({
+        payload: { runs: [capturedRun] },
+        runId: "captured-run",
+        readRun,
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it("fails closed without canceling when captured lineage exceeds the read bound", async () => {
+    const completedRun = {
+      status: "completed" as const,
+      page: 20,
+      offset: 0,
+      sourceTotal: 9_571,
+      sourcePageSize: 500,
+      sourceMeasuredAt: "2026-07-22T21:18:13.365Z",
+      startedAt: 1,
+      completedAt: 2,
+      counts: { observed: 9_571 },
+      operations: { sourceRequests: 18_360 },
+    };
+    const runs = new Map(
+      Array.from({ length: 9 }, (_, index) => [
+        `captured-${index}`,
+        {
+          ...completedRun,
+          runId: `captured-${index}`,
+          snapshotId: `skills-sh-captured:captured-${index + 1}`,
+        },
+      ]),
+    );
+
+    await expect(
+      resolveCompletedLiveMirrorRun({
+        payload: { runs: [runs.get("captured-0")] },
+        runId: "captured-0",
+        readRun: async (runId) => runs.get(runId) ?? null,
+      }),
+    ).rejects.toThrow("captured mirror lineage exceeded 8 runs");
   });
 
   it("bounds rate-limit recovery delays while preserving Retry-After", () => {

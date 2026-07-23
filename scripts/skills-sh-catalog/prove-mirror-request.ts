@@ -182,17 +182,23 @@ export type CompletedLiveMirrorRun = {
   operations: Record<string, number>;
 };
 
+type CompletedMirrorRun = CompletedLiveMirrorRun;
+
 export function capturedMirrorSourceRunId(snapshotId: string) {
   const prefix = "skills-sh-captured:";
   return snapshotId.startsWith(prefix) ? snapshotId.slice(prefix.length) || null : null;
 }
 
-export function findCompletedLiveMirrorRun(
-  payload: Record<string, unknown>,
+function findCompletedMirrorRun(
+  payload: unknown,
   runId?: string | null,
-): CompletedLiveMirrorRun | null {
-  if (!Array.isArray(payload.runs)) return null;
-  for (const value of payload.runs) {
+): CompletedMirrorRun | null {
+  const root =
+    payload && typeof payload === "object" && !Array.isArray(payload)
+      ? (payload as Record<string, unknown>)
+      : null;
+  const candidates = root ? [root, ...(Array.isArray(root.runs) ? root.runs : [])] : [];
+  for (const value of candidates) {
     if (!value || typeof value !== "object" || Array.isArray(value)) continue;
     const run = value as Record<string, unknown>;
     if (
@@ -200,8 +206,6 @@ export function findCompletedLiveMirrorRun(
       typeof run.runId !== "string" ||
       (runId && run.runId !== runId) ||
       typeof run.snapshotId !== "string" ||
-      !run.snapshotId.startsWith("skills-sh:") ||
-      run.snapshotId.startsWith("skills-sh-captured:") ||
       typeof run.page !== "number" ||
       typeof run.offset !== "number" ||
       typeof run.sourceTotal !== "number" ||
@@ -218,7 +222,47 @@ export function findCompletedLiveMirrorRun(
     ) {
       continue;
     }
-    return run as CompletedLiveMirrorRun;
+    return run as CompletedMirrorRun;
   }
   return null;
+}
+
+export function findCompletedLiveMirrorRun(
+  payload: unknown,
+  runId?: string | null,
+): CompletedLiveMirrorRun | null {
+  const run = findCompletedMirrorRun(payload, runId);
+  if (
+    !run ||
+    !run.snapshotId.startsWith("skills-sh:") ||
+    run.snapshotId.startsWith("skills-sh-captured:")
+  ) {
+    return null;
+  }
+  return run;
+}
+
+export async function resolveCompletedLiveMirrorRun(args: {
+  payload: unknown;
+  runId: string;
+  readRun: (runId: string) => Promise<unknown>;
+}) {
+  const seen = new Set<string>();
+  let runId = args.runId;
+  let payload = args.payload;
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (seen.has(runId)) return null;
+    seen.add(runId);
+    let run = findCompletedMirrorRun(payload, runId);
+    if (!run) {
+      payload = await args.readRun(runId);
+      run = findCompletedMirrorRun(payload, runId);
+    }
+    if (!run) return null;
+    const capturedRunId = capturedMirrorSourceRunId(run.snapshotId);
+    if (!capturedRunId) return findCompletedLiveMirrorRun(run, runId);
+    runId = capturedRunId;
+    payload = {};
+  }
+  throw new Error("captured mirror lineage exceeded 8 runs");
 }

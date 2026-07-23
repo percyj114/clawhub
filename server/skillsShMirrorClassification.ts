@@ -105,8 +105,9 @@ function hasReusableClassification(
     state !== undefined &&
     state.slug === row.slug &&
     state.displayName === row.displayName &&
-    (row.detail === undefined ||
-      (row.sourceContentHash !== undefined && state.sourceContentHash === row.sourceContentHash)) &&
+    (row.detail === undefined
+      ? state.inferredInputHash === classificationInputHash(row)
+      : row.sourceContentHash !== undefined && state.sourceContentHash === row.sourceContentHash) &&
     state.inferredClassifierVersion === CLASSIFIER_VERSION &&
     state.inferredTopicClassifierVersion === TOPIC_CLASSIFIER_VERSION
   );
@@ -120,6 +121,12 @@ function classificationText(row: ClassifiableMirrorRow) {
   const displayName = row.displayName.replace(/[\r\n]+/g, " ").trim() || row.slug;
   const content = row.detail?.content ?? `# ${displayName}`;
   return `---\nname: ${displayName}\n---\n${content}`.slice(0, MAX_CLASSIFICATION_TEXT_LENGTH);
+}
+
+function classificationInputHash(row: ClassifiableMirrorRow) {
+  return createHash("sha256")
+    .update(`${row.slug}\0${classificationText(row)}\0${JSON.stringify([])}`)
+    .digest("hex");
 }
 
 export function enrichSkillsShMirrorClassifications<

@@ -178,6 +178,68 @@ describe("skills.sh permanent Test mirror route", () => {
     });
   });
 
+  it("reads one exact mirror run for durable recovery", async () => {
+    readBodyMock.mockResolvedValue({
+      operation: "run",
+      runId: "skillsShMirrorRuns:live",
+    });
+    const convexFetch = vi.fn(async (_url: string, init: RequestInit) => {
+      expect(JSON.parse(String(init.body))).toEqual({
+        operation: "mirror-run",
+        runId: "skillsShMirrorRuns:live",
+      });
+      return new Response(
+        JSON.stringify({
+          runId: "skillsShMirrorRuns:live",
+          snapshotId: "skills-sh:2026-07-22T21:18:13.365Z:9571",
+          status: "completed",
+        }),
+      );
+    });
+    vi.stubGlobal("fetch", convexFetch);
+
+    const handler = (await import("./routes/ops/skills-sh/mirror-test.post")).default;
+    const response = (await handler({} as never)) as Response;
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      runId: "skillsShMirrorRuns:live",
+      status: "completed",
+    });
+  });
+
+  it("discards one stale captured recovery before a fresh authenticated run", async () => {
+    readBodyMock.mockResolvedValue({
+      operation: "discard",
+      runId: "skillsShMirrorRuns:stale",
+      reason: "discard stale captured recovery",
+    });
+    const convexFetch = vi.fn(async (_url: string, init: RequestInit) => {
+      expect(JSON.parse(String(init.body))).toEqual({
+        operation: "mirror-cancel",
+        runId: "skillsShMirrorRuns:stale",
+        reason: "discard stale captured recovery",
+        confirm: "cancel-skills-sh-mirror-test-run",
+      });
+      return new Response(
+        JSON.stringify({
+          runId: "skillsShMirrorRuns:stale",
+          status: "canceled",
+        }),
+      );
+    });
+    vi.stubGlobal("fetch", convexFetch);
+
+    const handler = (await import("./routes/ops/skills-sh/mirror-test.post")).default;
+    const response = (await handler({} as never)) as Response;
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      runId: "skillsShMirrorRuns:stale",
+      status: "canceled",
+    });
+  });
+
   it("fetches and commits one exact page-offset batch", async () => {
     readBodyMock.mockResolvedValue({
       operation: "step",

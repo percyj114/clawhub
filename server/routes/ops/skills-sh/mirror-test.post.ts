@@ -25,10 +25,12 @@ type MirrorRequest = {
     | "configure"
     | "start"
     | "start-replay"
+    | "run"
     | "step"
     | "step-replay"
     | "pause"
     | "resume"
+    | "discard"
     | "reconcile"
     | "conflicts"
     | "status"
@@ -136,6 +138,14 @@ export default defineEventHandler(async (event) => {
     const operation = body.operation;
     if (operation === "status") {
       return jsonResponse(await callConvexOperator(authorization, { operation: "mirror-status" }));
+    }
+    if (operation === "run") {
+      return jsonResponse(
+        await callConvexOperator(authorization, {
+          operation: "mirror-run",
+          runId: requireString(body.runId, "runId"),
+        }),
+      );
     }
     if (operation === "isolation") {
       return jsonResponse(
@@ -390,6 +400,16 @@ export default defineEventHandler(async (event) => {
           paused: operation === "pause",
           reason: requireString(body.reason, "reason"),
           confirm: "set-skills-sh-mirror-pause",
+        }),
+      );
+    }
+    if (operation === "discard") {
+      return jsonResponse(
+        await callConvexOperator(authorization, {
+          operation: "mirror-cancel",
+          runId: requireString(body.runId, "runId"),
+          reason: requireString(body.reason, "reason"),
+          confirm: "cancel-skills-sh-mirror-test-run",
         }),
       );
     }

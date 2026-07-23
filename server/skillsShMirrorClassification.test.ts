@@ -148,6 +148,62 @@ describe("skills.sh mirror classification enrichment", () => {
     });
   });
 
+  it("reclassifies from the display-name stub when retained detail disappears", () => {
+    const [previous] = enrichSkillsShMirrorClassifications([row], [], 100);
+    const classify = vi.fn(() => ({
+      categories: [],
+      topics: [],
+      confidence: "low" as const,
+      topicConfidence: "low" as const,
+      classifierVersion: CLASSIFIER_VERSION,
+      topicClassifierVersion: TOPIC_CLASSIFIER_VERSION,
+      inputHash: "stub-input",
+      topicInputHash: "stub-topic-input",
+    }));
+    const withoutDetail = {
+      externalId: row.externalId,
+      slug: row.slug,
+      displayName: row.displayName,
+    };
+
+    const [classified] = enrichSkillsShMirrorClassifications(
+      [withoutDetail],
+      [previous],
+      200,
+      classify,
+    );
+
+    expect(classify).toHaveBeenCalledWith({
+      slug: "html",
+      text: "---\nname: HTML\n---\n# HTML",
+    });
+    expect(classified).toMatchObject({
+      inferredCategories: ["other"],
+      inferredInputHash: "stub-input",
+      inferredAt: 200,
+    });
+  });
+
+  it("reuses classification when the same no-detail stub is observed again", () => {
+    const withoutDetail = {
+      externalId: row.externalId,
+      slug: row.slug,
+      displayName: row.displayName,
+    };
+    const [previous] = enrichSkillsShMirrorClassifications([withoutDetail], [], 100);
+    const classify = vi.fn();
+
+    const [classified] = enrichSkillsShMirrorClassifications(
+      [withoutDetail],
+      [previous],
+      200,
+      classify,
+    );
+
+    expect(classify).not.toHaveBeenCalled();
+    expect(classified.inferredAt).toBe(100);
+  });
+
   it("rebuilds bounded rows from the captured digest and detail snapshot", () => {
     const [replayed] = buildSkillsShMirrorReplayRows(
       [
