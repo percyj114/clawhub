@@ -69,6 +69,9 @@ describe("Test deploy workflow", () => {
     );
     expect(job?.if).toContain("github.event.pull_request.head.repo.full_name == github.repository");
     expect(job?.if).toContain("github.actor == 'Patrick-Erichsen'");
+    expect(job?.if).toContain(
+      "contains(github.event.pull_request.labels.*.name, 'test-mirror-load')",
+    );
     expect(job?.if).toContain("github.event.workflow_run.conclusion == 'success'");
     expect(job?.if).toContain("github.event.workflow_run.event == 'push'");
     expect(revision).toContain('deploy_sha" != "$main_sha');
