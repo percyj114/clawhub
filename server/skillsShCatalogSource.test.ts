@@ -177,11 +177,22 @@ describe("skills.sh Vercel source boundary", () => {
 
   it("does not sleep after the final controlled-source rate-limit attempt", async () => {
     vi.useFakeTimers();
+    let canceledResponses = 0;
     const fetchImpl = vi.fn(async () => {
-      return new Response("rate limited", {
-        status: 429,
-        headers: { "retry-after": "1" },
-      });
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("rate limited"));
+          },
+          cancel() {
+            canceledResponses += 1;
+          },
+        }),
+        {
+          status: 429,
+          headers: { "retry-after": "1" },
+        },
+      );
     });
     let settled = false;
     const resultPromise = fetchSkillsShMirrorControlledBatch(
@@ -199,9 +210,12 @@ describe("skills.sh Vercel source boundary", () => {
       settled = true;
     });
 
+    await vi.advanceTimersByTimeAsync(0);
+    expect(canceledResponses).toBe(1);
     await vi.advanceTimersByTimeAsync(3_000);
 
     expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(canceledResponses).toBe(4);
     expect(settled).toBe(true);
     expect(skillsShSourceRetryAfterSeconds(await resultPromise)).toBe(1);
   });
@@ -2308,13 +2322,24 @@ describe("skills.sh Vercel source boundary", () => {
   it("honors the full Retry-After delay before retrying a 429", async () => {
     vi.useFakeTimers();
     let attempts = 0;
+    let canceledResponses = 0;
     const fetchImpl = vi.fn(async () => {
       attempts += 1;
       if (attempts === 1) {
-        return new Response("rate limited", {
-          status: 429,
-          headers: { "retry-after": "17" },
-        });
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode("rate limited"));
+            },
+            cancel() {
+              canceledResponses += 1;
+            },
+          }),
+          {
+            status: 429,
+            headers: { "retry-after": "17" },
+          },
+        );
       }
       return new Response(
         JSON.stringify({
@@ -2330,6 +2355,7 @@ describe("skills.sh Vercel source boundary", () => {
     );
     await vi.advanceTimersByTimeAsync(16_999);
     expect(attempts).toBe(1);
+    expect(canceledResponses).toBe(1);
     await vi.advanceTimersByTimeAsync(1);
     await pagePromise;
     expect(attempts).toBe(2);

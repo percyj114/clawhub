@@ -504,18 +504,23 @@ async function fetchSkillsShApiResponse(
       },
     });
     if (response.ok) return response;
-    if (allowNotFound && response.status === 404) return null;
+    if (allowNotFound && response.status === 404) {
+      await cancelResponseBody(response);
+      return null;
+    }
     const retryAfterMs = response.status === 429 ? skillsShRetryAfterMs(response, attempt) : null;
     if (
       (response.status !== 429 && response.status < 500) ||
       attempt === MAX_SOURCE_ATTEMPTS - 1 ||
       (retryAfterMs !== null && retryAfterMs > MAX_INLINE_RETRY_AFTER_MS)
     ) {
+      await cancelResponseBody(response);
       throw new SkillsShSourceHttpError(
         response.status,
         retryAfterMs === null ? null : Math.max(1, Math.ceil(retryAfterMs / 1_000)),
       );
     }
+    await cancelResponseBody(response);
     await waitForSkillsShRetry(response, attempt);
   }
   throw new Error("skills.sh catalog source exhausted retries");
@@ -1563,6 +1568,7 @@ async function fetchSkillsShProofText(
       await cancelResponseBody(response);
       throw new Error(`skills.sh proof metadata returned HTTP ${response.status}`);
     }
+    await cancelResponseBody(response);
     await waitForSkillsShRetry(response, attempt);
   }
   throw new Error("skills.sh proof metadata exhausted retries");
@@ -2083,6 +2089,7 @@ export async function fetchSkillsShMirrorControlledBatch(
             await cancelResponseBody(response);
             break;
           }
+          await cancelResponseBody(response);
           await waitForSkillsShRetry(response, attempt);
         } else {
           if (attempt === MAX_SOURCE_ATTEMPTS - 1) break;
