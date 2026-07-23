@@ -191,6 +191,30 @@ describe("skills.sh external mirror", () => {
     expect(started.runId).toEqual(expect.any(String));
   });
 
+  it("records bounded source accounting above 100 MiB", async () => {
+    useTestEnvironment();
+    const t = convexTest(schema, modules);
+    await configure(t);
+    const { runId } = await startRun(t, "snapshot:large-source-accounting", 1);
+
+    await expect(
+      processBatch(t, {
+        runId,
+        page: 0,
+        offset: 0,
+        pageLength: 1,
+        hasMore: false,
+        sourceTotal: 1,
+        sourceRequests: 1,
+        sourceBytes: 50 * 8 * 1024 * 1024,
+        rows: [githubRow],
+      }),
+    ).resolves.toMatchObject({
+      status: "reconciling",
+      operations: { sourceBytes: 50 * 8 * 1024 * 1024 },
+    });
+  });
+
   it("stores immutable source pages and returns them with the exact leased cursor", async () => {
     useTestEnvironment();
     const t = convexTest(schema, modules);

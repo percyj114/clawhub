@@ -21,6 +21,11 @@ const MAX_DETAIL_BYTES = 64 * 1024;
 const MAX_DETAIL_PAGE_ROWS = 50;
 const MAX_RECONCILE_ROWS = 250;
 const MAX_SOURCE_ATTEMPTS = 4;
+// Accounting includes consumed upstream bodies, including at most one bounded
+// 8 MiB GitHub tree per distinct repository. Retryable API/identity responses
+// and non-OK tree responses are canceled unread, so retries do not multiply
+// tree bytes. This is not the Convex mutation payload size.
+const MAX_ACCOUNTED_SOURCE_BYTES_PER_BATCH = 512 * 1024 * 1024;
 const MAX_SEARCH_ROWS = 50;
 const MAX_SCANNER_STATUS_LENGTH = 32;
 const MAX_SCANNER_URL_LENGTH = 2_048;
@@ -977,7 +982,7 @@ export const processBatchInternal = internalMutation({
       0,
       MAX_SOURCE_ATTEMPTS * (1 + 5 * args.rows.length),
     );
-    assertIntegerInRange("sourceBytes", args.sourceBytes, 0, 100 * 1024 * 1024);
+    assertIntegerInRange("sourceBytes", args.sourceBytes, 0, MAX_ACCOUNTED_SOURCE_BYTES_PER_BATCH);
     if (args.offset + args.rows.length > args.pageLength) {
       throw new ConvexError("skills.sh mirror batch exceeds the source page");
     }

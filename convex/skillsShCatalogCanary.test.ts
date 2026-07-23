@@ -409,6 +409,57 @@ describe("skills.sh controlled hidden metadata canary", () => {
     });
   });
 
+  it("clears exact-native upstream metrics when the controlled entry is removed", async () => {
+    vi.useFakeTimers();
+    useEnvironment(LOCAL_ENV);
+    const t = convexTest(schema, modules);
+    const nativeSkillId = await seedNativeSkill(t, {
+      exactSource: true,
+      downloads: 143,
+      bookmarks: 5,
+      openClawInstalls: 11,
+      seedDigest: true,
+    });
+    await configureCanary(t);
+
+    const { runId } = await runCanary(t);
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    const rollback = await t.mutation(internal.skillsShCatalog.rollbackFixtureRunInternal, {
+      runId,
+      actor: "codex-test",
+      reason: "remove the controlled exact-native metadata",
+      confirm: "rollback-skills-sh-controlled-canary",
+    });
+    const native = await t.run(async (ctx) => await ctx.db.get(nativeSkillId));
+    const digest = await t.run(async (ctx) =>
+      ctx.db
+        .query("skillSearchDigest")
+        .withIndex("by_skill", (q) => q.eq("skillId", nativeSkillId))
+        .unique(),
+    );
+
+    expect(rollback).toMatchObject({
+      deletedEntries: 1,
+      nativeSkillsChanged: 1,
+    });
+    expect(native?.statsSkillsShInstalls).toBeUndefined();
+    expect(native?.statsGithubStars).toBeUndefined();
+    expect(digest?.statsSkillsShInstalls).toBeUndefined();
+    expect(digest?.statsGithubStars).toBeUndefined();
+    expect(native).toMatchObject({
+      statsDownloads: 143,
+      statsStars: 5,
+      statsInstallsCurrent: 11,
+      statsInstallsAllTime: 11,
+      stats: {
+        downloads: 143,
+        stars: 5,
+        installsCurrent: 11,
+        installsAllTime: 11,
+      },
+    });
+  });
+
   it("clears upstream metrics when an exact native match becomes a route collision", async () => {
     vi.useFakeTimers();
     useEnvironment(LOCAL_ENV);
