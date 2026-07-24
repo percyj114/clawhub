@@ -3,7 +3,7 @@ import { defineEventHandler, getQuery, setHeader } from "h3";
 import { fetchImageDataUrl, fetchPublisherProfileImageDataUrl } from "../../og/fetchImageDataUrl";
 import { fetchPublisherOgMeta } from "../../og/fetchPublisherOgMeta";
 import { readOgDownloadsQuery, resolveOgDownloadsDisplay } from "../../og/formatOgStats";
-import { normalizeOgLogoDataUrl } from "../../og/normalizeLogoDataUrl";
+import { normalizeOgAvatarDataUrl, normalizeOgLogoDataUrl } from "../../og/normalizeLogoDataUrl";
 import {
   ensureResvgWasm,
   FONT_MONO,
@@ -97,7 +97,9 @@ export default defineEventHandler(async (event) => {
     getClawHubLogoDataUrl(),
     ensureResvgWasm().then(() => getPublisherFontBuffers()),
   ]);
-  const avatarDataUrl = await fetchPublisherProfileImageDataUrl(avatarUrl);
+  const avatarDataUrl = await normalizeOgAvatarDataUrl(
+    await fetchPublisherProfileImageDataUrl(avatarUrl),
+  );
   const organizationImageUrls =
     verifiedMeta?.affiliations
       .map((affiliation) => affiliation.image)

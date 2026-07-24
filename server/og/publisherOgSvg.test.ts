@@ -70,14 +70,14 @@ describe("buildPublisherOgSvg", () => {
     expect(svg).toContain('stop-color="#6C1B2B" stop-opacity="0"');
     expect(svg).not.toContain("#D4453A");
     expect(svg).toContain('<tspan x="542" dy="0">Matt Van Horn</tspan>');
-    expect(svg).toContain('<svg x="1061.33" y="198.24" width="42" height="42"');
+    expect(svg).toContain('<svg x="1065" y="198.24" width="42" height="42"');
   });
 
   it("keeps the organization verified badge on the guide title line", () => {
     const svg = buildSvg({ official: true, organizationLogos: [transparentPixel] });
     expect(svg).toContain('font-size="72"');
     expect(svg).toContain('<tspan x="509" dy="0">Matt Van Horn</tspan>');
-    expect(svg).toContain('<svg x="1028.33" y="145.24" width="42" height="42"');
+    expect(svg).toContain('<svg x="1060.33" y="145.24" width="42" height="42"');
   });
 
   it("positions the official badge from the current one-line title length", () => {
@@ -129,6 +129,46 @@ describe("buildPublisherOgSvg", () => {
       expect(normalSvg).toContain(stableMarkup);
       expect(variableSvg).toContain(stableMarkup);
     }
+  });
+
+  it("leaves a visible gap between a publisher title and its official badge", () => {
+    const svg = buildSvg({
+      official: true,
+      title: "Youdotcom Oss",
+      handleLabel: "@youdotcom-oss",
+    });
+
+    expect(svg).toContain('<tspan x="447" dy="0">Youdotcom Oss</tspan>');
+    expect(svg).toContain('<svg x="974.53" y="201.22" width="42" height="42"');
+  });
+
+  it("vertically centers the avatar and content for long profiles without organizations", () => {
+    const svg = buildSvg({
+      title: "Youdotcom Oss",
+      handleLabel: "@youdotcom-oss",
+      avatarShape: "rounded",
+    });
+
+    expect(svg).toContain('<rect x="110" y="176" width="278" height="278"');
+    expect(svg).toContain('<text x="447" y="244"');
+    expect(svg).toContain('<text x="447" y="304"');
+    expect(svg).toContain('<text x="447" y="381"');
+    expect(svg).toContain('<text x="447" y="493"');
+  });
+
+  it("renders an initial when the publisher has no usable avatar", () => {
+    const svg = buildSvg({
+      avatarDataUrl: null,
+      avatarShape: "rounded",
+      title: "Youdotcom Oss",
+      handleLabel: "@youdotcom-oss",
+    });
+
+    expect(svg).toContain('<text x="249" y="355"');
+    expect(svg).toContain(">Y</text>");
+    expect(svg).not.toContain(
+      `<image href="${clawHubLogoDataUrl}" x="87" y="153" width="324" height="324"`,
+    );
   });
 
   it("renders organization state when affiliations exist", () => {

@@ -35,3 +35,21 @@ export async function normalizeOgLogoDataUrl(dataUrl: string | null | undefined)
     return null;
   }
 }
+
+export async function normalizeOgAvatarDataUrl(dataUrl: string | null | undefined) {
+  if (!dataUrl) return null;
+  const parsed = readDataUrl(dataUrl);
+  if (!parsed || !parsed.mimeType.startsWith("image/")) return null;
+
+  try {
+    const normalized = await sharp(parsed.buffer, {
+      limitInputPixels: NORMALIZED_LOGO_MAX_INPUT_PIXELS,
+    })
+      .ensureAlpha()
+      .png()
+      .toBuffer();
+    return `data:image/png;base64,${normalized.toString("base64")}`;
+  } catch {
+    return null;
+  }
+}

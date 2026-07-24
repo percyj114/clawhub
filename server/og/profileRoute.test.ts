@@ -7,6 +7,7 @@ const setHeaderMock = vi.fn();
 const fetchImageDataUrlMock = vi.fn();
 const fetchPublisherProfileImageDataUrlMock = vi.fn();
 const fetchPublisherOgMetaMock = vi.fn();
+const normalizeOgAvatarDataUrlMock = vi.fn();
 const normalizeOgLogoDataUrlMock = vi.fn();
 const getClawHubLogoDataUrlMock = vi.fn();
 const ensureResvgWasmMock = vi.fn();
@@ -47,6 +48,7 @@ vi.mock("./fetchPublisherOgMeta", () => ({
 }));
 
 vi.mock("./normalizeLogoDataUrl", () => ({
+  normalizeOgAvatarDataUrl: (...args: unknown[]) => normalizeOgAvatarDataUrlMock(...args),
   normalizeOgLogoDataUrl: (...args: unknown[]) => normalizeOgLogoDataUrlMock(...args),
 }));
 
@@ -73,6 +75,7 @@ beforeEach(() => {
   fetchImageDataUrlMock.mockReset();
   fetchPublisherProfileImageDataUrlMock.mockReset();
   fetchPublisherOgMetaMock.mockReset();
+  normalizeOgAvatarDataUrlMock.mockReset();
   normalizeOgLogoDataUrlMock.mockReset();
   getClawHubLogoDataUrlMock.mockReset();
   ensureResvgWasmMock.mockReset();
@@ -87,6 +90,9 @@ beforeEach(() => {
   getPublisherFontBuffersMock.mockResolvedValue([new Uint8Array([1, 2, 3])]);
   fetchPublisherProfileImageDataUrlMock.mockResolvedValue("data:image/png;base64,QVZBVEFS");
   fetchImageDataUrlMock.mockImplementation(async (url: string) => `data:image/png;base64,${url}`);
+  normalizeOgAvatarDataUrlMock.mockImplementation(
+    async (dataUrl: string) => `${dataUrl}-normalized`,
+  );
   normalizeOgLogoDataUrlMock.mockImplementation(async (dataUrl: string) => `${dataUrl}-normalized`);
   buildPublisherOgSvgMock.mockReturnValue("<svg>profile</svg>");
   renderAsPngMock.mockReturnValue(new Uint8Array([7, 8, 9]));
@@ -131,10 +137,11 @@ describe("profile og route", () => {
       "https://cdn.example.com/avatar.png",
     );
     expect(fetchImageDataUrlMock).not.toHaveBeenCalled();
+    expect(normalizeOgAvatarDataUrlMock).toHaveBeenCalledWith("data:image/png;base64,QVZBVEFS");
     expect(normalizeOgLogoDataUrlMock).not.toHaveBeenCalled();
     expect(buildPublisherOgSvgMock).toHaveBeenCalledWith({
       clawHubLogoDataUrl: "data:image/png;base64,TE9HTw==",
-      avatarDataUrl: "data:image/png;base64,QVZBVEFS",
+      avatarDataUrl: "data:image/png;base64,QVZBVEFS-normalized",
       avatarShape: "rounded",
       official: false,
       title: "NVIDIA",
@@ -143,6 +150,28 @@ describe("profile og route", () => {
       organizationLogos: [],
       stats: [{ value: "1.2k", label: "Downloads" }],
     });
+  });
+
+  it("passes a missing avatar through to the SVG empty state", async () => {
+    getQueryMock.mockReturnValue({
+      handle: "no-avatar",
+      title: "No Avatar",
+      downloads: "0",
+      kind: "org",
+      official: "0",
+      orgState: "0",
+      orgImages: "0",
+    });
+    fetchPublisherProfileImageDataUrlMock.mockResolvedValue(null);
+    normalizeOgAvatarDataUrlMock.mockResolvedValue(null);
+
+    const handler = (await import("../routes/og/profile.png")).default;
+    await handler({} as never);
+
+    expect(normalizeOgAvatarDataUrlMock).toHaveBeenCalledWith(null);
+    expect(buildPublisherOgSvgMock).toHaveBeenCalledWith(
+      expect.objectContaining({ avatarDataUrl: null, title: "No Avatar" }),
+    );
   });
 
   it("verifies trust indicators before rendering query-requested official state", async () => {

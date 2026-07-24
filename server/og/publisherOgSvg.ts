@@ -18,7 +18,8 @@ const OFFICIAL_BADGE_SIZE = 42;
 const OFFICIAL_BADGE_STROKE = 1.71;
 const OFFICIAL_BADGE_VISIBLE_LEFT_INSET = (3.85 / 24) * OFFICIAL_BADGE_SIZE;
 const OFFICIAL_BADGE_VISIBLE_CENTER_INSET = (12 / 24) * OFFICIAL_BADGE_SIZE;
-const OFFICIAL_BADGE_VISIBLE_GAP = 32;
+const OFFICIAL_BADGE_VISIBLE_GAP = 64;
+const OFFICIAL_BADGE_RESERVED_GAP = 32;
 const OFFICIAL_BADGE_TRUNCATED_VISIBLE_GAP = 80;
 const LONG_LAYOUT_BADGE_MAX_X = 1084;
 const NORMAL_TITLE_WIDTH_SCALE = 0.94;
@@ -29,6 +30,7 @@ const PUBLISHER_GRADIENT_FADE = "#6C1B2B";
 const PUBLISHER_TEXT_WEIGHT = 700;
 const PUBLISHER_LABEL_SIZE = 24;
 const PUBLISHER_VALUE_SIZE = 44;
+const LONG_NO_ORGANIZATION_Y_OFFSET = 93;
 const GRAPHEME_SEGMENTER =
   typeof Intl.Segmenter === "function"
     ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
@@ -74,7 +76,7 @@ function normalOfficialTitleMaxWidth(contentWidth: number) {
     contentWidth,
     (contentWidth -
       OFFICIAL_BADGE_SIZE -
-      OFFICIAL_BADGE_VISIBLE_GAP +
+      OFFICIAL_BADGE_RESERVED_GAP +
       OFFICIAL_BADGE_VISIBLE_LEFT_INSET) /
       NORMAL_TITLE_WIDTH_SCALE,
   );
@@ -267,7 +269,10 @@ function orgLogoTiles(
 
 export function buildPublisherOgSvg(params: PublisherOgSvgParams) {
   const rawTitle = params.title.trim() || params.handleLabel;
-  const avatar = params.avatarDataUrl || params.clawHubLogoDataUrl;
+  const avatarFallbackLabel =
+    textSegments(rawTitle)
+      .find((segment) => segment.trim())
+      ?.toLocaleUpperCase() ?? "@";
   const avatarShape = params.avatarShape ?? "circle";
   const organizationLogos = params.organizationLogos?.filter(Boolean) ?? [];
   const organizationCount = Math.min(
@@ -301,6 +306,7 @@ export function buildPublisherOgSvg(params: PublisherOgSvgParams) {
   const creatorNeedsOverflow =
     estimateTextWidth(params.handleLabel, 46) > normalLayout.creatorWidth;
   const usesLongLayout = titleNeedsOverflow || creatorNeedsOverflow;
+  const contentYOffset = usesLongLayout && !hasOrganizations ? LONG_NO_ORGANIZATION_Y_OFFSET : 0;
   const organizationExtraGap = usesLongLayout ? 41 : 0;
   const layout = usesLongLayout
     ? {
@@ -331,7 +337,7 @@ export function buildPublisherOgSvg(params: PublisherOgSvgParams) {
     )
     .join("");
   const titleY = usesLongLayout
-    ? 151
+    ? 151 + contentYOffset
     : hasOrganizations
       ? titleLines.length > 1
         ? 138
@@ -359,7 +365,12 @@ export function buildPublisherOgSvg(params: PublisherOgSvgParams) {
       ? { cx: 249, cy: 222, imageX: 87, imageY: 60 }
       : { cx: 308, cy: 262, imageX: 146, imageY: 100 }
     : usesLongLayout
-      ? { cx: 249, cy: 222, imageX: 87, imageY: 60 }
+      ? {
+          cx: 249,
+          cy: 222 + contentYOffset,
+          imageX: 87,
+          imageY: 60 + contentYOffset,
+        }
       : { cx: 276, cy: 315, imageX: 114, imageY: 153 };
   const statsMarkup = usesLongLayout
     ? `${statColumn("Creator", params.handleLabel, layout.detailX, detailY, layout.creatorWidth, { truncateWithDots: true })}
@@ -367,13 +378,21 @@ export function buildPublisherOgSvg(params: PublisherOgSvgParams) {
     : `${statColumn("Creator", params.handleLabel, layout.detailX, detailY, layout.creatorWidth, { truncateWithDots: true })}
     ${statColumn(downloadsStat.label, downloadsStat.value, layout.downloadsX, detailY, layout.downloadsWidth)}`;
   const orgLogosX = usesLongLayout ? 110 : 169;
+  const avatarImage = params.avatarDataUrl
+    ? `<image href="${params.avatarDataUrl}" x="${avatarCircle.imageX}" y="${avatarCircle.imageY}" width="324" height="324" clip-path="url(#publisherAvatar${avatarShape === "circle" ? "Circle" : "Rounded"}Clip)" preserveAspectRatio="xMidYMid slice"/>`
+    : `<text x="${avatarCircle.cx}" y="${avatarCircle.cy + 40}"
+        fill="${PUBLISHER_RED}"
+        font-size="118"
+        font-weight="${PUBLISHER_TEXT_WEIGHT}"
+        text-anchor="middle"
+        font-family="${FONT_SANS}, sans-serif">${escapeXml(avatarFallbackLabel)}</text>`;
   const avatarFrame =
     avatarShape === "circle"
       ? `<circle cx="${avatarCircle.cx}" cy="${avatarCircle.cy}" r="139" fill="#FFFFFF" fill-opacity="0.055" stroke="#FFFFFF" stroke-opacity="0.16"/>
-      <image href="${avatar}" x="${avatarCircle.imageX}" y="${avatarCircle.imageY}" width="324" height="324" clip-path="url(#publisherAvatarCircleClip)" preserveAspectRatio="xMidYMid slice"/>
+      ${avatarImage}
       <circle cx="${avatarCircle.cx}" cy="${avatarCircle.cy}" r="139" stroke="#FFFFFF" stroke-opacity="0.18" stroke-width="1.5"/>`
       : `<rect x="${avatarCircle.cx - 139}" y="${avatarCircle.cy - 139}" width="278" height="278" rx="58" fill="#FFFFFF" fill-opacity="0.055" stroke="#FFFFFF" stroke-opacity="0.16"/>
-      <image href="${avatar}" x="${avatarCircle.imageX}" y="${avatarCircle.imageY}" width="324" height="324" clip-path="url(#publisherAvatarRoundedClip)" preserveAspectRatio="xMidYMid slice"/>
+      ${avatarImage}
       <rect x="${avatarCircle.cx - 138.25}" y="${avatarCircle.cy - 138.25}" width="276.5" height="276.5" rx="57.25" stroke="#FFFFFF" stroke-opacity="0.18" stroke-width="1.5"/>`;
 
   return `<?xml version="1.0" encoding="UTF-8"?>

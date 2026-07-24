@@ -1,6 +1,6 @@
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
-import { normalizeOgLogoDataUrl } from "./normalizeLogoDataUrl";
+import { normalizeOgAvatarDataUrl, normalizeOgLogoDataUrl } from "./normalizeLogoDataUrl";
 
 async function makeLogoDataUrl(padding: number) {
   const size = 96;
@@ -79,6 +79,36 @@ describe("normalizeOgLogoDataUrl", () => {
 
     await expect(
       normalizeOgLogoDataUrl(`data:image/png;base64,${oversizedImage.toString("base64")}`),
+    ).resolves.toBeNull();
+  });
+});
+
+describe("normalizeOgAvatarDataUrl", () => {
+  it("converts WebP avatars to PNG for the SVG renderer", async () => {
+    const webp = await sharp({
+      create: {
+        width: 85,
+        height: 84,
+        channels: 4,
+        background: { r: 96, g: 165, b: 250, alpha: 0.8 },
+      },
+    })
+      .webp()
+      .toBuffer();
+
+    const normalized = await normalizeOgAvatarDataUrl(
+      `data:image/webp;base64,${webp.toString("base64")}`,
+    );
+
+    expect(normalized).toMatch(/^data:image\/png;base64,/);
+    await expect(
+      sharp(Buffer.from(normalized?.split(",")[1] ?? "", "base64")).metadata(),
+    ).resolves.toMatchObject({ format: "png", width: 85, height: 84 });
+  });
+
+  it("returns null when an avatar cannot be decoded", async () => {
+    await expect(
+      normalizeOgAvatarDataUrl("data:image/webp;base64,bm90LWFuLWltYWdl"),
     ).resolves.toBeNull();
   });
 });

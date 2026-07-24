@@ -61,7 +61,7 @@ describe("og helpers", () => {
     expect(meta.description).toBe("maton.ai");
     expect(meta.url).toBe("https://clawhub.ai/byungkyu");
     expect(meta.image).toContain("/og/profile?");
-    expect(meta.image).toContain("v=8");
+    expect(meta.image).toContain("v=9");
     expect(meta.image).toContain("handle=byungkyu");
     expect(meta.image).toContain("title=byungkyu");
     expect(meta.image).not.toContain("description=");
