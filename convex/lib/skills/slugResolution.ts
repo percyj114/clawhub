@@ -97,12 +97,15 @@ export async function getSkillBySlugForPublisher(
   slug: string,
   publisher: Doc<"publishers">,
 ) {
-  const scopedSkill = await ctx.db
-    .query("skills")
-    .withIndex("by_owner_publisher_slug", (q) =>
-      q.eq("ownerPublisherId", publisher._id).eq("slug", slug),
-    )
-    .unique();
+  const scopedSkills = await takeQueryResults<Doc<"skills">>(
+    ctx.db
+      .query("skills")
+      .withIndex("by_owner_publisher_slug", (q) =>
+        q.eq("ownerPublisherId", publisher._id).eq("slug", slug),
+      ),
+    MAX_LEGACY_OWNER_MATCHES,
+  );
+  const scopedSkill = selectPreferredSkillMatch(scopedSkills);
   if (scopedSkill) return scopedSkill;
 
   const linkedUserId = await getPublisherLegacyOwnerUserId(ctx, publisher);
@@ -114,8 +117,10 @@ export async function getSkillBySlugForPublisher(
       .withIndex("by_owner_slug", (q) => q.eq("ownerUserId", linkedUserId).eq("slug", slug)),
     MAX_LEGACY_OWNER_MATCHES,
   );
-  const legacySkill = legacySkills.find(
-    (candidate) => !candidate.ownerPublisherId || candidate.ownerPublisherId === publisher._id,
+  const legacySkill = selectPreferredSkillMatch(
+    legacySkills.filter(
+      (candidate) => !candidate.ownerPublisherId || candidate.ownerPublisherId === publisher._id,
+    ),
   );
   if (!legacySkill) return null;
   return legacySkill;
@@ -281,16 +286,60 @@ async function selectLegacySkillMatch(
     ? skills
     : skills.filter((skill) => isPublicSkillDoc(skill));
   if (selectableSkills.length === 1) return selectableSkills[0];
-  const openClawMatches = [];
+  const ownerGroups = new Map<
+    string,
+    { owner: Doc<"publishers"> | null; skills: Doc<"skills">[] }
+  >();
   for (const skill of selectableSkills) {
     const owner = await getOwnerPublisher(ctx, {
       ownerPublisherId: skill.ownerPublisherId,
       ownerUserId: skill.ownerUserId,
     });
-    if (owner?.handle === "openclaw") openClawMatches.push(skill);
+    const ownerKey = owner?._id ?? `${skill.ownerPublisherId ?? ""}/${skill.ownerUserId}`;
+    const group = ownerGroups.get(ownerKey);
+    if (group) {
+      group.skills.push(skill);
+    } else {
+      ownerGroups.set(ownerKey, { owner, skills: [skill] });
+    }
   }
-  if (openClawMatches.length === 1) return openClawMatches[0];
+  if (ownerGroups.size === 1) {
+    return selectPreferredSkillMatch(Array.from(ownerGroups.values())[0]?.skills ?? []);
+  }
+  const openClawGroups = Array.from(ownerGroups.values()).filter(
+    (group) => group.owner?.handle === "openclaw",
+  );
+  if (openClawGroups.length === 1) {
+    return selectPreferredSkillMatch(openClawGroups[0]?.skills ?? []);
+  }
   return "ambiguous";
+}
+
+function selectPreferredSkillMatch(skills: Doc<"skills">[]) {
+  if (skills.length <= 1) return skills[0] ?? null;
+
+  // Duplicate rows violate the publisher-scoped slug invariant, so resolve
+  // them deterministically without masking a public, current skill.
+  return [...skills].sort((left, right) => {
+    const activeDifference =
+      Number(Boolean(left.softDeletedAt)) - Number(Boolean(right.softDeletedAt));
+    if (activeDifference !== 0) return activeDifference;
+    const publicDifference = Number(isPublicSkillDoc(right)) - Number(isPublicSkillDoc(left));
+    if (publicDifference !== 0) return publicDifference;
+    const canonicalDifference =
+      Number(Boolean(left.canonicalSkillId)) - Number(Boolean(right.canonicalSkillId));
+    if (canonicalDifference !== 0) return canonicalDifference;
+    const publishedDifference =
+      (right.latestVersionSummary?.createdAt ?? 0) - (left.latestVersionSummary?.createdAt ?? 0);
+    if (publishedDifference !== 0) return publishedDifference;
+    const updatedDifference = right.updatedAt - left.updatedAt;
+    if (updatedDifference !== 0) return updatedDifference;
+    const createdDifference = right.createdAt - left.createdAt;
+    if (createdDifference !== 0) return createdDifference;
+    const creationDifference = right._creationTime - left._creationTime;
+    if (creationDifference !== 0) return creationDifference;
+    return right._id.localeCompare(left._id);
+  })[0];
 }
 
 async function takeQueryResults<T>(query: LegacyResultQuery<T>, limit: number) {
