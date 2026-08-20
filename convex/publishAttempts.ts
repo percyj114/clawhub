@@ -785,7 +785,7 @@ export const completePendingPublishAttemptChecksInternal = internalMutation({
         await ctx.db.patch(attempt.skillVersionId, {
           publicationStatus: "blocked",
           llmAnalysis: args.clawscanAnalysis,
-          aigAnalysis: args.aigAnalysis,
+          ...(args.aigAnalysis ? { aigAnalysis: args.aigAnalysis } : {}),
           publishAttemptId: attempt._id,
         });
       }
@@ -798,7 +798,7 @@ export const completePendingPublishAttemptChecksInternal = internalMutation({
           publicationStatus: "blocked",
           verification,
           llmAnalysis: args.clawscanAnalysis,
-          aigAnalysis: args.aigAnalysis,
+          ...(args.aigAnalysis ? { aigAnalysis: args.aigAnalysis } : {}),
           publishAttemptId: attempt._id,
         });
       }
@@ -858,14 +858,14 @@ export const completePendingPublishAttemptChecksInternal = internalMutation({
     if (attempt.kind === "skill" && attempt.skillVersionId && args.clawscanAnalysis) {
       await ctx.db.patch(attempt.skillVersionId, {
         llmAnalysis: args.clawscanAnalysis,
-        aigAnalysis: args.aigAnalysis,
+        ...(args.aigAnalysis ? { aigAnalysis: args.aigAnalysis } : {}),
         publishAttemptId: attempt._id,
       });
     }
     if (attempt.kind === "package" && attempt.packageReleaseId && args.clawscanAnalysis) {
       await ctx.db.patch(attempt.packageReleaseId, {
         llmAnalysis: args.clawscanAnalysis,
-        aigAnalysis: args.aigAnalysis,
+        ...(args.aigAnalysis ? { aigAnalysis: args.aigAnalysis } : {}),
         publishAttemptId: attempt._id,
       });
     }
