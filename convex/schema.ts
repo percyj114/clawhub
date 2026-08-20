@@ -4148,6 +4148,50 @@ const publisherAbuseSignals = defineTable({
   notificationClaimedAt: v.optional(v.number()),
   lastNotifiedAt: v.optional(v.number()),
   lastNotificationError: v.optional(v.string()),
+  trafficExplanationRequest: v.optional(
+    v.object({
+      requestedAt: v.number(),
+      tokenHash: v.optional(v.string()),
+      state: v.optional(
+        v.union(
+          v.literal("queued"),
+          v.literal("retrying"),
+          v.literal("sent"),
+          v.literal("cancelled"),
+          v.literal("not_deliverable"),
+        ),
+      ),
+      latestAttemptAt: v.optional(v.number()),
+      attemptCount: v.optional(v.number()),
+      sentAt: v.optional(v.number()),
+      recipientUserId: v.optional(v.id("users")),
+      recipientEmail: v.optional(v.string()),
+      providerId: v.optional(v.string()),
+      deliveryError: v.optional(v.string()),
+      subject: v.optional(v.string()),
+      templateVersion: v.optional(v.string()),
+      reasonBullets: v.optional(v.array(v.string())),
+      redactedTextSnapshot: v.optional(v.string()),
+    }),
+  ),
+  trafficExplanationResponse: v.optional(
+    v.object({
+      kind: v.union(v.literal("expected"), v.literal("not_recognized"), v.literal("unsure")),
+      message: v.optional(v.string()),
+      submittedAt: v.number(),
+      submittedByUserId: v.id("users"),
+    }),
+  ),
+  contactState: v.optional(
+    v.union(
+      v.literal("not_requested"),
+      v.literal("queued"),
+      v.literal("retrying"),
+      v.literal("sent"),
+      v.literal("cancelled"),
+      v.literal("not_deliverable"),
+    ),
+  ),
   attentionState: v.optional(
     v.union(
       v.literal("needs_attention"),
@@ -4158,6 +4202,23 @@ const publisherAbuseSignals = defineTable({
     ),
   ),
   needsAttention: v.optional(v.boolean()),
+  notificationEventKind: v.optional(
+    v.union(
+      v.literal("publisher_abuse_signal_owner_contact_failed"),
+      v.literal("publisher_abuse_signal_owner_response_submitted"),
+    ),
+  ),
+  notificationState: v.optional(
+    v.union(
+      v.literal("queued"),
+      v.literal("retrying"),
+      v.literal("delivered"),
+      v.literal("failed"),
+    ),
+  ),
+  notificationAttemptCount: v.optional(v.number()),
+  notificationLatestAttemptAt: v.optional(v.number()),
+  notificationDeliveredAt: v.optional(v.number()),
 })
   .index("by_last_seen_at", ["lastSeenAt"])
   .index("by_signal_type_and_last_seen_at", ["signalType", "lastSeenAt"])
@@ -4166,14 +4227,16 @@ const publisherAbuseSignals = defineTable({
   .index("by_skill_and_signal_type", ["skillId", "signalType"])
   .index("by_skill_signal_type_and_owner_key", ["skillId", "signalType", "ownerKey"])
   .index("by_review_status_and_last_seen_at", ["reviewStatus", "lastSeenAt"])
-  .index("by_review_status_and_attention_state_and_last_seen_at", {
-    fields: ["reviewStatus", "attentionState", "lastSeenAt"],
-    staged: true,
-  })
-  .index("by_review_status_and_needs_attention_and_last_seen_at", {
-    fields: ["reviewStatus", "needsAttention", "lastSeenAt"],
-    staged: true,
-  })
+  .index("by_review_status_and_attention_state_and_last_seen_at", [
+    "reviewStatus",
+    "attentionState",
+    "lastSeenAt",
+  ])
+  .index("by_review_status_and_needs_attention_and_last_seen_at", [
+    "reviewStatus",
+    "needsAttention",
+    "lastSeenAt",
+  ])
   .index("by_needs_notification_and_last_changed_at", ["needsNotification", "lastChangedAt"])
   .index("by_needs_notification_and_notification_claimed_at", [
     "needsNotification",
