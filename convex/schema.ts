@@ -4117,6 +4117,10 @@ const publisherAbuseSignals = defineTable({
     fields: ["latestRunId", "lastSeenAt"],
     staged: true,
   })
+  .index("by_owner_key_and_latest_run_id_and_last_seen_at", {
+    fields: ["ownerKey", "latestRunId", "lastSeenAt"],
+    staged: true,
+  })
   .index("by_owner_key_and_signal_type", {
     fields: ["ownerKey", "signalType"],
     staged: true,
